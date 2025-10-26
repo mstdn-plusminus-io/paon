@@ -59,7 +59,7 @@ ENV NODE_OPTIONS="--openssl-legacy-provider"
 RUN \
   set -xe && \
   apt-get update && \
-  apt-get -y --no-install-recommends install apt-utils build-essential git libicu-dev libidn11-dev libpq-dev libprotobuf-dev protobuf-compiler shared-mime-info libssl1.1 libpq5 imagemagick ffmpeg libyaml-0-2 file ca-certificates tzdata libreadline8 gcc tini && \
+  apt-get -y --no-install-recommends install apt-utils build-essential git libicu-dev libidn11-dev libpq-dev libprotobuf-dev protobuf-compiler shared-mime-info libssl-dev libssl1.1 libpq5 imagemagick ffmpeg libyaml-0-2 file ca-certificates tzdata libreadline8 gcc tini && \
   ln -s /opt/mastodon /mastodon && \
   gem install bundler && \
   npm install -g npm@latest && \
