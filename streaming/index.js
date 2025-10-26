@@ -152,17 +152,6 @@ const redisConfigFromEnv = (env) => {
   };
 };
 
-const PUBLIC_CHANNELS = [
-  'public',
-  'public:media',
-  'public:local',
-  'public:local:media',
-  'public:remote',
-  'public:remote:media',
-  'hashtag',
-  'hashtag:local',
-];
-
 // Used for priming the counters/gauges for the various metrics that are
 // per-channel
 const CHANNEL_NAMES = [
@@ -171,7 +160,14 @@ const CHANNEL_NAMES = [
   'user:notification',
   'list',
   'direct',
-  ...PUBLIC_CHANNELS
+  'public',
+  'public:media',
+  'public:local',
+  'public:local:media',
+  'public:remote',
+  'public:remote:media',
+  'hashtag',
+  'hashtag:local'
 ];
 
 const startServer = async () => {
@@ -459,7 +455,7 @@ const startServer = async () => {
         return;
       }
 
-      client.query('SELECT oauth_access_tokens.id, oauth_access_tokens.resource_owner_id, users.account_id, users.chosen_languages, oauth_access_tokens.scopes, devices.device_id FROM oauth_access_tokens INNER JOIN users ON oauth_access_tokens.resource_owner_id = users.id LEFT OUTER JOIN devices ON oauth_access_tokens.id = devices.access_token_id WHERE oauth_access_tokens.token = $1 AND oauth_access_tokens.revoked_at IS NULL LIMIT 1', [token], (err, result) => {
+      client.query('SELECT oauth_access_tokens.id, oauth_access_tokens.resource_owner_id, users.account_id, users.chosen_languages, oauth_access_tokens.scopes, devices.device_id FROM oauth_access_tokens INNER JOIN users ON oauth_access_tokens.resource_owner_id = users.id INNER JOIN accounts ON accounts.id = users.account_id LEFT OUTER JOIN devices ON oauth_access_tokens.id = devices.access_token_id WHERE oauth_access_tokens.token = $1 AND oauth_access_tokens.revoked_at IS NULL AND users.disabled IS FALSE AND accounts.suspended_at IS NULL LIMIT 1', [token], (err, result) => {
         done();
 
         if (err) {
@@ -547,12 +543,6 @@ const startServer = async () => {
    */
   const checkScopes = (req, channelName) => new Promise((resolve, reject) => {
     log.silly(req.requestId, `Checking OAuth scopes for ${channelName}`);
-
-    // When accessing public channels, no scopes are needed
-    if (PUBLIC_CHANNELS.includes(channelName)) {
-      resolve();
-      return;
-    }
 
     // The `read` scope has the highest priority, if the token has it
     // then it can access all streams
