@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.2.27] - 2025-10-13
+
+### Security
+
+- Update dependencies `rack` and `uri`
+- Fix streaming server connection not being closed on user suspension (by @ThisIsMissEm, [GHSA-r2fh-jr9c-9pxh](https://github.com/mastodon/mastodon/security/advisories/GHSA-r2fh-jr9c-9pxh))
+- Fix password change through admin CLI not invalidating existing sessions and access tokens (by @ThisIsMissEm, [GHSA-f3q3-rmf7-9655](https://github.com/mastodon/mastodon/security/advisories/GHSA-f3q3-rmf7-9655))
+- Fix streaming server allowing access to public timelines even without the `read` or `read:statuses` OAuth scopes (by @ThisIsMissEm, [GHSA-7gwh-mw97-qjgp](https://github.com/mastodon/mastodon/security/advisories/GHSA-7gwh-mw97-qjgp))
+
+## [4.2.26] - 2025-09-23
+
+### Security
+
+- Update dependencies
+
+### Fixed
+
+- Fix processing of out-of-order `Update` as implicit updates (#36190 by @ClearlyClaire)
+- Fix getting `Create` and `Update` out of order (#36176 by @ClearlyClaire)
+
+## [4.2.25] - 2025-09-16
+
+### Fixed
+
+- Fix processing of remote edited statuses with new media and no text (#35970 by @unfokus)
+
+## [4.2.24] - 2025-08-05
+
+### Security
+
+- Update dependencies
+- Fix incorrect rate-limit handling [GHSA-84ch-6436-c7mg](https://github.com/mastodon/mastodon/security/advisories/GHSA-84ch-6436-c7mg)
+
+### Fixed
+
+- Fix race condition caused by ActiveRecord query cache in `Create` critical path (#35662 by @ClearlyClaire)
+- Fix WebUI crashing for accounts with `null` URL (#35651 by @ClearlyClaire)
+
+## [4.2.23] - 2025-07-23
+
+### Security
+
+- Updated dependencies
+
 ## [4.2.22] - 2025-07-02
 
 ### Changed
