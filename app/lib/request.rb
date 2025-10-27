@@ -155,7 +155,7 @@ class Request
   private
 
   def set_common_headers!
-    @headers['User-Agent']      = Mastodon::Version.user_agent
+    @headers['User-Agent']      = Paon::Version.user_agent
     @headers['Host']            = @url.host
     @headers['Date']            = Time.now.utc.httpdate
     @headers['Accept-Encoding'] = 'gzip' if @verb != :head

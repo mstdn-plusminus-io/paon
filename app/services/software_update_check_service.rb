@@ -12,7 +12,7 @@ class SoftwareUpdateCheckService < BaseService
 
   def clean_outdated_updates!
     SoftwareUpdate.find_each do |software_update|
-      software_update.delete if Mastodon::Version.gem_version >= software_update.gem_version
+      software_update.delete if Paon::Version.gem_version >= software_update.gem_version
     rescue ArgumentError
       software_update.delete
     end
@@ -31,7 +31,7 @@ class SoftwareUpdateCheckService < BaseService
   end
 
   def version
-    @version ||= Mastodon::Version.to_s.split('+')[0]
+    @version ||= Paon::Version.to_s.split('+')[0]
   end
 
   def process_update_notices!(update_notices)

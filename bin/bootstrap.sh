@@ -8,11 +8,11 @@ echo "🚀 Starting Mastodon bootstrap process..."
 # Run macOS dependencies setup if on Darwin
 if [[ "$(uname)" == "Darwin" ]]; then
     echo "🍎 Detected macOS, setting up dependencies..."
-    
+
     # Run the setup script and capture the output
     SETUP_OUTPUT=$(./bin/setup-mac-deps.sh)
     echo "${SETUP_OUTPUT}"
-    
+
     # Extract the environment file path and source it
     ENV_FILE=$(echo "${SETUP_OUTPUT}" | grep "ENV_SETUP_FILE=" | cut -d'=' -f2)
     if [[ -n "${ENV_FILE}" ]] && [[ -f "${ENV_FILE}" ]]; then

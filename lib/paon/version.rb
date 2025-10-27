@@ -1,19 +1,19 @@
 # frozen_string_literal: true
 
-module Mastodon
+module Paon
   module Version
     module_function
 
     def major
-      4
+      0
     end
 
     def minor
-      2
+      9
     end
 
     def patch
-      27
+      0
     end
 
     def default_prerelease
@@ -21,15 +21,19 @@ module Mastodon
     end
 
     def prerelease
-      ENV['MASTODON_VERSION_PRERELEASE'].presence || default_prerelease
+      ENV['PAON_VERSION_PRERELEASE'].presence || default_prerelease
     end
 
     def build_metadata
-      ENV.fetch('MASTODON_VERSION_METADATA', nil)
+      ENV.fetch('PAON_VERSION_METADATA', nil)
     end
 
     def to_a
       [major, minor, patch].compact
+    end
+
+    def to_instance
+      "#{Mastodon::Version.to_a.join('.')} (compatible; Paon/#{Version})"
     end
 
     def to_s
@@ -44,7 +48,7 @@ module Mastodon
     end
 
     def repository
-      ENV.fetch('GITHUB_REPOSITORY', 'mastodon/mastodon')
+      ENV.fetch('GITHUB_REPOSITORY', 'mstdn-plusminus-io/Paon')
     end
 
     def source_base_url
@@ -65,7 +69,7 @@ module Mastodon
     end
 
     def user_agent
-      @user_agent ||= "#{HTTP::Request::USER_AGENT} (Mastodon/#{Version}; +http#{Rails.configuration.x.use_https ? 's' : ''}://#{Rails.configuration.x.web_domain}/)"
+      @user_agent ||= "#{HTTP::Request::USER_AGENT} (Paon/#{Version}; based Mastodon/#{Mastodon::Version}; +http#{Rails.configuration.x.use_https ? 's' : ''}://#{Rails.configuration.x.web_domain}/)"
     end
   end
 end

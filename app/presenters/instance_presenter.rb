@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 class InstancePresenter < ActiveModelSerializers::Model
-  attributes :domain, :title, :version, :source_url,
+  attributes :domain, :title, :version, :actual_version, :source_url,
              :description, :languages, :rules, :contact
 
   class ContactPresenter < ActiveModelSerializers::Model
@@ -67,11 +67,15 @@ class InstancePresenter < ActiveModelSerializers::Model
   end
 
   def version
-    Mastodon::Version.to_s
+    Paon::Version.to_instance
+  end
+
+  def actual_version
+    Paon::Version.to_s
   end
 
   def source_url
-    Mastodon::Version.source_url
+    Paon::Version.source_url
   end
 
   def thumbnail

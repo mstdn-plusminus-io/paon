@@ -9,7 +9,7 @@ class REST::InstanceSerializer < ActiveModel::Serializer
 
   include RoutingHelper
 
-  attributes :domain, :title, :version, :source_url, :description,
+  attributes :domain, :title, :version, :actual_version, :source_url, :description,
              :usage, :thumbnail, :languages, :configuration,
              :registrations, :feature_quote
 

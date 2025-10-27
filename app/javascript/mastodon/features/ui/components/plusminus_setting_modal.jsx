@@ -210,7 +210,7 @@ class PlusMinusSettingModal extends React.Component {
     sections.forEach((section) => {
       const rect = section.getBoundingClientRect();
       const sectionTop = rect.top - this.mainRef.getBoundingClientRect().top + scrollTop;
-      
+
       // Check if the section is in the viewport (with 100px offset for better UX)
       if (sectionTop <= scrollTop + 100) {
         activeSection = section.id;
@@ -851,7 +851,7 @@ class PlusMinusSettingModal extends React.Component {
         {isMobile && (
           <div className='plusminus-settings__header'>
             <h1 className='plusminus-settings__title plusminus-settings__title--mobile'>
-              plusminus設定 (<button className='plusminus-settings__developer-mode-button' onClick={this.onClickDeveloperModeButton}>β</button>{this.state.config.developer_mode === 'enabled' && '!'})
+              Pa<button className='plusminus-settings__title plusminus-settings__developer-mode-button' onClick={this.onClickDeveloperModeButton}>o</button>n設定{this.state.config.developer_mode === 'enabled' && '!'}
             </h1>
           </div>
         )}
@@ -868,7 +868,7 @@ class PlusMinusSettingModal extends React.Component {
         <div className='plusminus-settings__container'>
           {!isMobile && (
             <h1 className='plusminus-settings__title'>
-              plusminus設定 (<button className='plusminus-settings__developer-mode-button' onClick={this.onClickDeveloperModeButton}>β</button>{this.state.config.developer_mode === 'enabled' && '!'})
+              Pa<button className='plusminus-settings__title plusminus-settings__developer-mode-button' onClick={this.onClickDeveloperModeButton}>o</button>n設定{this.state.config.developer_mode === 'enabled' && '!'}
             </h1>
           )}
 

@@ -151,6 +151,9 @@ group :development do
   gem 'rubocop-rails', require: false
   gem 'rubocop-rspec', require: false
 
+  # Ruby LSP for VS Code integration
+  gem 'ruby-lsp', require: false
+
   # Annotates modules with schema
   gem 'annotate', '~> 3.2'
 

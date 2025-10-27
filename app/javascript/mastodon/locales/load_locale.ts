@@ -25,6 +25,16 @@ export async function loadLocale() {
       `mastodon/locales/${locale}.json`
     )) as LocaleData['messages'];
 
+    const ld = localeData.default as any as Record<string, string>;
+    Object.keys(localeData.default).forEach((key: string) => {
+      if (ld[key]) {
+        ld[key] = ld[key].replace('Mastodon', 'Paon');
+        ld[key] = ld[key].replace('mastodon', 'paon');
+      }
+    });
+
+    console.log("localeData:", localeData.default);
+
     setLocale({ messages: localeData, locale });
   });
 }
