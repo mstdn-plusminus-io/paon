@@ -26,7 +26,9 @@ module I18n
         when String
           obj = obj.gsub('Mastodon', 'Paon')
           obj = obj.gsub('mastodon', 'paon')
-          obj.gsub('マストドン', 'ぱおん')
+          obj = obj.gsub('マストドン', 'ぱおん')
+          obj.gsub(/mastodon gmbh/i, 'Team plusminus')
+          obj.gsub(/mastodon ggmbh/i, 'Team plusminus')
         else
           obj  # boolean, nil, 数値などはそのまま返す
         end

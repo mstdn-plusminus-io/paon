@@ -207,12 +207,12 @@ class About extends PureComponent {
           <LinkFooter />
 
           <div className='about__footer'>
-            <p>Paon is free, open-source software.</p>
+            <p>Paon is free, open-source software, fork of Mastodon by Mastodon gGmbH.</p>
           </div>
         </div>
 
         <Helmet>
-          <title>dsada{intl.formatMessage(messages.title)}dsadad</title>
+          <title>{intl.formatMessage(messages.title)}</title>
           <meta name='robots' content='all' />
         </Helmet>
       </Column>

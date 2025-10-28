@@ -43,8 +43,6 @@ export const IntlProvider: React.FC<
 
   const { locale, messages } = getLocale();
 
-  console.log("messages:", messages);
-
   return (
     <BaseIntlProvider
       locale={locale}
