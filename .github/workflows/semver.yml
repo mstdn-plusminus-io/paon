@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   retag_amd64:
-    runs-on: buildjet-4vcpu-ubuntu-2204
+    runs-on: buildjet-2vcpu-ubuntu-2204
 
     steps:
       - uses: joelwmale/webhook-action@2.1.0
@@ -64,7 +64,7 @@ jobs:
           body: '{"status": "😩 𝙨𝙚𝙢𝙫𝙚𝙧 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
   retag_arm64:
-    runs-on: buildjet-4vcpu-ubuntu-2204-arm
+    runs-on: buildjet-2vcpu-ubuntu-2204-arm
 
     steps:
       - uses: joelwmale/webhook-action@2.1.0

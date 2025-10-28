@@ -10,7 +10,7 @@ concurrency:
 
 jobs:
   build_amd64:
-    runs-on: buildjet-8vcpu-ubuntu-2204
+    runs-on: buildjet-4vcpu-ubuntu-2204
 
     steps:
       - uses: joelwmale/webhook-action@2.1.0
@@ -50,7 +50,7 @@ jobs:
           body: '{"status": "😩 𝙗𝙪𝙞𝙡𝙙 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\ndocker image: plusminusio/mastodon:staging\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
   build_arm64:
-    runs-on: buildjet-8vcpu-ubuntu-2204-arm
+    runs-on: buildjet-4vcpu-ubuntu-2204-arm
 
     steps:
       - uses: joelwmale/webhook-action@2.1.0
