@@ -20,7 +20,7 @@ jobs:
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": ":loading: 𝙨𝙚𝙢𝙫𝙚𝙧 𝙨𝙩𝙖𝙧𝙩\n\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": ":loading: 𝙨𝙚𝙢𝙫𝙚𝙧 𝙨𝙩𝙖𝙧𝙩\n\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - uses: actions/checkout@v3
         with:
@@ -47,20 +47,21 @@ jobs:
           push: true
           file: tagged.Dockerfile
           tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=registry,ref=plusminusio/mastodon:latest
 
       - if: success()
         uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "☺️ 𝙨𝙚𝙢𝙫𝙚𝙧 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "☺️ 𝙨𝙚𝙢𝙫𝙚𝙧 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - if: failure()
         uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "😩 𝙨𝙚𝙢𝙫𝙚𝙧 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "😩 𝙨𝙚𝙢𝙫𝙚𝙧 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
   retag_arm64:
     runs-on: buildjet-4vcpu-ubuntu-2204-arm
@@ -70,7 +71,7 @@ jobs:
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": ":loading: 𝙨𝙚𝙢𝙫𝙚𝙧 𝙨𝙩𝙖𝙧𝙩\n\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": ":loading: 𝙨𝙚𝙢𝙫𝙚𝙧 𝙨𝙩𝙖𝙧𝙩\n\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - uses: actions/checkout@v3
         with:
@@ -97,17 +98,18 @@ jobs:
           push: true
           file: tagged-arm64.Dockerfile
           tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=registry,ref=plusminusio/mastodon:latest-arm64
 
       - if: success()
         uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "☺️ 𝙨𝙚𝙢𝙫𝙚𝙧 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "☺️ 𝙨𝙚𝙢𝙫𝙚𝙧 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - if: failure()
         uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "😩 𝙨𝙚𝙢𝙫𝙚𝙧 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "😩 𝙨𝙚𝙢𝙫𝙚𝙧 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
