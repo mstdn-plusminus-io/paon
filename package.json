@@ -28,7 +28,7 @@
     "typecheck": "tsc --noEmit",
     "watch": "foreman start",
     "docker:dev": "docker compose -f docker-compose.develop.yml",
-    "bootstrap": "./bin/bootstrap.sh",
+    "bootstrap": "./bin/bootstrap-pre.sh; ./bin/bootstrap.sh; ./bin/bootstrap-post.sh",
     "db:migrate": "bundle exec rails db:migrate",
     "dynamo:create": "bundle exec rails dynamoid:create_tables"
   },
