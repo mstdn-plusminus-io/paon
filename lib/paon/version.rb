@@ -13,7 +13,7 @@ module Paon
     end
 
     def patch
-      1
+      2
     end
 
     def default_prerelease

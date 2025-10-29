@@ -1,9 +1,9 @@
-const MiniCssExtractPlugin = require('mini-css-extract-plugin');
+const rspack = require('@rspack/core');
 
 module.exports = {
   test: /\.s?css$/i,
   use: [
-    MiniCssExtractPlugin.loader,
+    rspack.CssExtractRspackPlugin.loader,
     {
       loader: 'css-loader',
       options: {

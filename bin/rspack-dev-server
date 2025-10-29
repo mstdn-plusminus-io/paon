@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+
+const { spawnSync } = require('child_process');
+const { resolve } = require('path');
+
+const env = Object.assign({}, process.env, {
+  RAILS_ENV: process.env.RAILS_ENV || process.env.RACK_ENV || 'development',
+  NODE_ENV: process.env.NODE_ENV || 'development',
+});
+
+const rspackPath = resolve(__dirname, '../node_modules/.bin/rspack');
+const configPath = resolve(__dirname, '../rspack.config.js');
+
+const args = ['serve', '--config', configPath, ...process.argv.slice(2)];
+
+const result = spawnSync(rspackPath, args, {
+  env,
+  stdio: 'inherit',
+  shell: true,
+});
+
+process.exit(result.status);

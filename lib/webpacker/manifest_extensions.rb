@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module Webpacker::ManifestExtensions
+module Shakapacker::ManifestExtensions
   def lookup(name, pack_type = {})
     asset = super
 
@@ -14,4 +14,4 @@ module Webpacker::ManifestExtensions
   end
 end
 
-Webpacker::Manifest.prepend(Webpacker::ManifestExtensions)
+Shakapacker::Manifest.prepend(Shakapacker::ManifestExtensions)

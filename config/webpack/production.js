@@ -8,7 +8,7 @@ const CompressionPlugin = require('@renchap/compression-webpack-plugin');
 const TerserPlugin = require('terser-webpack-plugin');
 const { BundleAnalyzerPlugin } = require('webpack-bundle-analyzer');
 const { merge } = require('webpack-merge');
-const { InjectManifest } = require('workbox-webpack-plugin');
+const { InjectManifest } = require('@aaroon/workbox-rspack-plugin');
 
 const sharedConfig = require('./shared');
 
@@ -23,9 +23,12 @@ module.exports = merge(sharedConfig, {
     minimize: true,
     minimizer: [
       new TerserPlugin({
-        cache: true,
         parallel: true,
-        sourceMap: true,
+        terserOptions: {
+          compress: {
+            warnings: false,
+          },
+        },
       }),
     ],
   },
@@ -33,13 +36,11 @@ module.exports = merge(sharedConfig, {
   plugins: [
     new CompressionPlugin({
       filename: '[path][base].gz[query]',
-      cache: true,
       test: /\.(js|css|html|json|ico|svg|eot|otf|ttf|map)$/,
     }),
     new CompressionPlugin({
       filename: '[path][base].br[query]',
       algorithm: 'brotliCompress',
-      cache: true,
       test: /\.(js|css|html|json|ico|svg|eot|otf|ttf|map)$/,
     }),
     new BundleAnalyzerPlugin({ // generates report.html
