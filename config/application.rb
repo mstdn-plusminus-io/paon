@@ -63,14 +63,13 @@ require_relative '../lib/mastodon/redis_config'
 module Mastodon
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.
-    config.load_defaults 7.0
+    # Updated to 7.2 for Rails 7.2 upgrade
+    config.load_defaults 7.2
 
-    # TODO: Release a version which uses the 7.0 defaults as specified above,
-    # but preserves the 6.1 cache format as set below. In a subsequent change,
-    # remove this line setting to 6.1 cache format, and then release another version.
+    # Updated to 7.0 for Rails 7.2 compatibility
+    # Rails 7.2 does not support cache_format_version 6.1
     # https://guides.rubyonrails.org/upgrading_ruby_on_rails.html#new-activesupport-cache-serialization-format
-    # https://github.com/mastodon/mastodon/pull/24241#discussion_r1162890242
-    config.active_support.cache_format_version = 6.1
+    config.active_support.cache_format_version = 7.0
 
     config.add_autoload_paths_to_load_path = false
 
@@ -197,7 +196,8 @@ module Mastodon
     config.active_job.queue_adapter = :sidekiq
 
     config.action_mailer.deliver_later_queue_name = 'mailers'
-    config.action_mailer.preview_path = Rails.root.join('spec', 'mailers', 'previews')
+    # Rails 7.2 uses preview_paths (plural) instead of preview_path
+    config.action_mailer.preview_paths = [Rails.root.join('spec', 'mailers', 'previews')]
 
     # We use our own middleware for this
     config.public_file_server.enabled = false
