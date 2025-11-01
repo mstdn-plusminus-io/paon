@@ -13,7 +13,7 @@ concurrency:
 jobs:
   retag:
     runs-on: buildjet-2vcpu-ubuntu-2204
-
+    timeout-minutes: 15
     steps:
       - uses: joelwmale/webhook-action@2.1.0
         with:
@@ -35,16 +35,12 @@ jobs:
           push: true
           file: latest.Dockerfile
           tags: plusminusio/mastodon:latest
-          cache-from: type=registry,ref=plusminusio/mastodon:latest
-          cache-to: type=inline
 
       - uses: docker/build-push-action@v4
         with:
           push: true
           file: latest-arm64.Dockerfile
           tags: plusminusio/mastodon:latest-arm64
-          cache-from: type=registry,ref=plusminusio/mastodon:latest-arm64
-          cache-to: type=inline
 
       - if: success()
         uses: joelwmale/webhook-action@2.1.0

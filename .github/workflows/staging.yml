@@ -11,7 +11,7 @@ concurrency:
 jobs:
   build_amd64:
     runs-on: buildjet-4vcpu-ubuntu-2204
-
+    timeout-minutes: 15
     steps:
       - uses: joelwmale/webhook-action@2.1.0
         with:
@@ -32,8 +32,6 @@ jobs:
         with:
           push: true
           tags: plusminusio/mastodon:staging
-          cache-from: type=registry,ref=plusminusio/mastodon:staging
-          cache-to: type=inline
 
       - if: success()
         uses: joelwmale/webhook-action@2.1.0
@@ -51,7 +49,7 @@ jobs:
 
   build_arm64:
     runs-on: buildjet-4vcpu-ubuntu-2204-arm
-
+    timeout-minutes: 15
     steps:
       - uses: joelwmale/webhook-action@2.1.0
         with:
@@ -72,8 +70,6 @@ jobs:
         with:
           push: true
           tags: plusminusio/mastodon:staging-arm64
-          cache-from: type=registry,ref=plusminusio/mastodon:staging-arm64
-          cache-to: type=inline
 
       - if: success()
         uses: joelwmale/webhook-action@2.1.0

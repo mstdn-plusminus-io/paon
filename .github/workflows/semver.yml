@@ -14,7 +14,7 @@ concurrency:
 jobs:
   retag_amd64:
     runs-on: buildjet-2vcpu-ubuntu-2204
-
+    timeout-minutes: 15
     steps:
       - uses: joelwmale/webhook-action@2.1.0
         with:
@@ -47,7 +47,6 @@ jobs:
           push: true
           file: tagged.Dockerfile
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=registry,ref=plusminusio/mastodon:latest
 
       - if: success()
         uses: joelwmale/webhook-action@2.1.0
@@ -65,7 +64,7 @@ jobs:
 
   retag_arm64:
     runs-on: buildjet-2vcpu-ubuntu-2204-arm
-
+    timeout-minutes: 15
     steps:
       - uses: joelwmale/webhook-action@2.1.0
         with:
@@ -98,7 +97,6 @@ jobs:
           push: true
           file: tagged-arm64.Dockerfile
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=registry,ref=plusminusio/mastodon:latest-arm64
 
       - if: success()
         uses: joelwmale/webhook-action@2.1.0
