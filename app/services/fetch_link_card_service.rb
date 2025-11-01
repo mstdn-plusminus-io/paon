@@ -48,7 +48,7 @@ class FetchLinkCardService < BaseService
   def html
     return @html if defined?(@html)
 
-    @html = Request.new(:get, @url).add_headers('Accept' => 'text/html', 'User-Agent' => "#{Mastodon::Version.user_agent} Bot").perform do |res|
+    @html = Request.new(:get, @url).add_headers('Accept' => 'text/html', 'User-Agent' => "#{Paon::Version.user_agent} Bot").perform do |res|
       next unless res.code == 200 && res.mime_type == 'text/html'
 
       # We follow redirects, and ideally we want to save the preview card for

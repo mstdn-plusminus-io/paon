@@ -14,11 +14,11 @@ class Admin::Metrics::Dimension::SoftwareVersionsDimension < Admin::Metrics::Dim
   end
 
   def mastodon_version
-    value = Mastodon::Version.to_s
+    value = Paon::Version.to_s
 
     {
       key: 'mastodon',
-      human_key: 'Mastodon',
+      human_key: 'Paon',
       value: value,
       human_value: value,
     }

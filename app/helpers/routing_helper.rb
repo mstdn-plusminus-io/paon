@@ -5,7 +5,7 @@ module RoutingHelper
 
   include Rails.application.routes.url_helpers
   include ActionView::Helpers::AssetTagHelper
-  include Webpacker::Helper
+  include Shakapacker::Helper
 
   included do
     def default_url_options

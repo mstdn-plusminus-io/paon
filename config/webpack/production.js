@@ -1,14 +1,15 @@
 // Note: You must restart bin/webpack-dev-server for changes to take effect
 
+/* eslint-disable import/no-extraneous-dependencies */
+
 const { createHash } = require('crypto');
 const { readFileSync } = require('fs');
 const { resolve } = require('path');
 
-const CompressionPlugin = require('@renchap/compression-webpack-plugin');
+const { InjectManifest } = require('@aaroon/workbox-rspack-plugin');
 const TerserPlugin = require('terser-webpack-plugin');
 const { BundleAnalyzerPlugin } = require('webpack-bundle-analyzer');
 const { merge } = require('webpack-merge');
-const { InjectManifest } = require('workbox-webpack-plugin');
 
 const sharedConfig = require('./shared');
 
@@ -23,29 +24,21 @@ module.exports = merge(sharedConfig, {
     minimize: true,
     minimizer: [
       new TerserPlugin({
-        cache: true,
         parallel: true,
-        sourceMap: true,
+        terserOptions: {
+          compress: {
+            warnings: false,
+          },
+        },
       }),
     ],
   },
 
   plugins: [
-    new CompressionPlugin({
-      filename: '[path][base].gz[query]',
-      cache: true,
-      test: /\.(js|css|html|json|ico|svg|eot|otf|ttf|map)$/,
-    }),
-    new CompressionPlugin({
-      filename: '[path][base].br[query]',
-      algorithm: 'brotliCompress',
-      cache: true,
-      test: /\.(js|css|html|json|ico|svg|eot|otf|ttf|map)$/,
-    }),
     new BundleAnalyzerPlugin({ // generates report.html
       analyzerMode: 'static',
       openAnalyzer: false,
-      logLevel: 'silent', // do not bother Webpacker, who runs with --json and parses stdout
+      logLevel: 'silent', // keep Shakapacker quiet when running with --json
     }),
     new InjectManifest({
       additionalManifestEntries: ['1f602.svg', 'sheet_13.png'].map((filename) => {

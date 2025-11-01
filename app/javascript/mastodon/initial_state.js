@@ -81,6 +81,7 @@
  * @property {boolean} use_blurhash
  * @property {boolean=} use_pending_items
  * @property {string} version
+ * @property {string} actual_version
  * @property {string} sso_redirect
  * @property {boolean} feature_quote
  */
@@ -142,7 +143,7 @@ export const trendsAsLanding = getMeta('trends_as_landing_page');
 export const unfollowModal = getMeta('unfollow_modal');
 export const useBlurhash = getMeta('use_blurhash');
 export const usePendingItems = getMeta('use_pending_items');
-export const version = getMeta('version');
+export const version = getMeta('actual_version');
 export const languages = initialState?.languages;
 export const criticalUpdatesPending = initialState?.critical_updates_pending;
 // @ts-expect-error

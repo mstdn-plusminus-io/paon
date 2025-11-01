@@ -4,8 +4,8 @@ module PremailerWebpackStrategy
   def load(url)
     asset_host = ENV['CDN_HOST'] || ENV['WEB_DOMAIN'] || ENV['LOCAL_DOMAIN']
 
-    if Webpacker.dev_server.running?
-      asset_host = "#{Webpacker.dev_server.protocol}://#{Webpacker.dev_server.host_with_port}"
+    if Shakapacker.dev_server.running?
+      asset_host = "#{Shakapacker.dev_server.protocol}://#{Shakapacker.dev_server.host_with_port}"
       url        = File.join(asset_host, url)
     end
 

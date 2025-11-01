@@ -66,26 +66,34 @@ class ColumnSettings extends PureComponent {
   noOptionsMessage = () => this.props.intl.formatMessage(messages.noOptions);
 
   modeSelect (mode) {
+    const nonceElement = document.querySelector('meta[name=style-nonce]');
+    const styleNonce = nonceElement?.content;
+    const selectControl = (
+      <AsyncSelect
+        isMulti
+        autoFocus
+        value={this.tags(mode)}
+        onChange={this.onSelect(mode)}
+        loadOptions={this.props.onLoad}
+        className='column-select__container'
+        classNamePrefix='column-select'
+        name='tags'
+        placeholder={this.props.intl.formatMessage(messages.placeholder)}
+        noOptionsMessage={this.noOptionsMessage}
+      />
+    );
+
     return (
       <div className='column-settings__row'>
         <span className='column-settings__section'>
           {this.modeLabel(mode)}
         </span>
 
-        <NonceProvider nonce={document.querySelector('meta[name=style-nonce]').content} cacheKey='tags'>
-          <AsyncSelect
-            isMulti
-            autoFocus
-            value={this.tags(mode)}
-            onChange={this.onSelect(mode)}
-            loadOptions={this.props.onLoad}
-            className='column-select__container'
-            classNamePrefix='column-select'
-            name='tags'
-            placeholder={this.props.intl.formatMessage(messages.placeholder)}
-            noOptionsMessage={this.noOptionsMessage}
-          />
-        </NonceProvider>
+        {styleNonce ? (
+          <NonceProvider nonce={styleNonce} cacheKey='tags'>
+            {selectControl}
+          </NonceProvider>
+        ) : selectControl}
       </div>
     );
   }

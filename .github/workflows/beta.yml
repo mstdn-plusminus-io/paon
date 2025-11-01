@@ -10,14 +10,14 @@ concurrency:
 
 jobs:
   retag:
-    runs-on: buildjet-4vcpu-ubuntu-2204
-
+    runs-on: buildjet-2vcpu-ubuntu-2204
+    timeout-minutes: 15
     steps:
       - uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": ":loading: 𝙩𝙖𝙜 𝙧𝙤𝙩𝙖𝙩𝙚 𝙨𝙩𝙖𝙧𝙩\n\ndocker image:\nplusminusio/mastodon:staging 👉 plusminusio/mastodon:beta\ndocker image:\nplusminusio/mastodon:staging-arm64 👉 plusminusio/mastodon:beta-arm64\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": ":loading: 𝙩𝙖𝙜 𝙧𝙤𝙩𝙖𝙩𝙚 𝙨𝙩𝙖𝙧𝙩\n\ndocker image:\nplusminusio/paon:staging 👉 plusminusio/mastodon:beta\ndocker image:\nplusminusio/mastodon:staging-arm64 👉 plusminusio/mastodon:beta-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - uses: actions/checkout@v3
         with:
@@ -45,11 +45,11 @@ jobs:
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "☺️ 𝙩𝙖𝙜 𝙧𝙤𝙩𝙖𝙩𝙚 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\ndocker image:\nplusminusio/mastodon:staging 👉 plusminusio/mastodon:beta\ndocker image:\nplusminusio/mastodon:staging-arm64 👉 plusminusio/mastodon:beta-arm64\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "☺️ 𝙩𝙖𝙜 𝙧𝙤𝙩𝙖𝙩𝙚 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\ndocker image:\nplusminusio/mastodon:staging 👉 plusminusio/mastodon:beta\ndocker image:\nplusminusio/mastodon:staging-arm64 👉 plusminusio/mastodon:beta-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - if: failure()
         uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "😩 𝙩𝙖𝙜 𝙧𝙤𝙩𝙖𝙩𝙚 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\ndocker image:\nplusminusio/mastodon:staging 👉 plusminusio/mastodon:beta\ndocker image:\nplusminusio/mastodon:staging-arm64 👉 plusminusio/mastodon:beta-arm64\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "😩 𝙩𝙖𝙜 𝙧𝙤𝙩𝙖𝙩𝙚 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\ndocker image:\nplusminusio/mastodon:staging 👉 plusminusio/mastodon:beta\ndocker image:\nplusminusio/mastodon:staging-arm64 👉 plusminusio/mastodon:beta-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'

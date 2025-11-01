@@ -72,6 +72,7 @@ RUN \
   bundle config set silence_root_warning true && \
   bundle install -j"$(nproc)" && \
   yarn install --pure-lockfile && \
+  rm -rf /opt/mastodon/public/packs /opt/mastodon/public/packs-test && \
   OTP_SECRET=precompile_placeholder SECRET_KEY_BASE=precompile_placeholder bundle exec rails assets:precompile && \
   rm -rf /opt/mastodon/node_modules/.cache && \
   chown -R mastodon:mastodon /opt/mastodon && \

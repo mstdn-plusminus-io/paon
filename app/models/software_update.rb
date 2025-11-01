@@ -30,7 +30,7 @@ class SoftwareUpdate < ApplicationRecord
     def pending_to_a
       return [] unless check_enabled?
 
-      all.to_a.filter { |update| update.gem_version > Mastodon::Version.gem_version }
+      all.to_a.filter { |update| update.gem_version > Paon::Version.gem_version }
     end
 
     def urgent_pending?

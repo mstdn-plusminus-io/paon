@@ -91,7 +91,7 @@ gem 'strong_migrations', '~> 0.8'
 gem 'tty-prompt', '~> 0.23', require: false
 gem 'twitter-text', '~> 3.1.0'
 gem 'tzinfo-data', '~> 1.2023'
-gem 'webpacker', '~> 5.4'
+gem 'shakapacker', '~> 9.0'
 gem 'webpush', github: 'ClearlyClaire/webpush', ref: 'f14a4d52e201128b1b00245d11b6de80d6cfdcd9'
 gem 'webauthn', '~> 3.0'
 
@@ -150,6 +150,9 @@ group :development do
   gem 'rubocop-performance', require: false
   gem 'rubocop-rails', require: false
   gem 'rubocop-rspec', require: false
+
+  # Ruby LSP for VS Code integration
+  gem 'ruby-lsp', require: false
 
   # Annotates modules with schema
   gem 'annotate', '~> 3.2'

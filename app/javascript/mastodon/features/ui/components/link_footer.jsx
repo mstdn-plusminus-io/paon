@@ -90,7 +90,7 @@ class LinkFooter extends PureComponent {
         </p>
 
         <p>
-          <strong>Mastodon</strong>:
+          <strong>Paon</strong>:
           {' '}
           <a href='https://joinmastodon.org' target='_blank'><FormattedMessage id='footer.about' defaultMessage='About' /></a>
           {DividingCircle}
