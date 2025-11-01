@@ -5,19 +5,19 @@ module Paon
     module_function
 
     def major
-      0
+      5
     end
 
     def minor
-      9
+      0
     end
 
     def patch
-      2
+      0
     end
 
     def default_prerelease
-      ''
+      'alpha.1'
     end
 
     def prerelease
