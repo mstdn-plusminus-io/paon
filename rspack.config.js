@@ -10,9 +10,11 @@ const extname = require('path-complete-extname');
 const { load } = require('js-yaml');
 const { RspackManifestPlugin } = require('rspack-manifest-plugin');
 
-// Load webpacker configuration
-const configPath = resolve('config', 'webpacker.yml');
-const settings = load(readFileSync(configPath), 'utf8')[env.RAILS_ENV || env.NODE_ENV];
+// Load Shakapacker configuration
+const configFile = env.SHAKAPACKER_CONFIG || env.WEBPACKER_CONFIG || 'config/shakapacker.yml';
+const configPath = resolve(configFile);
+const currentEnv = env.RAILS_ENV || env.NODE_ENV || 'development';
+const settings = load(readFileSync(configPath), 'utf8')[currentEnv];
 
 const themePath = resolve('config', 'themes.yml');
 const themes = load(readFileSync(themePath), 'utf8');
@@ -20,11 +22,6 @@ const themes = load(readFileSync(themePath), 'utf8');
 const output = {
   path: resolve('public', settings.public_output_path),
   publicPath: `/${settings.public_output_path}/`,
-};
-
-const nodeEnv = {
-  NODE_ENV: env.NODE_ENV,
-  PUBLIC_OUTPUT_PATH: settings.public_output_path,
 };
 
 // Load rules
@@ -165,7 +162,7 @@ if (env.NODE_ENV === 'development') {
     },
   };
 } else if (env.NODE_ENV === 'production') {
-  const CompressionPlugin = require('@renchap/compression-webpack-plugin');
+  // eslint-disable-next-line import/no-extraneous-dependencies
   const { InjectManifest } = require('@aaroon/workbox-rspack-plugin');
   const { createHash } = require('crypto');
 
@@ -185,15 +182,6 @@ if (env.NODE_ENV === 'development') {
 
     plugins: [
       ...baseConfig.plugins,
-      new CompressionPlugin({
-        filename: '[path][base].gz[query]',
-        test: /\.(js|css|html|json|ico|svg|eot|otf|ttf|map)$/,
-      }),
-      new CompressionPlugin({
-        filename: '[path][base].br[query]',
-        algorithm: 'brotliCompress',
-        test: /\.(js|css|html|json|ico|svg|eot|otf|ttf|map)$/,
-      }),
       new InjectManifest({
         additionalManifestEntries: ['1f602.svg', 'sheet_13.png'].map((filename) => {
           const path = resolve(root, 'public', 'emoji', filename);

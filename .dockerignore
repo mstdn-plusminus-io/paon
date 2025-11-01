@@ -15,3 +15,10 @@ postgres14
 redis
 elasticsearch
 chart
+vendor/bundle
+tmp
+public/assets
+public/packs
+public/system
+coverage
+build
