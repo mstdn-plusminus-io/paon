@@ -27,7 +27,7 @@ gem 'bootsnap', '~> 1.16.0', require: false
 gem 'browser'
 gem 'charlock_holmes', '~> 0.7.9'
 gem 'chewy', '~> 7.3'
-gem 'devise', '~> 4.9'
+gem 'devise', '~> 4.9', '>= 4.9.4'
 gem 'devise-two-factor', '~> 4.1'
 
 group :pam_authentication, optional: true do
