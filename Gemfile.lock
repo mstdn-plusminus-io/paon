@@ -478,6 +478,7 @@ GEM
     msgpack (1.7.1)
     multi_json (1.15.0)
     multipart-post (2.3.0)
+    mutex_m (0.3.0)
     net-http (0.3.2)
       uri
     net-http-persistent (4.0.2)
@@ -530,6 +531,7 @@ GEM
     openssl-signature_algorithm (1.3.0)
       openssl (> 2.0)
     orm_adapter (0.5.0)
+    ostruct (0.6.3)
     ox (2.14.17)
     package_json (0.1.0)
     parallel (1.23.0)
@@ -880,7 +882,9 @@ DEPENDENCIES
   addressable (~> 2.8)
   annotate (~> 3.2)
   aws-sdk-s3 (~> 1.123)
+  base64
   better_errors (~> 2.9)
+  bigdecimal
   binding_of_caller (~> 1.0)
   blurhash (~> 0.1)
   bootsnap (~> 1.16.0)
@@ -939,6 +943,7 @@ DEPENDENCIES
   md-paperclip-azure (~> 2.2)
   memory_profiler
   mime-types (~> 3.5.0)
+  mutex_m
   net-http (~> 0.3.2)
   net-ldap (~> 0.18)
   nokogiri (~> 1.17)
@@ -948,6 +953,7 @@ DEPENDENCIES
   omniauth-rails_csrf_protection (~> 1.0)
   omniauth-saml (~> 2.0)
   omniauth_openid_connect (~> 0.6.1)
+  ostruct
   ox (~> 2.14)
   parslet
   pg (~> 1.5)

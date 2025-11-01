@@ -198,6 +198,12 @@ end
 
 gem 'concurrent-ruby', require: false
 gem 'connection_pool', require: false
+
+# Ruby 3.4+ compatibility: bundled gems that were removed from stdlib
+gem 'mutex_m'
+gem 'ostruct'
+gem 'base64'
+gem 'bigdecimal'
 gem 'xorcist', '~> 1.1'
 gem 'cocoon', '~> 1.2'
 
