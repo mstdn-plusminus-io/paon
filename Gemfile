@@ -4,7 +4,7 @@ source 'https://rubygems.org'
 ruby '>= 3.1.0'
 
 gem 'puma', '~> 6.3'
-gem 'rails', '~> 7.0'
+gem 'rails', '~> 7.2'
 gem 'sprockets', '~> 3.7.2'
 gem 'thor', '~> 1.2'
 gem 'rack', '~> 2.2.7'
@@ -27,7 +27,7 @@ gem 'bootsnap', '~> 1.16.0', require: false
 gem 'browser'
 gem 'charlock_holmes', '~> 0.7.9'
 gem 'chewy', '~> 7.3'
-gem 'devise', '~> 4.9'
+gem 'devise', '~> 4.9', '>= 4.9.4'
 gem 'devise-two-factor', '~> 4.1'
 
 group :pam_authentication, optional: true do
@@ -61,7 +61,6 @@ gem 'kaminari', '~> 1.2'
 gem 'link_header', '~> 0.0'
 gem 'mime-types', '~> 3.5.0', require: 'mime/types/columnar'
 gem 'nokogiri', '~> 1.17'
-gem 'nsa'
 gem 'oj', '~> 3.14'
 gem 'ox', '~> 2.14'
 gem 'parslet'
@@ -190,7 +189,7 @@ group :development, :test do
   gem 'test-prof'
 
   # RSpec runner for rails
-  gem 'rspec-rails', '~> 6.0'
+  gem 'rspec-rails', '~> 7.0'
 end
 
 group :production do
@@ -199,6 +198,13 @@ end
 
 gem 'concurrent-ruby', require: false
 gem 'connection_pool', require: false
+
+# Ruby 3.4+ compatibility: bundled gems that were removed from stdlib
+gem 'mutex_m'
+gem 'ostruct'
+gem 'base64'
+gem 'bigdecimal'
+gem 'csv'
 gem 'xorcist', '~> 1.1'
 gem 'cocoon', '~> 1.2'
 

@@ -10,7 +10,9 @@
       "Bash(ls:*)",
       "Bash(brew info:*)",
       "Bash(awk:*)",
-      "Bash(sed:*)"
+      "Bash(sed:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)"
     ],
     "deny": []
   }

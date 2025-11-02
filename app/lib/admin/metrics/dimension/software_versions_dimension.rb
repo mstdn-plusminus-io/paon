@@ -10,7 +10,7 @@ class Admin::Metrics::Dimension::SoftwareVersionsDimension < Admin::Metrics::Dim
   protected
 
   def perform_query
-    [mastodon_version, ruby_version, postgresql_version, redis_version, elasticsearch_version].compact
+    [mastodon_version, ruby_version, rails_version, postgresql_version, redis_version, elasticsearch_version].compact
   end
 
   def mastodon_version
@@ -30,6 +30,17 @@ class Admin::Metrics::Dimension::SoftwareVersionsDimension < Admin::Metrics::Dim
     {
       key: 'ruby',
       human_key: 'Ruby',
+      value: value,
+      human_value: value,
+    }
+  end
+
+  def rails_version
+    value = Rails::VERSION::STRING.to_s
+
+    {
+      key: 'rails',
+      human_key: 'Rails',
       value: value,
       human_value: value,
     }
