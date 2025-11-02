@@ -35,6 +35,10 @@ class Oauth::AuthorizedApplicationsController < Doorkeeper::AuthorizedApplicatio
     forbidden if current_account.suspended?
   end
 
+  def set_cache_headers
+    response.cache_control.replace(private: true, no_store: true)
+  end
+
   def set_last_used_at_by_app
     @last_used_at_by_app = Doorkeeper::AccessToken
                            .select('DISTINCT ON (application_id) application_id, last_used_at')
