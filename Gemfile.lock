@@ -225,6 +225,7 @@ GEM
     crass (1.0.6)
     css_parser (1.14.0)
       addressable
+    csv (3.3.5)
     database_cleaner-active_record (2.1.0)
       activerecord (>= 5.a)
       database_cleaner-core (~> 2.0.0)
@@ -903,6 +904,7 @@ DEPENDENCIES
   color_diff (~> 0.1)
   concurrent-ruby
   connection_pool
+  csv
   database_cleaner-active_record
   devise (~> 4.9, >= 4.9.4)
   devise-two-factor (~> 4.1)

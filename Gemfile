@@ -204,6 +204,7 @@ gem 'mutex_m'
 gem 'ostruct'
 gem 'base64'
 gem 'bigdecimal'
+gem 'csv'
 gem 'xorcist', '~> 1.1'
 gem 'cocoon', '~> 1.2'
 
