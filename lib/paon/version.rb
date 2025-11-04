@@ -17,7 +17,7 @@ module Paon
     end
 
     def default_prerelease
-      'alpha.4'
+      'alpha.5'
     end
 
     def prerelease
@@ -69,7 +69,7 @@ module Paon
     end
 
     def user_agent
-      @user_agent ||= "#{HTTP::Request::USER_AGENT} (Paon/#{Version}; based Mastodon/#{Mastodon::Version}; +http#{Rails.configuration.x.use_https ? 's' : ''}://#{Rails.configuration.x.web_domain}/)"
+      @user_agent ||= "#{HTTP::Request::USER_AGENT} (Paon/#{Version}; based Mastodon/#{Mastodon::Version}; +http#{'s' if Rails.configuration.x.use_https}://#{Rails.configuration.x.web_domain}/)"
     end
   end
 end
