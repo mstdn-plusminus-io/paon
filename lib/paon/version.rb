@@ -17,7 +17,7 @@ module Paon
     end
 
     def default_prerelease
-      'alpha.3'
+      'alpha.4'
     end
 
     def prerelease
