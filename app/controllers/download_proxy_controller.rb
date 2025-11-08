@@ -26,34 +26,19 @@ class DownloadProxyController < ApplicationController
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-
-    # Stream file content directly
-    file_url = @media_attachment.file.url(version)
-    filename = extract_filename_from_url(file_url)
-
-    # Set CORS headers
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-    response.headers['Content-Disposition'] = "attachment; filename=\"#{filename}\""
+    response.headers['Content-Disposition'] = "attachment; filename=\"#{extract_filename}\""
     response.headers['Content-Type'] = @media_attachment.file.content_type
 
-    # Stream the file content
-    # Stream file content directly
-    if Rails.configuration.x.use_s3 || Rails.configuration.x.use_swift
-      # For S3/Swift, stream from remote URL
-      require 'open-uri'
-      file_content = URI.open(file_url).read
-      send_data file_content,
-                type: @media_attachment.file.content_type,
-                filename: filename,
-                disposition: 'attachment'
+    # Handle different storage scenarios
+    if !@media_attachment.local? && @media_attachment.file.blank?
+      # Remote media that hasn't been cached
+      stream_from_remote_url
+    elsif Rails.configuration.x.use_s3 || Rails.configuration.x.use_swift
+      # S3/Swift storage
+      stream_from_object_storage
     else
-      # For local storage
-      send_file @media_attachment.file.path(version),
-                type: @media_attachment.file.content_type,
-                filename: filename,
-                disposition: 'attachment'
+      # Local filesystem storage
+      stream_from_local_file
     end
   end
 
