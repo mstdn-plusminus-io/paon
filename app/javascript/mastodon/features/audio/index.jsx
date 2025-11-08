@@ -55,6 +55,7 @@ class Audio extends PureComponent {
     volume: PropTypes.number,
     muted: PropTypes.bool,
     deployPictureInPicture: PropTypes.func,
+    attachmentId: PropTypes.string,
   };
 
   state = {
@@ -94,6 +95,7 @@ class Audio extends PureComponent {
       accentColor: this.props.accentColor,
       sensitive: this.props.sensitive,
       visible: this.props.visible,
+      attachmentId: this.props.attachmentId,
     };
   }
 

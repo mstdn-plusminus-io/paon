@@ -153,7 +153,7 @@ class MediaModal extends ImmutablePureComponent {
             height={height}
             alt={description}
             lang={lang}
-            key={image.get('url')}
+            key={image.get('url') || image.get('remote_url')}
             onClick={this.nop}
             navigationHidden={this.state.navigationHidden || index !== i}
           />
@@ -165,7 +165,7 @@ class MediaModal extends ImmutablePureComponent {
           <Video
             preview={image.get('preview_url') || image.get('preview_remote_url')}
             blurhash={image.get('blurhash')}
-            src={image.get('url')}
+            src={image.get('url') || image.get('remote_url')}
             width={image.get('width')}
             height={image.get('height')}
             frameRate={image.getIn(['meta', 'original', 'frame_rate'])}
@@ -246,7 +246,7 @@ class MediaModal extends ImmutablePureComponent {
 
           <div className='media-modal__overlay'>
             {pagination && <ul className='media-modal__pagination'>{pagination}</ul>}
-            {statusId && <Footer statusId={statusId} withOpenButton onClose={onClose} />}
+            {statusId && <Footer statusId={statusId} withOpenButton onClose={onClose} src={media?.get(index)?.get('url') || media?.get(index)?.get('remote_url') || media?.get(index)?.get('preview_url') || ''} attachmentId={media?.get(index)?.get('id')} />}
           </div>
         </div>
       </div>

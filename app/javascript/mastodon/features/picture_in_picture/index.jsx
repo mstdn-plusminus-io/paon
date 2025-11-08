@@ -28,6 +28,7 @@ class PictureInPicture extends Component {
     backgroundColor: PropTypes.string,
     foregroundColor: PropTypes.string,
     accentColor: PropTypes.string,
+    attachmentId: PropTypes.string,
     dispatch: PropTypes.func.isRequired,
   };
 
@@ -37,7 +38,7 @@ class PictureInPicture extends Component {
   };
 
   render () {
-    const { type, src, currentTime, accountId, statusId } = this.props;
+    const { type, src, currentTime, accountId, statusId, attachmentId } = this.props;
 
     if (!currentTime) {
       return null;
@@ -55,6 +56,7 @@ class PictureInPicture extends Component {
           autoPlay
           inline
           alwaysVisible
+          attachmentId={attachmentId}
         />
       );
     } else if (type === 'audio') {
@@ -69,6 +71,7 @@ class PictureInPicture extends Component {
           foregroundColor={this.props.foregroundColor}
           accentColor={this.props.accentColor}
           autoPlay
+          attachmentId={attachmentId}
         />
       );
     }
@@ -79,7 +82,7 @@ class PictureInPicture extends Component {
 
         {player}
 
-        <Footer statusId={statusId} />
+        <Footer statusId={statusId} src={src} type={type} attachmentId={attachmentId} />
       </div>
     );
   }

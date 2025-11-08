@@ -126,6 +126,7 @@ class Video extends PureComponent {
     muted: PropTypes.bool,
     componentIndex: PropTypes.number,
     autoFocus: PropTypes.bool,
+    attachmentId: PropTypes.string,
   };
 
   static defaultProps = {
@@ -373,6 +374,7 @@ class Video extends PureComponent {
         currentTime: this.video.currentTime,
         muted: this.video.muted,
         volume: this.video.volume,
+        attachmentId: this.props.attachmentId,
       });
     }
   }
@@ -406,6 +408,7 @@ class Video extends PureComponent {
           currentTime: this.video.currentTime,
           muted: this.video.muted,
           volume: this.video.volume,
+          attachmentId: this.props.attachmentId,
         });
       }
 
