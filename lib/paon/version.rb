@@ -17,7 +17,7 @@ module Paon
     end
 
     def default_prerelease
-      'beta.1'
+      ''
     end
 
     def prerelease
