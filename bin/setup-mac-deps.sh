@@ -54,23 +54,23 @@ LIBPQ_PREFIX="${BREW_PREFIX}/opt/libpq"
 
 # For charlock_holmes 0.7.9+, icu4c@75 works fine
 # If we have icu4c@77, we should use icu4c@75 instead
-if [[ -d "${BREW_PREFIX}/opt/icu4c@77" ]]; then
-    echo "⚠️  Detected icu4c@77, switching to icu4c@75 for charlock_holmes compatibility"
+# if [[ -d "${BREW_PREFIX}/opt/icu4c@77" ]]; then
+#     echo "⚠️  Detected icu4c@77, switching to icu4c@75 for charlock_holmes compatibility"
 
-    # Make sure icu4c@75 is installed
-    if ! [[ -d "${BREW_PREFIX}/opt/icu4c@75" ]]; then
-        echo "📦 Installing icu4c@75..."
-        brew install --force icu4c@75
-    fi
+#     # Make sure icu4c@75 is installed
+#     if ! [[ -d "${BREW_PREFIX}/opt/icu4c@75" ]]; then
+#         echo "📦 Installing icu4c@75..."
+#         brew install --force icu4c@75
+#     fi
 
-    # Link icu4c@75
-    brew unlink icu4c@77 2>/dev/null || true
-    brew link --force icu4c@75
+#     # Link icu4c@75
+#     brew unlink icu4c@77 2>/dev/null || true
+#     brew link --force icu4c@75
 
-    ICU4C_PREFIX="${BREW_PREFIX}/opt/icu4c@75"
-elif [[ -d "${BREW_PREFIX}/opt/icu4c@75" ]]; then
-    ICU4C_PREFIX="${BREW_PREFIX}/opt/icu4c@75"
-fi
+#     ICU4C_PREFIX="${BREW_PREFIX}/opt/icu4c@75"
+# elif [[ -d "${BREW_PREFIX}/opt/icu4c@75" ]]; then
+#     ICU4C_PREFIX="${BREW_PREFIX}/opt/icu4c@75"
+# fi
 
 # Export environment variables
 export PKG_CONFIG_PATH="${ICU4C_PREFIX}/lib/pkgconfig:${LIBPQ_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}"
