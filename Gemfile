@@ -26,8 +26,8 @@ gem 'addressable', '~> 2.8'
 gem 'bootsnap', '~> 1.16.0', require: false
 gem 'browser'
 gem 'charlock_holmes', '~> 0.7.9'
-gem 'chewy', '~> 7.3'
-gem 'devise', '~> 4.9'
+gem 'chewy', '~> 7.6'
+gem 'devise', '~> 4.9', '>= 4.9.4'
 gem 'devise-two-factor', '~> 4.1'
 
 group :pam_authentication, optional: true do
@@ -189,7 +189,7 @@ group :development, :test do
   gem 'test-prof'
 
   # RSpec runner for rails
-  gem 'rspec-rails', '~> 6.0'
+  gem 'rspec-rails', '~> 7.0'
 end
 
 group :production do
@@ -198,6 +198,13 @@ end
 
 gem 'concurrent-ruby', require: false
 gem 'connection_pool', require: false
+
+# Ruby 3.4+ compatibility: bundled gems that were removed from stdlib
+gem 'mutex_m'
+gem 'ostruct'
+gem 'base64'
+gem 'bigdecimal'
+gem 'csv'
 gem 'xorcist', '~> 1.1'
 gem 'cocoon', '~> 1.2'
 

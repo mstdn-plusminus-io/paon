@@ -10,6 +10,7 @@ const initialState = {
   muted: false,
   volume: 0,
   currentTime: 0,
+  attachmentId: null,
 };
 
 export default function pictureInPicture(state = initialState, action) {

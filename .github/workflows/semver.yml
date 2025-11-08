@@ -13,8 +13,8 @@ concurrency:
 
 jobs:
   retag_amd64:
-    runs-on: buildjet-2vcpu-ubuntu-2204
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: joelwmale/webhook-action@2.1.0
         with:
@@ -35,7 +35,7 @@ jobs:
         uses: docker/metadata-action@v4
         with:
           images: |
-            plusminusio/mastodon
+            plusminusio/paon
           flavor: |
             latest=false
           tags: |
@@ -63,8 +63,8 @@ jobs:
           body: '{"status": "😩 𝙨𝙚𝙢𝙫𝙚𝙧 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
   retag_arm64:
-    runs-on: buildjet-2vcpu-ubuntu-2204-arm
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
       - uses: joelwmale/webhook-action@2.1.0
         with:
@@ -85,7 +85,7 @@ jobs:
         uses: docker/metadata-action@v4
         with:
           images: |
-            plusminusio/mastodon
+            plusminusio/paon
           flavor: |
             latest=false
           tags: |
