@@ -35,7 +35,7 @@ jobs:
         uses: docker/metadata-action@v4
         with:
           images: |
-            plusminusio/mastodon
+            plusminusio/paon
           flavor: |
             latest=false
           tags: |
@@ -85,7 +85,7 @@ jobs:
         uses: docker/metadata-action@v4
         with:
           images: |
-            plusminusio/mastodon
+            plusminusio/paon
           flavor: |
             latest=false
           tags: |

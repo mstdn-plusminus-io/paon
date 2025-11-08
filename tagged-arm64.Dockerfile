@@ -1,1 +1,1 @@
-FROM plusminusio/mastodon:latest-arm64
+FROM plusminusio/paon:latest-arm64

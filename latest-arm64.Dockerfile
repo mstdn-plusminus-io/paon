@@ -1,1 +1,1 @@
-FROM plusminusio/mastodon:staging-arm64
+FROM plusminusio/paon:staging-arm64

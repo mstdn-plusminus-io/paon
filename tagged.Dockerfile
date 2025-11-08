@@ -1,1 +1,1 @@
-FROM plusminusio/mastodon:latest
+FROM plusminusio/paon:latest

@@ -1,12 +1,12 @@
 ![](./lib/assets/logo_full.png)
 
-[![GitHub release](https://img.shields.io/github/release/mstdn-plusminus-io/mastodon.svg)][releases]
-[![build latest image](https://github.com/mstdn-plusminus-io/mastodon/actions/workflows/latest.yml/badge.svg?branch=master)](https://github.com/mstdn-plusminus-io/mastodon/actions/workflows/latest.yml)
-[![build staging image](https://github.com/mstdn-plusminus-io/mastodon/actions/workflows/staging.yml/badge.svg?branch=staging)](https://github.com/mstdn-plusminus-io/mastodon/actions/workflows/staging.yml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/plusminusio/mastodon.svg)][docker]
+[![GitHub release](https://img.shields.io/github/release/mstdn-plusminus-io/paon.svg)][releases]
+[![build latest image](https://github.com/mstdn-plusminus-io/paon/actions/workflows/latest.yml/badge.svg?branch=master)](https://github.com/mstdn-plusminus-io/paon/actions/workflows/latest.yml)
+[![build staging image](https://github.com/mstdn-plusminus-io/paon/actions/workflows/staging.yml/badge.svg?branch=staging)](https://github.com/mstdn-plusminus-io/paon/actions/workflows/staging.yml)
+[![Docker Pulls](https://img.shields.io/docker/pulls/plusminusio/paon.svg)][docker]
 
-[releases]: https://github.com/mstdn-plusminus-io/mastodon/releases
-[docker]: https://hub.docker.com/r/plusminusio/mastodon/
+[releases]: https://github.com/mstdn-plusminus-io/paon/releases
+[docker]: https://hub.docker.com/r/plusminusio/paon/
 
 [Upstream README.md](https://github.com/mastodon/mastodon/blob/main/README.md)
 
