@@ -28,7 +28,8 @@ class Import < ApplicationRecord
 
   belongs_to :account
 
-  enum type: { following: 0, blocking: 1, muting: 2, domain_blocking: 3, bookmarks: 4 }
+  # Rails 7.1+: Use positional arguments instead of keyword arguments
+  enum :type, { following: 0, blocking: 1, muting: 2, domain_blocking: 3, bookmarks: 4 }
 
   validates :type, presence: true
 

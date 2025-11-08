@@ -124,7 +124,7 @@ RSpec.configure do |config|
 
   config.before :suite do
     if RUN_SYSTEM_SPECS
-      Webpacker.compile
+      Shakapacker.compile
       streaming_server_manager.start(port: STREAMING_PORT)
     end
 

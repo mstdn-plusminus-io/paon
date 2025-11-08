@@ -17,7 +17,7 @@ if (process.env.VAGRANT) {
 module.exports = merge(sharedConfig, {
   mode: 'development',
   cache: true,
-  devtool: 'cheap-module-eval-source-map',
+  devtool: 'eval-cheap-module-source-map',
 
   stats: {
     errorDetails: true,

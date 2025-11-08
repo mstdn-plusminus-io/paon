@@ -88,6 +88,12 @@ describe InstancePresenter do
     end
   end
 
+  describe '#actual_version' do
+    it 'returns string' do
+      expect(instance_presenter.actual_version).to be_a String
+    end
+  end
+
   describe '#source_url' do
     context 'with the GITHUB_REPOSITORY env variable set' do
       around do |example|

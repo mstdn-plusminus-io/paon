@@ -149,7 +149,7 @@ module Mastodon::CLI
 
     desc 'version', 'Show version'
     def version
-      say(Mastodon::Version.to_s)
+      say(Paon::Version.to_s)
     end
   end
 end

@@ -105,8 +105,12 @@ class ActivityPub::Activity::Create < ActivityPub::Activity
 
     begin
       quote_object = ActivityPub::Dereferencer.new(quote_url, permitted_origin: quote_url, signature_actor: signed_fetch_actor).object
-      quote_acct = ActivityPub::FetchRemoteAccountService.new.call(quote_object['attributedTo'])
-      quote_status = ActivityPub::FetchRemoteStatusService.new.call(quote_url)
+      return if quote_object.nil? || quote_object['attributedTo'].blank?
+
+      ActivityPub::FetchRemoteAccountService.new.call(quote_object['attributedTo'], request_id: @options[:request_id])
+      quote_status = ActivityPub::FetchRemoteStatusService.new.call(quote_url, request_id: @options[:request_id])
+      return if quote_status.nil?
+
       quote_status_url = "#{Rails.configuration.x.use_https ? 'https' : 'http'}://#{Rails.configuration.x.web_domain}/@#{quote_status.account.acct}/#{quote_status.id}"
 
       StatusQuotes.new(status_id: @status.id.to_s, quote_id: quote_status.id.to_s, original_url: quote_url, local_url: quote_status_url).save

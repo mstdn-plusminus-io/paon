@@ -13,7 +13,7 @@ describe Mastodon::CLI::Main do
   describe 'version' do
     it 'returns the Mastodon version' do
       expect { described_class.new.invoke(:version) }.to output(
-        a_string_including(Mastodon::Version.to_s)
+        a_string_including(Paon::Version.to_s)
       ).to_stdout
     end
   end

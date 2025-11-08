@@ -8,6 +8,7 @@ default: &default
   cache_path: tmp/cache/webpacker
   check_yarn_integrity: false
   webpack_compile_output: false
+  assets_bundler: rspack
 
   # Additional paths webpack should lookup modules
   # ['app/assets', 'engine/foo/app/assets']

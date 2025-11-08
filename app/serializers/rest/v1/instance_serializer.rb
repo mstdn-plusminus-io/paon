@@ -4,7 +4,7 @@ class REST::V1::InstanceSerializer < ActiveModel::Serializer
   include RoutingHelper
 
   attributes :uri, :title, :short_description, :description, :email,
-             :version, :urls, :stats, :thumbnail,
+             :version, :actual_version, :urls, :stats, :thumbnail,
              :languages, :registrations, :approval_required, :invites_enabled,
              :configuration, :feature_quote
 
