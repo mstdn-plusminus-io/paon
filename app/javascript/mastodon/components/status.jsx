@@ -471,6 +471,7 @@ class Status extends ImmutablePureComponent {
                 blurhash={attachment.get('blurhash')}
                 visible={this.state.showMedia}
                 onToggleVisibility={this.handleToggleMediaVisibility}
+                attachmentId={attachment.get('id')}
               />
             )}
           </Bundle>
@@ -495,6 +496,7 @@ class Status extends ImmutablePureComponent {
                 deployPictureInPicture={pictureInPicture.get('available') ? this.handleDeployPictureInPicture : undefined}
                 visible={this.state.showMedia}
                 onToggleVisibility={this.handleToggleMediaVisibility}
+                attachmentId={attachment.get('id')}
               />
             )}
           </Bundle>

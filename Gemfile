@@ -4,7 +4,7 @@ source 'https://rubygems.org'
 ruby '>= 3.1.0'
 
 gem 'puma', '~> 6.3'
-gem 'rails', '~> 7.0'
+gem 'rails', '~> 7.2'
 gem 'sprockets', '~> 3.7.2'
 gem 'thor', '~> 1.2'
 gem 'rack', '~> 2.2.7'
@@ -26,8 +26,8 @@ gem 'addressable', '~> 2.8'
 gem 'bootsnap', '~> 1.16.0', require: false
 gem 'browser'
 gem 'charlock_holmes', '~> 0.7.9'
-gem 'chewy', '~> 7.3'
-gem 'devise', '~> 4.9'
+gem 'chewy', '~> 7.6'
+gem 'devise', '~> 4.9', '>= 4.9.4'
 gem 'devise-two-factor', '~> 4.1'
 
 group :pam_authentication, optional: true do
@@ -61,7 +61,6 @@ gem 'kaminari', '~> 1.2'
 gem 'link_header', '~> 0.0'
 gem 'mime-types', '~> 3.5.0', require: 'mime/types/columnar'
 gem 'nokogiri', '~> 1.17'
-gem 'nsa'
 gem 'oj', '~> 3.14'
 gem 'ox', '~> 2.14'
 gem 'parslet'
@@ -91,7 +90,7 @@ gem 'strong_migrations', '~> 0.8'
 gem 'tty-prompt', '~> 0.23', require: false
 gem 'twitter-text', '~> 3.1.0'
 gem 'tzinfo-data', '~> 1.2023'
-gem 'webpacker', '~> 5.4'
+gem 'shakapacker', '~> 9.0'
 gem 'webpush', github: 'ClearlyClaire/webpush', ref: 'f14a4d52e201128b1b00245d11b6de80d6cfdcd9'
 gem 'webauthn', '~> 3.0'
 
@@ -151,6 +150,9 @@ group :development do
   gem 'rubocop-rails', require: false
   gem 'rubocop-rspec', require: false
 
+  # Ruby LSP for VS Code integration
+  gem 'ruby-lsp', require: false
+
   # Annotates modules with schema
   gem 'annotate', '~> 3.2'
 
@@ -187,7 +189,7 @@ group :development, :test do
   gem 'test-prof'
 
   # RSpec runner for rails
-  gem 'rspec-rails', '~> 6.0'
+  gem 'rspec-rails', '~> 7.0'
 end
 
 group :production do
@@ -196,6 +198,13 @@ end
 
 gem 'concurrent-ruby', require: false
 gem 'connection_pool', require: false
+
+# Ruby 3.4+ compatibility: bundled gems that were removed from stdlib
+gem 'mutex_m'
+gem 'ostruct'
+gem 'base64'
+gem 'bigdecimal'
+gem 'csv'
 gem 'xorcist', '~> 1.1'
 gem 'cocoon', '~> 1.2'
 

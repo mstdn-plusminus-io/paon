@@ -47,7 +47,7 @@ Rails.application.routes.draw do
 
   root 'home#index'
 
-  mount LetterOpenerWeb::Engine, at: 'letter_opener' if Rails.env.development?
+  mount LetterOpenerWeb::Engine, at: 'letter_opener' if defined?(LetterOpenerWeb::Engine)
 
   get 'health', to: 'health#show'
 
@@ -179,6 +179,7 @@ Rails.application.routes.draw do
   resource :statuses_cleanup, controller: :statuses_cleanup, only: [:show, :update]
 
   get '/media_proxy/:id/(*any)', to: 'media_proxy#show', as: :media_proxy, format: false
+  get '/download_proxy/:id/(*any)', to: 'download_proxy#show', as: :download_proxy, format: false
   get '/backups/:id/download', to: 'backups#download', as: :download_backup, format: false
 
   resource :authorize_interaction, only: [:show]

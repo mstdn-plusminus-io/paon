@@ -12,14 +12,14 @@ concurrency:
 
 jobs:
   build_amd64:
-    runs-on: buildjet-8vcpu-ubuntu-2204
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": ":loading: 𝙗𝙪𝙞𝙡𝙙 𝙨𝙩𝙖𝙧𝙩\n\ndocker image: plusminusio/mastodon:next\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": ":loading: 𝙗𝙪𝙞𝙡𝙙 𝙨𝙩𝙖𝙧𝙩\n\ndocker image: plusminusio/paon:next\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - uses: actions/checkout@v3
         with:
@@ -30,34 +30,34 @@ jobs:
           username: mohemohe
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v3
+      - uses: docker/build-push-action@v4
         with:
           push: true
-          tags: plusminusio/mastodon:next
+          tags: plusminusio/paon:next
 
       - if: success()
         uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "☺️ 𝙗𝙪𝙞𝙡𝙙 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\ndocker image: plusminusio/mastodon:next\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "☺️ 𝙗𝙪𝙞𝙡𝙙 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\ndocker image: plusminusio/paon:next\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - if: failure()
         uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "😩 𝙗𝙪𝙞𝙡𝙙 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\ndocker image: plusminusio/mastodon:next\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "😩 𝙗𝙪𝙞𝙡𝙙 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\ndocker image: plusminusio/paon:next\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
   build_arm64:
-    runs-on: buildjet-8vcpu-ubuntu-2204-arm
-
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
     steps:
       - uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": ":loading: 𝙗𝙪𝙞𝙡𝙙 𝙨𝙩𝙖𝙧𝙩\n\ndocker image: plusminusio/mastodon:next-arm64\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": ":loading: 𝙗𝙪𝙞𝙡𝙙 𝙨𝙩𝙖𝙧𝙩\n\ndocker image: plusminusio/paon:next-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - uses: actions/checkout@v3
         with:
@@ -71,18 +71,18 @@ jobs:
       - uses: docker/build-push-action@v3
         with:
           push: true
-          tags: plusminusio/mastodon:next-arm64
+          tags: plusminusio/paon:next-arm64
 
       - if: success()
         uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "☺️ 𝙗𝙪𝙞𝙡𝙙 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\ndocker image: plusminusio/mastodon:next-arm64\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "☺️ 𝙗𝙪𝙞𝙡𝙙 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\ndocker image: plusminusio/paon:next-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - if: failure()
         uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "😩 𝙗𝙪𝙞𝙡𝙙 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\ndocker image: plusminusio/mastodon:next-arm64\nworkflow: ${{ github.event.repository.url }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "😩 𝙗𝙪𝙞𝙡𝙙 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\ndocker image: plusminusio/paon:next-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'

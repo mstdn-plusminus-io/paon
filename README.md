@@ -1,16 +1,12 @@
-<h1><picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./lib/assets/wordmark.dark.png?raw=true">
-  <source media="(prefers-color-scheme: light)" srcset="./lib/assets/wordmark.light.png?raw=true">
-  <img alt="Mastodon" src="./lib/assets/wordmark.light.png?raw=true" height="34">
-</picture></h1>
+![](./lib/assets/logo_full.png)
 
-[![GitHub release](https://img.shields.io/github/release/mstdn-plusminus-io/mastodon.svg)][releases]
-[![build latest image](https://github.com/mstdn-plusminus-io/mastodon/actions/workflows/latest.yml/badge.svg?branch=master)](https://github.com/mstdn-plusminus-io/mastodon/actions/workflows/latest.yml)
-[![build staging image](https://github.com/mstdn-plusminus-io/mastodon/actions/workflows/staging.yml/badge.svg?branch=staging)](https://github.com/mstdn-plusminus-io/mastodon/actions/workflows/staging.yml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/plusminusio/mastodon.svg)][docker]
+[![GitHub release](https://img.shields.io/github/release/mstdn-plusminus-io/paon.svg)][releases]
+[![build latest image](https://github.com/mstdn-plusminus-io/paon/actions/workflows/latest.yml/badge.svg?branch=master)](https://github.com/mstdn-plusminus-io/paon/actions/workflows/latest.yml)
+[![build staging image](https://github.com/mstdn-plusminus-io/paon/actions/workflows/staging.yml/badge.svg?branch=staging)](https://github.com/mstdn-plusminus-io/paon/actions/workflows/staging.yml)
+[![Docker Pulls](https://img.shields.io/docker/pulls/plusminusio/paon.svg)][docker]
 
-[releases]: https://github.com/mstdn-plusminus-io/mastodon/releases
-[docker]: https://hub.docker.com/r/plusminusio/mastodon/
+[releases]: https://github.com/mstdn-plusminus-io/paon/releases
+[docker]: https://hub.docker.com/r/plusminusio/paon/
 
 [Upstream README.md](https://github.com/mastodon/mastodon/blob/main/README.md)
 
@@ -42,7 +38,7 @@
 - Configurable enable or disable remote media cache
   - `DISABLE_REMOTE_MEDIA_CACHE=true`
 
-## Start develop 
+## Start develop
 
 Before developing, you need to install the following software.
 

@@ -1,1 +1,1 @@
-FROM plusminusio/mastodon:staging
+FROM plusminusio/paon:staging

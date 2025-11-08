@@ -13,7 +13,7 @@ module ActiveRecord
 
       column_names.unshift(primary_key)
 
-      relation = relation.reorder(batch_order(order)).limit(batch_limit)
+      relation = relation.reorder(primary_key => order).limit(batch_limit)
       relation.skip_query_cache!
 
       batch_relation = relation

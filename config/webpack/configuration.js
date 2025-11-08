@@ -1,4 +1,4 @@
-// Common configuration for webpacker loaded from config/webpacker.yml
+// Common configuration for Shakapacker loaded from config/shakapacker.yml
 
 const { readFileSync } = require('fs');
 const { resolve } = require('path');
@@ -6,8 +6,10 @@ const { env } = require('process');
 
 const { load } = require('js-yaml');
 
-const configPath = resolve('config', 'webpacker.yml');
-const settings = load(readFileSync(configPath), 'utf8')[env.RAILS_ENV || env.NODE_ENV];
+const configFile = env.SHAKAPACKER_CONFIG || env.WEBPACKER_CONFIG || 'config/shakapacker.yml';
+const configPath = resolve(configFile);
+const currentEnv = env.RAILS_ENV || env.NODE_ENV || 'development';
+const settings = load(readFileSync(configPath), 'utf8')[currentEnv];
 
 const themePath = resolve('config', 'themes.yml');
 const themes = load(readFileSync(themePath), 'utf8');

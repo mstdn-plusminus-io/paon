@@ -13,6 +13,7 @@ import { replyCompose } from 'mastodon/actions/compose';
 import { reblog, favourite, unreblog, unfavourite } from 'mastodon/actions/interactions';
 import { openModal } from 'mastodon/actions/modal';
 import { IconButton } from 'mastodon/components/icon_button';
+import { fileNameFromURL } from 'mastodon/features/video';
 import { me, boostModal } from 'mastodon/initial_state';
 import { makeGetStatus } from 'mastodon/selectors';
 
@@ -27,6 +28,7 @@ const messages = defineMessages({
   replyConfirm: { id: 'confirmations.reply.confirm', defaultMessage: 'Reply' },
   replyMessage: { id: 'confirmations.reply.message', defaultMessage: 'Replying now will overwrite the message you are currently composing. Are you sure you want to proceed?' },
   open: { id: 'status.open', defaultMessage: 'Expand this status' },
+  download: { id: 'video.download', defaultMessage: 'Download' },
 });
 
 const makeMapStateToProps = () => {
@@ -55,6 +57,9 @@ class Footer extends ImmutablePureComponent {
     askReplyConfirmation: PropTypes.bool,
     withOpenButton: PropTypes.bool,
     onClose: PropTypes.func,
+    src: PropTypes.string,
+    type: PropTypes.string,
+    attachmentId: PropTypes.string,
   };
 
   _performReply = () => {
@@ -131,7 +136,7 @@ class Footer extends ImmutablePureComponent {
     if (signedIn) {
       if (status.get('reblogged')) {
         dispatch(unreblog(status));
-      } else if ((e && e.shiftKey) || !boostModal) {
+      } else if (e?.shiftKey || !boostModal) {
         this._performReblog(status);
       } else {
         dispatch(initBoostModal({ status, onReblog: this._performReblog }));
@@ -162,6 +167,30 @@ class Footer extends ImmutablePureComponent {
     }
 
     router.history.push(`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`);
+  };
+
+  handleDownloadClick = () => {
+    const { src, attachmentId } = this.props;
+
+    if (!src) return;
+
+    // Use download_proxy for all downloads to avoid CORS issues
+    if (attachmentId) {
+      const downloadUrl = `${window.location.origin}/download_proxy/${attachmentId}/original`;
+
+      // Create download link
+      const element = document.createElement('a');
+      element.href = downloadUrl;
+      element.download = fileNameFromURL(src);
+      element.style.display = 'none';
+
+      document.body.appendChild(element);
+      element.click();
+      document.body.removeChild(element);
+    } else {
+      // Fallback to original URL if no attachment ID
+      window.open(src, '_blank', 'noopener,noreferrer');
+    }
   };
 
   render () {
@@ -197,6 +226,7 @@ class Footer extends ImmutablePureComponent {
         <IconButton className='status__action-bar-button' title={replyTitle} icon={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? 'reply' : replyIcon} onClick={this.handleReplyClick} counter={status.get('replies_count')} />
         <IconButton className={classNames('status__action-bar-button', { reblogPrivate })} disabled={!publicStatus && !reblogPrivate}  active={status.get('reblogged')} title={reblogTitle} icon='retweet' onClick={this.handleReblogClick} counter={status.get('reblogs_count')} />
         <IconButton className='status__action-bar-button star-icon' animate active={status.get('favourited')} title={intl.formatMessage(messages.favourite)} icon='star' onClick={this.handleFavouriteClick} counter={status.get('favourites_count')} />
+        <IconButton className='status__action-bar-button' title={intl.formatMessage(messages.download)} icon='download' onClick={this.handleDownloadClick} disabled={!this.props?.src} />
         {withOpenButton && <IconButton className='status__action-bar-button' title={intl.formatMessage(messages.open)} icon='external-link' onClick={this.handleOpenClick} href={`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`} />}
       </div>
     );

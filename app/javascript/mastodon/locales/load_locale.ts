@@ -25,6 +25,17 @@ export async function loadLocale() {
       `mastodon/locales/${locale}.json`
     )) as LocaleData['messages'];
 
+    const ld = localeData.default as any as Record<string, string>;
+    Object.keys(localeData.default).forEach((key: string) => {
+      if (ld[key]) {
+        ld[key] = ld[key].replaceAll('Mastodon', 'Paon');
+        ld[key] = ld[key].replaceAll('mastodon', 'paon');
+        ld[key] = ld[key].replaceAll('マストドン', 'ぱおん');
+        ld[key] = ld[key].replaceAll(/mastodon gmbh/gi, 'Team plusminus');
+        ld[key] = ld[key].replaceAll(/mastodon ggmbh/gi, 'Team plusminus');
+      }
+    });
+
     setLocale({ messages: localeData, locale });
   });
 }

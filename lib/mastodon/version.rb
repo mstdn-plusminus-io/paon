@@ -16,14 +16,6 @@ module Mastodon
       27
     end
 
-    def suffix
-      'plusminus'
-    end
-
-    def revision
-      1
-    end
-
     def default_prerelease
       ''
     end
@@ -42,9 +34,7 @@ module Mastodon
 
     def to_s
       components = [to_a.join('.')]
-      components << "-#{suffix}."
-      components << "#{prerelease}" if prerelease.present?
-      components << "#{revision}"
+      components << "-#{prerelease}" if prerelease.present?
       components << "+#{build_metadata}" if build_metadata.present?
       components.join
     end
@@ -54,7 +44,7 @@ module Mastodon
     end
 
     def repository
-      ENV.fetch('GITHUB_REPOSITORY', 'mstdn-plusminus-io/mastodon')
+      ENV.fetch('GITHUB_REPOSITORY', 'mastodon/mastodon')
     end
 
     def source_base_url

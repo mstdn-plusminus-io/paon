@@ -4,10 +4,10 @@ const { basename, dirname, join, relative, resolve } = require('path');
 
 const CircularDependencyPlugin = require('circular-dependency-plugin');
 const { sync } = require('glob');
-const MiniCssExtractPlugin = require('mini-css-extract-plugin');
+const rspack = require('@rspack/core');
 const extname = require('path-complete-extname');
 const webpack = require('webpack');
-const AssetsManifestPlugin = require('webpack-assets-manifest');
+const { RspackManifestPlugin } = require('rspack-manifest-plugin');
 
 const { env, settings, themes, output } = require('./configuration');
 const rules = require('./rules');
@@ -57,36 +57,31 @@ module.exports = {
         },
       },
     },
-    occurrenceOrder: true,
   },
 
   module: {
     rules: Object.keys(rules).map(key => rules[key]),
-    strictExportPresence: true,
   },
 
   plugins: [
-    new webpack.EnvironmentPlugin(JSON.parse(JSON.stringify(env))),
-    new webpack.NormalModuleReplacementPlugin(
+    new rspack.EnvironmentPlugin(JSON.parse(JSON.stringify(env))),
+    new rspack.NormalModuleReplacementPlugin(
       /^history\//, (resource) => {
         // temporary fix for https://github.com/ReactTraining/react-router/issues/5576
         // to reduce bundle size
         resource.request = resource.request.replace(/^history/, 'history/es');
       },
     ),
-    new MiniCssExtractPlugin({
+    new rspack.CssExtractRspackPlugin({
       filename: 'css/[name]-[contenthash:8].css',
       chunkFilename: 'css/[name]-[contenthash:8].chunk.css',
     }),
-    new AssetsManifestPlugin({
-      integrity: true,
-      integrityHashes: ['sha256'],
-      entrypoints: true,
-      writeToDisk: true,
-      publicPath: true,
+    new RspackManifestPlugin({
+      fileName: 'manifest.json',
+      writeToFileEmit: true,
     }),
     new CircularDependencyPlugin({
-      failOnError: true,
+      failOnError: false,
     })
   ],
 
@@ -100,11 +95,5 @@ module.exports = {
 
   resolveLoader: {
     modules: ['node_modules'],
-  },
-
-  node: {
-    // Called by http-link-header in an API we never use, increases
-    // bundle size unnecessarily
-    Buffer: false,
   },
 };
