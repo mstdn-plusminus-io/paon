@@ -130,6 +130,12 @@ class MediaModal extends ImmutablePureComponent {
   nop = () => {
   };
 
+  onClickOuter = (e) => {
+    if (e.target.classList.contains("react-transform-wrapper")) {
+      this.props.onClose();
+    }
+  }
+
   render () {
     const { media, statusId, lang, intl, onClose } = this.props;
     const { navigationHidden } = this.state;
@@ -225,7 +231,7 @@ class MediaModal extends ImmutablePureComponent {
 
     return (
       <div className='modal-root__modal media-modal'>
-        <div className='media-modal__closer' role='presentation' onClick={onClose} >
+        <div className='media-modal__closer' role='presentation' onClick={this.onClickOuter} >
           <ReactSwipeableViews
             style={swipeableViewsStyle}
             containerStyle={containerStyle}
