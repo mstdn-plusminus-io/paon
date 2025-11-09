@@ -12,7 +12,10 @@
       "Bash(awk:*)",
       "Bash(sed:*)",
       "WebSearch",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(bundle exec rails runner:*)",
+      "Bash(RAILS_ENV=development bundle exec rails runner:*)",
+      "Bash(bundle show:*)"
     ],
     "deny": []
   }

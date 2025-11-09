@@ -10,7 +10,7 @@ class Admin::Metrics::Dimension::SoftwareVersionsDimension < Admin::Metrics::Dim
   protected
 
   def perform_query
-    [mastodon_version, ruby_version, rails_version, postgresql_version, redis_version, elasticsearch_version].compact
+    [mastodon_version, ruby_version, rails_version, postgresql_version, redis_version, meilisearch_version].compact
   end
 
   def mastodon_version
@@ -68,19 +68,23 @@ class Admin::Metrics::Dimension::SoftwareVersionsDimension < Admin::Metrics::Dim
     }
   end
 
-  def elasticsearch_version
-    return unless Chewy.enabled?
+  def meilisearch_version
+    return unless Mastodon.meilisearch_enabled?
 
-    client_info = Chewy.client.info
-    version = client_info.dig('version', 'number')
+    client = MeiliSearch::Client.new(
+      ENV.fetch('MEILI_HOST') { 'http://localhost:7700' },
+      ENV.fetch('MEILI_MASTER_KEY') { nil }
+    )
+    version_info = client.version
+    version = version_info['pkgVersion']
 
     {
-      key: 'elasticsearch',
-      human_key: client_info.dig('version', 'distribution') == 'opensearch' ? 'OpenSearch' : 'Elasticsearch',
+      key: 'meilisearch',
+      human_key: 'Meilisearch',
       value: version,
       human_value: version,
     }
-  rescue Faraday::ConnectionFailed, Elasticsearch::Transport::Transport::Error
+  rescue Faraday::ConnectionFailed, StandardError
     nil
   end
 

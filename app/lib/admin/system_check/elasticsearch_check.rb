@@ -1,16 +1,9 @@
 # frozen_string_literal: true
 
 class Admin::SystemCheck::ElasticsearchCheck < Admin::SystemCheck::BaseCheck
-  INDEXES = [
-    InstancesIndex,
-    AccountsIndex,
-    TagsIndex,
-    StatusesIndex,
-    PublicStatusesIndex,
-  ].freeze
-
   def skip?
-    !current_user.can?(:view_devops)
+    # Meilisearch does not require this check
+    true
   end
 
   def pass?

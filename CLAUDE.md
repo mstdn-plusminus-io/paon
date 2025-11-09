@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - GitHub Flavored Markdownのサポート（実験的）
 - Cloudflare Turnstileによるサインアップ保護
 - リモートメディアキャッシュの有効/無効設定
+- **検索エンジン**: ElasticsearchからMeilisearchに置き換え（軽量・高速）
 
 ## 開発環境のセットアップ
 
@@ -20,23 +21,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Yarn 1.22.x
 - PostgreSQL
 - Redis
+- Meilisearch (Docker経由で起動)
 
 ### 初期セットアップ
 ```bash
 # 依存関係のインストール
 yarn bootstrap
 
-# Docker環境の起動（データベース等）
+# Docker環境の起動（データベース、Redis、Meilisearch等）
 yarn docker:dev up -d
 
 # 環境設定ファイルの準備
 cp .env.sample .env
+
+# .envファイルでMeilisearchを有効化
+# MEILI_ENABLED=true
+# MEILI_HOST=http://localhost:7700
+# MEILI_MASTER_KEY=aSampleMasterKey
+# MEILI_PREFIX=myinstance  # 複数インスタンスで共有する場合に設定（オプション）
 
 # データベースのマイグレーション
 rails db:migrate
 
 # DynamoDBテーブルの作成（必要な場合）
 yarn dynamo:create
+
+# Meilisearchインデックスの作成（検索機能を使用する場合）
+# Railsコンソールで以下を実行
+# Account.reindex
+# Status.reindex
+# Tag.reindex
+# Instance.reindex
 ```
 
 ## トラブルシューティング
@@ -137,6 +152,52 @@ yarn fix
 ### 型チェック
 ```bash
 yarn typecheck
+```
+
+## Meilisearch設定
+
+### 基本設定
+
+Meilisearchは軽量で高速な検索エンジンで、Elasticsearchの代替として使用しています。
+
+環境変数：
+- `MEILI_ENABLED`: Meilisearchを有効化（true/false）
+- `MEILI_HOST`: MeilisearchサーバーのURL（デフォルト: http://localhost:7700）
+- `MEILI_MASTER_KEY`: Meilisearchのマスターキー
+- `MEILI_PREFIX`: インデックス名のプレフィックス（複数インスタンス共有時に使用）
+
+### 複数インスタンスでの共有
+
+`MEILI_PREFIX`を使用することで、複数のMastodonインスタンスで単一のMeilisearchサーバーを共有できます。
+
+例：
+```bash
+# インスタンス1
+MEILI_PREFIX=instance1
+
+# インスタンス2
+MEILI_PREFIX=instance2
+```
+
+この設定により、各インスタンスは独立したインデックス名を持ちます：
+- `instance1_accounts`, `instance1_statuses`, `instance1_tags`, `instance1_instances`
+- `instance2_accounts`, `instance2_statuses`, `instance2_tags`, `instance2_instances`
+
+`MEILI_PREFIX`が設定されていない場合、`REDIS_NAMESPACE`の値がフォールバックとして使用されます。
+
+### インデックスの再作成
+
+検索機能が正常に動作しない場合、インデックスを再作成してください：
+
+```bash
+# Railsコンソールで実行
+rails console
+
+# 全モデルのインデックスを再作成
+Account.reindex
+Status.reindex
+Tag.reindex
+Instance.reindex
 ```
 
 ## アーキテクチャの概要

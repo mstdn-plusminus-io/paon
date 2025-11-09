@@ -20,8 +20,6 @@ class AccountStat < ApplicationRecord
 
   belongs_to :account, inverse_of: :account_stat
 
-  update_index('accounts', :account)
-
   def following_count
     [attributes['following_count'], 0].max
   end

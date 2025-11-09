@@ -21,6 +21,7 @@
 
 class Tag < ApplicationRecord
   include Paginable
+  include TagMeilisearch
   has_and_belongs_to_many :statuses
   has_and_belongs_to_many :accounts
 
@@ -57,8 +58,6 @@ class Tag < ApplicationRecord
                             .group(:id).order(Arel.sql('count(*) desc'))
                         }
   scope :matches_name, ->(term) { where(arel_table[:name].lower.matches(arel_table.lower("#{sanitize_sql_like(Tag.normalize(term))}%"), nil, true)) } # Search with case-sensitive to use B-tree index
-
-  update_index('tags', :self)
 
   def to_param
     name
