@@ -5,7 +5,7 @@ module Paon
     module_function
 
     def major
-      5
+      6
     end
 
     def minor
@@ -17,7 +17,7 @@ module Paon
     end
 
     def default_prerelease
-      ''
+      'beta.1'
     end
 
     def prerelease

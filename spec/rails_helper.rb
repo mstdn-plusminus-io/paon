@@ -24,12 +24,11 @@ require 'rspec/rails'
 require 'webmock/rspec'
 require 'paperclip/matchers'
 require 'capybara/rspec'
-require 'chewy/rspec'
 
 Dir[Rails.root.join('spec', 'support', '**', '*.rb')].each { |f| require f }
 
 ActiveRecord::Migration.maintain_test_schema!
-WebMock.disable_net_connect!(allow: Chewy.settings[:host], allow_localhost: RUN_SYSTEM_SPECS)
+WebMock.disable_net_connect!(allow_localhost: RUN_SYSTEM_SPECS)
 Sidekiq::Testing.inline!
 Sidekiq.logger = nil
 
@@ -101,7 +100,6 @@ RSpec.configure do |config|
   config.include Devise::Test::IntegrationHelpers, type: :request
   config.include Paperclip::Shoulda::Matchers
   config.include ActiveSupport::Testing::TimeHelpers
-  config.include Chewy::Rspec::Helpers
   config.include Redisable
   config.include SignedRequestHelpers, type: :request
 
@@ -129,7 +127,6 @@ RSpec.configure do |config|
     end
 
     if RUN_SEARCH_SPECS
-      Chewy.strategy(:urgent)
       search_data_manager.prepare_test_data
     end
   end

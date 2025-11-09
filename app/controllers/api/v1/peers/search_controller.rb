@@ -23,25 +23,19 @@ class Api::V1::Peers::SearchController < Api::BaseController
   def set_domains
     return if params[:q].blank?
 
-    if Chewy.enabled?
-      @domains = InstancesIndex.query(function_score: {
-        query: {
-          prefix: {
-            domain: TagManager.instance.normalize_domain(params[:q].strip),
-          },
-        },
-
-        field_value_factor: {
-          field: 'accounts_count',
-          modifier: 'log2p',
-        },
-      }).limit(10).pluck(:domain)
+    if Mastodon.meilisearch_enabled?
+      domain = TagManager.instance.normalize_domain(params[:q].strip)
+      results = Instance.search(domain, {
+        limit: 10,
+        sort: ['accounts_count:desc']
+      })
+      @domains = results.map(&:domain)
     else
       domain = params[:q].strip
       domain = TagManager.instance.normalize_domain(domain)
       @domains = Instance.searchable.where(Instance.arel_table[:domain].matches("#{Instance.sanitize_sql_like(domain)}%", false, true)).limit(10).pluck(:domain)
     end
-  rescue Addressable::URI::InvalidURIError
+  rescue Addressable::URI::InvalidURIError, StandardError
     @domains = []
   end
 end

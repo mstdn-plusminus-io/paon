@@ -23,6 +23,7 @@ require 'mail'
 # you've limited to :test, :development, or :production.
 Bundler.require(*Rails.groups)
 
+require_relative '../lib/mastodon'
 require_relative '../lib/exceptions'
 require_relative '../lib/sanitize_ext/sanitize_config'
 require_relative '../lib/redis/namespace_extensions'
@@ -41,10 +42,6 @@ require_relative '../lib/mastodon/rack_middleware'
 require_relative '../lib/public_file_server_middleware'
 require_relative '../lib/devise/two_factor_ldap_authenticatable'
 require_relative '../lib/devise/two_factor_pam_authenticatable'
-require_relative '../lib/chewy/settings_extensions'
-require_relative '../lib/chewy/index_extensions'
-require_relative '../lib/chewy/strategy/mastodon'
-require_relative '../lib/chewy/strategy/bypass_with_warning'
 require_relative '../lib/shakapacker/manifest_extensions'
 require_relative '../lib/shakapacker/helper_extensions'
 require_relative '../lib/rails/engine_extensions'
@@ -60,8 +57,16 @@ Bundler.require(:pam_authentication) if ENV['PAM_ENABLED'] == 'true'
 
 require_relative '../lib/mastodon/redis_config'
 
+STDERR.puts "[TRACE-APP] Before defining Mastodon::Application"
+STDERR.puts "[TRACE-APP] Mastodon.respond_to?(:meilisearch_enabled?): #{Mastodon.respond_to?(:meilisearch_enabled?)}"
+
 module Mastodon
+  STDERR.puts "[TRACE-APP] Re-opening Mastodon module for Application class"
+  STDERR.puts "[TRACE-APP] Module object_id: #{self.object_id}"
+  STDERR.puts "[TRACE-APP] Methods before: #{singleton_methods.sort.inspect}"
+
   class Application < Rails::Application
+    STDERR.puts "[TRACE-APP] Inside Application class definition"
     # Initialize configuration defaults for originally generated Rails version.
     # Updated to 7.2 for Rails 7.2 upgrade
     config.load_defaults 7.2
@@ -215,4 +220,11 @@ module Mastodon
       Devise::FailureApp.include Localized
     end
   end
+
+  STDERR.puts "[TRACE-APP] After Application class definition"
+  STDERR.puts "[TRACE-APP] Module object_id: #{self.object_id}"
+  STDERR.puts "[TRACE-APP] Methods after: #{singleton_methods.sort.inspect}"
 end
+
+STDERR.puts "[TRACE-APP] After Mastodon module re-opening"
+STDERR.puts "[TRACE-APP] Mastodon.respond_to?(:meilisearch_enabled?): #{Mastodon.respond_to?(:meilisearch_enabled?)}"

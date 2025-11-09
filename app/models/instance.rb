@@ -9,6 +9,8 @@
 #
 
 class Instance < ApplicationRecord
+  include InstanceMeilisearch
+
   self.primary_key = :domain
 
   attr_accessor :failure_days
