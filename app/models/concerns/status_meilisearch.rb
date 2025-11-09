@@ -28,12 +28,28 @@ module StatusMeilisearch
           media_attachments.any?
         end
 
+        attribute :has_image do
+          media_attachments.any? { |m| m.type == 'image' }
+        end
+
+        attribute :has_video do
+          media_attachments.any? { |m| m.type == 'video' || m.type == 'gifv' }
+        end
+
         attribute :has_poll do
           preloadable_poll.present?
         end
 
         attribute :has_link do
           preview_cards.any?
+        end
+
+        attribute :has_embed do
+          preview_cards.any? { |card| card.type == 'video' || card.html.present? }
+        end
+
+        attribute :is_reply do
+          in_reply_to_id.present?
         end
 
         attribute :created_at_timestamp do
@@ -57,7 +73,7 @@ module StatusMeilisearch
           'reblogs_count:desc'
         ]
 
-        filterable_attributes [:account_id, :language, :visibility, :sensitive, :has_media, :has_poll, :has_link, :searchable_by]
+        filterable_attributes [:account_id, :in_reply_to_id, :language, :visibility, :sensitive, :has_media, :has_image, :has_video, :has_poll, :has_link, :has_embed, :is_reply, :searchable_by, :created_at_timestamp]
         sortable_attributes [:created_at_timestamp, :favourites_count, :reblogs_count, :replies_count]
       end
     end
