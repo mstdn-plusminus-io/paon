@@ -73,7 +73,7 @@ module StatusMeilisearch
           'reblogs_count:desc'
         ]
 
-        filterable_attributes [:account_id, :in_reply_to_id, :language, :visibility, :sensitive, :has_media, :has_image, :has_video, :has_poll, :has_link, :has_embed, :is_reply, :searchable_by, :created_at_timestamp]
+        filterable_attributes [:id, :account_id, :in_reply_to_id, :language, :visibility, :sensitive, :has_media, :has_image, :has_video, :has_poll, :has_link, :has_embed, :is_reply, :searchable_by, :created_at_timestamp]
         sortable_attributes [:created_at_timestamp, :favourites_count, :reblogs_count, :replies_count]
       end
     end

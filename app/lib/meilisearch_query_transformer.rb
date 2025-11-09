@@ -75,6 +75,22 @@ class MeilisearchQueryTransformer < Parslet::Transform
       when 'public'
         # Public posts only
         filters << 'visibility = "public"'
+      when 'bookmark'
+        # User's bookmarked posts
+        bookmark_status_ids = BookmarkFeed.new(@options[:current_account]).get_all_status_ids
+
+        if bookmark_status_ids.any?
+          # Large bookmark set warning
+          if bookmark_status_ids.size > 10_000
+            Rails.logger.warn "Large bookmark set for account #{@options[:current_account].id}: #{bookmark_status_ids.size} items"
+          end
+
+          # Meilisearch filter syntax: id IN [1,2,3,...]
+          filters << "id IN [#{bookmark_status_ids.join(',')}]"
+        else
+          # No bookmarks, return empty results
+          filters << "id = -1"
+        end
       else
         # Default: public and unlisted posts
         filters << "(visibility = \"public\" OR visibility = \"unlisted\")"
