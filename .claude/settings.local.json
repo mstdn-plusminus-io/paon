@@ -15,7 +15,22 @@
       "WebFetch(domain:github.com)",
       "Bash(bundle exec rails runner:*)",
       "Bash(RAILS_ENV=development bundle exec rails runner:*)",
-      "Bash(bundle show:*)"
+      "Bash(bundle show:*)",
+      "Bash(cat:*)",
+      "Bash(git log:*)",
+      "Bash(ruby --version:*)",
+      "Bash(bundle exec ruby:*)",
+      "Bash(ruby:*)",
+      "Bash(gem environment:*)",
+      "Bash(rails runner:*)",
+      "Bash(gem list:*)",
+      "Bash(rbenv versions:*)",
+      "Bash(RAILS_ENV=development rails runner:*)",
+      "mcp__context7__resolve-library-id",
+      "Bash(asdf current:*)",
+      "Bash(asdf list:*)",
+      "Bash(find:*)",
+      "mcp__context7__get-library-docs"
     ],
     "deny": []
   }
