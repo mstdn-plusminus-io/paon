@@ -17,7 +17,7 @@ module Paon
     end
 
     def default_prerelease
-      'beta.2'
+      ''
     end
 
     def prerelease
@@ -48,7 +48,7 @@ module Paon
     end
 
     def repository
-      ENV.fetch('GITHUB_REPOSITORY', 'mstdn-plusminus-io/Paon')
+      ENV.fetch('GITHUB_REPOSITORY', 'mstdn-plusminus-io/paon')
     end
 
     def source_base_url
