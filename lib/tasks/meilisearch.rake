@@ -10,6 +10,10 @@ namespace :meilisearch do
 
     require 'ruby-progressbar'
 
+    # Get batch size from environment variable or use default
+    batch_size = (ENV['BATCH_SIZE'] || 100).to_i
+    puts "Batch size: #{batch_size}"
+
     models = [
       { name: 'Account', model: Account },
       { name: 'Status', model: Status },
@@ -35,7 +39,6 @@ namespace :meilisearch do
         puts "  → Found #{total_count} records (took #{count_elapsed.round(2)}s)"
 
         indexed_count = 0
-        batch_size = 1000
 
         progress = ProgressBar.create(
           title: "  #{model_name}",
@@ -43,12 +46,6 @@ namespace :meilisearch do
           format: '%t %c/%C |%B| %p%% %e',
           output: $stdout
         )
-
-        puts "  → Clearing existing index..."
-        clear_start = Time.now
-        model_class.clear_index!
-        clear_elapsed = Time.now - clear_start
-        puts "  → Index cleared (took #{clear_elapsed.round(2)}s)"
 
         puts "  → Starting batch indexing..."
 
@@ -63,7 +60,8 @@ namespace :meilisearch do
           end
 
           indexed_count += batch.size
-          progress.progress = indexed_count
+          # Prevent progress from exceeding total
+          progress.progress = [indexed_count, total_count].min
         end
 
         progress.finish
