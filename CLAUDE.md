@@ -190,15 +190,51 @@ MEILI_PREFIX=instance2
 検索機能が正常に動作しない場合、インデックスを再作成してください：
 
 ```bash
-# Railsコンソールで実行
-rails console
+# Rakeタスクで全インデックスを再作成（推奨）
+rake meilisearch:deploy
 
-# 全モデルのインデックスを再作成
+# バッチサイズを指定（デフォルト: 100）
+BATCH_SIZE=1000 rake meilisearch:deploy
+
+# Railsコンソールで個別に実行
+rails console
 Account.reindex
 Status.reindex
 Tag.reindex
 Instance.reindex
 ```
+
+### インデックス作成の途中再開機能
+
+大量のデータをインデックスする場合、処理に長時間かかることがあります。
+Ctrl+Cで中断した場合、進行状況が自動的に保存され、途中から再開できます：
+
+```bash
+# 通常のインデックス作成
+rake meilisearch:deploy
+
+# 中断した場合（Ctrl+C）、以下のようなメッセージが表示されます：
+# 💾 Progress saved!
+#   → Model: Status
+#   → Last processed ID: 5500000
+#   → Progress: 5500000/36661518 (15.0%)
+#   → Progress file: tmp/meilisearch_deploy_progress.json
+#
+# To resume, run:
+#   RESUME=true rake meilisearch:deploy
+
+# 途中から再開
+RESUME=true rake meilisearch:deploy
+
+# 再開時もバッチサイズを指定可能
+RESUME=true BATCH_SIZE=1000 rake meilisearch:deploy
+```
+
+**注意事項:**
+- 進行状況は `tmp/meilisearch_deploy_progress.json` に保存されます
+- 正常に完了した場合、進行状況ファイルは自動的に削除されます
+- エラーが発生した場合も進行状況が保存されるため、問題を修正後に再開できます
+- 最初からやり直したい場合は、`RESUME=true` を指定せずに実行してください
 
 ## アーキテクチャの概要
 
