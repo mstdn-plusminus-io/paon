@@ -14,8 +14,6 @@
 class Favourite < ApplicationRecord
   include Paginable
 
-  update_index('statuses', :status)
-
   belongs_to :account, inverse_of: :favourites
   belongs_to :status,  inverse_of: :favourites
 

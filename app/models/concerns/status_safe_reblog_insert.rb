@@ -16,7 +16,7 @@ module StatusSafeReblogInsert
     # The code is kept similar to ActiveRecord::Persistence code and calls it
     # directly when we are not handling a reblog.
     def _insert_record(connection, values, returning)
-      return super unless values.is_a?(Hash) && values['reblog_of_id']&.value.present?
+      return super(connection, values, returning) unless values.is_a?(Hash) && values['reblog_of_id']&.value.present?
 
       primary_key = self.primary_key
       primary_key_value = nil

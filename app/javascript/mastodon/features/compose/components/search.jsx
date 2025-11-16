@@ -54,6 +54,7 @@ class Search extends PureComponent {
     expanded: false,
     selectedOption: -1,
     options: [],
+    isComposing: false,
   };
 
   defaultOptions = [
@@ -64,7 +65,7 @@ class Search extends PureComponent {
     { label: <><mark>before:</mark> <FormattedMessage id='search_popout.specific_date' defaultMessage='specific date' /></>, action: e => { e.preventDefault(); this._insertText('before:') } },
     { label: <><mark>during:</mark> <FormattedMessage id='search_popout.specific_date' defaultMessage='specific date' /></>, action: e => { e.preventDefault(); this._insertText('during:') } },
     { label: <><mark>after:</mark> <FormattedMessage id='search_popout.specific_date' defaultMessage='specific date' /></>, action: e => { e.preventDefault(); this._insertText('after:') } },
-    { label: <><mark>in:</mark> <FormattedList type='disjunction' value={['all', 'library']} /></>, action: e => { e.preventDefault(); this._insertText('in:') } }
+    { label: <><mark>in:</mark> <FormattedList type='disjunction' value={['all', 'library', 'bookmark']} /></>, action: e => { e.preventDefault(); this._insertText('in:') } }
   ];
 
   setRef = c => {
@@ -88,6 +89,14 @@ class Search extends PureComponent {
       onClear();
       this.setState({ options: [], selectedOption: -1 });
     }
+  };
+
+  handleCompositionStart = () => {
+    this.setState({ isComposing: true });
+  };
+
+  handleCompositionEnd = () => {
+    this.setState({ isComposing: false });
   };
 
   handleKeyDown = (e) => {
@@ -117,6 +126,10 @@ class Search extends PureComponent {
 
       break;
     case 'Enter':
+      if (this.state.isComposing) {
+        return;
+      }
+
       e.preventDefault();
 
       if (selectedOption === -1) {
@@ -330,6 +343,8 @@ class Search extends PureComponent {
           aria-label={intl.formatMessage(signedIn ? messages.placeholderSignedIn : messages.placeholder)}
           value={value}
           onChange={this.handleChange}
+          onCompositionStart={this.handleCompositionStart}
+          onCompositionEnd={this.handleCompositionEnd}
           onKeyDown={this.handleKeyDown}
           onFocus={this.handleFocus}
           onBlur={this.handleBlur}

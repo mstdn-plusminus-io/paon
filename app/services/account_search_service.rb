@@ -185,7 +185,7 @@ class AccountSearchService < BaseService
     return [] if limit_for_non_exact_results.zero?
 
     @search_results ||= begin
-      results = from_elasticsearch if Chewy.enabled?
+      results = from_meilisearch if Mastodon.meilisearch_enabled?
       results ||= from_database
       results
     end
@@ -207,21 +207,27 @@ class AccountSearchService < BaseService
     Account.search_for(terms_for_query, limit: limit_for_non_exact_results, offset: offset)
   end
 
-  def from_elasticsearch
-    query_builder = begin
-      if options[:use_searchable_text]
-        FullQueryBuilder.new(terms_for_query, account, options.slice(:following))
-      else
-        AutocompleteQueryBuilder.new(terms_for_query, account, options.slice(:following))
-      end
+  def from_meilisearch
+    search_options = {
+      limit: limit_for_non_exact_results,
+      offset: offset,
+      sort: ['followers_count:desc', 'statuses_count:desc']
+    }
+
+    # Add filter for following if specified
+    if account && options[:following]
+      following_ids = account.active_relationships.pluck(:target_account_id) + [account.id]
+      search_options[:filter] = "id IN [#{following_ids.join(',')}]"
     end
 
-    records = query_builder.build.limit(limit_for_non_exact_results).offset(offset).objects.compact
+    results = Account.search(terms_for_query, search_options)
+    records = results.to_a
 
     ActiveRecord::Associations::Preloader.new(records: records, associations: [:account_stat, { user: :role }]).call
 
     records
-  rescue Faraday::ConnectionFailed, Parslet::ParseFailed
+  rescue StandardError => e
+    Rails.logger.error "Meilisearch error: #{e.message}"
     nil
   end
 

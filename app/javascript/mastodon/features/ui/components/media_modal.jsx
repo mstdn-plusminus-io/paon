@@ -231,7 +231,7 @@ class MediaModal extends ImmutablePureComponent {
 
     return (
       <div className='modal-root__modal media-modal'>
-        <div className='media-modal__closer' role='presentation' onClick={this.onClickOuter} >
+        <div className='media-modal__closer' role='presentation' onClick={image.get('type') === 'image' ? this.onClickOuter : onClose} >
           <ReactSwipeableViews
             style={swipeableViewsStyle}
             containerStyle={containerStyle}

@@ -188,7 +188,7 @@ class DeleteAccountService < BaseService
     @account.favourites.in_batches do |favourites|
       ids = favourites.pluck(:status_id)
       StatusStat.where(status_id: ids).update_all('favourites_count = GREATEST(0, favourites_count - 1)')
-      Chewy.strategy.current.update(StatusesIndex, ids) if Chewy.enabled?
+      # Meilisearch will automatically update the index via callbacks
       Rails.cache.delete_multi(ids.map { |id| "statuses/#{id}" })
       favourites.delete_all
     end
@@ -196,7 +196,7 @@ class DeleteAccountService < BaseService
 
   def purge_bookmarks!
     @account.bookmarks.in_batches do |bookmarks|
-      Chewy.strategy.current.update(StatusesIndex, bookmarks.pluck(:status_id)) if Chewy.enabled?
+      # Meilisearch will automatically update the index via callbacks
       bookmarks.delete_all
     end
   end

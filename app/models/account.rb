@@ -83,7 +83,7 @@ class Account < ApplicationRecord
   include DomainMaterializable
   include AccountMerging
   include AccountSearch
-  include AccountStatusesSearch
+  include AccountMeilisearch
 
   enum protocol: { ostatus: 0, activitypub: 1 }
   enum suspension_origin: { local: 0, remote: 1 }, _prefix: true
@@ -159,8 +159,6 @@ class Account < ApplicationRecord
            allow_nil: true
 
   delegate :chosen_languages, to: :user, prefix: false, allow_nil: true
-
-  update_index('accounts', :self)
 
   def local?
     domain.nil?
