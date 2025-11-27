@@ -12,6 +12,9 @@ namespace :meilisearch do
     require 'json'
     require 'fileutils'
 
+    # Extend default timeout for wait_for_task (default is 5 seconds, which is too short)
+    Meilisearch::Task.default_timeout_ms = 300_000 # 5 minutes
+
     # Progress file path
     progress_file = Rails.root.join('tmp', 'meilisearch_deploy_progress.json')
     interrupted = false
