@@ -84,6 +84,10 @@ namespace :meilisearch do
       start_time = Time.now
 
       begin
+        # Create/update index settings synchronously before adding documents
+        puts "  → Creating/updating index settings..."
+        model_class.ms_set_settings(true)
+
         puts "  → Counting records..."
         count_start = Time.now
         total_count = model_class.count
