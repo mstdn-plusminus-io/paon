@@ -8,7 +8,7 @@ module StatusMeilisearch
       include MeiliSearch::Rails
 
       meilisearch index_uid: "#{Mastodon.meilisearch_prefix}statuses", primary_key: :id, if: :searchable? do
-        attribute :id, :account_id, :in_reply_to_id, :reblog_of_id, :language, :sensitive
+        attribute :id, :account_id, :reblog_of_id, :language, :sensitive
 
         attribute :text do
           searchable_text
@@ -19,10 +19,6 @@ module StatusMeilisearch
         end
 
         attribute :visibility
-
-        attribute :searchable_by do
-          searchable_by_ids
-        end
 
         attribute :has_media do
           media_attachments.any?
@@ -58,7 +54,6 @@ module StatusMeilisearch
 
         attribute :favourites_count
         attribute :reblogs_count
-        attribute :replies_count
 
         searchable_attributes [:text, :tags]
 
@@ -73,8 +68,12 @@ module StatusMeilisearch
           'reblogs_count:desc'
         ]
 
-        filterable_attributes [:id, :account_id, :in_reply_to_id, :language, :visibility, :sensitive, :has_media, :has_image, :has_video, :has_poll, :has_link, :has_embed, :is_reply, :searchable_by, :created_at_timestamp]
-        sortable_attributes [:created_at_timestamp, :favourites_count, :reblogs_count, :replies_count]
+        filterable_attributes [:id, :account_id, :language, :visibility, :sensitive, :has_media, :has_image, :has_video, :has_poll, :has_link, :has_embed, :is_reply, :created_at_timestamp]
+        sortable_attributes [:created_at_timestamp, :favourites_count, :reblogs_count]
+
+        # Performance optimizations
+        typo_tolerance enabled: false
+        proximity_precision 'byAttribute'
       end
     end
   end
@@ -91,18 +90,5 @@ module StatusMeilisearch
       spoiler_text,
       preloadable_poll&.options&.join(' ')
     ].compact.join("\n\n")
-  end
-
-  def searchable_by_ids
-    case visibility.to_sym
-    when :public, :unlisted
-      []
-    when :private
-      account.followers.pluck(:id) + [account_id]
-    when :direct
-      mentions.pluck(:account_id) + [account_id]
-    else
-      []
-    end
   end
 end
