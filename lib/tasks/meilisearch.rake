@@ -12,9 +12,6 @@ namespace :meilisearch do
     require 'json'
     require 'fileutils'
 
-    # Extend default timeout for wait_for_task (default is 5 seconds, which is too short)
-    Meilisearch::Models::Task.default_timeout_ms = 300_000 # 5 minutes
-
     # Progress file path
     progress_file = Rails.root.join('tmp', 'meilisearch_deploy_progress.json')
     interrupted = false
@@ -36,6 +33,30 @@ namespace :meilisearch do
       JSON.parse(File.read(file))
     rescue JSON::ParserError
       nil
+    end
+
+    # Create index with settings using direct API (configurable timeout)
+    def ensure_index_settings(model_class, timeout_ms = 300_000)
+      client = MeiliSearch::Rails.client
+      index_uid = model_class.ms_index_uid
+      primary_key = model_class.meilisearch_options[:primary_key]&.to_s || 'id'
+
+      # Create index if it doesn't exist
+      begin
+        task = client.create_index(index_uid, { primaryKey: primary_key })
+        client.wait_for_task(task['taskUid'], timeout_ms)
+        puts "    Created index: #{index_uid}"
+      rescue Meilisearch::ApiError => e
+        raise e unless e.code == 'index_already_exists'
+        puts "    Index already exists: #{index_uid}"
+      end
+
+      # Update settings
+      index = client.index(index_uid)
+      settings = model_class.meilisearch_settings.to_settings
+      task = index.update_settings(settings)
+      client.wait_for_task(task['taskUid'], timeout_ms)
+      puts "    Settings updated"
     end
 
     # Get batch size from environment variable or use default
@@ -87,9 +108,14 @@ namespace :meilisearch do
       start_time = Time.now
 
       begin
-        # Create/update index settings synchronously before adding documents
-        puts "  → Creating/updating index settings..."
-        model_class.ms_set_settings(true)
+        # Create/update index settings (skip on resume for same model - already done)
+        is_resuming_same_model = resume_mode && progress_data && progress_data['current_model'] == model_name && progress_data['last_processed_id'].present?
+        unless is_resuming_same_model
+          puts "  → Creating/updating index settings..."
+          ensure_index_settings(model_class)
+        else
+          puts "  → Skipping index settings (resuming)..."
+        end
 
         puts "  → Counting records..."
         count_start = Time.now
@@ -181,9 +207,9 @@ namespace :meilisearch do
         puts "  ✗ Error: #{e.message}"
         puts e.backtrace.first(5).map { |line| "    #{line}" }.join("\n")
 
-        # Save progress on error as well
+        # Save progress on error as well (only if we have actual progress to save)
         # Use last_successful_id to ensure failed batch will be retried
-        if defined?(last_successful_id)
+        if defined?(last_successful_id) && last_successful_id.present?
           progress_info = {
             'current_model' => model_name,
             'current_model_index' => model_index,
