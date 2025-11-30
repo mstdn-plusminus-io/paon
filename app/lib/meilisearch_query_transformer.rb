@@ -21,18 +21,34 @@ class MeilisearchQueryTransformer < Parslet::Transform
       @clauses = clauses
       @options = options
       @query_terms = []
-      @filters = []
+      @meilisearch_filters = []
+      @postgresql_filters = []
       @sort = []
+      @bookmark_mode = false
 
       process_clauses!
+      build_visibility_filter!
     end
 
     def to_meilisearch_query
       {
         query: query_string,
-        filter: filter_string,
+        filter: @final_filter_string,
         sort: sort_array
       }.compact.reject { |_, v| v.blank? }
+    end
+
+    # Returns conditions for PostgreSQL post-filtering
+    def to_postgresql_conditions
+      @postgresql_filters.compact
+    end
+
+    def bookmark_mode?
+      @bookmark_mode
+    end
+
+    def current_account
+      @options[:current_account]
     end
 
     private
@@ -53,8 +69,12 @@ class MeilisearchQueryTransformer < Parslet::Transform
             # Handle special flags like 'in:'
             @flags ||= {}
             @flags[clause.prefix] = clause.term
-          else
-            @filters << clause.to_filter_string
+          elsif clause.operator == :meilisearch_filter
+            # Filters handled by Meilisearch (account_id, created_at_timestamp)
+            @meilisearch_filters << clause.to_filter_string
+          elsif clause.operator == :postgresql_filter
+            # Filters handled by PostgreSQL post-filtering (has:*, is:*, language:)
+            @postgresql_filters << clause.to_postgresql_condition
           end
         end
       end
@@ -64,39 +84,27 @@ class MeilisearchQueryTransformer < Parslet::Transform
       @query_terms.join(' ').strip
     end
 
-    def filter_string
-      filters = @filters.dup
+    def build_visibility_filter!
+      filters = @meilisearch_filters.dup
+      current_account_id = @options[:current_account].id
 
       # Add visibility filter based on 'in:' flag
       case @flags&.dig('in')
       when 'library'
-        # User's own posts
-        filters << "account_id = #{@options[:current_account].id}"
+        # User's own posts only
+        filters << "account_id = #{current_account_id}"
       when 'public'
         # Public posts only
         filters << 'visibility = "public"'
       when 'bookmark'
-        # User's bookmarked posts
-        bookmark_status_ids = BookmarkFeed.new(@options[:current_account]).get_all_status_ids
-
-        if bookmark_status_ids.any?
-          # Large bookmark set warning
-          if bookmark_status_ids.size > 10_000
-            Rails.logger.warn "Large bookmark set for account #{@options[:current_account].id}: #{bookmark_status_ids.size} items"
-          end
-
-          # Meilisearch filter syntax: id IN [1,2,3,...]
-          filters << "id IN [#{bookmark_status_ids.join(',')}]"
-        else
-          # No bookmarks, return empty results
-          filters << "id = -1"
-        end
+        # User's bookmarked posts - handled separately in search service
+        @bookmark_mode = true
       else
-        # Default: public and unlisted posts
-        filters << "(visibility = \"public\" OR visibility = \"unlisted\")"
+        # Default (in:all): public posts OR user's own posts
+        filters << "(visibility = \"public\" OR account_id = #{current_account_id})"
       end
 
-      filters.compact.join(' AND ')
+      @final_filter_string = filters.compact.join(' AND ')
     end
 
     def sort_array
@@ -158,28 +166,34 @@ class MeilisearchQueryTransformer < Parslet::Transform
       @prefix = prefix
       @negated = operator == '-'
       @options = options
-      @operator = :filter
 
       case prefix
       when 'has'
         parse_has_filter(term)
+        @operator = :postgresql_filter
       when 'is'
         parse_is_filter(term)
+        @operator = :postgresql_filter
       when 'language'
         @filter = :language
         @term = language_code_from_term(term)
+        @operator = :postgresql_filter
       when 'from'
         @filter = :account_id
         @term = account_id_from_term(term)
+        @operator = :meilisearch_filter
       when 'before'
         @filter = :created_at_timestamp
         @term = timestamp_from_date(term, :before)
+        @operator = :meilisearch_filter
       when 'after'
         @filter = :created_at_timestamp
         @term = timestamp_from_date(term, :after)
+        @operator = :meilisearch_filter
       when 'during'
         @filter = :created_at_timestamp
         @term = timestamp_from_date(term, :during)
+        @operator = :meilisearch_filter
       when 'in'
         @operator = :flag
         @term = term
@@ -188,8 +202,9 @@ class MeilisearchQueryTransformer < Parslet::Transform
       end
     end
 
+    # For Meilisearch filters (account_id, created_at_timestamp)
     def to_filter_string
-      return nil if @operator == :flag
+      return nil unless @operator == :meilisearch_filter
 
       case @filter
       when :created_at_timestamp
@@ -209,30 +224,34 @@ class MeilisearchQueryTransformer < Parslet::Transform
         else
           "account_id = #{@term}"
         end
+      else
+        nil
+      end
+    end
+
+    # For PostgreSQL post-filtering (has:*, is:*, language:)
+    def to_postgresql_condition
+      return nil unless @operator == :postgresql_filter
+
+      case @filter
       when :language
-        if @negated
-          "language != '#{@term}'"
-        else
-          "language = '#{@term}'"
-        end
-      when :has_media, :has_image, :has_video, :has_poll, :has_link, :has_embed
-        if @negated
-          "#{@filter} = false"
-        else
-          "#{@filter} = true"
-        end
+        { type: :language, value: @term, negated: @negated }
+      when :has_media
+        { type: :has_media, negated: @negated }
+      when :has_image
+        { type: :has_image, negated: @negated }
+      when :has_video
+        { type: :has_video, negated: @negated }
+      when :has_poll
+        { type: :has_poll, negated: @negated }
+      when :has_link
+        { type: :has_link, negated: @negated }
+      when :has_embed
+        { type: :has_embed, negated: @negated }
       when :sensitive
-        if @negated
-          "sensitive = false"
-        else
-          "sensitive = true"
-        end
+        { type: :sensitive, negated: @negated }
       when :is_reply
-        if @negated
-          "is_reply = false"
-        else
-          "is_reply = true"
-        end
+        { type: :is_reply, negated: @negated }
       else
         nil
       end

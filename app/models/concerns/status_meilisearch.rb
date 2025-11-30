@@ -68,8 +68,14 @@ module StatusMeilisearch
           'reblogs_count:desc'
         ]
 
-        filterable_attributes [:id, :account_id, :language, :visibility, :sensitive, :has_media, :has_image, :has_video, :has_poll, :has_link, :has_embed, :is_reply, :created_at_timestamp]
-        sortable_attributes [:created_at_timestamp, :favourites_count, :reblogs_count]
+        # Minimal filterable attributes for performance optimization
+        # - id: required for in:bookmark filter
+        # - account_id: required for from:, in:library filters
+        # - visibility: required for visibility-based filtering
+        # - created_at_timestamp: required for before:, after:, during: filters
+        # Other filters (has:*, is:*, language:) are handled by PostgreSQL post-filtering
+        filterable_attributes [:id, :account_id, :visibility, :created_at_timestamp]
+        sortable_attributes [:created_at_timestamp]
 
         # Performance optimizations
         typo_tolerance enabled: false
@@ -79,7 +85,9 @@ module StatusMeilisearch
   end
 
   def searchable?
-    public_visibility? || unlisted_visibility?
+    # Index all local statuses (including private/direct for self-search)
+    # Index only public statuses from remote accounts
+    local? || public_visibility?
   end
 
   def searchable_text

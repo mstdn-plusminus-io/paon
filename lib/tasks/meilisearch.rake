@@ -35,11 +35,21 @@ namespace :meilisearch do
       nil
     end
 
+    # Create raw Meilisearch client (bypassing meilisearch-rails wrappers)
+    def raw_meilisearch_client
+      @raw_meilisearch_client ||= Meilisearch::Client.new(
+        ENV.fetch('MEILI_HOST', 'http://localhost:7700'),
+        ENV['MEILI_MASTER_KEY']
+      )
+    end
+
     # Create index with settings using direct API (configurable timeout)
     def ensure_index_settings(model_class, timeout_ms = 300_000)
-      client = MeiliSearch::Rails.client
+      client = raw_meilisearch_client
       index_uid = model_class.ms_index_uid
       primary_key = model_class.meilisearch_options[:primary_key]&.to_s || 'id'
+
+      puts "    Using direct Meilisearch client (timeout: #{timeout_ms}ms)"
 
       # Create index if it doesn't exist
       begin
@@ -51,10 +61,12 @@ namespace :meilisearch do
         puts "    Index already exists: #{index_uid}"
       end
 
-      # Update settings
+      # Update settings using raw client
       index = client.index(index_uid)
       settings = model_class.meilisearch_settings.to_settings
+      puts "    Updating settings..."
       task = index.update_settings(settings)
+      puts "    Waiting for task #{task['taskUid']}..."
       client.wait_for_task(task['taskUid'], timeout_ms)
       puts "    Settings updated"
     end
