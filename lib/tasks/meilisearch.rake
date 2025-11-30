@@ -168,8 +168,8 @@ namespace :meilisearch do
         last_successful_id = start_id
 
         model_class.find_in_batches(**find_options) do |batch|
-          # Filter records that should be indexed
-          indexable_records = batch.select { |record| record.respond_to?(:should_index?) ? record.should_index? : true }
+          # Filter records that should be indexed (using searchable? method from meilisearch-rails)
+          indexable_records = batch.select { |record| record.respond_to?(:searchable?) ? record.searchable? : true }
 
           if indexable_records.any?
             # Add documents to index
