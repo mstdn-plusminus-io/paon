@@ -21,5 +21,9 @@ module Mastodon
         p ? "#{p}_" : ''
       end
     end
+
+    def meilisearch_library_only?
+      ENV['MEILI_LIBRARY_ONLY'] == 'true'
+    end
   end
 end

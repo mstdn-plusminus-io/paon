@@ -85,9 +85,23 @@ module StatusMeilisearch
   end
 
   def searchable?
-    # Index all local statuses (including private/direct for self-search)
-    # Index only public statuses from remote accounts
-    local? || public_visibility?
+    if Mastodon.meilisearch_library_only?
+      # MEILI_LIBRARY_ONLY=true: Index local statuses OR remote statuses with local interactions
+      local? || has_local_interaction?
+    else
+      # Default: Index all local statuses + remote public statuses
+      local? || public_visibility?
+    end
+  end
+
+  def has_local_interaction?
+    return false if local?
+
+    # Check if any local user has interacted with this remote status
+    local_favorited.exists? ||
+      local_reblogged.exists? ||
+      local_bookmarked.exists? ||
+      local_mentioned.exists?
   end
 
   def searchable_text
