@@ -11,7 +11,7 @@ module AccountMeilisearch
         attribute :id, :username, :display_name, :domain, :bot, :locked, :discoverable, :indexable
 
         attribute :text do
-          ::PlainTextFormatter.new(note, local?).to_s if discoverable?
+          ::PlainTextFormatter.new(note, local?).to_s
         end
 
         attribute :followers_count do
@@ -54,7 +54,7 @@ module AccountMeilisearch
   end
 
   def searchable?
-    !suspended? && !moved? && discoverable?
+    !suspended? && !moved?
   end
 
   private

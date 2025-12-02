@@ -152,7 +152,7 @@ class AccountSearchService < BaseService
     @options = options
     @account = account
 
-    search_service_results.compact.uniq
+    search_service_results.compact.uniq.first(limit)
   end
 
   private
@@ -208,20 +208,47 @@ class AccountSearchService < BaseService
   end
 
   def from_meilisearch
-    search_options = {
-      limit: limit_for_non_exact_results,
+    base_search_options = {
       offset: offset,
       sort: ['followers_count:desc', 'statuses_count:desc']
     }
 
-    # Add filter for following if specified
-    if account && options[:following]
-      following_ids = account.active_relationships.pluck(:target_account_id) + [account.id]
-      search_options[:filter] = "id IN [#{following_ids.join(',')}]"
-    end
+    records = if account && options[:following]
+                # Filter to only show accounts the user is following
+                following_ids = account.active_relationships.pluck(:target_account_id) + [account.id]
+                search_options = base_search_options.merge(
+                  limit: limit_for_non_exact_results,
+                  filter: "id IN [#{following_ids.join(',')}]"
+                )
+                Account.search(terms_for_query, search_options).to_a
+              elsif account
+                # Prioritize accounts the user is following, then show others
+                following_ids = account.active_relationships.pluck(:target_account_id) + [account.id]
 
-    results = Account.search(terms_for_query, search_options)
-    records = results.to_a
+                # First, search within following accounts
+                following_options = base_search_options.merge(
+                  limit: limit_for_non_exact_results,
+                  filter: "id IN [#{following_ids.join(',')}]"
+                )
+                following_results = Account.search(terms_for_query, following_options).to_a
+
+                # If we need more results, search for non-following accounts
+                remaining_limit = limit_for_non_exact_results - following_results.size
+                if remaining_limit.positive?
+                  others_options = base_search_options.merge(
+                    limit: remaining_limit,
+                    filter: "id NOT IN [#{following_ids.join(',')}]"
+                  )
+                  others_results = Account.search(terms_for_query, others_options).to_a
+                  following_results + others_results
+                else
+                  following_results
+                end
+              else
+                # No account context, just search normally
+                search_options = base_search_options.merge(limit: limit_for_non_exact_results)
+                Account.search(terms_for_query, search_options).to_a
+              end
 
     ActiveRecord::Associations::Preloader.new(records: records, associations: [:account_stat, { user: :role }]).call
 
