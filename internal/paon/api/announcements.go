@@ -175,7 +175,7 @@ func (s *Server) announcementStatuses(announcement models.Announcement) ([]model
 func (s *Server) announcementReactions(accountID int64, announcementID int64) ([]serializer.ReactionSource, error) {
 	var rows []announcementReactionRow
 	err := s.db.Model(&models.AnnouncementReaction{}).
-		Select(`name, custom_emoji_id, COUNT(*) AS count, EXISTS(SELECT 1 FROM announcement_reactions r WHERE r.account_id = ? AND r.announcement_id = announcement_reactions.announcement_id AND r.name = announcement_reactions.name) AS me`, accountID).
+		Select(`name, custom_emoji_id, COUNT(*) AS count, EXISTS(SELECT 1 FROM announcement_reactions r WHERE r.account_id = ? AND r.announcement_id = ? AND r.name = announcement_reactions.name) AS me`, accountID, announcementID).
 		Where("announcement_id = ?", announcementID).
 		Group("name, custom_emoji_id").
 		Order("MIN(created_at) ASC").
