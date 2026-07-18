@@ -61,6 +61,26 @@ func TestHostAuthorizationIsDisabledInRailsTestEnvironment(t *testing.T) {
 	}
 }
 
+func TestHostAuthorizationAllowsProductionReadinessCheckFromLoopback(t *testing.T) {
+	s, err := NewServer(config.Config{
+		RailsEnv:    "production",
+		Title:       "Paon",
+		LocalDomain: "social.example",
+		WebDomain:   "social.example",
+		ForceSSL:    true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3000/health/ready", nil)
+	rec := httptest.NewRecorder()
+	s.echo.ServeHTTP(rec, req)
+	if rec.Code == http.StatusForbidden {
+		t.Fatal("production readiness check was blocked by host authorization")
+	}
+}
+
 func TestHostAuthorizationMatchesRailsPortAndForwardedHostRules(t *testing.T) {
 	allowed := railsAllowedHosts(config.Config{
 		RailsEnv:         "production",
