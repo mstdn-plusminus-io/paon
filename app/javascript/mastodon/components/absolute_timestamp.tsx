@@ -49,6 +49,8 @@ class AbsoluteTimestamp extends Component<Props, States> {
   }
 }
 
-const AbsoluteTimestampWithIntl = injectIntl(AbsoluteTimestamp as any);
+const AbsoluteTimestampWithIntl = injectIntl(
+  AbsoluteTimestamp as React.ComponentType<Props>,
+);
 
 export { AbsoluteTimestampWithIntl as AbsoluteTimestamp };
