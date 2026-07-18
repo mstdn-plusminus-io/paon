@@ -5,7 +5,7 @@ module Paon
     module_function
 
     def major
-      5
+      6
     end
 
     def minor
@@ -13,11 +13,11 @@ module Paon
     end
 
     def patch
-      0
+      2
     end
 
     def default_prerelease
-      'beta.1'
+      ''
     end
 
     def prerelease
@@ -48,7 +48,7 @@ module Paon
     end
 
     def repository
-      ENV.fetch('GITHUB_REPOSITORY', 'mstdn-plusminus-io/Paon')
+      ENV.fetch('GITHUB_REPOSITORY', 'mstdn-plusminus-io/paon')
     end
 
     def source_base_url

@@ -7,7 +7,7 @@ class TagSearchService < BaseService
     @limit   = options.delete(:limit).to_i
     @options = options
 
-    results   = from_elasticsearch if Chewy.enabled?
+    results   = from_meilisearch if Mastodon.meilisearch_enabled?
     results ||= from_database
 
     results
@@ -15,69 +15,23 @@ class TagSearchService < BaseService
 
   private
 
-  def from_elasticsearch
-    query = {
-      function_score: {
-        query: {
-          multi_match: {
-            query: @query,
-            fields: %w(name.edge_ngram name),
-            type: 'most_fields',
-            operator: 'and',
-          },
-        },
-
-        functions: [
-          {
-            field_value_factor: {
-              field: 'usage',
-              modifier: 'log2p',
-              missing: 0,
-            },
-          },
-
-          {
-            gauss: {
-              last_status_at: {
-                scale: '7d',
-                offset: '14d',
-                decay: 0.5,
-              },
-            },
-          },
-        ],
-
-        boost_mode: 'multiply',
-      },
+  def from_meilisearch
+    search_options = {
+      limit: @limit,
+      offset: @offset,
+      sort: ['usage:desc', 'accounts_count:desc']
     }
 
-    filter = {
-      bool: {
-        should: [
-          {
-            term: {
-              reviewed: {
-                value: true,
-              },
-            },
-          },
+    # Add filter for reviewed tags if exclude_unreviewed is true
+    if @options[:exclude_unreviewed]
+      search_options[:filter] = 'reviewed = true'
+    end
 
-          {
-            match: {
-              name: {
-                query: @query,
-              },
-            },
-          },
-        ],
-      },
-    }
+    results = Tag.search(@query, search_options)
 
-    definition = TagsIndex.query(query)
-    definition = definition.filter(filter) if @options[:exclude_unreviewed]
-
-    ensure_exact_match(definition.limit(@limit).offset(@offset).objects.compact)
-  rescue Faraday::ConnectionFailed, Parslet::ParseFailed
+    ensure_exact_match(results.to_a)
+  rescue StandardError => e
+    Rails.logger.error "Meilisearch error: #{e.message}"
     nil
   end
 

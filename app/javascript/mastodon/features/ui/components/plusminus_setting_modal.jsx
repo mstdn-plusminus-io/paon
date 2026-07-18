@@ -872,7 +872,7 @@ class PlusMinusSettingModal extends React.Component {
             </h1>
           )}
 
-          <div className='plusminus-settings__main'>
+          <div className={`plusminus-settings__main ${isMobile ? 'plusminus-settings__main--mobile' : ''}`}>
             <p className='plusminus-settings__hint'>以下の設定はブラウザごとに保存されます</p>
             <hr />
 

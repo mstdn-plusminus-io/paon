@@ -95,7 +95,7 @@ export function fetchSearchFail(error) {
 }
 
 function setLibraryIfNeeded(value) {
-  if (searchEnabled && !value.trim().startsWith("@") && !value.trim().startsWith("#") && !value.includes("in:all") && !value.includes("in:library")) {
+  if (searchEnabled && !value.trim().startsWith("@") && !value.trim().startsWith("#") && !value.includes("in:")) {
     value += " in:library";
   }
   return value;

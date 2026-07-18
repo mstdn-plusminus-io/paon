@@ -14,8 +14,6 @@
 class Bookmark < ApplicationRecord
   include Paginable
 
-  update_index('statuses', :status) if Chewy.enabled?
-
   belongs_to :account, inverse_of: :bookmarks
   belongs_to :status,  inverse_of: :bookmarks
 
@@ -27,9 +25,23 @@ class Bookmark < ApplicationRecord
 
   after_destroy :invalidate_cleanup_info
 
+  # ブックマークフィードキャッシュの更新
+  after_create :add_to_bookmark_feed
+  after_destroy :remove_from_bookmark_feed
+
   def invalidate_cleanup_info
     return unless status&.account_id == account_id && account.local?
 
     account.statuses_cleanup_policy&.invalidate_last_inspected(status, :unbookmark)
+  end
+
+  private
+
+  def add_to_bookmark_feed
+    BookmarkFeed.new(account).add(self)
+  end
+
+  def remove_from_bookmark_feed
+    BookmarkFeed.new(account).remove(status_id)
   end
 end

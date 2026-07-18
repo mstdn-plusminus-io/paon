@@ -363,7 +363,7 @@ class User < ApplicationRecord
   def reset_password(new_password, new_password_confirmation)
     return false if encrypted_password.blank?
 
-    super
+    super(new_password, new_password_confirmation)
   end
 
   def revoke_access!

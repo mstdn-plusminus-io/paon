@@ -61,7 +61,7 @@ module PamAuthenticable
     end
 
     def self.authenticate_with_pam(attributes = {})
-      super if Devise.pam_authentication
+      super(attributes) if Devise.pam_authentication
     end
   end
 end

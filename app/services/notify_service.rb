@@ -70,7 +70,7 @@ class NotifyService < BaseService
     ) && @mentions.count > SPAMMER_MENTION_THRESHOLD
   end
 
-  SPAM_FILTER_OPENAI_MODEL           = ENV.fetch('OPENAI_SPAM_FILTER_MODEL', 'gpt-4.1')
+  SPAM_FILTER_OPENAI_MODEL           = ENV.fetch('OPENAI_SPAM_FILTER_MODEL', 'gpt-4.1-mini')
   SPAM_FILTER_OPENAI_SYSTEM_MESSAGE  = ENV.fetch('SPAM_FILTER_OPENAI_SYSTEM_MESSAGE',
                                                  'You are a specialist in spam determination. ' \
                                                  'Please respond with a brief `TRUE` or `FALSE` response as to whether or not the given sentences are spam or not. ' \
@@ -93,10 +93,7 @@ class NotifyService < BaseService
             { role: 'system', content: SPAM_FILTER_OPENAI_SYSTEM_MESSAGE },
             { role: 'user', content: raw_text },
           ],
-          temperature: 1.2,
-          frequency_penalty: 0,
-          presence_penalty: 0,
-          top_p: 1,
+          temperature: 0.7,
         }
       )
       response.dig('choices', 0, 'message', 'content')

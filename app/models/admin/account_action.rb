@@ -32,7 +32,7 @@ class Admin::AccountAction
     @send_email_notification = true
     @include_statuses        = true
 
-    super
+    super(attributes)
   end
 
   def send_email_notification=(value)

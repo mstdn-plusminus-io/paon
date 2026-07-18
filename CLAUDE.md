@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - GitHub Flavored Markdownのサポート（実験的）
 - Cloudflare Turnstileによるサインアップ保護
 - リモートメディアキャッシュの有効/無効設定
+- **検索エンジン**: ElasticsearchからMeilisearchに置き換え（軽量・高速）
 
 ## 開発環境のセットアップ
 
@@ -20,23 +21,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Yarn 1.22.x
 - PostgreSQL
 - Redis
+- Meilisearch (Docker経由で起動)
 
 ### 初期セットアップ
 ```bash
 # 依存関係のインストール
 yarn bootstrap
 
-# Docker環境の起動（データベース等）
+# Docker環境の起動（データベース、Redis、Meilisearch等）
 yarn docker:dev up -d
 
 # 環境設定ファイルの準備
 cp .env.sample .env
+
+# .envファイルでMeilisearchを有効化
+# MEILI_ENABLED=true
+# MEILI_HOST=http://localhost:7700
+# MEILI_MASTER_KEY=aSampleMasterKey
+# MEILI_PREFIX=myinstance  # 複数インスタンスで共有する場合に設定（オプション）
 
 # データベースのマイグレーション
 rails db:migrate
 
 # DynamoDBテーブルの作成（必要な場合）
 yarn dynamo:create
+
+# Meilisearchインデックスの作成（検索機能を使用する場合）
+# Railsコンソールで以下を実行
+# Account.reindex
+# Status.reindex
+# Tag.reindex
+# Instance.reindex
 ```
 
 ## トラブルシューティング
@@ -138,6 +153,88 @@ yarn fix
 ```bash
 yarn typecheck
 ```
+
+## Meilisearch設定
+
+### 基本設定
+
+Meilisearchは軽量で高速な検索エンジンで、Elasticsearchの代替として使用しています。
+
+環境変数：
+- `MEILI_ENABLED`: Meilisearchを有効化（true/false）
+- `MEILI_HOST`: MeilisearchサーバーのURL（デフォルト: http://localhost:7700）
+- `MEILI_MASTER_KEY`: Meilisearchのマスターキー
+- `MEILI_PREFIX`: インデックス名のプレフィックス（複数インスタンス共有時に使用）
+
+### 複数インスタンスでの共有
+
+`MEILI_PREFIX`を使用することで、複数のMastodonインスタンスで単一のMeilisearchサーバーを共有できます。
+
+例：
+```bash
+# インスタンス1
+MEILI_PREFIX=instance1
+
+# インスタンス2
+MEILI_PREFIX=instance2
+```
+
+この設定により、各インスタンスは独立したインデックス名を持ちます：
+- `instance1_accounts`, `instance1_statuses`, `instance1_tags`, `instance1_instances`
+- `instance2_accounts`, `instance2_statuses`, `instance2_tags`, `instance2_instances`
+
+`MEILI_PREFIX`が設定されていない場合、`REDIS_NAMESPACE`の値がフォールバックとして使用されます。
+
+### インデックスの再作成
+
+検索機能が正常に動作しない場合、インデックスを再作成してください：
+
+```bash
+# Rakeタスクで全インデックスを再作成（推奨）
+rake meilisearch:deploy
+
+# バッチサイズを指定（デフォルト: 100）
+BATCH_SIZE=1000 rake meilisearch:deploy
+
+# Railsコンソールで個別に実行
+rails console
+Account.reindex
+Status.reindex
+Tag.reindex
+Instance.reindex
+```
+
+### インデックス作成の途中再開機能
+
+大量のデータをインデックスする場合、処理に長時間かかることがあります。
+Ctrl+Cで中断した場合、進行状況が自動的に保存され、途中から再開できます：
+
+```bash
+# 通常のインデックス作成
+rake meilisearch:deploy
+
+# 中断した場合（Ctrl+C）、以下のようなメッセージが表示されます：
+# 💾 Progress saved!
+#   → Model: Status
+#   → Last processed ID: 5500000
+#   → Progress: 5500000/36661518 (15.0%)
+#   → Progress file: tmp/meilisearch_deploy_progress.json
+#
+# To resume, run:
+#   RESUME=true rake meilisearch:deploy
+
+# 途中から再開
+RESUME=true rake meilisearch:deploy
+
+# 再開時もバッチサイズを指定可能
+RESUME=true BATCH_SIZE=1000 rake meilisearch:deploy
+```
+
+**注意事項:**
+- 進行状況は `tmp/meilisearch_deploy_progress.json` に保存されます
+- 正常に完了した場合、進行状況ファイルは自動的に削除されます
+- エラーが発生した場合も進行状況が保存されるため、問題を修正後に再開できます
+- 最初からやり直したい場合は、`RESUME=true` を指定せずに実行してください
 
 ## アーキテクチャの概要
 

@@ -20,7 +20,7 @@ class InitialStateSerializer < ActiveModel::Serializer
       domain: Addressable::IDNA.to_unicode(instance_presenter.domain),
       title: instance_presenter.title,
       admin: object.admin&.id&.to_s,
-      search_enabled: Chewy.enabled?,
+      search_enabled: Mastodon.meilisearch_enabled?,
       repository: Paon::Version.repository,
       source_url: instance_presenter.source_url,
       version: instance_presenter.version,

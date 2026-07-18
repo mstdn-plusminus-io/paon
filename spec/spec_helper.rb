@@ -30,7 +30,6 @@ RSpec.configure do |config|
 
   config.before :suite do
     Rails.application.load_seed
-    Chewy.strategy(:bypass)
 
     # NOTE: we switched registrations mode to closed by default, but the specs
     # very heavily rely on having it enabled by default, as it relies on users
@@ -151,24 +150,25 @@ class SearchDataManager
     end
   end
 
-  def indexes
+  def models
     [
-      AccountsIndex,
-      PublicStatusesIndex,
-      StatusesIndex,
-      TagsIndex,
+      Account,
+      Status,
+      Tag,
     ]
   end
 
   def populate_indexes
-    indexes.each do |index_class|
-      index_class.purge!
-      index_class.import!
+    return unless Mastodon.meilisearch_enabled?
+
+    models.each do |model_class|
+      model_class.reindex!
     end
   end
 
   def remove_indexes
-    indexes.each(&:delete!)
+    # Meilisearch automatically manages index lifecycle
+    # No explicit delete needed for test cleanup
   end
 
   def cleanup_test_data

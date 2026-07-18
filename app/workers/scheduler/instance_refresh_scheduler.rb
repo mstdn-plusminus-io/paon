@@ -6,7 +6,15 @@ class Scheduler::InstanceRefreshScheduler
   sidekiq_options retry: 0, lock: :until_executed, lock_ttl: 1.day.to_i
 
   def perform
+    # メソッドが存在しない場合は、lib/mastodonを再度ロード
+    unless Mastodon.respond_to?(:meilisearch_enabled?)
+      require_relative '../../../lib/mastodon'
+    end
+
     Instance.refresh
-    InstancesIndex.import if Chewy.enabled?
+
+    if Mastodon.meilisearch_enabled?
+      Instance.reindex!
+    end
   end
 end

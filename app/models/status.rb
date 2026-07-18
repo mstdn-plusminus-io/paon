@@ -38,6 +38,7 @@ class Status < ApplicationRecord
   include RateLimitable
   include StatusSafeReblogInsert
   include StatusSearchConcern
+  include StatusMeilisearch
 
   rate_limit by: :account, family: :statuses
 
@@ -47,8 +48,8 @@ class Status < ApplicationRecord
   # will be based on current time instead of `created_at`
   attr_accessor :override_timestamps
 
-  update_index('statuses', :proper)
-  update_index('public_statuses', :proper)
+  # update_index('statuses', :proper)
+  # update_index('public_statuses', :proper)
 
   enum visibility: { public: 0, unlisted: 1, private: 2, direct: 3, limited: 4 }, _suffix: :visibility
 
