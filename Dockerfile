@@ -31,6 +31,7 @@ RUN rm -rf public/packs public/packs-test && yarn build:production
 
 FROM debian:bookworm-slim
 
+ENV RAILS_ENV=production
 ENV NODE_ENV=production
 ENV BIND=0.0.0.0
 ENV PORT=3000

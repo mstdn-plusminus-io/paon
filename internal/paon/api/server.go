@@ -484,7 +484,10 @@ func hostAuthorizationMiddleware(cfg config.Config) echo.MiddlewareFunc {
 }
 
 func railsHostAuthorizationExcluded(req *http.Request) bool {
-	return req != nil && req.URL != nil && req.URL.Path == "/health"
+	if req == nil || req.URL == nil {
+		return false
+	}
+	return req.URL.Path == "/health" || req.URL.Path == "/health/ready"
 }
 
 func railsAllowedHosts(cfg config.Config) map[string]struct{} {

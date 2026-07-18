@@ -14,6 +14,14 @@ func TestDockerfileKeepsRunnableDropInRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(raw)
+	runtimeStageStart := strings.LastIndex(body, "FROM debian:bookworm-slim")
+	if runtimeStageStart < 0 {
+		t.Fatal("Dockerfile missing final runtime stage")
+	}
+	runtimeStage := body[runtimeStageStart:]
+	if !strings.Contains(runtimeStage, "ENV RAILS_ENV=production") {
+		t.Fatal("Dockerfile runtime stage must default RAILS_ENV to production")
+	}
 
 	for _, want := range []string{
 		`FROM golang:1.25-bookworm AS go-builder`,
