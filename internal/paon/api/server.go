@@ -206,6 +206,7 @@ func NewServer(cfg config.Config, database *gorm.DB) (*Server, error) {
 	e.Pre(apiTrailingSlashMiddleware)
 	e.Pre(methodOverrideMiddleware)
 	e.Use(requestIDMiddleware)
+	e.Use(accessLogMiddleware(cfg))
 	e.Use(corsMiddleware)
 	e.Use(hostAuthorizationMiddleware(cfg))
 	e.Use(forceSSLMiddleware(cfg))
