@@ -153,11 +153,11 @@ in:bookmark from:admin 設定
 新しい検索属性を有効にするには、インデックスの再構築が必要です:
 
 ```bash
-bundle exec rake meilisearch:reindex_all
+task meili-deploy
 ```
 
-または、投稿のみを再インデックス:
+Docker Compose環境では次のコマンドを使用します:
 
 ```bash
-bundle exec rake meilisearch:reindex_statuses
+task compose:meili-deploy
 ```
