@@ -73,9 +73,15 @@ ImmutableHashtag.propTypes = {
 const Hashtag = ({ name, to, people, uses, history, className, description, withGraph }) => (
   <div className={classNames('trends__item', className)}>
     <div className='trends__item__name'>
-      <Link to={to}>
-        {name ? <>#<span>{name}</span></> : <Skeleton width={50} />}
-      </Link>
+      {to ? (
+        <Link to={to}>
+          {name ? <>#<span>{name}</span></> : <Skeleton width={50} />}
+        </Link>
+      ) : (
+        <span>
+          {name ? <>#<span>{name}</span></> : <Skeleton width={50} />}
+        </span>
+      )}
 
       {description ? (
         <span>{description}</span>

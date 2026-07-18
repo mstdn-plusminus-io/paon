@@ -1,13 +1,10 @@
 /build/**
 /coverage/**
-/db/**
-/lib/**
 /log/**
 /node_modules/**
 /nonobox/**
 /public/**
 !/public/embed.js
-/spec/**
 /tmp/**
 /vendor/**
 !.eslintrc.js

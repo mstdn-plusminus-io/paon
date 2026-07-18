@@ -30,6 +30,9 @@ en:
       create: Leave note
       created_msg: Moderation note successfully created!
       destroyed_msg: Moderation note successfully destroyed!
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        invalid: Account moderation note is invalid
     accounts:
       add_email_domain_block: Block e-mail domain
       approve: Approve
@@ -40,6 +43,8 @@ en:
       change_email:
         changed_msg: Email successfully changed!
         current_email: Current email
+        errors:
+          database_unavailable: DATABASE_URL is not set
         label: Change email
         new_email: New email
         submit: Change email
@@ -297,6 +302,12 @@ en:
       edit:
         title: Edit announcement
       empty: No announcements found.
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        datetime_invalid: Announcement date or time is invalid
+        invalid: Announcement is invalid
+        start_and_end_required: Announcement start and end must both be present
+        text_blank: Announcement text can't be blank
       live: Live
       new:
         create: Create announcement
@@ -327,6 +338,13 @@ en:
       enable: Enable
       enabled: Enabled
       enabled_msg: Successfully enabled that emoji
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        image_invalid: Image is invalid
+        image_required: Image is required
+        shortcode_invalid: Shortcode is invalid
+        shortcode_taken: Shortcode has already been taken
+        unknown_batch_action: Unknown custom emoji action
       image_hint: PNG or GIF up to %{size}
       list: List
       listed: Listed
@@ -349,6 +367,7 @@ en:
       interactions: interactions
       media_storage: Media storage
       new_users: new users
+      not_permitted: You are not allowed to view the dashboard.
       opened_reports: reports opened
       pending_appeals_html:
         one: "<strong>%{count}</strong> pending appeal"
@@ -370,6 +389,103 @@ en:
       top_languages: Top active languages
       top_servers: Top active servers
       website: Website
+    devops:
+      active: Active
+      all_queues: All queues
+      apply: Apply
+      archived: Archived
+      attention: Attention
+      backlog: Backlog
+      auto_refresh: Auto refresh
+      bytes: bytes
+      captured_at: Captured at
+      concurrency: Concurrency
+      consumers: Consumers
+      covered: covered
+      date: Date
+      days: days
+      deadline: Deadline
+      detail_archived: "%d tasks are archived."
+      detail_deadline_exceeded: A running task is past its effective deadline.
+      detail_no_consumer: "%d pending tasks have no active consumer."
+      detail_orphaned: An active task has no worker lease.
+      detail_paused: This queue is paused and will not process tasks.
+      detail_retry: "%d tasks are awaiting retry."
+      detail_saturated: "%d pending tasks are waiting while all consumers are at capacity."
+      details: Details
+      elapsed: Elapsed
+      empty: No data
+      error: Last error
+      error_detail_redacted: "[Error detail redacted because it may contain sensitive data]"
+      failed: Failed
+      failed_total: Failed total
+      filter: Filter
+      healthy: Healthy
+      history: History
+      host: Host / server
+      idle: Idle
+      issue_archived: Archived tasks need attention
+      issue_deadline_exceeded: Task deadline exceeded
+      issue_no_consumer: No active consumer
+      issue_orphaned: Orphaned active task
+      issue_paused: Queue paused
+      issue_retry: Tasks awaiting retry
+      issue_saturated: Worker capacity saturated
+      last_failed_at: Last failed
+      last_updated: Last updated
+      latency: Latency
+      letter_opener_description: Development mail generated without SMTP delivery is stored in memory and listed here for preview.
+      letter_opener_title: Letter Opener
+      mailbox: Mailbox
+      memory: Memory
+      messages: Messages
+      missing: missing
+      next: Next
+      next_process_at: Next attempt
+      no_messages: No messages
+      non_json_payload: "[non-JSON payload: %d bytes]"
+      orphaned: Orphaned
+      overview: Overview
+      page_of: Page %d · %d tasks
+      pagination: Pagination
+      payload: Payload
+      payload_omitted: "[payload omitted: %d bytes]"
+      payload_shape_omitted: "[scalar or array payload omitted: %d bytes]"
+      payload_unavailable: "[payload unavailable: %d bytes]"
+      pending: Pending
+      queue: Queue
+      queues: Queues
+      range: Range
+      recipient: Recipient
+      refresh_error: Could not refresh Asynq data.
+      relation: Relation
+      retries: Retries
+      retry: Retry
+      safe_preview: Redacted preview
+      scheduled: Scheduled
+      servers: Servers and running tasks
+      sent_at: Sent at
+      sidekiq_description: Asynq queue coverage and backlog for this Paon process.
+      polling_interval: Polling interval
+      previous: Previous
+      processed: Processed
+      processed_total: Processed total
+      size: Size
+      stale: Stale
+      started_at: Started
+      status: Status
+      subject: Subject
+      succeeded: Succeeded
+      summary: Asynq summary
+      task_id: Task ID
+      task_results_truncated: The view is limited to %d of %d tasks. Filter by queue to narrow the result.
+      task_type: Task
+      timing: Timing / worker
+      unavailable_detail: Asynq data could not be loaded. The displayed counts are unavailable.
+      unknown_queue: Unknown queue
+      utilization: Server-wide active / capacity
+      worker: Worker
+      workers: Running tasks
     disputes:
       appeals:
         empty: No appeals found.
@@ -378,6 +494,10 @@ en:
       add_new: Allow federation with domain
       created_msg: Domain has been successfully allowed for federation
       destroyed_msg: Domain has been disallowed from federation
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        domain_invalid: Domain is invalid
+        invalid: Domain allow is invalid
       export: Export
       import: Import
       undo: Disallow federation with domain
@@ -396,6 +516,13 @@ en:
       destroyed_msg: Domain block has been undone
       domain: Domain
       edit: Edit domain block
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        domain_invalid: Domain is invalid
+        import_invalid: Domain block import is invalid
+        invalid: Domain block is invalid
+        severity_invalid: Domain block severity is invalid
+        taken: Domain has already been taken
       existing_domain_block: You have already imposed stricter limits on %{name}.
       existing_domain_block_html: You have already imposed stricter limits on %{name}, you need to <a href="%{unblock_url}">unblock it</a> first.
       export: Export
@@ -429,11 +556,17 @@ en:
         one: "%{count} attempt over the last week"
         other: "%{count} sign-up attempts over the last week"
       created_msg: Successfully blocked e-mail domain
+      deleted_msg: Successfully deleted e-mail domain blocks
       delete: Delete
       dns:
         types:
           mx: MX record
       domain: Domain
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        domain_invalid: Domain is invalid
+        invalid: E-mail domain block is invalid
+        taken: Domain has already been taken
       new:
         create: Add domain
         resolve: Resolve domain
@@ -444,10 +577,14 @@ en:
       resolved_through_html: Resolved through %{domain}
       title: Blocked e-mail domains
     export_domain_allows:
+      errors:
+        database_unavailable: DATABASE_URL is not set
       new:
         title: Import domain allows
       no_file: No file selected
     export_domain_blocks:
+      errors:
+        database_unavailable: DATABASE_URL is not set
       import:
         description_html: You are about to import a list of domain blocks. Please review this list very carefully, especially if you have not authored this list yourself.
         existing_relationships_warning: Existing follow relationships
@@ -516,6 +653,8 @@ en:
       delivery_error_hint: If delivery is not possible for %{count} days, it will be automatically marked as undeliverable.
       destroyed_msg: Data from %{domain} is now queued for imminent deletion.
       empty: No domains found.
+      errors:
+        database_unavailable: DATABASE_URL is not set
       known_accounts:
         one: "%{count} known account"
         other: "%{count} known accounts"
@@ -541,11 +680,19 @@ en:
         available: Available
         expired: Expired
         title: Filter
+      not_permitted: You are not allowed to manage invites.
       title: Invites
     ip_blocks:
       add_new: Create rule
       created_msg: Successfully added new IP rule
+      deleted_msg: Successfully deleted IP rules
       delete: Delete
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        invalid: IP rule is invalid
+        ip_invalid: IP address or range is invalid
+        severity_invalid: IP rule severity is invalid
+        taken: IP address or range has already been taken
       expires_in:
         '1209600': 2 weeks
         '15778476': 6 months
@@ -568,6 +715,11 @@ en:
       enable: Enable
       enable_hint: Once enabled, your server will subscribe to all public posts from this relay, and will begin sending this server's public posts to it.
       enabled: Enabled
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        inbox_url_blank: Relay inbox URL can't be blank
+        inbox_url_invalid: Relay inbox URL is invalid
+        invalid: Relay is invalid
       inbox_url: Relay URL
       pending: Waiting for relay's approval
       save_and_enable: Save and enable
@@ -609,6 +761,8 @@ en:
       confirm_action: Confirm moderation action against @%{acct}
       created_at: Reported
       delete_and_resolve: Delete posts
+      errors:
+        database_unavailable: DATABASE_URL is not set
       forwarded: Forwarded
       forwarded_to: Forwarded to %{domain}
       mark_as_resolved: Mark as resolved
@@ -677,6 +831,11 @@ en:
       edit: Edit '%{name}' role
       everyone: Default permissions
       everyone_full_description_html: This is the <strong>base role</strong> affecting <strong>all users</strong>, even those without an assigned role. All other roles inherit permissions from it.
+      errors:
+        invalid: Role could not be saved
+        everyone_cannot_be_deleted: Everyone role cannot be deleted
+        higher_role_cannot_be_deleted: You cannot delete a role higher than or equal to your own
+        own_role_cannot_be_deleted: You cannot delete your own role
       permissions_count:
         one: "%{count} permission"
         other: "%{count} permissions"
@@ -728,6 +887,11 @@ en:
       description_html: While most claim to have read and agree to the terms of service, usually people do not read through until after a problem arises. <strong>Make it easier to see your server's rules at a glance by providing them in a flat bullet point list.</strong> Try to keep individual rules short and simple, but try not to split them up into many separate items either.
       edit: Edit rule
       empty: No server rules have been defined yet.
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        invalid: Rule is invalid
+        text_blank: Rule text can't be blank
+        text_too_long: Rule text is too long
       title: Server rules
     settings:
       about:
@@ -778,14 +942,40 @@ en:
         authorized_fetch_hint: Requiring authentication from federated servers enables stricter enforcement of both user-level and server-level blocks. However, this comes at the cost of a performance penalty, reduces the reach of your replies, and may introduce compatibility issues with some federated services. In addition, this will not prevent dedicated actors from fetching your public posts and accounts.
         authorized_fetch_overridden_hint: You are currently unable to change this setting because it is overridden by an environment variable.
         federation_authentication: Federation authentication enforcement
+      errors:
+        backups_retention_period_integer: Backups retention period must be an integer
+        contact_email_blank: Contact e-mail can't be blank
+        contact_username_blank: Contact username can't be blank
+        content_cache_retention_period_integer: Content cache retention period must be an integer
+        custom_css_too_long: Custom CSS is too long
+        domain_block_rationale_visibility_invalid: Domain block rationale visibility is invalid
+        domain_block_visibility_invalid: Domain block visibility is invalid
+        media_cache_retention_period_integer: Media cache retention period must be an integer
+        registration_mode_invalid: Registration mode is invalid
+        short_description_too_long: Short description is too long
+        site_title_blank: Site title can't be blank
+        site_upload_image: Site upload must be an image
+        site_upload_readable_image: Site upload must be a readable image
+        status_page_url_invalid: Status page URL is invalid
+        theme_invalid: Theme is invalid
+      messages:
+        database_unavailable: DATABASE_URL is not set
+        invalid: "%{section} settings are invalid"
+        saved: "%{section} settings saved"
+      not_permitted: You are not allowed to manage settings.
       title: Server settings
     site_uploads:
       delete: Delete uploaded file
       destroyed_msg: Site upload successfully deleted!
+      not_found: Site upload not found.
+      not_permitted: You are not allowed to manage site uploads.
+      unsupported_action: Unsupported site upload action.
     software_updates:
       critical_update: Critical — please update quickly
       description: It is recommended to keep your Mastodon installation up to date to benefit from the latest fixes and features. Moreover, it is sometimes critical to update Mastodon in a timely manner to avoid security issues. For these reasons, Mastodon checks for updates every 30 minutes, and will notify you according to your e-mail notification preferences.
+      disabled: Software update checks are disabled.
       documentation_link: Learn more
+      not_permitted: You are not allowed to view software updates.
       release_notes: Release notes
       title: Available updates
       type: Type
@@ -946,6 +1136,10 @@ en:
       delete: Delete
       edit_preset: Edit warning preset
       empty: You haven't defined any warning presets yet.
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        invalid: Warning preset is invalid
+        text_blank: Warning text can't be blank
       title: Manage warning presets
     webhooks:
       add_new: Add endpoint
@@ -960,10 +1154,20 @@ en:
       enabled_events:
         one: 1 enabled event
         other: "%{count} enabled events"
+      errors:
+        database_unavailable: DATABASE_URL is not set
+        event_permissions_invalid: Webhook event permissions are invalid
+        events_blank: Webhook events can't be blank
+        events_invalid: Webhook events are invalid
+        invalid: Webhook is invalid
+        template_invalid: Webhook template is invalid
+        url_blank: Webhook URL can't be blank
+        url_invalid: Webhook URL is invalid
       events: Events
       new: New webhook
       rotate_secret: Rotate secret
       secret: Signing secret
+      secret_rotated_msg: Webhook secret rotated
       status: Status
       title: Webhooks
       webhook: Webhook
@@ -1045,10 +1249,14 @@ en:
   auth:
     apply_for_account: Request an account
     captcha_confirmation:
+      continue: Continue
       help_html: If you have issues solving the CAPTCHA, you can get in touch with us through %{email} and we can assist you.
       hint_html: Just one more thing! We need to confirm you're a human (this is so we can keep the spam out!). Solve the CAPTCHA below and click "Continue".
+      not_required: Captcha confirmation is not required.
       title: Security check
     confirmations:
+      email_not_found: Email not found or already confirmed
+      invalid_token: Confirmation token is invalid or has already been used
       wrong_email_hint: If that e-mail address is not correct, you can change it in account settings.
     delete_account: Delete account
     delete_account_html: If you wish to delete your account, you can <a href="%{path}">proceed here</a>. You will be asked for confirmation.
@@ -1059,6 +1267,7 @@ en:
     didnt_get_confirmation: Didn't receive a confirmation link?
     dont_have_your_security_key: Don't have your security key?
     forgot_password: Forgot your password?
+    invalid_password: Current password is invalid
     invalid_reset_password_token: Password reset token is invalid or expired. Please request a new one.
     link_to_otp: Enter a two-factor code from your phone or a recovery code
     link_to_webauth: Use your security key device
@@ -1068,7 +1277,7 @@ en:
     migrate_account: Move to a different account
     migrate_account_html: If you wish to redirect this account to a different one, you can <a href="%{path}">configure it here</a>.
     or_log_in_with: Or log in with
-    privacy_policy_agreement_html: I have read and agree to the <a href="%{privacy_policy_path}" target="_blank">privacy policy</a>
+    privacy_policy_agreement_html: I have read and agree to the <a href="%{rules_path}" target="_blank">server rules</a> and <a href="%{privacy_policy_path}" target="_blank">privacy policy</a>
     progress:
       confirm: Confirm e-mail
       details: Your details
@@ -1101,6 +1310,20 @@ en:
       preamble_html: Login with your <strong>%{domain}</strong> credentials. If your account is hosted on a different server, you will not be able to log in here.
       title: Login to %{domain}
     sign_up:
+      errors:
+        agreement_required: Agreement must be accepted
+        email_invalid: Email is invalid
+        invite_invalid: Invite is invalid
+        honeypot: The form could not be submitted
+        malformed_request: The request you submitted was invalid or malformed.
+        password_confirmation_mismatch: Password confirmation does not match
+        password_invalid: Password is invalid
+        reason_required: Reason for joining can't be blank
+        reason_too_long: Reason for joining is too long
+        taken: Username or e-mail has already been taken
+        turnstile_malformed: Cloudflare Turnstile reports malformed request
+        username_invalid: Username is invalid
+        username_reserved: Username is reserved
       manual_review: Sign-ups on %{domain} go through manual review by our moderators. To help us process your registration, write a bit about yourself and why you want an account on %{domain}.
       preamble: With an account on this Mastodon server, you'll be able to follow any other person on the network, regardless of where their account is hosted.
       title: Let's get you set up on %{domain}.
@@ -1191,6 +1414,8 @@ en:
     invalid_domain: is not a valid domain name
   edit_profile:
     basic_information: Basic information
+    errors:
+      invalid: Profile update is invalid
     hint_html: "<strong>Customize what people see on your public profile and next to your posts.</strong> Other people are more likely to follow you back and interact with you when you have a filled out profile and a profile picture."
     other: Other
   errors:
@@ -1207,6 +1432,7 @@ en:
       content: We're sorry, but something went wrong on our end.
       title: This page is not correct
     '503': The page could not be served due to a temporary server failure.
+    database_unavailable: DATABASE_URL is not set
     noscript_html: To use the Mastodon web application, please enable JavaScript. Alternatively, try one of the <a href="%{apps_path}">native apps</a> for Mastodon for your platform.
   existing_username_validator:
     not_found: could not find a local user with that username
@@ -1368,6 +1594,7 @@ en:
     expires_in_prompt: Never
     generate: Generate invite link
     invited_by: 'You were invited by:'
+    not_permitted: You are not allowed to invite users.
     max_uses:
       one: 1 use
       other: "%{count} uses"
@@ -1377,6 +1604,8 @@ en:
       expires_at: Expires
       uses: Uses
     title: Invite people
+  link_preview:
+    author: By %{name}
   lists:
     errors:
       limit: You have reached the maximum number of lists
@@ -1531,6 +1760,8 @@ en:
     posting_defaults: Posting defaults
     public_timelines: Public timelines
   privacy:
+    errors:
+      invalid: Privacy update is invalid
     hint_html: "<strong>Customize how you want your profile and your posts to be found.</strong> A variety of features in Mastodon can help you reach a wider audience when enabled. Take a moment to review these settings to make sure they fit your use case."
     privacy: Privacy
     privacy_hint_html: Control how much you want to disclose for the benefit of others. People discover interesting profiles and cool apps by browsing other people's follows and seeing which apps they post from, but you may prefer to keep it hidden.
@@ -1631,6 +1862,7 @@ en:
     aliases: Account aliases
     appearance: Appearance
     authorized_apps: Authorized apps
+    back_to_app: Back to app
     back: Back to Mastodon
     delete: Account deletion
     development: Development
@@ -1642,10 +1874,12 @@ en:
     migrate: Account migration
     notifications: Notifications
     preferences: Preferences
+    paon_go_served_by: is served by Paon using the existing Mastodon database tables and Rails-compatible form field names.
     profile: Public profile
     relationships: Follows and followers
     statuses_cleanup: Automated post deletion
     strikes: Moderation strikes
+    title: Settings
     two_factor_authentication: Two-factor Auth
     webauthn_authentication: Security keys
   statuses:
@@ -1671,6 +1905,7 @@ en:
       in_reply_not_found: The post you are trying to reply to does not appear to exist.
     open_in_web: Open in web
     over_character_limit: character limit of %{max} exceeded
+    replies: Replies
     pin_errors:
       direct: Posts that are only visible to mentioned users cannot be pinned
       limit: You have already pinned the maximum number of posts
@@ -1733,6 +1968,7 @@ en:
     min_reblogs: Keep posts boosted at least
     min_reblogs_hint: Doesn't delete any of your posts that has been boosted at least this number of times. Leave blank to delete posts regardless of their number of boosts
   stream_entries:
+    click_to_show: Click to show
     sensitive_content: Sensitive content
   strikes:
     errors:
@@ -1831,10 +2067,14 @@ en:
       subject: Welcome to Mastodon
       title: Welcome aboard, %{name}!
   users:
+    email_taken: Email has already been taken
     follow_limit_reached: You cannot follow more than %{limit} people
     go_to_sso_account_settings: Go to your identity provider's account settings
+    invalid_email: Email is invalid
     invalid_otp_token: Invalid two-factor code
+    invalid_password: Password is invalid
     otp_lost_help_html: If you lost access to both, you may get in touch with %{email}
+    password_confirmation_mismatch: Password confirmation does not match
     rate_limited: Too many authentication attempts, try again later.
     seamless_external_login: You are logged in via an external service, so password and e-mail settings are not available.
     signed_in_as: 'Signed in as:'
@@ -1847,6 +2087,9 @@ en:
     verified_links: Your verified links
   webauthn_credentials:
     add: Add new security key
+    already_exists: Security key already exists
+    authentication_failed: Security key authentication failed.
+    challenge_expired: WebAuthn challenge is missing or expired
     create:
       error: There was a problem adding your security key. Please try again.
       success: Your security key was successfully added.
@@ -1857,8 +2100,10 @@ en:
       error: There was a problem deleting you security key. Please try again.
       success: Your security key was successfully deleted.
     invalid_credential: Invalid security key
+    nickname: Name
     nickname_hint: Enter the nickname of your new security key
     not_enabled: You haven't enabled WebAuthn yet
     not_supported: This browser doesn't support security keys
     otp_required: To use security keys please enable two-factor authentication first.
+    created: Created
     registered_on: Registered on %{date}

@@ -4,14 +4,6 @@
 # or operating system, you probably want to add a global ignore instead:
 #   git config --global core.excludesfile '~/.gitignore_global'
 
-# Ignore bundler config and downloaded libraries.
-/.bundle
-/vendor/bundle
-
-# Ignore the default SQLite database.
-/db/*.sqlite3
-/db/*.sqlite3-journal
-
 # Ignore all logfiles and tempfiles.
 .eslintcache
 /log/*
@@ -28,21 +20,16 @@
 /node_modules/
 /build/
 
-# Ignore Vagrant files
-.vagrant/
-
-# Ignore Capistrano customizations
-/config/deploy/*
-
 # Ignore IDE files
 .vscode/
 .idea/
 
-# Ignore postgres + redis + elasticsearch volume optionally created by docker-compose
+# Ignore service volumes optionally created by docker-compose
 /postgres
 /postgres14
 /redis
 /elasticsearch
+/meilisearch
 
 # Ignore Apple files
 .DS_Store
