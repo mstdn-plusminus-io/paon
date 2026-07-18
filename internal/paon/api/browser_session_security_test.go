@@ -304,6 +304,48 @@ func TestBrowserSecurityMiddlewareInjectsCSRFForRailsDataMethodLinks(t *testing.
 	}
 }
 
+func TestBrowserSecurityMiddlewareNormalizesReactShellCSRFMeta(t *testing.T) {
+	server := newBrowserSecurityTestServer()
+	e := echo.New()
+	e.Pre(methodOverrideMiddleware)
+	e.Use(server.browserSecurityMiddleware)
+	e.GET("/deck", func(c *echo.Context) error {
+		return c.HTML(http.StatusOK, `<!doctype html><html><head><meta name="csrf-param" content="authenticity_token"><meta name="csrf-token" content="renderer-token"></head><body><div id="mastodon"></div></body></html>`)
+	})
+	e.DELETE("/auth/sign_out", func(c *echo.Context) error {
+		return c.String(http.StatusOK, "signed out")
+	})
+
+	getRecorder := httptest.NewRecorder()
+	e.ServeHTTP(getRecorder, httptest.NewRequest(http.MethodGet, "/deck", nil))
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("GET status = %d body=%s", getRecorder.Code, getRecorder.Body.String())
+	}
+	cookie := browserSessionCookieFromRecorder(t, getRecorder)
+	state, err := server.openBrowserSession(cookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(getRecorder.Body.String(), "renderer-token") {
+		t.Fatalf("React shell retained stale renderer CSRF token: %s", getRecorder.Body.String())
+	}
+	if !strings.Contains(getRecorder.Body.String(), `name="csrf-token" content="`+state.CSRFToken+`"`) {
+		t.Fatalf("React shell CSRF meta tag was not normalized: %s", getRecorder.Body.String())
+	}
+
+	postRecorder := httptest.NewRecorder()
+	postRequest := httptest.NewRequest(http.MethodPost, "/auth/sign_out", strings.NewReader(url.Values{
+		"authenticity_token": {state.CSRFToken},
+		"_method":            {"delete"},
+	}.Encode()))
+	postRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postRequest.AddCookie(cookie)
+	e.ServeHTTP(postRecorder, postRequest)
+	if postRecorder.Code != http.StatusOK || postRecorder.Body.String() != "signed out" {
+		t.Fatalf("React shell logout status = %d body=%s", postRecorder.Code, postRecorder.Body.String())
+	}
+}
+
 func TestRailsDataMethodGeneratedFormPassesBrowserCSRF(t *testing.T) {
 	server := newBrowserSecurityTestServer()
 	e := echo.New()

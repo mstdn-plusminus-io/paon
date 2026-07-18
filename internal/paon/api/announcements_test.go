@@ -122,9 +122,9 @@ func TestAnnouncementReactionMeMatchesRailsNameScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `EXISTS(SELECT 1 FROM announcement_reactions r WHERE r.account_id = ? AND r.announcement_id = announcement_reactions.announcement_id AND r.name = announcement_reactions.name) AS me`
+	want := "Select(`name, custom_emoji_id, COUNT(*) AS count, EXISTS(SELECT 1 FROM announcement_reactions r WHERE r.account_id = ? AND r.announcement_id = ? AND r.name = announcement_reactions.name) AS me`, accountID, announcementID)"
 	if !functionBodyContains(t, src, "announcementReactions", want) {
-		t.Fatalf("announcementReactions should calculate me by announcement/name like Rails, even when custom_emoji_id differs")
+		t.Fatalf("announcementReactions should calculate me by a bound announcement/name like Rails, even when custom_emoji_id differs")
 	}
 	if !functionBodyContains(t, src, "announcementReactions", `!errors.Is(err, gorm.ErrRecordNotFound)`) {
 		t.Fatal("announcementReactions must tolerate wrapped gorm.ErrRecordNotFound as an empty reaction set")

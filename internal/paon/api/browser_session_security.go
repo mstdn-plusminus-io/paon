@@ -590,7 +590,7 @@ func (s *Server) finishBrowserHTMLResponse(c *echo.Context, writer *browserHTMLR
 	if err != nil {
 		return err
 	}
-	if !htmlHasUnsafeAction(body) {
+	if !htmlNeedsBrowserCSRF(body) {
 		writer.Header().Set("Content-Length", stringLength(len(body)))
 		writer.ResponseWriter.WriteHeader(writer.status)
 		_, err := io.WriteString(writer.ResponseWriter, body)
@@ -866,6 +866,10 @@ func htmlHasUnsafeForm(body string) bool {
 
 func htmlHasUnsafeAction(body string) bool {
 	return htmlHasUnsafeForm(body) || unsafeDataMethodPattern.MatchString(body)
+}
+
+func htmlNeedsBrowserCSRF(body string) bool {
+	return htmlHasUnsafeAction(body) || csrfParamMetaPattern.MatchString(body) || csrfTokenMetaPattern.MatchString(body)
 }
 
 func injectBrowserCSRF(body string, token string) string {

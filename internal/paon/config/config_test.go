@@ -21,6 +21,17 @@ func unsetEnvForTest(t *testing.T, name string) {
 	})
 }
 
+func TestRailsLogLevelDefaultsToInfo(t *testing.T) {
+	unsetEnvForTest(t, "RAILS_LOG_LEVEL")
+	cfg := FromEnv()
+	if cfg.RailsLogLevel != "info" {
+		t.Fatalf("default RAILS_LOG_LEVEL = %q, want info", cfg.RailsLogLevel)
+	}
+	if !cfg.ShouldLog("info") {
+		t.Fatal("default log level suppressed INFO logs")
+	}
+}
+
 func TestFromEnvUpdateCheckURLMatchesRailsDefaultAndDisableSemantics(t *testing.T) {
 	t.Setenv("UPDATE_CHECK_URL", "")
 	cfg := FromEnv()
