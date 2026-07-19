@@ -409,7 +409,6 @@ ja:
       elapsed: 経過時間
       empty: データはありません
       error: 最終エラー
-      error_detail_redacted: "[機密情報を含む可能性があるためエラー詳細を秘匿しました]"
       failed: 失敗
       failed_total: 累計失敗
       filter: 絞り込み
@@ -436,15 +435,11 @@ ja:
       next: 次へ
       next_process_at: 次回実行
       no_messages: メッセージはありません
-      non_json_payload: "[JSONではないペイロード: %dバイト]"
       orphaned: 孤立
       overview: 概要
       page_of: "%dページ · 全%d件"
       pagination: ページネーション
       payload: ペイロード
-      payload_omitted: "[ペイロードを省略しました: %dバイト]"
-      payload_shape_omitted: "[スカラーまたは配列のペイロードを省略しました: %dバイト]"
-      payload_unavailable: "[ペイロードを表示できません: %dバイト]"
       pending: 待機中
       queue: キュー
       queues: キュー
@@ -454,7 +449,7 @@ ja:
       relation: リレーション
       retries: 再試行回数
       retry: 再試行
-      safe_preview: 秘匿済みプレビュー
+      raw_payload: 生のペイロード
       scheduled: 予定
       servers: サーバーと実行中タスク
       sent_at: 送信日時

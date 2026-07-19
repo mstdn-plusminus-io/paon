@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -319,56 +318,45 @@ func TestCollectAsynqDashboardPropagatesInspectorFailuresAndStatsUses503(t *test
 	}
 }
 
-func TestAsynqPayloadPreviewRedactsAndBoundsUntrustedPayloads(t *testing.T) {
-	payload := []byte(`{
-  "account_id": 42,
-  "old_private_key": "PRIVATE-LEAK",
-  "privateKey": "CAMEL-PRIVATE-LEAK",
-  "apiKey": "API-KEY-LEAK",
-  "access-token": "TOKEN-LEAK",
-  "nested": {"password": "PASSWORD-LEAK", "safe": "visible"},
-  "headers": {"Authorization": "BEARER-LEAK"},
-  "content": "MAIL-BODY-LEAK",
-  "htmlBody": "HTML-BODY-LEAK",
-  "mailMessage": "MAIL-MESSAGE-LEAK"
-}`)
-	preview := asynqPayloadPreview(payload)
-	for _, secret := range []string{"PRIVATE-LEAK", "CAMEL-PRIVATE-LEAK", "API-KEY-LEAK", "TOKEN-LEAK", "PASSWORD-LEAK", "BEARER-LEAK", "MAIL-BODY-LEAK", "HTML-BODY-LEAK", "MAIL-MESSAGE-LEAK"} {
-		if strings.Contains(preview, secret) {
-			t.Fatalf("payload preview leaked %q: %s", secret, preview)
-		}
+func TestAsynqTaskDetailsShowCompleteRawPayloadAndErrorWithHTMLEscaping(t *testing.T) {
+	payload := []byte(`{"token":"ADMIN-TOKEN","body":"</pre><script>alert('payload')</script>","large":"` + strings.Repeat("x", 70*1024) + `"}`)
+	lastError := `delivery failed: privateKey=ERROR-SECRET </pre><script>alert('error')</script> ` + strings.Repeat("e", 2_000)
+	inspector := &fakeAsynqInspectorClient{
+		tasks: map[string]map[string][]*asynq.TaskInfo{
+			"pending": {"default": {{ID: "raw-task", Queue: "default", Type: "raw", Payload: payload, LastErr: lastError}}},
+		},
+		listErr: map[string]error{},
 	}
-	for _, want := range []string{`"account_id": 42`, `"safe": "visible"`, "[REDACTED]"} {
-		if !strings.Contains(preview, want) {
-			t.Fatalf("payload preview missing %q: %s", want, preview)
-		}
+	server := &Server{asynqInspector: inspector}
+	data := &asynqDashboardData{
+		QueueInfos:  map[string]*asynq.QueueInfo{"default": {Queue: "default", Pending: 1}},
+		ActiveTasks: map[string][]*asynq.TaskInfo{}, WorkerByTask: map[string]*asynq.WorkerInfo{}, ServerByTask: map[string]*asynq.ServerInfo{},
 	}
-
-	wide := make(map[string]any)
-	for i := 0; i < 30; i++ {
-		wide[fmt.Sprintf("field_%02d", i)] = strings.Repeat("x", 256)
-	}
-	encoded, err := json.Marshal(wide)
+	page, err := server.asynqTaskPage(data, "pending", "", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	truncated := asynqPayloadPreview(encoded)
-	if !strings.HasSuffix(truncated, "\n…") || len(truncated) > asynqPayloadPreviewMax+4 {
-		t.Fatalf("bounded payload preview length/suffix = %d %q", len(truncated), truncated)
+	if len(page.Tasks) != 1 {
+		t.Fatalf("task count = %d, want 1", len(page.Tasks))
+	}
+	task := page.Tasks[0]
+	if task.RawPayload != string(payload) {
+		t.Fatalf("raw payload changed: got %d bytes, want %d", len(task.RawPayload), len(payload))
+	}
+	if task.LastError != lastError {
+		t.Fatalf("last error changed: got %d bytes, want %d", len(task.LastError), len(lastError))
 	}
 
-	oversized := []byte(`{"safe":"` + strings.Repeat("secret-payload", asynqPayloadDecodeMax/len("secret-payload")+2) + `"}`)
-	if got := asynqPayloadPreview(oversized); !strings.Contains(got, "payload omitted") || strings.Contains(got, "secret-payload") {
-		t.Fatalf("oversized payload preview = %q", got)
+	rows := asynqTaskRowsHTML(&page, "en")
+	for _, want := range []string{"ADMIN-TOKEN", "ERROR-SECRET", "Raw payload", "&lt;/pre&gt;&lt;script&gt;alert(&#39;payload&#39;)&lt;/script&gt;", "&lt;/pre&gt;&lt;script&gt;alert(&#39;error&#39;)&lt;/script&gt;"} {
+		if !strings.Contains(rows, want) {
+			t.Fatalf("task HTML missing %q", want)
+		}
 	}
-	if got := asynqPayloadPreview([]byte("not-json-secret")); got != "[non-JSON payload: 15 bytes]" {
-		t.Fatalf("non-JSON payload preview = %q", got)
-	}
-	if got := asynqPayloadPreview([]byte(`"TOP-LEVEL-SECRET"`)); strings.Contains(got, "TOP-LEVEL-SECRET") || !strings.Contains(got, "omitted") {
-		t.Fatalf("top-level scalar payload preview = %q", got)
-	}
-	if got := asynqErrorPreview(`delivery failed: privateKey=ERROR-SECRET`); strings.Contains(got, "ERROR-SECRET") || !strings.Contains(strings.ToLower(got), "redacted") {
-		t.Fatalf("error preview = %q", got)
+	for _, unwanted := range []string{"<script>", "[REDACTED]", "payload omitted", "error detail redacted"} {
+		if strings.Contains(rows, unwanted) {
+			t.Fatalf("task HTML unexpectedly contains %q", unwanted)
+		}
 	}
 }
 
