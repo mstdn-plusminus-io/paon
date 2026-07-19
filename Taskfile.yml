@@ -1,0 +1,204 @@
+version: '3'
+
+vars:
+  PAON_IMAGE_TAGS:
+    sh: |
+      if command -v pkg-config >/dev/null 2>&1 && pkg-config --atleast-version=8.16.1 vips; then
+        printf libvips
+      else
+        printf '%s\n' 'level=WARN event=image_processor_fallback processor=libvips fallback=go-native phase=task_build' >&2
+      fi
+
+env:
+  GOTMPDIR: '{{.ROOT_DIR}}/.go-tmp'
+  GOCACHE: '{{.ROOT_DIR}}/.go-buildcache'
+  GOMODCACHE: '{{.ROOT_DIR}}/.go-modcache'
+  GOFLAGS: '{{if .PAON_IMAGE_TAGS}}-tags={{.PAON_IMAGE_TAGS}}{{end}}'
+
+tasks:
+  dev:
+    desc: Build UI assets once, then watch and restart the Go backend alongside Rspack
+    deps:
+      - dev:assets
+    cmds:
+      - task --parallel dev:backend dev:frontend
+
+  dev:assets:
+    desc: Build development UI assets into public/packs before the backend starts
+    preconditions:
+      - sh: test -x node_modules/.bin/rspack
+        msg: Run yarn install --frozen-lockfile before task dev
+    cmds:
+      - yarn build:development
+
+  dev:backend:
+    desc: Rebuild and gracefully restart Paon when backend files change
+    cmds:
+      - go run github.com/air-verse/air@v1.65.3 -c .air.toml
+
+  dev:frontend:
+    desc: Rebuild development UI assets in public/packs when frontend files change
+    preconditions:
+      - sh: test -x node_modules/.bin/rspack
+        msg: Run yarn install --frozen-lockfile before task dev
+    cmds:
+      - yarn build:development --watch
+
+  build:
+    desc: Build the Paon binaries
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE" bin
+      - go build -mod=mod -o bin/paon ./cmd/paon
+      - go build -mod=mod -o bin/paon-admin ./cmd/paon-admin
+      - go build -mod=mod -o bin/paon-cutover ./cmd/paon-cutover
+      - go build -mod=mod -o bin/paon-meili-deploy ./cmd/paon-meili-deploy
+      - go build -mod=mod -o bin/paon-migrate ./cmd/paon-migrate
+
+  test:
+    desc: Run the Paon test suite
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
+      - go test -cover -mod=mod ./...
+
+  test:rtk:
+    desc: Run the Paon test suite through rtk
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
+      - rtk go test -mod=mod ./...
+
+  integration:up:
+    desc: Start isolated PostgreSQL and Redis integration dependencies
+    cmds:
+      - docker compose -f docker-compose.integration.yml up -d --wait
+
+  test:integration:
+    desc: Run real PostgreSQL and Redis migration, queue, lease, and scheduler tests
+    deps:
+      - integration:up
+    env:
+      PAON_TEST_DATABASE_URL: postgres://postgres:paon@127.0.0.1:55432/paon_integration?sslmode=disable
+      PAON_TEST_REDIS_URL: redis://127.0.0.1:56379/15
+    cmds:
+      - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/migrate
+      - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/cutover
+      - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/api
+
+  routes:go:
+    desc: Export the registered Go HTTP route manifest
+    cmds:
+      - mkdir -p tmp
+      - go run -mod=mod ./cmd/paon-routes > tmp/go-routes.json
+
+  test:differential:
+    desc: Compare declared HTTP contracts against live Rails and Go reference servers
+    preconditions:
+      - sh: test -n "$PAON_RAILS_REFERENCE_URL"
+        msg: PAON_RAILS_REFERENCE_URL is required
+      - sh: test -n "$PAON_GO_REFERENCE_URL"
+        msg: PAON_GO_REFERENCE_URL is required
+    cmds:
+      - go run -mod=mod ./cmd/paon-differential --cases testdata/differential/core.json
+
+  integration:down:
+    desc: Stop and delete isolated integration dependencies
+    cmds:
+      - docker compose -f docker-compose.integration.yml down -v
+
+  external:up:
+    desc: Start deterministic Meilisearch, S3-compatible, and SMTP test services
+    cmds:
+      - docker compose -f docker-compose.integration.yml --profile external up -d --wait
+
+  test:external:
+    desc: Run real Meilisearch, S3-compatible storage, SMTP, and media-tool tests
+    deps:
+      - external:up
+    env:
+      PAON_TEST_MEILI_URL: http://127.0.0.1:57700
+      PAON_TEST_MEILI_KEY: paon-integration-master-key
+      PAON_TEST_S3_URL: http://127.0.0.1:59000
+      PAON_TEST_SMTP_HOST: 127.0.0.1
+      PAON_TEST_SMTP_PORT: 51025
+      PAON_TEST_MAILPIT_URL: http://127.0.0.1:58025
+    cmds:
+      - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} external" ./internal/paon/api
+
+  run:
+    desc: Run the Paon HTTP/worker process from source
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
+      - go run -mod=mod ./cmd/paon
+
+  check-config:
+    desc: Run Paon startup compatibility checks from source
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
+      - go run -mod=mod ./cmd/paon --check-config
+
+  check-config:bin:
+    desc: Run Paon startup compatibility checks with the built binary
+    deps:
+      - build
+    cmds:
+      - bin/paon --check-config
+
+  cutover:preflight:
+    desc: Refuse Go cutover unless the fenced Rails Sidekiq deployment is fully drained
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
+      - go run -mod=mod ./cmd/paon-cutover --producer-fenced
+
+  db:migrate:
+    desc: Apply or validate the Go-owned Rails-compatible database schema
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
+      - go run -mod=mod ./cmd/paon-migrate
+
+  meili-deploy:
+    desc: Rebuild Rails-compatible Meilisearch indexes from source
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
+      - go run -mod=mod ./cmd/paon-meili-deploy
+
+  meili-deploy:check-config:
+    desc: Validate Meilisearch deploy prerequisites from source
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
+      - go run -mod=mod ./cmd/paon-meili-deploy --check-config
+
+  meili-deploy:check-config:bin:
+    desc: Validate Meilisearch deploy prerequisites with the built binary
+    deps:
+      - build
+    cmds:
+      - bin/paon-meili-deploy --check-config
+
+  compose:config:
+    desc: Render the Go drop-in Compose configuration
+    cmds:
+      - docker compose config
+
+  compose:up:
+    desc: Start the Go drop-in web and worker services
+    cmds:
+      - docker compose up web worker
+
+  compose:check-config:
+    desc: Validate the Go drop-in Compose runtime
+    cmds:
+      - docker compose run --rm web paon --check-config
+
+  compose:db-migrate:
+    desc: Initialize or validate the schema using the Go migration binary
+    cmds:
+      - docker compose --profile setup run --rm db-migrate
+
+  compose:meili-deploy:
+    desc: Rebuild Meilisearch indexes inside the Go Compose runtime
+    cmds:
+      - docker compose run --rm web paon-meili-deploy
+
+  compose:meili-deploy:check-config:
+    desc: Validate Meilisearch deploy prerequisites inside Compose
+    cmds:
+      - docker compose run --rm web paon-meili-deploy --check-config

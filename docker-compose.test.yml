@@ -1,44 +1,34 @@
-version: '3'
 services:
   web:
     image: test
     restart: always
-    env_file: .env
-    command: bash -c "rm -f /mastodon/tmp/pids/server.pid; bundle exec rails s -p 3000"
-    networks:
-      - default
+    env_file:
+      - path: .env
+        required: false
+    command: paon
+    environment:
+      BIND: 0.0.0.0
+      PORT: 3000
+      PAON_PROCESS_ROLE: web
+      PAON_PUBLIC_DIR: /opt/mastodon/public
     healthcheck:
-      # prettier-ignore
-      test: ['CMD-SHELL', 'wget -q --spider --proxy=off localhost:3000/health || exit 1']
+      test: ['CMD-SHELL', 'wget -q --spider --proxy=off localhost:3000/health/ready || exit 1']
     ports:
       - '3000:3000'
     volumes:
-      - ./public/system:/mastodon/public/system
+      - ./public/system:/opt/mastodon/public/system
 
-  streaming:
+  worker:
     image: test
     restart: always
-    env_file: .env
-    command: node ./streaming
-    networks:
-      - default
+    env_file:
+      - path: .env
+        required: false
+    command: paon
+    environment:
+      PAON_PROCESS_ROLE: worker
+      PAON_PUBLIC_DIR: /opt/mastodon/public
     healthcheck:
-      # prettier-ignore
-      test: ['CMD-SHELL', 'wget -q --spider --proxy=off localhost:4000/api/v1/streaming/health || exit 1']
-    ports:
-      - '4000:4000'
-
-  sidekiq:
-    image: test
-    restart: always
-    env_file: .env
-    command: bundle exec sidekiq
-    networks:
-      - default
+      disable: true
     volumes:
-      - ./public/system:/mastodon/public/system
-    healthcheck:
-      test: ['CMD-SHELL', "ps aux | grep '[s]idekiq\ 6' || false"]
-
-networks:
-  default:
+      - ./public/system:/opt/mastodon/public/system
