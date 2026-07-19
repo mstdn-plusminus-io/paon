@@ -304,7 +304,6 @@ type Config struct {
 	AllowedPrivateAddresses             string
 }
 
-const DefaultVersion = "6.0.2"
 const defaultMastodonVersion = "4.2.27"
 const defaultRepository = "mstdn-plusminus-io/paon"
 
@@ -312,19 +311,23 @@ func VersionFromEnv() string {
 	if version := firstNonEmpty(os.Getenv("PAON_VERSION")); version != "" {
 		return version
 	}
-	return versionWithRailsMetadata(DefaultVersion, "PAON_VERSION_PRERELEASE", "PAON_VERSION_METADATA")
+	return versionWithRailsMetadata(DefaultVersion, DefaultPrerelease, "PAON_VERSION_PRERELEASE", "PAON_VERSION_METADATA")
 }
 
 func MastodonVersionFromEnv() string {
 	if version := firstNonEmpty(os.Getenv("MASTODON_VERSION")); version != "" {
 		return version
 	}
-	return versionWithRailsMetadata(defaultMastodonVersion, "MASTODON_VERSION_PRERELEASE", "MASTODON_VERSION_METADATA")
+	return versionWithRailsMetadata(defaultMastodonVersion, "", "MASTODON_VERSION_PRERELEASE", "MASTODON_VERSION_METADATA")
 }
 
-func versionWithRailsMetadata(base string, prereleaseEnv string, metadataEnv string) string {
+func versionWithRailsMetadata(base string, defaultPrerelease string, prereleaseEnv string, metadataEnv string) string {
 	version := strings.TrimSpace(base)
-	if prerelease := railsPresenceEnv(prereleaseEnv); prerelease != "" {
+	prerelease := railsPresenceEnv(prereleaseEnv)
+	if prerelease == "" {
+		prerelease = strings.TrimSpace(defaultPrerelease)
+	}
+	if prerelease != "" {
 		version += "-" + prerelease
 	}
 	if metadata := railsPresenceEnv(metadataEnv); metadata != "" {
