@@ -683,9 +683,9 @@ func (s *Server) newS3ObjectRequestWithPayloadHash(ctx context.Context, method s
 
 func (s *Server) s3ObjectRequestURL(key string) string {
 	key = strings.TrimLeft(key, "/")
+	bucket := strings.Trim(s.cfg.S3Bucket, "/")
 	if endpoint := strings.TrimRight(strings.TrimSpace(s.cfg.S3Endpoint), "/"); endpoint != "" {
 		if parsed, err := url.Parse(endpoint); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-			bucket := strings.Trim(s.cfg.S3Bucket, "/")
 			if s.cfg.S3OverridePathStyle && bucket != "" {
 				parsed.Host = bucket + "." + parsed.Host
 				parsed.Path = "/" + path.Join(strings.Trim(parsed.Path, "/"), key)
@@ -706,9 +706,16 @@ func (s *Server) s3ObjectRequestURL(key string) string {
 	if host == "" && !s.cfg.S3HostnameSet {
 		host = "s3-" + s.s3RegionForRequest() + ".amazonaws.com"
 	}
+	if strings.EqualFold(protocol, "https") && strings.Contains(bucket, ".") && !s.cfg.S3OverridePathStyle {
+		return (&url.URL{
+			Scheme: protocol,
+			Host:   host,
+			Path:   "/" + path.Join(bucket, key),
+		}).String()
+	}
 	return (&url.URL{
 		Scheme: protocol,
-		Host:   strings.Trim(s.cfg.S3Bucket, "/") + "." + host,
+		Host:   bucket + "." + host,
 		Path:   "/" + key,
 	}).String()
 }
