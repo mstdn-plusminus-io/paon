@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"html"
-	"image"
-	"image/png"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -274,28 +272,8 @@ func (s *Server) storeCustomEmojiFile(emoji models.CustomEmoji, file *multipart.
 }
 
 func (s *Server) generateCustomEmojiStaticFile(id int64, original string, filename string) error {
-	src, err := os.Open(original)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-	img, _, err := image.Decode(src)
-	if err != nil {
-		return err
-	}
 	target := s.customEmojiImagePath(id, "static", customEmojiStaticFilename(filename))
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	dst, err := os.Create(target)
-	if err != nil {
-		return err
-	}
-	if err := png.Encode(dst, img); err != nil {
-		_ = dst.Close()
-		return err
-	}
-	if err := dst.Close(); err != nil {
+	if err := writeVIPSStaticPNG(original, target); err != nil {
 		return err
 	}
 	emoji := models.CustomEmoji{

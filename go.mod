@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/beevik/etree v1.1.0
+	github.com/cshum/vipsgen v1.3.10
 	github.com/go-ldap/ldap/v3 v3.4.13
 	github.com/go-webauthn/webauthn v0.15.0
 	github.com/google/uuid v1.6.0

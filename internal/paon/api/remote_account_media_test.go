@@ -14,7 +14,7 @@ func TestDownloadAndStoreRemoteAccountImageGuardsAndPipeline(t *testing.T) {
 		`s.cfg.DisableRemoteMediaCache`,
 		`fetchRemoteImageMedia(ctx, remoteURL, remoteAccountImageLimit)`,
 		`profileImageContentTypeSupported(contentType)`,
-		`image.Decode(bytes.NewReader(download.body))`,
+		`resizeAccountImageBuffer(kind, download.body, contentType)`,
 		`profileImageUpdates(kind, filename, contentType, int64(len(data)), now)`,
 	} {
 		if !functionBodyContains(t, src, "downloadAndStoreRemoteAccountImage", want) {
@@ -23,15 +23,15 @@ func TestDownloadAndStoreRemoteAccountImageGuardsAndPipeline(t *testing.T) {
 	}
 }
 
-func TestResizeRemoteAccountImageMatchesRailsStyles(t *testing.T) {
+func TestResizeAccountImageBufferMatchesRailsStyles(t *testing.T) {
 	src, err := os.ReadFile("remote_account_media.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !functionBodyContains(t, src, "resizeRemoteAccountImage", `resizeImageToFill(img, remoteAccountAvatarTarget, remoteAccountAvatarTarget)`) {
+	if !functionBodyContains(t, src, "resizeAccountImageBuffer", `resizeVIPSBufferToFill(data, contentType, remoteAccountAvatarTarget, remoteAccountAvatarTarget)`) {
 		t.Fatal("avatar must use 400x400 fill crop like Rails avatar style")
 	}
-	if !functionBodyContains(t, src, "resizeRemoteAccountImage", `resizeImageToMaxPixels(img, remoteAccountHeaderMaxPixels)`) {
+	if !functionBodyContains(t, src, "resizeAccountImageBuffer", `resizeVIPSBufferToMaxPixels(data, contentType, remoteAccountHeaderMaxPixels)`) {
 		t.Fatal("header must use 750000 max pixels like Rails header style")
 	}
 	if remoteAccountAvatarTarget != 400 {

@@ -185,15 +185,6 @@ func (s *Server) storeSiteUploadThumbnailStyles(header *multipart.FileHeader, id
 	if err := s.uploadPaperclipObject(context.Background(), siteUploadObjectKey(id, "original", filename), original, contentType); err != nil {
 		return 0, err
 	}
-	file, err := header.Open()
-	if err != nil {
-		return 0, err
-	}
-	defer file.Close()
-	img, _, err := image.Decode(file)
-	if err != nil {
-		return 0, err
-	}
 	for _, style := range []struct {
 		name   string
 		width  int
@@ -204,19 +195,7 @@ func (s *Server) storeSiteUploadThumbnailStyles(header *multipart.FileHeader, id
 	} {
 		styleFilename := siteUploadStyleFilename("thumbnail", style.name, filename)
 		target := s.siteUploadFilePath(id, style.name, styleFilename)
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return 0, err
-		}
-		dst, err := os.Create(target)
-		if err != nil {
-			return 0, err
-		}
-		resized := resizeImageToFill(img, style.width, style.height)
-		if err := png.Encode(dst, resized); err != nil {
-			_ = dst.Close()
-			return 0, err
-		}
-		if err := dst.Close(); err != nil {
+		if err := resizeVIPSFileToFill(original, target, "image/png", style.width, style.height); err != nil {
 			return 0, err
 		}
 		if err := s.uploadPaperclipObject(context.Background(), siteUploadObjectKey(id, style.name, styleFilename), target, "image/png"); err != nil {

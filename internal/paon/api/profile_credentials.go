@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
-	"image"
-	"image/png"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -256,13 +254,9 @@ func (s *Server) storeAccountImageFile(header *multipart.FileHeader, accountID i
 	}
 	defer src.Close()
 
-	img, _, err := image.Decode(src)
+	data, err := io.ReadAll(src)
 	if err != nil {
-		return "", "", 0, apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: File type is invalid"}
-	}
-	resized := resizeRemoteAccountImage(kind, img)
-	if resized == nil {
-		return "", "", 0, fmt.Errorf("unknown account image kind %q", kind)
+		return "", "", 0, err
 	}
 	if strings.EqualFold(strings.TrimSpace(contentType), "image/webp") {
 		contentType = "image/png"
@@ -272,9 +266,9 @@ func (s *Server) storeAccountImageFile(header *multipart.FileHeader, accountID i
 			filename += ".png"
 		}
 	}
-	data, err := encodeAccountImage(resized, contentType)
+	data, err = resizeAccountImageBuffer(kind, data, contentType)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: File type is invalid"}
 	}
 
 	target := s.accountImagePath(accountID, kind, filename)
@@ -332,27 +326,7 @@ func profileImageStaticFilename(filename string, contentType string) string {
 }
 
 func writeStaticPNGFromImageFile(source string, target string) error {
-	src, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-	img, _, err := image.Decode(src)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	dst, err := os.Create(target)
-	if err != nil {
-		return err
-	}
-	if err := png.Encode(dst, img); err != nil {
-		_ = dst.Close()
-		return err
-	}
-	return dst.Close()
+	return writeVIPSStaticPNG(source, target)
 }
 
 func profileImageContentTypeSupported(contentType string) bool {

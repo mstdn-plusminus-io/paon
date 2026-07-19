@@ -230,7 +230,18 @@ func TestResizeImageToFillCenterCrops(t *testing.T) {
 			img.Set(x, y, color.RGBA{R: uint8(x * 50), G: uint8(y * 100), A: 255})
 		}
 	}
-	resized := resizeImageToFill(img, 2, 2)
+	var input bytes.Buffer
+	if err := png.Encode(&input, img); err != nil {
+		t.Fatal(err)
+	}
+	data, err := resizeVIPSBufferToFill(input.Bytes(), "image/png", 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resized, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resized.Bounds().Dx() != 2 || resized.Bounds().Dy() != 2 {
 		t.Fatalf("bounds = %v", resized.Bounds())
 	}

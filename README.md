@@ -49,6 +49,10 @@ Before developing, you need to install the following software.
 - Go 1.25.x
 - Node.js 22.x
 - Yarn 1.22.x
+- libvips 8.16.1 or newer and pkg-config
+- FFmpeg and ffprobe
+
+On macOS, install the native media dependencies with `brew install vips pkg-config ffmpeg`.
 
 Then run the following commands.
 

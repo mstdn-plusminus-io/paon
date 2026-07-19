@@ -1,6 +1,10 @@
-FROM golang:1.25-bookworm AS go-builder
+FROM golang:1.25-trixie AS go-builder
 
 WORKDIR /src
+
+RUN apt-get update && \
+	apt-get install -y --no-install-recommends libvips-dev pkg-config && \
+	rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -9,11 +13,11 @@ COPY cmd ./cmd
 COPY internal ./internal
 
 RUN go list -mod=mod ./cmd/paon ./cmd/paon-admin ./cmd/paon-cutover ./cmd/paon-meili-deploy ./cmd/paon-migrate >/dev/null
-RUN CGO_ENABLED=0 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon ./cmd/paon && \
-	CGO_ENABLED=0 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-admin ./cmd/paon-admin && \
-	CGO_ENABLED=0 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-cutover ./cmd/paon-cutover && \
-	CGO_ENABLED=0 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-meili-deploy ./cmd/paon-meili-deploy && \
-	CGO_ENABLED=0 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-migrate ./cmd/paon-migrate
+RUN CGO_ENABLED=1 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon ./cmd/paon && \
+	CGO_ENABLED=1 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-admin ./cmd/paon-admin && \
+	CGO_ENABLED=1 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-cutover ./cmd/paon-cutover && \
+	CGO_ENABLED=1 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-meili-deploy ./cmd/paon-meili-deploy && \
+	CGO_ENABLED=1 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-migrate ./cmd/paon-migrate
 
 FROM node:22-bookworm-slim AS assets
 
@@ -29,7 +33,7 @@ RUN corepack enable && yarn install --pure-lockfile --production=false
 COPY . .
 RUN rm -rf public/packs public/packs-test && yarn build:production
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 ENV RAILS_ENV=production
 ENV NODE_ENV=production
@@ -47,7 +51,7 @@ ARG GID=991
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates ffmpeg pamtester tzdata tini wget; \
+    apt-get install -y --no-install-recommends ca-certificates ffmpeg libvips42t64 pamtester tzdata tini wget; \
     groupadd --gid "${GID}" mastodon; \
     useradd --home-dir /opt/mastodon --create-home --uid "${UID}" --gid "${GID}" mastodon; \
     mkdir -p /opt/mastodon/public/system /opt/mastodon/tmp; \

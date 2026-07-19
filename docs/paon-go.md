@@ -18,6 +18,13 @@ When `STREAMING_API_BASE_URL` is unset, streaming uses `ws://LOCAL_DOMAIN` in de
 
 ## Local development
 
+The Go backend uses CGO through `github.com/cshum/vipsgen/vips816`. Install libvips
+8.16.1 or newer, pkg-config, FFmpeg, and ffprobe before building. On macOS:
+
+```bash
+brew install vips pkg-config ffmpeg
+```
+
 ```bash
 yarn install --frozen-lockfile
 cp .env.sample .env
