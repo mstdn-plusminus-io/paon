@@ -390,11 +390,14 @@ func statusEmbedAccountAvatarURL(baseURL string, account models.Account) string 
 
 func statusEmbedAccountAvatarURLWithConfig(cfg config.Config, account models.Account) string {
 	baseURL := cfg.BaseURL()
-	if account.AvatarRemoteURL.Valid && strings.TrimSpace(account.AvatarRemoteURL.String) != "" {
+	if account.AvatarRemoteURL.Valid && strings.TrimSpace(account.AvatarRemoteURL.String) != "" && cfg.DisableRemoteMediaCache {
 		return strings.TrimSpace(account.AvatarRemoteURL.String)
 	}
 	if account.AvatarFileName.Valid && strings.TrimSpace(account.AvatarFileName.String) != "" {
-		return cfg.SystemAssetURL("accounts/avatars/" + strings.ReplaceAll(mediaPaperclipIDPartition(account.ID), "\\", "/") + "/original/" + url.PathEscape(account.AvatarFileName.String))
+		return cfg.SystemAssetURL(accountImageAssetPath(account, "avatar", "original", account.AvatarFileName.String))
+	}
+	if account.AvatarRemoteURL.Valid && strings.TrimSpace(account.AvatarRemoteURL.String) != "" {
+		return strings.TrimSpace(account.AvatarRemoteURL.String)
 	}
 	return baseURL + "/avatars/original/missing.png"
 }

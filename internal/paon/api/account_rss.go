@@ -409,7 +409,7 @@ func accountRSSLocalUsernameAndDomain(cfg config.Config, account models.Account)
 
 func accountRSSAvatarURL(cfg config.Config, account models.Account) string {
 	if account.AvatarFileName.Valid && account.AvatarFileName.String != "" {
-		return cfg.SystemAssetURL("accounts/avatars/" + strings.ReplaceAll(mediaPaperclipIDPartition(account.ID), "\\", "/") + "/original/" + url.PathEscape(account.AvatarFileName.String))
+		return cfg.SystemAssetURL(accountImageAssetPath(account, "avatar", "original", account.AvatarFileName.String))
 	}
 	return cfg.BaseURL() + "/avatars/original/missing.png"
 }

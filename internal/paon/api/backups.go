@@ -398,7 +398,8 @@ func (s *Server) backupAccountImageArchiveEntry(account models.Account, kind str
 	if filename == "" {
 		return backupArchiveEntry{}, false, nil
 	}
-	path := s.accountImagePath(account.ID, kind, filename)
+	cachePrefix := accountImageUsesCachePrefix(account, kind)
+	path := s.accountImagePathStyleWithCachePrefix(account.ID, kind, "original", filename, cachePrefix)
 	ext := filepath.Ext(filename)
 	entryName := kind
 	if kind == "avatar" {
@@ -406,7 +407,7 @@ func (s *Server) backupAccountImageArchiveEntry(account models.Account, kind str
 	} else {
 		entryName = "header"
 	}
-	return s.backupPaperclipArchiveEntry(entryName+ext, path, accountImageObjectKey(account.ID, kind, "original", filename))
+	return s.backupPaperclipArchiveEntry(entryName+ext, path, accountImageObjectKeyForAccount(account, kind, "original", filename))
 }
 
 func backupActivityImageObject(mediaType string, name string) map[string]any {

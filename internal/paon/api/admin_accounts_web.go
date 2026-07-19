@@ -1316,7 +1316,7 @@ func adminAccountModerationNoteHTML(note models.AccountModerationNote, locale st
 
 func adminAccountModerationNoteAvatarURL(cfg config.Config, account models.Account) string {
 	if account.AvatarFileName.Valid && strings.TrimSpace(account.AvatarFileName.String) != "" && account.ID != 0 {
-		return adminAccountPaperclipAssetURL(cfg, "accounts/avatars/"+adminPaperclipIDPartition(account.ID)+"/original/"+url.PathEscape(account.AvatarFileName.String))
+		return adminAccountPaperclipAssetURL(cfg, accountImageAssetPath(account, "avatar", "original", account.AvatarFileName.String))
 	}
 	if account.AvatarRemoteURL.Valid && strings.TrimSpace(account.AvatarRemoteURL.String) != "" {
 		return account.AvatarRemoteURL.String
