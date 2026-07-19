@@ -2090,7 +2090,11 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 			statusQuery = s.db.Where("account_id = ? AND (uri = ? OR uri = ?)", actor.ID, object.ID, object.AtomURI)
 		}
 		err := statusQuery.First(&status).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		statusMissing := errors.Is(err, gorm.ErrRecordNotFound)
+		if activityPubUpdateShouldIgnoreUnknownObject(statusMissing, object, time.Now().UTC()) {
+			return nil
+		}
+		if statusMissing {
 			return s.processActivityPubCreateNote(payload, actor, deliveredTo, relayedThrough, options)
 		}
 		if err != nil {
@@ -2222,6 +2226,18 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 	return nil
 }
 
+// Mastodon 4.2.28 ignores old Update activities only when their object is not
+// already known, preventing old remote posts from being delivered as new.
+const activityPubUpdateUnknownObjectAgeThreshold = 24 * time.Hour
+
+func activityPubUpdateShouldIgnoreUnknownObject(statusMissing bool, object activityObject, now time.Time) bool {
+	if !statusMissing {
+		return false
+	}
+	publishedAt, ok := parseActivityPubTime(object.Published)
+	return ok && publishedAt.Before(now.UTC().Add(-activityPubUpdateUnknownObjectAgeThreshold))
+}
+
 func (s *Server) processActivityPubDereferencedUpdate(payload activityPayload, actor *models.Account, deliveredTo *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
 	objectFetchURI, objectURI := activityPubDereferenceFetchURI(payload.Object.ID)
 	if s == nil || actor == nil || objectFetchURI == "" || objectURI == "" {
@@ -2241,9 +2257,14 @@ func (s *Server) processActivityPubDereferencedUpdate(payload activityPayload, a
 	if err != nil || object.ID == "" {
 		return nil
 	}
-	dereferenced := payload
-	dereferenced.Object = object
+	dereferenced := activityPubDereferencedUpdatePayload(payload, object)
 	return s.processActivityPubUpdate(dereferenced, actor, deliveredTo, relayedThrough, options)
+}
+
+func activityPubDereferencedUpdatePayload(payload activityPayload, object activityObject) activityPayload {
+	payload.Object = object
+	payload.ObjectReference = false
+	return payload
 }
 
 func (s *Server) fetchActivityObjectForUpdate(uri string, userAgent string, signer *models.Account) (activityObject, error) {

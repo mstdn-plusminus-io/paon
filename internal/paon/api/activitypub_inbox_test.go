@@ -616,6 +616,35 @@ func TestActivityPubDereferenceRejectsMismatchedObjectHostBeforeFetchLikeRails(t
 	}
 }
 
+func TestActivityPubDereferencedUpdatePayloadClearsReferenceAndKeepsPublished(t *testing.T) {
+	payload := activityPayload{
+		Type:            "Update",
+		ObjectReference: true,
+		Object:          activityObject{ID: "https://remote.example/statuses/old"},
+	}
+	object := activityObject{
+		ID:           "https://remote.example/statuses/old",
+		Type:         "Note",
+		Published:    "2026-06-20T11:59:59Z",
+		AttributedTo: "https://remote.example/users/alice",
+	}
+
+	dereferenced := activityPubDereferencedUpdatePayload(payload, object)
+	if dereferenced.ObjectReference {
+		t.Fatal("dereferenced Update must not be dereferenced again")
+	}
+	if dereferenced.Object.ID != object.ID || dereferenced.Object.Published != object.Published {
+		t.Fatalf("dereferenced object = %#v", dereferenced.Object)
+	}
+	if !payload.ObjectReference {
+		t.Fatal("building the dereferenced payload must not mutate the original value")
+	}
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	if !activityPubUpdateShouldIgnoreUnknownObject(true, dereferenced.Object, now) {
+		t.Fatal("an old unknown dereferenced Update must use the same age policy as an embedded object")
+	}
+}
+
 func TestActivityPubStatusSignificantChangeMatchesRemoteEditBoundaries(t *testing.T) {
 	editedAt := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
 	current := models.Status{
@@ -699,6 +728,34 @@ func TestActivityPubStatusUpdateEditedAtModeMatchesRails(t *testing.T) {
 	}
 	if !activityPubStatusUpdateIsExplicit(models.Status{}, newer) {
 		t.Fatal("updated status with no previous edited_at should be explicit")
+	}
+}
+
+func TestActivityPubUpdateUnknownObjectAgePolicyMatchesMastodon428(t *testing.T) {
+	if activityPubUpdateUnknownObjectAgeThreshold != 24*time.Hour {
+		t.Fatalf("unknown Update object age threshold = %s", activityPubUpdateUnknownObjectAgeThreshold)
+	}
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		statusMissing bool
+		published     string
+		want          bool
+	}{
+		{name: "older than one day unknown", statusMissing: true, published: now.Add(-24*time.Hour - time.Second).Format(time.RFC3339), want: true},
+		{name: "newer than one day unknown", statusMissing: true, published: now.Add(-24*time.Hour + time.Second).Format(time.RFC3339), want: false},
+		{name: "exactly one day unknown", statusMissing: true, published: now.Add(-24 * time.Hour).Format(time.RFC3339), want: false},
+		{name: "missing published unknown", statusMissing: true, published: "", want: false},
+		{name: "invalid published unknown", statusMissing: true, published: "not-a-date", want: false},
+		{name: "older than one day known", statusMissing: false, published: now.Add(-7 * 24 * time.Hour).Format(time.RFC3339), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			object := activityObject{Published: tt.published}
+			if got := activityPubUpdateShouldIgnoreUnknownObject(tt.statusMissing, object, now); got != tt.want {
+				t.Fatalf("ignore = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
