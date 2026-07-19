@@ -8594,6 +8594,7 @@ func (s *Server) updateStatusMentionsFromTextAndCollectAccounts(tx *gorm.DB, sta
 	refs := statusMentionRefs(text)
 	seen := map[int64]struct{}{}
 	currentAccountIDs := map[int64]struct{}{}
+	blockedAccountIDs := map[int64]struct{}{}
 	result := statusMentionSaveResult{NotificationIDs: make([]int64, 0), NotificationPayloads: make([]asynqLocalNotificationPayload, 0), Accounts: make([]models.Account, 0)}
 	for _, ref := range refs {
 		account, err := s.accountFromMentionRef(tx, ref)
@@ -8611,6 +8612,7 @@ func (s *Server) updateStatusMentionsFromTextAndCollectAccounts(tx *gorm.DB, sta
 			return result, err
 		}
 		if blocked {
+			blockedAccountIDs[account.ID] = struct{}{}
 			continue
 		}
 		if _, ok := seen[account.ID]; ok {
@@ -8638,21 +8640,51 @@ func (s *Server) updateStatusMentionsFromTextAndCollectAccounts(tx *gorm.DB, sta
 		}
 	}
 
+	droppedIDs, removedIDs := statusMentionChangeIDs(previous, currentAccountIDs, blockedAccountIDs)
+	if err := applyStatusMentionChanges(tx, droppedIDs, removedIDs); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func statusMentionChangeIDs(previous []models.Mention, currentAccountIDs map[int64]struct{}, blockedAccountIDs map[int64]struct{}) ([]int64, []int64) {
+	droppedIDs := make([]int64, 0)
 	removedIDs := make([]int64, 0)
 	for _, mention := range previous {
 		if !mention.AccountID.Valid {
 			continue
 		}
-		if _, ok := currentAccountIDs[mention.AccountID.Int64]; !ok {
+		accountID := mention.AccountID.Int64
+		if _, blocked := blockedAccountIDs[accountID]; blocked {
+			droppedIDs = append(droppedIDs, mention.ID)
+			continue
+		}
+		if _, current := currentAccountIDs[accountID]; !current {
 			removedIDs = append(removedIDs, mention.ID)
+		}
+	}
+	return droppedIDs, removedIDs
+}
+
+func applyStatusMentionChanges(tx *gorm.DB, droppedIDs []int64, removedIDs []int64) error {
+	if len(droppedIDs) > 0 {
+		var locked []models.Mention
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").Where("id IN ?", droppedIDs).Find(&locked).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("activity_type = ? AND activity_id IN ?", "Mention", droppedIDs).Delete(&models.Notification{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("id IN ?", droppedIDs).Delete(&models.Mention{}).Error; err != nil {
+			return err
 		}
 	}
 	if len(removedIDs) > 0 {
 		if err := tx.Model(&models.Mention{}).Where("id IN ?", removedIDs).Update("silent", true).Error; err != nil {
-			return result, err
+			return err
 		}
 	}
-	return result, nil
+	return nil
 }
 
 func statusMentionAccountMentionable(account *models.Account) bool {
