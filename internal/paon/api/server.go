@@ -52,6 +52,7 @@ type Server struct {
 	quoteStore        statusQuoteStore
 	asynqClient       *asynq.Client
 	asynqInspector    asynqInspectorClient
+	asynqTaskRetryer  asynqTaskRetryer
 	streamMetrics     streamingMetricState
 	ipBlockMu         sync.Mutex
 	noAccessIPBlocks  []models.IPBlock
@@ -234,7 +235,11 @@ func NewServer(cfg config.Config, database *gorm.DB) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	server := &Server{echo: e, cfg: cfg, browserSessionKey: browserSessionKey, db: database, pgHeroStatsDB: pgHeroStatsDB, pgHeroOtherDB: pgHeroOtherDB, renderer: renderer, quoteStore: quoteStore, asynqClient: asynq.NewClient(asynqRedisOpt(cfg)), asynqInspector: asynq.NewInspector(asynqRedisOpt(cfg))}
+	asynqTaskRetryer, err := newRedisAsynqTaskRetryer(cfg)
+	if err != nil {
+		return nil, err
+	}
+	server := &Server{echo: e, cfg: cfg, browserSessionKey: browserSessionKey, db: database, pgHeroStatsDB: pgHeroStatsDB, pgHeroOtherDB: pgHeroOtherDB, renderer: renderer, quoteStore: quoteStore, asynqClient: asynq.NewClient(asynqRedisOpt(cfg)), asynqInspector: asynq.NewInspector(asynqRedisOpt(cfg)), asynqTaskRetryer: asynqTaskRetryer}
 	e.HTTPErrorHandler = server.handleHTTPError
 	setAppAssets(renderer)
 	i18nStore := i18n.NewStore(localesDirFor(cfg.PublicDir))
@@ -263,6 +268,9 @@ func (s *Server) Close() error {
 	}
 	if s.asynqInspector != nil {
 		closeErrors = append(closeErrors, s.asynqInspector.Close())
+	}
+	if s.asynqTaskRetryer != nil {
+		closeErrors = append(closeErrors, s.asynqTaskRetryer.Close())
 	}
 	return errors.Join(closeErrors...)
 }
@@ -2022,6 +2030,7 @@ func (s *Server) routes() {
 	e.GET("/sidekiq/*", s.sidekiqPage)
 	e.GET("/asynq", s.sidekiqPage)
 	e.GET("/asynq/stats", s.sidekiqStats)
+	e.POST("/asynq/tasks/retry", s.retryAsynqTask)
 	e.GET("/asynq/*", s.sidekiqPage)
 	e.GET("/pghero", s.pgHeroPage)
 	e.GET("/pghero/*", s.pgHeroPage)

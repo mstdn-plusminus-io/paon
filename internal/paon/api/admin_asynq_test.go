@@ -1,8 +1,12 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"strings"
@@ -10,7 +14,9 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
+	"github.com/redis/go-redis/v9"
 )
 
 type fakeAsynqInspectorClient struct {
@@ -33,6 +39,21 @@ type fakeAsynqInspectorClient struct {
 type fakeAsynqListRequest struct {
 	Page int
 	Size int
+}
+
+type fakeAsynqTaskRequest struct {
+	Queue       string
+	TaskID      string
+	SourceState string
+}
+
+type fakeAsynqTaskRetryer struct {
+	errs  map[string]error
+	calls []fakeAsynqTaskRequest
+}
+
+func (f *fakeAsynqTaskRetryer) Close() error {
+	return nil
 }
 
 func (f *fakeAsynqInspectorClient) Close() error {
@@ -134,6 +155,12 @@ func (f *fakeAsynqInspectorClient) ListScheduledTasks(queue string, opts ...asyn
 
 func (f *fakeAsynqInspectorClient) ListArchivedTasks(queue string, opts ...asynq.ListOption) ([]*asynq.TaskInfo, error) {
 	return f.list("archived", queue, opts...)
+}
+
+func (f *fakeAsynqTaskRetryer) RetryTask(_ context.Context, queue string, taskID string, sourceState string) error {
+	request := fakeAsynqTaskRequest{Queue: queue, TaskID: taskID, SourceState: sourceState}
+	f.calls = append(f.calls, request)
+	return f.errs[asynqTaskKey(queue, taskID)]
 }
 
 func asynqIssueCodesForQueue(issues []asynqDashboardIssue, queue string) []string {
@@ -357,6 +384,310 @@ func TestAsynqTaskDetailsShowCompleteRawPayloadAndErrorWithHTMLEscaping(t *testi
 		if strings.Contains(rows, unwanted) {
 			t.Fatalf("task HTML unexpectedly contains %q", unwanted)
 		}
+	}
+}
+
+func TestRunAsynqTaskNowAllowsOnlyRetryAndArchivedTasks(t *testing.T) {
+	for _, sourceState := range []string{"retry", "archived"} {
+		t.Run(sourceState, func(t *testing.T) {
+			request := fakeAsynqTaskRequest{Queue: "tenant:pull", TaskID: sourceState + "-task", SourceState: sourceState}
+			retryer := &fakeAsynqTaskRetryer{}
+			server := &Server{cfg: config.Config{RedisNamespace: "tenant:"}, asynqTaskRetryer: retryer}
+			if err := server.runAsynqTaskNow(context.Background(), sourceState, request.Queue, request.TaskID); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(retryer.calls, []fakeAsynqTaskRequest{request}) {
+				t.Fatalf("retry calls = %#v", retryer.calls)
+			}
+		})
+	}
+
+	retryer := &fakeAsynqTaskRetryer{}
+	server := &Server{cfg: config.Config{RedisNamespace: "tenant"}, asynqTaskRetryer: retryer}
+	if err := server.runAsynqTaskNow(context.Background(), "scheduled", "tenant:pull", "task"); !errors.Is(err, errUnsupportedAsynqRetryState) {
+		t.Fatalf("scheduled source error = %v", err)
+	}
+	if len(retryer.calls) != 0 {
+		t.Fatalf("unsupported source reached retryer: %#v", retryer.calls)
+	}
+}
+
+func TestRunAsynqTaskNowEnforcesQueueOwnershipAndPropagatesRetryErrors(t *testing.T) {
+	retryer := &fakeAsynqTaskRetryer{}
+	server := &Server{cfg: config.Config{RedisNamespace: "tenant:"}, asynqTaskRetryer: retryer}
+	if err := server.runAsynqTaskNow(context.Background(), "retry", "foreign:pull", "task"); !errors.Is(err, errUnknownAsynqQueue) {
+		t.Fatalf("foreign queue error = %v", err)
+	}
+	if len(retryer.calls) != 0 {
+		t.Fatalf("foreign queue reached retryer: %#v", retryer.calls)
+	}
+	if err := server.runAsynqTaskNow(context.Background(), "retry", "tenant:pull", " "); !errors.Is(err, asynq.ErrTaskNotFound) {
+		t.Fatalf("blank task ID error = %v", err)
+	}
+
+	request := fakeAsynqTaskRequest{Queue: "tenant:pull", TaskID: "run-failure", SourceState: "retry"}
+	runFailure := errors.New("redis unavailable")
+	retryer.errs = map[string]error{asynqTaskKey(request.Queue, request.TaskID): runFailure}
+	if err := server.runAsynqTaskNow(context.Background(), "retry", request.Queue, request.TaskID); !errors.Is(err, runFailure) {
+		t.Fatalf("retry error = %v", err)
+	}
+	if !reflect.DeepEqual(retryer.calls, []fakeAsynqTaskRequest{request}) {
+		t.Fatalf("retry calls = %#v", retryer.calls)
+	}
+
+	plainRetryer := &fakeAsynqTaskRetryer{}
+	plainServer := &Server{asynqTaskRetryer: plainRetryer}
+	if err := plainServer.runAsynqTaskNow(context.Background(), "retry", "default", "configured-task"); err != nil {
+		t.Fatalf("configured queue without namespace failed: %v", err)
+	}
+	if err := plainServer.runAsynqTaskNow(context.Background(), "retry", "another-app", "task"); !errors.Is(err, errUnknownAsynqQueue) {
+		t.Fatalf("unconfigured queue without namespace error = %v", err)
+	}
+	if len(plainRetryer.calls) != 1 {
+		t.Fatalf("unconfigured queue reached retryer: %#v", plainRetryer.calls)
+	}
+}
+
+func TestRedisAsynqTaskRetryerUsesAtomicExpectedStateTransition(t *testing.T) {
+	var gotKeys []string
+	var gotArgs []interface{}
+	var hasDeadline bool
+	retryer := redisAsynqTaskRetryer{
+		run: func(ctx context.Context, keys []string, args ...interface{}) (int64, error) {
+			_, hasDeadline = ctx.Deadline()
+			gotKeys = append([]string(nil), keys...)
+			gotArgs = append([]interface{}(nil), args...)
+			return 1, nil
+		},
+	}
+	if err := retryer.RetryTask(context.Background(), "tenant:pull", "task-123", "archived"); err != nil {
+		t.Fatal(err)
+	}
+	wantKeys := []string{
+		"asynq:{tenant:pull}:t:task-123",
+		"asynq:{tenant:pull}:archived",
+		"asynq:{tenant:pull}:pending",
+	}
+	wantArgs := []interface{}{"task-123", "archived"}
+	if !hasDeadline || !reflect.DeepEqual(gotKeys, wantKeys) || !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("Redis script deadline=%v keys=%#v args=%#v, want keys=%#v args=%#v", hasDeadline, gotKeys, gotArgs, wantKeys, wantArgs)
+	}
+	stateCheck := strings.Index(retryAsynqTaskFromStateScript, `state ~= ARGV[2]`)
+	removeFromSource := strings.Index(retryAsynqTaskFromStateScript, `ZREM`)
+	moveToPending := strings.Index(retryAsynqTaskFromStateScript, `LPUSH`)
+	if stateCheck < 0 || removeFromSource <= stateCheck || moveToPending <= removeFromSource {
+		t.Fatalf("retry script does not atomically check state before moving the task: %s", retryAsynqTaskFromStateScript)
+	}
+}
+
+func TestRedisAsynqTaskRetryerMapsAtomicTransitionResults(t *testing.T) {
+	cases := []struct {
+		name string
+		code int64
+		err  error
+		want error
+	}{
+		{name: "missing task", code: -1, want: asynq.ErrTaskNotFound},
+		{name: "state changed", code: -2, want: errAsynqTaskStateChanged},
+		{name: "source set changed", code: -3, want: errAsynqTaskStateChanged},
+		{name: "redis failure", err: errors.New("redis unavailable")},
+		{name: "unexpected code", code: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			retryer := redisAsynqTaskRetryer{run: func(context.Context, []string, ...interface{}) (int64, error) {
+				return tc.code, tc.err
+			}}
+			err := retryer.RetryTask(context.Background(), "default", "task", "retry")
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+			if tc.err != nil && !errors.Is(err, tc.err) {
+				t.Fatalf("error = %v, want command error %v", err, tc.err)
+			}
+			if tc.want == nil && tc.err == nil && err == nil {
+				t.Fatal("unexpected Redis response was accepted")
+			}
+		})
+	}
+}
+
+func TestNewRedisAsynqTaskRetryerUsesSidekiqRedisConnection(t *testing.T) {
+	retryer, err := newRedisAsynqTaskRetryer(config.Config{
+		RedisURL:        "redis://main.example.test:6379/0",
+		SidekiqRedisURL: "rediss://worker:secret@sidekiq.example.test:6380/4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer retryer.Close()
+	client, ok := retryer.client.(*redis.Client)
+	if !ok {
+		t.Fatalf("retry Redis client type = %T", retryer.client)
+	}
+	options := client.Options()
+	if options.Addr != "sidekiq.example.test:6380" || options.Username != "worker" || options.Password != "secret" || options.DB != 4 || options.TLSConfig == nil || options.MaxRetries != 0 {
+		t.Fatalf("retry Redis options = %#v", options)
+	}
+}
+
+func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
+	task := asynqTaskView{ID: `task"><script>alert(1)</script>`, Queue: "tenant:pull", DisplayQueue: "pull", Type: "delivery"}
+	for _, state := range []string{"retry", "archived"} {
+		page := &asynqTaskPage{State: state, Queue: "tenant:pull", Page: 3, Tasks: []asynqTaskView{task}}
+		rows := asynqTaskRowsHTML(page, "ja")
+		for _, want := range []string{
+			`action="/asynq/tasks/retry" method="post"`,
+			`name="source_state" value="` + state + `"`,
+			`name="queue" value="tenant:pull"`,
+			`name="return_queue" value="tenant:pull"`,
+			`name="return_page" value="3"`,
+			`今すぐ再試行`,
+			`再試行回数はリセットされません`,
+			`task&#34;&gt;&lt;script&gt;alert(1)&lt;/script&gt;`,
+		} {
+			if !strings.Contains(rows, want) {
+				t.Fatalf("%s task rows missing %q: %s", state, want, rows)
+			}
+		}
+		if strings.Contains(rows, `<script>`) {
+			t.Fatalf("%s task rows contain executable task ID: %s", state, rows)
+		}
+		if !htmlNeedsBrowserCSRF(`<html><body>` + rows + `</body></html>`) {
+			t.Fatalf("%s retry form was not detected as CSRF-protected", state)
+		}
+		withCSRF := injectBrowserCSRF(`<html><body>`+rows+`</body></html>`, "csrf-token")
+		if !strings.Contains(withCSRF, `name="authenticity_token" value="csrf-token"`) {
+			t.Fatalf("%s retry form did not receive a CSRF token: %s", state, withCSRF)
+		}
+	}
+
+	for _, state := range []string{"active", "pending", "scheduled"} {
+		rows := asynqTaskRowsHTML(&asynqTaskPage{State: state, Page: 1, Tasks: []asynqTaskView{task}}, "en")
+		if strings.Contains(rows, `/asynq/tasks/retry`) || strings.Contains(rows, `Retry now`) {
+			t.Fatalf("%s task unexpectedly has a retry action: %s", state, rows)
+		}
+	}
+	if rows := asynqTaskRowsHTML(&asynqTaskPage{State: "retry"}, "en"); !strings.Contains(rows, `colspan="8"`) {
+		t.Fatalf("empty retry rows have the wrong colspan: %s", rows)
+	}
+	if rows := asynqTaskRowsHTML(&asynqTaskPage{State: "pending"}, "en"); !strings.Contains(rows, `colspan="7"`) {
+		t.Fatalf("empty pending rows have the wrong colspan: %s", rows)
+	}
+	retryPage := &asynqTaskPage{State: "retry", Page: 1, Tasks: []asynqTaskView{task}}
+	if pageHTML := asynqTasksHTML(asynqDashboardSnapshot{}, retryPage, "retry", "en"); !strings.Contains(pageHTML, `<th scope="col">Actions</th>`) {
+		t.Fatalf("retry page is missing the Actions header: %s", pageHTML)
+	}
+}
+
+func TestAsynqTaskActionRedirectURLPreservesListContext(t *testing.T) {
+	got := asynqTaskActionRedirectURL("retry", "tenant:pull", 3, "notice", "queued now")
+	want := "/asynq/retry?notice=queued+now&page=3&queue=tenant%3Apull"
+	if got != want {
+		t.Fatalf("redirect URL = %q, want %q", got, want)
+	}
+	if unsafe := asynqTaskActionRedirectURL("https://evil.example", "", 1, "", ""); !strings.HasPrefix(unsafe, "/asynq/") {
+		t.Fatalf("redirect escaped the Asynq path: %q", unsafe)
+	}
+}
+
+func TestRetryAsynqTaskAuthorizedParsesActionAndRedirectsToListContext(t *testing.T) {
+	for _, sourceState := range []string{"retry", "archived"} {
+		t.Run(sourceState, func(t *testing.T) {
+			retryer := &fakeAsynqTaskRetryer{}
+			server := &Server{cfg: config.Config{RedisNamespace: "tenant:"}, asynqTaskRetryer: retryer}
+			form := url.Values{
+				"source_state": {sourceState},
+				"queue":        {"tenant:pull"},
+				"task_id":      {sourceState + "-task"},
+				"return_queue": {"tenant:pull"},
+				"return_page":  {"3"},
+			}
+			request := httptest.NewRequest(http.MethodPost, "/asynq/tasks/retry", strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			recorder := httptest.NewRecorder()
+			ctx := echo.NewContext(request, recorder, echo.New())
+			if err := server.retryAsynqTaskAuthorized(ctx, "en"); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != http.StatusSeeOther {
+				t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+			}
+			location := recorder.Header().Get("Location")
+			if !strings.HasPrefix(location, "/asynq/"+sourceState+"?") || !strings.Contains(location, "notice=") || !strings.Contains(location, "page=3") || !strings.Contains(location, "queue=tenant%3Apull") {
+				t.Fatalf("Location = %q", location)
+			}
+			wantCall := fakeAsynqTaskRequest{Queue: "tenant:pull", TaskID: sourceState + "-task", SourceState: sourceState}
+			if !reflect.DeepEqual(retryer.calls, []fakeAsynqTaskRequest{wantCall}) {
+				t.Fatalf("retry calls = %#v", retryer.calls)
+			}
+		})
+	}
+
+	staleRetryer := &fakeAsynqTaskRetryer{errs: map[string]error{asynqTaskKey("default", "stale-task"): errAsynqTaskStateChanged}}
+	staleServer := &Server{asynqTaskRetryer: staleRetryer}
+	form := url.Values{"source_state": {"retry"}, "queue": {"default"}, "task_id": {"stale-task"}}
+	request := httptest.NewRequest(http.MethodPost, "/asynq/tasks/retry", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	if err := staleServer.retryAsynqTaskAuthorized(echo.NewContext(request, recorder, echo.New()), "en"); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusSeeOther || !strings.Contains(recorder.Header().Get("Location"), "error=") {
+		t.Fatalf("stale redirect status=%d Location=%q", recorder.Code, recorder.Header().Get("Location"))
+	}
+}
+
+func TestAsynqRetryMutationRequiresBrowserCSRFBeforeCallingRetryer(t *testing.T) {
+	server := newBrowserSecurityTestServer()
+	retryer := &fakeAsynqTaskRetryer{}
+	server.asynqTaskRetryer = retryer
+	e := echo.New()
+	e.Use(server.browserSecurityMiddleware)
+	e.GET("/asynq/retry", func(c *echo.Context) error {
+		return c.HTML(http.StatusOK, `<html><body><form method="post" action="/asynq/tasks/retry"></form></body></html>`)
+	})
+	e.POST("/asynq/tasks/retry", func(c *echo.Context) error {
+		return server.retryAsynqTaskAuthorized(c, "en")
+	})
+
+	authCookie := &http.Cookie{Name: sessionCookieName, Value: "authenticated"}
+	getRequest := httptest.NewRequest(http.MethodGet, "/asynq/retry", nil)
+	getRequest.AddCookie(authCookie)
+	getRecorder := httptest.NewRecorder()
+	e.ServeHTTP(getRecorder, getRequest)
+	browserCookie := browserSessionCookieFromRecorder(t, getRecorder)
+	state, err := server.openBrowserSession(browserCookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	actionForm := url.Values{"source_state": {"retry"}, "queue": {"default"}, "task_id": {"task"}}
+	missingRequest := httptest.NewRequest(http.MethodPost, "/asynq/tasks/retry", strings.NewReader(actionForm.Encode()))
+	missingRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	missingRequest.AddCookie(authCookie)
+	missingRequest.AddCookie(browserCookie)
+	missingRecorder := httptest.NewRecorder()
+	e.ServeHTTP(missingRecorder, missingRequest)
+	if missingRecorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing CSRF status=%d body=%s", missingRecorder.Code, missingRecorder.Body.String())
+	}
+	if len(retryer.calls) != 0 {
+		t.Fatalf("missing CSRF reached retryer: %#v", retryer.calls)
+	}
+
+	actionForm.Set("authenticity_token", state.CSRFToken)
+	validRequest := httptest.NewRequest(http.MethodPost, "/asynq/tasks/retry", strings.NewReader(actionForm.Encode()))
+	validRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	validRequest.AddCookie(authCookie)
+	validRequest.AddCookie(browserCookie)
+	validRecorder := httptest.NewRecorder()
+	e.ServeHTTP(validRecorder, validRequest)
+	if validRecorder.Code != http.StatusSeeOther {
+		t.Fatalf("valid CSRF status=%d body=%s", validRecorder.Code, validRecorder.Body.String())
+	}
+	if len(retryer.calls) != 1 {
+		t.Fatalf("valid CSRF retry calls = %#v", retryer.calls)
 	}
 }
 

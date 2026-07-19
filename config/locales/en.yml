@@ -391,6 +391,7 @@ en:
       website: Website
     devops:
       active: Active
+      actions: Actions
       all_queues: All queues
       apply: Apply
       archived: Archived
@@ -456,6 +457,12 @@ en:
       relation: Relation
       retries: Retries
       retry: Retry
+      retry_confirm: Retry this task now? Its retry count will not be reset.
+      retry_failed: The task could not be retried. Refresh and try again.
+      retry_invalid_state: Only retry and archived tasks can be retried.
+      retry_now: Retry now
+      retry_stale: The task is no longer available in this list. Refresh and check its current state.
+      retry_success: The task was moved to the pending queue.
       raw_payload: Raw payload
       scheduled: Scheduled
       servers: Servers and running tasks

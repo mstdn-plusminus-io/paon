@@ -215,6 +215,7 @@ func TestBrowserCSRFProtectsAuthenticatedWebMutationsAndAnonymousAuthForms(t *te
 		"/invites/1",
 		"/settings/preferences/appearance",
 		"/admin/accounts/batch",
+		"/asynq/tasks/retry",
 		"/oauth/authorize",
 	} {
 		req := httptest.NewRequest(http.MethodPost, target, nil)

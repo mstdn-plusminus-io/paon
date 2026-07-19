@@ -31,6 +31,21 @@ func TestDevopsPagesRequireWebSession(t *testing.T) {
 			t.Fatalf("%s Location = %q, want %q", path, got, want)
 		}
 	}
+	retryRequest := httptest.NewRequest(http.MethodPost, "/asynq/tasks/retry?x=1", strings.NewReader(url.Values{
+		"source_state": {"retry"},
+		"queue":        {"default"},
+		"task_id":      {"task"},
+	}.Encode()))
+	retryRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	retryRecorder := httptest.NewRecorder()
+	s.echo.ServeHTTP(retryRecorder, retryRequest)
+	if retryRecorder.Code != http.StatusFound {
+		t.Fatalf("unauthenticated Asynq retry status = %d body = %s", retryRecorder.Code, retryRecorder.Body.String())
+	}
+	want := "/auth/sign_in?redirect_to=" + url.QueryEscape("/asynq/tasks/retry?x=1")
+	if got := retryRecorder.Header().Get("Location"); got != want {
+		t.Fatalf("unauthenticated Asynq retry Location = %q, want %q", got, want)
+	}
 }
 
 func TestAsynqAndPgHeroHTMLHelpers(t *testing.T) {

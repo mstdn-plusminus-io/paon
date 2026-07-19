@@ -269,6 +269,14 @@
     inset 0 -1px rgba($gold-star, 0.28);
 }
 
+.asynq-task__actions {
+  white-space: nowrap;
+
+  form {
+    margin: 0;
+  }
+}
+
 .asynq-badge {
   display: inline-block;
   padding: 1px 6px;
