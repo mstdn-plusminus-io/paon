@@ -8228,9 +8228,7 @@ func updateStatusMedia(tx *gorm.DB, accountID int64, statusID int64, mediaIDs []
 		if len(acceptedMediaIDs) == 0 {
 			return acceptedMediaIDs, nil
 		}
-		if err := tx.Model(&models.MediaAttachment{}).
-			Where("account_id = ? AND id IN ?", accountID, acceptedMediaIDs).
-			Updates(map[string]any{"status_id": statusID, "scheduled_status_id": sql.NullInt64{}, "updated_at": time.Now().UTC()}).Error; err != nil {
+		if err := assignMediaAttachmentsToStatus(tx, accountID, statusID, []int64(acceptedMediaIDs), time.Now().UTC()).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -8273,6 +8271,12 @@ func updateStatusMedia(tx *gorm.DB, accountID int64, statusID int64, mediaIDs []
 		}
 	}
 	return acceptedMediaIDs, nil
+}
+
+func assignMediaAttachmentsToStatus(tx *gorm.DB, accountID int64, statusID int64, mediaIDs []int64, now time.Time) *gorm.DB {
+	return tx.Model(&models.MediaAttachment{}).
+		Where("account_id = ? AND id IN ?", accountID, mediaIDs).
+		Updates(map[string]any{"status_id": statusID, "scheduled_status_id": sql.NullInt64{}, "updated_at": now})
 }
 
 func orderedExistingMediaIDs(requested models.Int64Array, media []models.MediaAttachment) models.Int64Array {

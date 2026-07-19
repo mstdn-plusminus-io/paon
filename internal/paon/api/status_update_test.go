@@ -13,7 +13,31 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
+
+func TestAssignMediaAttachmentsToStatusExpandsPostgresINList(t *testing.T) {
+	database, err := gorm.Open(postgres.New(postgres.Config{
+		DSN:                  "host=localhost user=paon dbname=paon",
+		PreferSimpleProtocol: false,
+	}), &gorm.Config{DryRun: true, DisableAutomaticPing: true, SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := assignMediaAttachmentsToStatus(database, 7, 9, []int64{11, 12}, time.Unix(1_700_000_000, 0).UTC())
+	if result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	query := result.Statement.SQL.String()
+	if !strings.Contains(query, `WHERE account_id = $4 AND id IN ($5,$6)`) {
+		t.Fatalf("media attachment update did not expand the PostgreSQL IN list: %s", query)
+	}
+	if len(result.Statement.Vars) != 6 {
+		t.Fatalf("media attachment update vars = %#v, want six bound values", result.Statement.Vars)
+	}
+}
 
 func TestParseStatusUpdatePayloadDetectsJSONPollNullAndMediaAttributes(t *testing.T) {
 	e := echo.New()
