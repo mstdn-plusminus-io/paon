@@ -123,8 +123,8 @@ func TestSettingsNavigationAppliesRailsStateAndPermissionBoundaries(t *testing.T
 	if !strings.Contains(devops, `id="asynq" class="selected simple-navigation-active-leaf"`) || !strings.Contains(devops, `href="/asynq"`) {
 		t.Fatalf("devops navigation missing selected Asynq dashboard: %s", devops)
 	}
-	if strings.Contains(devops, `target=`) {
-		t.Fatalf("Asynq navigation must open in the current window: %s", devops)
+	if !strings.Contains(devops, `target="_blank"`) {
+		t.Fatalf("Asynq navigation must open in a new tab: %s", devops)
 	}
 	if strings.Contains(devops, "PgHero") || strings.Contains(devops, "/pghero") {
 		t.Fatalf("Go navigation must omit PgHero: %s", devops)

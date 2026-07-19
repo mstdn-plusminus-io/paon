@@ -1052,7 +1052,7 @@ func (s *Server) asynqAuthorizedUser(c *echo.Context) (*models.User, string, str
 	locale := s.webLocale(c, user)
 	theme := settingsWebTheme(decodeUserSettings(user.Settings.String))
 	if !s.userCan(user, rolePermissionViewDevops) {
-		if responseErr := c.HTML(http.StatusForbidden, authPageHTML("Asynq", "", adminT(locale, "admin.dashboard.not_permitted", "You are not allowed to view the dashboard."), "", locale, theme)); responseErr != nil {
+		if responseErr := c.HTML(http.StatusForbidden, asynqPageShell("", adminT(locale, "admin.dashboard.not_permitted", "You are not allowed to view the dashboard."), "", locale, theme)); responseErr != nil {
 			return nil, locale, theme, responseErr
 		}
 		return nil, locale, theme, errWebAuthResponseHandled
@@ -1133,7 +1133,31 @@ func (s *Server) sidekiqPage(c *echo.Context) error {
 		}
 	}
 	body := asynqPageHTML(data.Snapshot, taskPage, view, locale)
-	return c.HTML(http.StatusOK, authPageHTML("Asynq", c.QueryParam("notice"), c.QueryParam("error"), body, locale, theme))
+	return c.HTML(http.StatusOK, asynqPageShell(c.QueryParam("notice"), c.QueryParam("error"), body, locale, theme))
+}
+
+func asynqPageShell(notice string, errorText string, body string, locale string, theme string) string {
+	assets := currentAppAssets()
+	if strings.TrimSpace(locale) == "" {
+		locale = webDefaultLocaleValue()
+	}
+	return `<!DOCTYPE html>
+<html lang="` + html.EscapeString(locale) + `">
+  <head>
+    ` + buildAppHead("Asynq", theme) + `
+  </head>
+  <body class="admin theme-` + html.EscapeString(normalizedWebTheme(theme)) + ` no-reduce-motion asynq-page">
+    <div class="admin-wrapper">
+      <main class="content asynq-page__content" role="main">
+        <div class="content__heading"><div class="content__heading__row"><div class="asynq-page__title"><a class="asynq-page__logo" href="/" aria-label="Paon"><img alt="Paon" src="` + html.EscapeString(assets.logoDesktopSVG) + `"></a><h2>Asynq</h2></div></div></div>
+        ` + settingsFlashHTML(notice, errorText) + body + `
+      </main>
+    </div>
+    <script src="` + html.EscapeString(assets.publicJS) + `" crossorigin="anonymous" defer></script>
+    <script src="` + html.EscapeString(assets.adminJS) + `" crossorigin="anonymous" defer></script>
+    <div class="logo-resources" tabindex="-1" aria-hidden="true"></div>
+  </body>
+</html>`
 }
 
 func asynqHTMLAttr(value string) string {

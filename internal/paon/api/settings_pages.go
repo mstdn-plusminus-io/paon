@@ -330,6 +330,7 @@ func settingsNavigationHTML(path string, locale string, options settingsHTMLOpti
 	}
 	if has(rolePermissionViewDevops) {
 		asynq := settingsNavigationItem{ID: "asynq", Href: "/asynq", Icon: "tasks", Label: "Asynq"}
+		asynq.Target = "_blank"
 		asynq.Selected = selected("/asynq")
 		asynq.Leaf = asynq.Selected
 		items = append(items, asynq)

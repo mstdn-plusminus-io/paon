@@ -90,6 +90,31 @@ func TestAsynqAndPgHeroHTMLHelpers(t *testing.T) {
 	}
 }
 
+func TestAsynqPageShellIsStandaloneAndFullWidth(t *testing.T) {
+	page := asynqPageShell("saved", "", `<div data-asynq-dashboard></div>`, "ja", "default")
+	for _, want := range []string{
+		`<body class="admin theme-default no-reduce-motion asynq-page">`,
+		`class="admin-wrapper"`,
+		`class="content asynq-page__content"`,
+		`class="asynq-page__title"`,
+		`class="asynq-page__logo" href="/" aria-label="Paon"`,
+		`alt="Paon" src="/packs/media/images/logo.svg"`,
+		`<h2>Asynq</h2>`,
+		`class="flash-message notice"`,
+		`data-asynq-dashboard`,
+		`src="/packs/js/admin.js"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("standalone Asynq shell missing %q: %s", want, page)
+		}
+	}
+	for _, unwanted := range []string{`class="sidebar-wrapper"`, `class="sidebar"`, `class="content-wrapper"`} {
+		if strings.Contains(page, unwanted) {
+			t.Fatalf("standalone Asynq shell retained %q: %s", unwanted, page)
+		}
+	}
+}
+
 func TestDevopsHTMLHelpersUseLocaleKeys(t *testing.T) {
 	asynqHTML := asynqPageHTML(asynqDashboardSnapshot{
 		Available: true,
