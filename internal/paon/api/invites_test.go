@@ -93,7 +93,7 @@ func TestInvitesHTMLRendersRailsCopyTable(t *testing.T) {
 		Code:      "abc123",
 		Uses:      1,
 		MaxUses:   sql.NullInt64{Int64: 5, Valid: true},
-		ExpiresAt: sql.NullTime{Time: time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC), Valid: true},
+		ExpiresAt: sql.NullTime{Time: time.Now().UTC().Add(time.Hour), Valid: true},
 	}}, "", "en")
 	for _, want := range []string{
 		`class="simple_form new_invite"`,
