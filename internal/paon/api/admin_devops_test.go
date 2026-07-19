@@ -31,6 +31,21 @@ func TestDevopsPagesRequireWebSession(t *testing.T) {
 			t.Fatalf("%s Location = %q, want %q", path, got, want)
 		}
 	}
+	retryRequest := httptest.NewRequest(http.MethodPost, "/asynq/tasks/retry?x=1", strings.NewReader(url.Values{
+		"source_state": {"retry"},
+		"queue":        {"default"},
+		"task_id":      {"task"},
+	}.Encode()))
+	retryRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	retryRecorder := httptest.NewRecorder()
+	s.echo.ServeHTTP(retryRecorder, retryRequest)
+	if retryRecorder.Code != http.StatusFound {
+		t.Fatalf("unauthenticated Asynq retry status = %d body = %s", retryRecorder.Code, retryRecorder.Body.String())
+	}
+	want := "/auth/sign_in?redirect_to=" + url.QueryEscape("/asynq/tasks/retry?x=1")
+	if got := retryRecorder.Header().Get("Location"); got != want {
+		t.Fatalf("unauthenticated Asynq retry Location = %q, want %q", got, want)
+	}
 }
 
 func TestAsynqAndPgHeroHTMLHelpers(t *testing.T) {
@@ -71,6 +86,31 @@ func TestAsynqAndPgHeroHTMLHelpers(t *testing.T) {
 	for _, want := range []string{"PgHero", "public.statuses", "1.5 KB", "2026-06-30T12:00:00Z"} {
 		if !strings.Contains(pghero, want) {
 			t.Fatalf("pghero HTML missing %q: %s", want, pghero)
+		}
+	}
+}
+
+func TestAsynqPageShellIsStandaloneAndFullWidth(t *testing.T) {
+	page := asynqPageShell("saved", "", `<div data-asynq-dashboard></div>`, "ja", "default")
+	for _, want := range []string{
+		`<body class="admin theme-default no-reduce-motion asynq-page">`,
+		`class="admin-wrapper"`,
+		`class="content asynq-page__content"`,
+		`class="asynq-page__title"`,
+		`class="asynq-page__logo" href="/" aria-label="Paon"`,
+		`alt="Paon" src="/packs/media/images/logo.svg"`,
+		`<h2>Asynq</h2>`,
+		`class="flash-message notice"`,
+		`data-asynq-dashboard`,
+		`src="/packs/js/admin.js"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("standalone Asynq shell missing %q: %s", want, page)
+		}
+	}
+	for _, unwanted := range []string{`class="sidebar-wrapper"`, `class="sidebar"`, `class="content-wrapper"`} {
+		if strings.Contains(page, unwanted) {
+			t.Fatalf("standalone Asynq shell retained %q: %s", unwanted, page)
 		}
 	}
 }

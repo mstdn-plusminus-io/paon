@@ -104,6 +104,7 @@ func TestComposePreservesEnvFileDatabaseCredentials(t *testing.T) {
 		"ENV DB_PASS=postgres",
 		"ENV REDIS_PORT=6379",
 		"ca-certificates ffmpeg pamtester tzdata tini wget",
+		"apt-get install -y --no-install-recommends libvips42t64",
 	} {
 		if !strings.Contains(dockerfile, want) {
 			t.Fatalf("Dockerfile missing %q", want)

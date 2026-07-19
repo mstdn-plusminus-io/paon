@@ -5,12 +5,15 @@ go 1.25.0
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/beevik/etree v1.1.0
+	github.com/cshum/vipsgen v1.3.10
+	github.com/gen2brain/avif v0.6.0
 	github.com/go-ldap/ldap/v3 v3.4.13
 	github.com/go-webauthn/webauthn v0.15.0
 	github.com/google/uuid v1.6.0
 	github.com/hibiken/asynq v0.26.0
 	github.com/labstack/echo/v5 v5.2.1
 	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/perkeep/heic v0.0.0-20260105010044-a57ca1ce101f
 	github.com/redis/go-redis/v9 v9.14.1
 	github.com/rivo/uniseg v0.4.7
 	github.com/russellhaering/goxmldsig v1.4.0
@@ -31,12 +34,14 @@ require (
 	github.com/cayleygraph/quad v1.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/jonboulle/clockwork v0.2.2 // indirect
 	github.com/pquerna/cachecontrol v0.2.0 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
+	github.com/tetratelabs/wazero v1.12.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 )
@@ -56,5 +61,5 @@ require (
 	github.com/piprate/json-gold v0.8.0
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 )

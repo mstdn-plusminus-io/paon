@@ -182,6 +182,18 @@ const convertLocalDatetimeToUTC = (value) => {
 };
 
 const initializeAsynqPolling = (dashboard) => {
+  try {
+    const currentURL = new URL(window.location.href);
+    const hasFlash = currentURL.searchParams.has('notice') || currentURL.searchParams.has('error');
+    if (hasFlash) {
+      currentURL.searchParams.delete('notice');
+      currentURL.searchParams.delete('error');
+      window.history.replaceState(window.history.state, '', `${currentURL.pathname}${currentURL.search}${currentURL.hash}`);
+    }
+  } catch (error) {
+    console.warn('Unable to clear Asynq action result from the URL', error);
+  }
+
   const enabledInput = dashboard.querySelector('#asynq_polling_enabled');
   const intervalInput = dashboard.querySelector('#asynq_polling_interval');
   const intervalOutput = dashboard.querySelector('#asynq_polling_interval_value');

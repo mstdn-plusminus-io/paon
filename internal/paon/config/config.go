@@ -461,7 +461,7 @@ func FromEnv() Config {
 		RedisPassword:                       os.Getenv("REDIS_PASSWORD"),
 		RedisDB:                             envOrDefault("REDIS_DB", "0"),
 		RedisNamespace:                      redisNamespaceFromEnv(),
-		SidekiqConcurrency:                  railsIntFromEnv("SIDEKIQ_CONCURRENCY", 5),
+		SidekiqConcurrency:                  asynqConcurrencyFromEnv(),
 		StatsDAddr:                          os.Getenv("STATSD_ADDR"),
 		StatsDNamespace:                     envOrDefault("STATSD_NAMESPACE", "Mastodon."+railsEnvName()),
 		StatsDSidekiq:                       os.Getenv("STATSD_SIDEKIQ") == "true",
@@ -1883,6 +1883,13 @@ func railsIntFromEnv(name string, fallback int) int {
 		return 0
 	}
 	return sign * parsed
+}
+
+func asynqConcurrencyFromEnv() int {
+	if envIsSet("ASYNQ_CONCURRENCY") {
+		return railsIntFromEnv("ASYNQ_CONCURRENCY", 5)
+	}
+	return railsIntFromEnv("SIDEKIQ_CONCURRENCY", 5)
 }
 
 func railsFloatFromEnv(name string, fallback float64) float64 {

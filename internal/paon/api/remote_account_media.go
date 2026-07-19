@@ -1,13 +1,8 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"image"
-	"image/gif"
-	"image/jpeg"
-	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,16 +42,8 @@ func (s *Server) downloadAndStoreRemoteAccountImage(ctx context.Context, account
 	if !profileImageContentTypeSupported(contentType) {
 		return fmt.Errorf("remote account %s has unsupported content type %q", kind, contentType)
 	}
-	img, _, err := image.Decode(bytes.NewReader(download.body))
-	if err != nil {
-		return err
-	}
-	resized := resizeRemoteAccountImage(kind, img)
-	if resized == nil {
-		return fmt.Errorf("unknown account image kind %q", kind)
-	}
-	// Go cannot re-encode webp; normalize to png so the stored file matches its content type and
-	// filename extension (avoids a content_type=webp file whose bytes are png).
+	// Keep the existing Paperclip-compatible WebP-to-PNG storage contract now that libvips owns
+	// decoding, resizing, and encoding.
 	if strings.EqualFold(strings.TrimSpace(contentType), "image/webp") {
 		contentType = "image/png"
 		if ext := filepath.Ext(filename); ext != "" {
@@ -65,7 +52,7 @@ func (s *Server) downloadAndStoreRemoteAccountImage(ctx context.Context, account
 			filename += ".png"
 		}
 	}
-	data, err := encodeAccountImage(resized, contentType)
+	data, err := resizeAccountImageBuffer(kind, download.body, contentType)
 	if err != nil {
 		return err
 	}
@@ -76,42 +63,17 @@ func (s *Server) downloadAndStoreRemoteAccountImage(ctx context.Context, account
 	return s.db.WithContext(ctx).Model(&models.Account{}).Where("id = ?", accountID).Updates(profileImageUpdates(kind, filename, contentType, int64(len(data)), now)).Error
 }
 
-// resizeRemoteAccountImage applies the Rails avatar (400x400# fill crop) or header
-// (<=750000px²) style to the decoded image. Returns nil for an unknown kind.
-func resizeRemoteAccountImage(kind string, img image.Image) image.Image {
+// resizeAccountImageBuffer applies the Rails avatar (400x400# fill crop) or header
+// (<=750000px²) style through libvips.
+func resizeAccountImageBuffer(kind string, data []byte, contentType string) ([]byte, error) {
 	switch kind {
 	case "avatar":
-		return resizeImageToFill(img, remoteAccountAvatarTarget, remoteAccountAvatarTarget)
+		return resizeVIPSBufferToFill(data, contentType, remoteAccountAvatarTarget, remoteAccountAvatarTarget)
 	case "header":
-		return resizeImageToMaxPixels(img, remoteAccountHeaderMaxPixels)
+		return resizeVIPSBufferToMaxPixels(data, contentType, remoteAccountHeaderMaxPixels)
 	default:
-		return nil
+		return nil, fmt.Errorf("unknown account image kind %q", kind)
 	}
-}
-
-// encodeAccountImage encodes the image in its original format. webp callers must normalize to
-// png before calling (see downloadAndStoreRemoteAccountImage).
-func encodeAccountImage(img image.Image, contentType string) ([]byte, error) {
-	var buf bytes.Buffer
-	switch strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0])) {
-	case "image/jpeg":
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 90}); err != nil {
-			return nil, err
-		}
-	case "image/gif":
-		if err := gif.Encode(&buf, img, nil); err != nil {
-			return nil, err
-		}
-	case "image/png":
-		if err := png.Encode(&buf, img); err != nil {
-			return nil, err
-		}
-	default:
-		if err := png.Encode(&buf, img); err != nil {
-			return nil, err
-		}
-	}
-	return buf.Bytes(), nil
 }
 
 // storeAccountImageBytes is the []byte variant of storeAccountImageFile

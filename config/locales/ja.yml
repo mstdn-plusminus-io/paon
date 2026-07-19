@@ -384,6 +384,7 @@ ja:
       website: ウェブサイト
     devops:
       active: 実行中
+      actions: アクション
       all_queues: すべてのキュー
       apply: 適用
       archived: アーカイブ
@@ -449,6 +450,12 @@ ja:
       relation: リレーション
       retries: 再試行回数
       retry: 再試行
+      retry_confirm: このタスクを今すぐ再試行しますか？再試行回数はリセットされません。
+      retry_failed: タスクを再試行できませんでした。画面を更新して、もう一度お試しください。
+      retry_invalid_state: 再試行またはアーカイブ状態のタスクのみ再試行できます。
+      retry_now: 今すぐ再試行
+      retry_stale: このタスクは一覧に存在しません。画面を更新して現在の状態を確認してください。
+      retry_success: タスクを再実行待ちに移動しました。
       raw_payload: 生のペイロード
       scheduled: 予定
       servers: サーバーと実行中タスク

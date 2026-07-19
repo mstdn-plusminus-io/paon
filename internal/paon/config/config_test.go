@@ -129,6 +129,20 @@ func TestFromEnvStatusLengthLimitMatchesRailsToI(t *testing.T) {
 	}
 }
 
+func TestFromEnvPrefersAsynqConcurrencyOverLegacySidekiqConcurrency(t *testing.T) {
+	t.Setenv("SIDEKIQ_CONCURRENCY", "7")
+	unsetEnvForTest(t, "ASYNQ_CONCURRENCY")
+
+	if got := FromEnv().SidekiqConcurrency; got != 7 {
+		t.Fatalf("legacy SIDEKIQ_CONCURRENCY = %d, want 7", got)
+	}
+
+	t.Setenv("ASYNQ_CONCURRENCY", "11")
+	if got := FromEnv().SidekiqConcurrency; got != 11 {
+		t.Fatalf("ASYNQ_CONCURRENCY override = %d, want 11", got)
+	}
+}
+
 func TestFromEnvFollowLimitsMatchRailsToIAndToF(t *testing.T) {
 	cases := []struct {
 		name          string

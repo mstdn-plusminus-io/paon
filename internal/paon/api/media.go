@@ -8,8 +8,8 @@ import (
 	"html"
 	"image"
 	_ "image/gif"
-	"image/jpeg"
-	"image/png"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"math"
 	"mime"
@@ -28,7 +28,6 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
-	xdraw "golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 	"gorm.io/gorm"
 )
@@ -1486,12 +1485,7 @@ func convertedMediaImageFilename(filename string) string {
 }
 
 func convertImageFileToJPEG(source string, target string) error {
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), mediaFFmpegThumbnailTimeout)
-	defer cancel()
-	return exec.CommandContext(ctx, mediaFFmpegBinary(), "-y", "-i", source, "-frames:v", "1", "-update", "1", target).Run()
+	return convertVIPSFileToJPEG(source, target)
 }
 
 func generateImageSmallFile(source string, target string, contentType string) error {
@@ -1502,95 +1496,11 @@ func generateImageSmallFile(source string, target string, contentType string) er
 }
 
 func generateImageThumbnailFile(source string, target string) error {
-	src, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-	img, _, err := image.Decode(src)
-	if err != nil {
-		return err
-	}
-	resized := resizeImageToMaxPixels(img, mediaThumbnailMaxPixels)
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	dst, err := os.Create(target)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
-	return png.Encode(dst, resized)
+	return resizeVIPSFileToMaxPixels(source, target, "image/png", mediaThumbnailMaxPixels)
 }
 
 func generateJPEGThumbnailFile(source string, target string) error {
-	src, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-	img, _, err := image.Decode(src)
-	if err != nil {
-		return err
-	}
-	resized := resizeImageToMaxPixels(img, mediaThumbnailMaxPixels)
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	dst, err := os.Create(target)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
-	return jpeg.Encode(dst, resized, &jpeg.Options{Quality: 90})
-}
-
-func resizeImageToMaxPixels(img image.Image, maxPixels int) image.Image {
-	bounds := img.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
-	if width <= 0 || height <= 0 || maxPixels <= 0 {
-		return image.NewRGBA(image.Rect(0, 0, 1, 1))
-	}
-	targetWidth, targetHeight := thumbnailDimensions(width, height, maxPixels)
-	out := image.NewRGBA(image.Rect(0, 0, targetWidth, targetHeight))
-	xdraw.CatmullRom.Scale(out, out.Bounds(), img, bounds, xdraw.Over, nil)
-	return out
-}
-
-func resizeImageToFill(img image.Image, targetWidth int, targetHeight int) image.Image {
-	if targetWidth <= 0 || targetHeight <= 0 {
-		return image.NewRGBA(image.Rect(0, 0, 1, 1))
-	}
-	bounds := img.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
-	if width <= 0 || height <= 0 {
-		return image.NewRGBA(image.Rect(0, 0, targetWidth, targetHeight))
-	}
-	srcX := 0
-	srcY := 0
-	srcWidth := width
-	srcHeight := height
-	sourceRatio := float64(width) / float64(height)
-	targetRatio := float64(targetWidth) / float64(targetHeight)
-	if sourceRatio > targetRatio {
-		srcWidth = int(float64(height)*targetRatio + 0.5)
-		if srcWidth < 1 {
-			srcWidth = 1
-		}
-		srcX = (width - srcWidth) / 2
-	} else if sourceRatio < targetRatio {
-		srcHeight = int(float64(width)/targetRatio + 0.5)
-		if srcHeight < 1 {
-			srcHeight = 1
-		}
-		srcY = (height - srcHeight) / 2
-	}
-	out := image.NewRGBA(image.Rect(0, 0, targetWidth, targetHeight))
-	srcRect := image.Rect(bounds.Min.X+srcX, bounds.Min.Y+srcY, bounds.Min.X+srcX+srcWidth, bounds.Min.Y+srcY+srcHeight)
-	xdraw.CatmullRom.Scale(out, out.Bounds(), img, srcRect, xdraw.Over, nil)
-	return out
+	return resizeVIPSFileToMaxPixels(source, target, "image/jpeg", mediaThumbnailMaxPixels)
 }
 
 func thumbnailDimensions(width int, height int, maxPixels int) (int, int) {

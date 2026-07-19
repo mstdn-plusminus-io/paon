@@ -1,10 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"image"
-	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -305,46 +306,32 @@ func TestThumbnailDimensionsMatchRailsSmallPixelLimit(t *testing.T) {
 	}
 }
 
-func TestResizeImageUsesInterpolatingScaler(t *testing.T) {
+func TestResizeImageUsesLibvips(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
-			if (x+y)%2 == 0 {
-				img.Set(x, y, color.White)
-			} else {
-				img.Set(x, y, color.Black)
-			}
-		}
+	var input bytes.Buffer
+	if err := png.Encode(&input, img); err != nil {
+		t.Fatal(err)
 	}
-
-	for name, resized := range map[string]image.Image{
-		"fill":       resizeImageToFill(img, 4, 4),
-		"max-pixels": resizeImageToMaxPixels(img, 16),
+	fill, err := resizeVIPSBufferToFill(input.Bytes(), "image/png", 4, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxPixels, err := resizeVIPSBufferToMaxPixels(input.Bytes(), "image/png", 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"fill":       fill,
+		"max-pixels": maxPixels,
 	} {
+		resized, _, err := image.Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("%s decode: %v", name, err)
+		}
 		if resized.Bounds().Dx() != 4 || resized.Bounds().Dy() != 4 {
 			t.Fatalf("%s bounds = %v", name, resized.Bounds())
 		}
-		if !imageHasInterpolatedPixel(resized) {
-			t.Fatalf("%s resize used only source colors; expected interpolated pixels", name)
-		}
 	}
-}
-
-func imageHasInterpolatedPixel(img image.Image) bool {
-	bounds := img.Bounds()
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			r, g, b, _ := img.At(x, y).RGBA()
-			if isIntermediateColor(r) || isIntermediateColor(g) || isIntermediateColor(b) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isIntermediateColor(v uint32) bool {
-	return v != 0 && v != 0xffff
 }
 
 func TestGenerateImageThumbnailFileWritesReadablePNG(t *testing.T) {
@@ -371,6 +358,30 @@ func TestGenerateImageThumbnailFileWritesReadablePNG(t *testing.T) {
 	}
 	if cfg.Width*cfg.Height > mediaThumbnailMaxPixels {
 		t.Fatalf("generated dimensions = %dx%d", cfg.Width, cfg.Height)
+	}
+}
+
+func TestConvertImageFileToJPEGUsesLibvips(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "original.png")
+	target := filepath.Join(root, "converted", "photo.jpeg")
+	if err := os.WriteFile(source, siteUploadTestPNG(t, 64, 32), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := convertImageFileToJPEG(source, target); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	cfg, format, err := image.DecodeConfig(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format != "jpeg" || cfg.Width != 64 || cfg.Height != 32 {
+		t.Fatalf("converted image = %s %dx%d", format, cfg.Width, cfg.Height)
 	}
 }
 

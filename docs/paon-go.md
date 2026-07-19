@@ -18,6 +18,22 @@ When `STREAMING_API_BASE_URL` is unset, streaming uses `ws://LOCAL_DOMAIN` in de
 
 ## Local development
 
+The optimized image backend uses CGO through `github.com/cshum/vipsgen/vips816`.
+Install libvips 8.16.1 or newer, pkg-config, FFmpeg, and ffprobe before building.
+On macOS:
+
+```bash
+brew install vips pkg-config ffmpeg
+```
+
+Taskfile builds automatically enable the optimized backend when `pkg-config` finds
+libvips. For direct `go` commands, set `GOFLAGS=-tags=libvips`. Builds without that
+tag remain fully Go-native. If libvips is not compiled in or a libvips image
+operation fails, Paon retries with the Go-native processor and emits a
+`level=WARN event=image_processor_fallback` log entry. The fallback registers
+CGo-free AVIF and HEIC decoders backed by embedded WASM, so those accepted upload
+formats do not require a system codec library.
+
 ```bash
 yarn install --frozen-lockfile
 cp .env.sample .env
@@ -58,7 +74,12 @@ task test:external
 
 ## Containers
 
-The standard `Dockerfile` builds Go binaries and Rspack assets in separate stages, then copies only binaries, `public`, and `config/locales` into a non-root Debian runtime. Ruby, Bundler, Rails, Sidekiq, Node.js, and frontend source are absent from the runtime image.
+The standard `Dockerfile` builds both Go-native and libvips Go binaries plus Rspack
+assets in separate stages, then selects libvips when both build and runtime packages
+are available. If a base-image update makes libvips unavailable, the image selects
+the Go-native binary and writes a WARN fallback message during the build. Ruby,
+Bundler, Rails, Sidekiq, Node.js, and frontend source are absent from the runtime
+image. Set `--build-arg PAON_IMAGE_PROCESSOR=native` to force the fallback image.
 
 ```bash
 task compose:config

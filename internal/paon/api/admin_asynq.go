@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"html"
@@ -14,7 +15,9 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/labstack/echo/v5"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -23,11 +26,16 @@ const (
 	asynqTaskMaxPage  = 200
 )
 
-var errUnknownAsynqQueue = errors.New("unknown asynq queue")
+var (
+	errUnknownAsynqQueue          = errors.New("unknown asynq queue")
+	errUnsupportedAsynqRetryState = errors.New("unsupported asynq retry state")
+	errAsynqTaskStateChanged      = errors.New("asynq task state changed")
+)
 
-// asynqInspectorClient is deliberately limited to the read operations used by
-// the dashboard. Keeping the Inspector behind the Server makes the operational
-// views testable without a package-global factory or a second Redis client.
+// asynqInspectorClient is deliberately limited to the operations used by the
+// dashboard. Keeping the Inspector behind the Server makes the operational
+// views and actions testable without a package-global factory or a second Redis
+// client.
 type asynqInspectorClient interface {
 	Close() error
 	Queues() ([]string, error)
@@ -40,6 +48,38 @@ type asynqInspectorClient interface {
 	ListScheduledTasks(queue string, opts ...asynq.ListOption) ([]*asynq.TaskInfo, error)
 	ListArchivedTasks(queue string, opts ...asynq.ListOption) ([]*asynq.TaskInfo, error)
 }
+
+type asynqTaskRetryer interface {
+	RetryTask(ctx context.Context, queue string, taskID string, expectedState string) error
+	Close() error
+}
+
+type asynqTaskTransitionRunner func(ctx context.Context, keys []string, args ...interface{}) (int64, error)
+
+type redisAsynqTaskRetryer struct {
+	client redis.UniversalClient
+	run    asynqTaskTransitionRunner
+}
+
+const retryAsynqTaskFromStateScript = `
+local state = redis.call("HGET", KEYS[1], "state")
+if not state then
+  return -1
+end
+if state ~= ARGV[2] then
+  return -2
+end
+if redis.call("ZREM", KEYS[2], ARGV[1]) == 0 then
+  return -3
+end
+redis.call("LPUSH", KEYS[3], ARGV[1])
+redis.call("HSET", KEYS[1], "state", "pending")
+return 1
+`
+
+const asynqTaskRetryTimeout = 5 * time.Second
+
+var retryAsynqTaskFromStateRedisScript = redis.NewScript(retryAsynqTaskFromStateScript)
 
 type asynqDashboardSummary struct {
 	ProcessedTotal int `json:"processed_total"`
@@ -197,6 +237,89 @@ func asynqConfiguredQueueNames(s *Server) []string {
 	}
 	sort.Strings(queues)
 	return queues
+}
+
+func asynqQueueOwnedByServer(s *Server, queue string) bool {
+	if s == nil || strings.TrimSpace(queue) == "" {
+		return false
+	}
+	for _, configured := range asynqConfiguredQueueNames(s) {
+		if queue == configured {
+			return true
+		}
+	}
+	namespacePrefix := strings.TrimSuffix(strings.TrimSpace(s.cfg.RedisNamespace), ":")
+	if namespacePrefix == "" {
+		return false
+	}
+	return strings.HasPrefix(queue, namespacePrefix+":")
+}
+
+func asynqQueueRedisKeyPrefix(queue string) string {
+	return "asynq:{" + queue + "}:"
+}
+
+func newRedisAsynqTaskRetryer(cfg config.Config) (*redisAsynqTaskRetryer, error) {
+	opt, ok := asynqRedisOpt(cfg).(asynq.RedisClientOpt)
+	if !ok {
+		return nil, errors.New("asynq task retry requires a direct Redis client")
+	}
+	client := redis.NewClient(&redis.Options{
+		Network:      opt.Network,
+		Addr:         opt.Addr,
+		Username:     opt.Username,
+		Password:     opt.Password,
+		DB:           opt.DB,
+		DialTimeout:  opt.DialTimeout,
+		ReadTimeout:  opt.ReadTimeout,
+		WriteTimeout: opt.WriteTimeout,
+		PoolSize:     opt.PoolSize,
+		TLSConfig:    opt.TLSConfig,
+		// A timed-out mutation may already have reached Redis. Retrying at the
+		// transport layer could execute a fast-failing task twice.
+		MaxRetries: -1,
+	})
+	return &redisAsynqTaskRetryer{client: client}, nil
+}
+
+func (r *redisAsynqTaskRetryer) Close() error {
+	if r == nil || r.client == nil {
+		return nil
+	}
+	return r.client.Close()
+}
+
+func (r redisAsynqTaskRetryer) RetryTask(ctx context.Context, queue string, taskID string, expectedState string) error {
+	ctx, cancel := context.WithTimeout(ctx, asynqTaskRetryTimeout)
+	defer cancel()
+	keys := []string{
+		asynqQueueRedisKeyPrefix(queue) + "t:" + taskID,
+		asynqQueueRedisKeyPrefix(queue) + expectedState,
+		asynqQueueRedisKeyPrefix(queue) + "pending",
+	}
+	run := r.run
+	if run == nil {
+		if r.client == nil {
+			return errors.New("asynq task retry Redis client is unavailable")
+		}
+		run = func(ctx context.Context, keys []string, args ...interface{}) (int64, error) {
+			return retryAsynqTaskFromStateRedisScript.Run(ctx, r.client, keys, args...).Int64()
+		}
+	}
+	code, err := run(ctx, keys, taskID, expectedState)
+	if err != nil {
+		return err
+	}
+	switch code {
+	case 1:
+		return nil
+	case -1:
+		return asynq.ErrTaskNotFound
+	case -2, -3:
+		return errAsynqTaskStateChanged
+	default:
+		return fmt.Errorf("unexpected Asynq retry response %d", code)
+	}
 }
 
 func asynqDuration(value time.Duration) string {
@@ -865,6 +988,62 @@ func asynqPageNumber(c *echo.Context) int {
 	return min(page, asynqTaskMaxPage)
 }
 
+func asynqRetryTaskState(state string) (asynq.TaskState, bool) {
+	switch state {
+	case "retry":
+		return asynq.TaskStateRetry, true
+	case "archived":
+		return asynq.TaskStateArchived, true
+	default:
+		return 0, false
+	}
+}
+
+func (s *Server) runAsynqTaskNow(ctx context.Context, sourceState string, queue string, taskID string) error {
+	_, ok := asynqRetryTaskState(sourceState)
+	if !ok {
+		return errUnsupportedAsynqRetryState
+	}
+	if !asynqQueueOwnedByServer(s, queue) {
+		return errUnknownAsynqQueue
+	}
+	if strings.TrimSpace(taskID) == "" {
+		return asynq.ErrTaskNotFound
+	}
+	if s.asynqTaskRetryer == nil {
+		return errors.New("asynq task retryer is unavailable")
+	}
+	// The retryer compares and moves the task in one Redis operation. This keeps
+	// a second click from rerunning a task that completed after the page loaded.
+	return s.asynqTaskRetryer.RetryTask(ctx, queue, taskID, sourceState)
+}
+
+func asynqActionPageNumber(value string) int {
+	page, err := strconv.Atoi(value)
+	if err != nil || page < 1 {
+		return 1
+	}
+	return min(page, asynqTaskMaxPage)
+}
+
+func asynqTaskActionRedirectURL(state string, queue string, page int, flashKey string, message string) string {
+	values := url.Values{}
+	if queue != "" {
+		values.Set("queue", queue)
+	}
+	if page > 1 {
+		values.Set("page", strconv.Itoa(min(page, asynqTaskMaxPage)))
+	}
+	if (flashKey == "notice" || flashKey == "error") && message != "" {
+		values.Set(flashKey, message)
+	}
+	target := "/asynq/" + url.PathEscape(state)
+	if encoded := values.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	return target
+}
+
 func (s *Server) asynqAuthorizedUser(c *echo.Context) (*models.User, string, string, error) {
 	user, err := s.requireDevopsWebUser(c)
 	if err != nil {
@@ -873,7 +1052,7 @@ func (s *Server) asynqAuthorizedUser(c *echo.Context) (*models.User, string, str
 	locale := s.webLocale(c, user)
 	theme := settingsWebTheme(decodeUserSettings(user.Settings.String))
 	if !s.userCan(user, rolePermissionViewDevops) {
-		if responseErr := c.HTML(http.StatusForbidden, authPageHTML("Asynq", "", adminT(locale, "admin.dashboard.not_permitted", "You are not allowed to view the dashboard."), "", locale, theme)); responseErr != nil {
+		if responseErr := c.HTML(http.StatusForbidden, asynqPageShell("", adminT(locale, "admin.dashboard.not_permitted", "You are not allowed to view the dashboard."), "", locale, theme)); responseErr != nil {
 			return nil, locale, theme, responseErr
 		}
 		return nil, locale, theme, errWebAuthResponseHandled
@@ -895,6 +1074,35 @@ func (s *Server) sidekiqStats(c *echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, asynqUnavailableSnapshot(locale, collectErr))
 	}
 	return c.JSON(http.StatusOK, data.Snapshot)
+}
+
+func (s *Server) retryAsynqTask(c *echo.Context) error {
+	_, locale, _, err := s.asynqAuthorizedUser(c)
+	if err != nil {
+		return webAuthResponseError(err)
+	}
+	return s.retryAsynqTaskAuthorized(c, locale)
+}
+
+func (s *Server) retryAsynqTaskAuthorized(c *echo.Context, locale string) error {
+	sourceState := c.FormValue("source_state")
+	if _, ok := asynqRetryTaskState(sourceState); !ok {
+		return echo.NewHTTPError(http.StatusBadRequest, adminT(locale, "admin.devops.retry_invalid_state", "Only retry and archived tasks can be retried."))
+	}
+	queue := c.FormValue("queue")
+	returnQueue := c.FormValue("return_queue")
+	if !asynqQueueOwnedByServer(s, queue) || (returnQueue != "" && !asynqQueueOwnedByServer(s, returnQueue)) {
+		return echo.NewHTTPError(http.StatusBadRequest, adminT(locale, "admin.devops.unknown_queue", "Unknown queue"))
+	}
+	page := asynqActionPageNumber(c.FormValue("return_page"))
+	err := s.runAsynqTaskNow(c.Request().Context(), sourceState, queue, c.FormValue("task_id"))
+	if err == nil {
+		return c.Redirect(http.StatusSeeOther, asynqTaskActionRedirectURL(sourceState, returnQueue, page, "notice", adminT(locale, "admin.devops.retry_success", "The task was moved to the pending queue.")))
+	}
+	if errors.Is(err, asynq.ErrTaskNotFound) || errors.Is(err, asynq.ErrQueueNotFound) || errors.Is(err, errAsynqTaskStateChanged) {
+		return c.Redirect(http.StatusSeeOther, asynqTaskActionRedirectURL(sourceState, returnQueue, page, "error", adminT(locale, "admin.devops.retry_stale", "The task is no longer available in this list. Refresh and check its current state.")))
+	}
+	return c.Redirect(http.StatusSeeOther, asynqTaskActionRedirectURL(sourceState, returnQueue, page, "error", adminT(locale, "admin.devops.retry_failed", "The task could not be retried. Refresh and try again.")))
 }
 
 func (s *Server) sidekiqPage(c *echo.Context) error {
@@ -925,7 +1133,31 @@ func (s *Server) sidekiqPage(c *echo.Context) error {
 		}
 	}
 	body := asynqPageHTML(data.Snapshot, taskPage, view, locale)
-	return c.HTML(http.StatusOK, authPageHTML("Asynq", "", "", body, locale, theme))
+	return c.HTML(http.StatusOK, asynqPageShell(c.QueryParam("notice"), c.QueryParam("error"), body, locale, theme))
+}
+
+func asynqPageShell(notice string, errorText string, body string, locale string, theme string) string {
+	assets := currentAppAssets()
+	if strings.TrimSpace(locale) == "" {
+		locale = webDefaultLocaleValue()
+	}
+	return `<!DOCTYPE html>
+<html lang="` + html.EscapeString(locale) + `">
+  <head>
+    ` + buildAppHead("Asynq", theme) + `
+  </head>
+  <body class="admin theme-` + html.EscapeString(normalizedWebTheme(theme)) + ` no-reduce-motion asynq-page">
+    <div class="admin-wrapper">
+      <main class="content asynq-page__content" role="main">
+        <div class="content__heading"><div class="content__heading__row"><div class="asynq-page__title"><a class="asynq-page__logo" href="/" aria-label="Paon"><img alt="Paon" src="` + html.EscapeString(assets.logoDesktopSVG) + `"></a><h2>Asynq</h2></div></div></div>
+        ` + settingsFlashHTML(notice, errorText) + body + `
+      </main>
+    </div>
+    <script src="` + html.EscapeString(assets.publicJS) + `" crossorigin="anonymous" defer></script>
+    <script src="` + html.EscapeString(assets.adminJS) + `" crossorigin="anonymous" defer></script>
+    <div class="logo-resources" tabindex="-1" aria-hidden="true"></div>
+  </body>
+</html>`
 }
 
 func asynqHTMLAttr(value string) string {
@@ -1185,9 +1417,34 @@ func asynqTaskTimingHTML(task asynqTaskView, locale string) string {
 	return `<div class="asynq-worker__metadata">` + body.String() + `</div>`
 }
 
+func asynqTaskActionsAvailable(page *asynqTaskPage) bool {
+	if page == nil {
+		return false
+	}
+	_, ok := asynqRetryTaskState(page.State)
+	return ok
+}
+
+func asynqTaskActionHTML(page *asynqTaskPage, task asynqTaskView, locale string) string {
+	if !asynqTaskActionsAvailable(page) {
+		return ""
+	}
+	return `<form action="/asynq/tasks/retry" method="post">` +
+		`<input type="hidden" name="source_state" value="` + asynqHTMLAttr(page.State) + `">` +
+		`<input type="hidden" name="queue" value="` + asynqHTMLAttr(task.Queue) + `">` +
+		`<input type="hidden" name="task_id" value="` + asynqHTMLAttr(task.ID) + `">` +
+		`<input type="hidden" name="return_queue" value="` + asynqHTMLAttr(page.Queue) + `">` +
+		`<input type="hidden" name="return_page" value="` + strconv.Itoa(page.Page) + `">` +
+		`<button type="submit" class="table-action-link" data-confirm="` + asynqHTMLAttr(adminT(locale, "admin.devops.retry_confirm", "Retry this task now? Its retry count will not be reset.")) + `"><i class="fa fa-refresh fa-fw"></i> ` + asynqHTMLAttr(adminT(locale, "admin.devops.retry_now", "Retry now")) + `</button></form>`
+}
+
 func asynqTaskRowsHTML(page *asynqTaskPage, locale string) string {
 	if page == nil || len(page.Tasks) == 0 {
-		return `<tr><td class="asynq-table__empty" colspan="7">` + asynqHTMLAttr(adminT(locale, "admin.devops.empty", "No data")) + `</td></tr>`
+		columns := 7
+		if asynqTaskActionsAvailable(page) {
+			columns++
+		}
+		return `<tr><td class="asynq-table__empty" colspan="` + strconv.Itoa(columns) + `">` + asynqHTMLAttr(adminT(locale, "admin.devops.empty", "No data")) + `</td></tr>`
 	}
 	var body strings.Builder
 	for _, task := range page.Tasks {
@@ -1207,7 +1464,11 @@ func asynqTaskRowsHTML(page *asynqTaskPage, locale string) string {
 		if task.Queue != task.DisplayQueue {
 			body.WriteString(`<code>` + asynqHTMLAttr(task.Queue) + `</code>`)
 		}
-		body.WriteString(`</td><td><strong>` + asynqHTMLAttr(task.Type) + `</strong><small>` + asynqHTMLAttr(task.State) + `</small></td><td class="asynq-table__number">` + strconv.Itoa(task.Retried) + ` / ` + strconv.Itoa(task.MaxRetry) + `</td><td>` + asynqTaskTimingHTML(task, locale) + `</td><td>` + lastError + `</td><td>` + payload + `</td></tr>`)
+		body.WriteString(`</td><td><strong>` + asynqHTMLAttr(task.Type) + `</strong><small>` + asynqHTMLAttr(task.State) + `</small></td><td class="asynq-table__number">` + strconv.Itoa(task.Retried) + ` / ` + strconv.Itoa(task.MaxRetry) + `</td><td>` + asynqTaskTimingHTML(task, locale) + `</td><td>` + lastError + `</td><td>` + payload + `</td>`)
+		if asynqTaskActionsAvailable(page) {
+			body.WriteString(`<td class="asynq-task__actions">` + asynqTaskActionHTML(page, task, locale) + `</td>`)
+		}
+		body.WriteString(`</tr>`)
 	}
 	return body.String()
 }
@@ -1266,7 +1527,11 @@ func asynqTasksHTML(snapshot asynqDashboardSnapshot, page *asynqTaskPage, view s
 	if page != nil && page.Truncated {
 		truncated = `<p class="asynq-alert asynq-alert--warning">` + fmt.Sprintf(asynqHTMLAttr(adminT(locale, "admin.devops.task_results_truncated", "The view is limited to %d of %d tasks. Filter by queue to narrow the result.")), page.ResultLimit, page.Total) + `</p>`
 	}
-	return `<section class="asynq-section"><div class="asynq-section__heading"><h2>` + asynqHTMLAttr(adminT(locale, label[0], label[1])) + `</h2>` + asynqTaskFilterHTML(snapshot, page, locale) + `</div>` + truncated + `<div class="asynq-table-wrapper table-wrapper"><table class="table"><thead><tr><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.task_id", "Task ID")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.queue", "Queue")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.task_type", "Task")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.retries", "Retries")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.timing", "Timing / worker")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.error", "Last error")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.payload", "Payload")) + `</th></tr></thead><tbody>` + asynqTaskRowsHTML(page, locale) + `</tbody></table></div>` + asynqTaskPaginationHTML(page, locale) + `</section>`
+	actionsHeader := ""
+	if asynqTaskActionsAvailable(page) {
+		actionsHeader = `<th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.actions", "Actions")) + `</th>`
+	}
+	return `<section class="asynq-section"><div class="asynq-section__heading"><h2>` + asynqHTMLAttr(adminT(locale, label[0], label[1])) + `</h2>` + asynqTaskFilterHTML(snapshot, page, locale) + `</div>` + truncated + `<div class="asynq-table-wrapper table-wrapper"><table class="table"><thead><tr><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.task_id", "Task ID")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.queue", "Queue")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.task_type", "Task")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.retries", "Retries")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.timing", "Timing / worker")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.error", "Last error")) + `</th><th scope="col">` + asynqHTMLAttr(adminT(locale, "admin.devops.payload", "Payload")) + `</th>` + actionsHeader + `</tr></thead><tbody>` + asynqTaskRowsHTML(page, locale) + `</tbody></table></div>` + asynqTaskPaginationHTML(page, locale) + `</section>`
 }
 
 func asynqPageHTML(snapshot asynqDashboardSnapshot, taskPage *asynqTaskPage, view string, locale string) string {
