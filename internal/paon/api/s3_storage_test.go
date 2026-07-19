@@ -62,6 +62,52 @@ func TestS3SignatureVersionV2CanonicalStringAndPresign(t *testing.T) {
 	}
 }
 
+func TestS3ObjectRequestURLUsesPathStyleForDottedBucketOverHTTPS(t *testing.T) {
+	s := &Server{cfg: config.Config{
+		S3Bucket:   "media.stg.mstdn.plusminus.io",
+		S3Region:   "ap-northeast-1",
+		S3Protocol: "https",
+		S3Hostname: "s3-ap-northeast-1.amazonaws.com",
+	}}
+
+	got := s.s3ObjectRequestURL("media_attachments/files/000/000/042/original/photo.png")
+	want := "https://s3-ap-northeast-1.amazonaws.com/media.stg.mstdn.plusminus.io/media_attachments/files/000/000/042/original/photo.png"
+	if got != want {
+		t.Fatalf("S3 object request URL = %q, want %q", got, want)
+	}
+}
+
+func TestS3ObjectRequestURLCanOverrideDottedBucketPathStyle(t *testing.T) {
+	s := &Server{cfg: config.Config{
+		S3Bucket:            "media.stg.mstdn.plusminus.io",
+		S3Region:            "ap-northeast-1",
+		S3Protocol:          "https",
+		S3Hostname:          "s3-ap-northeast-1.amazonaws.com",
+		S3OverridePathStyle: true,
+	}}
+
+	got := s.s3ObjectRequestURL("media/file.png")
+	want := "https://media.stg.mstdn.plusminus.io.s3-ap-northeast-1.amazonaws.com/media/file.png"
+	if got != want {
+		t.Fatalf("S3 object request URL = %q, want %q", got, want)
+	}
+}
+
+func TestS3ObjectRequestURLKeepsVirtualHostedStyleForDNSCompatibleBucket(t *testing.T) {
+	s := &Server{cfg: config.Config{
+		S3Bucket:   "media-stg-mstdn-plusminus-io",
+		S3Region:   "ap-northeast-1",
+		S3Protocol: "https",
+		S3Hostname: "s3-ap-northeast-1.amazonaws.com",
+	}}
+
+	got := s.s3ObjectRequestURL("media/file.png")
+	want := "https://media-stg-mstdn-plusminus-io.s3-ap-northeast-1.amazonaws.com/media/file.png"
+	if got != want {
+		t.Fatalf("S3 object request URL = %q, want %q", got, want)
+	}
+}
+
 func TestUploadPaperclipObjectStreamsLocalFilesToObjectStorage(t *testing.T) {
 	src, err := os.ReadFile("s3_storage.go")
 	if err != nil {
