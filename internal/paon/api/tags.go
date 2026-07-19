@@ -314,7 +314,7 @@ func renderRSS(channel rssChannel) ([]byte, error) {
 }
 
 func rssGenerator(cfg config.Config) string {
-	return "Mastodon v" + firstNonEmpty(cfg.MastodonVersion, "4.2.27")
+	return "Mastodon v" + firstNonEmpty(cfg.MastodonVersion, config.DefaultMastodonVersion)
 }
 
 type rssFeed struct {

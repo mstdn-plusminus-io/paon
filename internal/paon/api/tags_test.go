@@ -219,7 +219,7 @@ func TestPublicTagRSSLimitMatchesRailsTagsController(t *testing.T) {
 }
 
 func TestRSSGeneratorMatchesRailsMastodonVersionFormat(t *testing.T) {
-	if got := rssGenerator(config.Config{}); got != "Mastodon v4.2.27" {
+	if got := rssGenerator(config.Config{}); got != "Mastodon v4.2.29" {
 		t.Fatalf("default generator = %q", got)
 	}
 	if got := rssGenerator(config.Config{MastodonVersion: "4.3.0"}); got != "Mastodon v4.3.0" {
@@ -382,7 +382,7 @@ func TestRenderTagRSSIncludesMediaAttachments(t *testing.T) {
 	for _, want := range []string{
 		`<title>#GoLang</title>`,
 		`xmlns:webfeeds="http://webfeeds.org/rss/1.0"`,
-		`<generator>Mastodon v4.2.27</generator>`,
+		`<generator>Mastodon v4.2.29</generator>`,
 		`<media:content url="https://example.com/system/media_attachments/files/000/000/008/original/photo.png" type="image/png" fileSize="1234" medium="image">`,
 		`<media:rating scheme="urn:simple">nonadult</media:rating>`,
 		`<media:description type="plain">alt text</media:description>`,

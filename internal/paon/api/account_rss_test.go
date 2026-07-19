@@ -223,7 +223,7 @@ func TestRenderAccountRSSIncludesAccountAndStatuses(t *testing.T) {
 		`<title>Alice</title>`,
 		`xmlns:webfeeds="http://webfeeds.org/rss/1.0"`,
 		`<description>Public posts from @alice@example.com</description>`,
-		`<generator>Mastodon v4.2.27</generator>`,
+		`<generator>Mastodon v4.2.29</generator>`,
 		`<url>https://example.com/system/accounts/avatars/000/000/010/original/avatar.png</url>`,
 		`<webfeeds:icon>https://example.com/system/accounts/avatars/000/000/010/original/avatar.png</webfeeds:icon>`,
 		`<link>https://example.com/@alice/123</link>`,

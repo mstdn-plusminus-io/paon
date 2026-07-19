@@ -2041,7 +2041,7 @@ func fallbackPreviewImageURL(cfg config.Config, fallbackURL string) string {
 func instanceVersion(cfg config.Config) string {
 	mastodonVersion := strings.TrimSpace(cfg.MastodonVersion)
 	if mastodonVersion == "" {
-		mastodonVersion = "4.2.27"
+		mastodonVersion = config.DefaultMastodonVersion
 	}
 	paonVersion := strings.TrimSpace(cfg.Version)
 	if paonVersion == "" {

@@ -15,7 +15,7 @@ func paonUserAgent(cfg config.Config) string {
 	}
 	mastodonVersion := strings.TrimSpace(cfg.MastodonVersion)
 	if mastodonVersion == "" {
-		mastodonVersion = "4.2.27"
+		mastodonVersion = config.DefaultMastodonVersion
 	}
 	return railsHTTPRequestUserAgent + " (Paon/" + paonVersion + "; based Mastodon/" + mastodonVersion + "; +" + strings.TrimRight(cfg.BaseURL(), "/") + "/)"
 }

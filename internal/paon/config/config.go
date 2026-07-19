@@ -304,7 +304,6 @@ type Config struct {
 	AllowedPrivateAddresses             string
 }
 
-const defaultMastodonVersion = "4.2.27"
 const defaultRepository = "mstdn-plusminus-io/paon"
 
 func VersionFromEnv() string {
@@ -318,7 +317,7 @@ func MastodonVersionFromEnv() string {
 	if version := firstNonEmpty(os.Getenv("MASTODON_VERSION")); version != "" {
 		return version
 	}
-	return versionWithRailsMetadata(defaultMastodonVersion, "", "MASTODON_VERSION_PRERELEASE", "MASTODON_VERSION_METADATA")
+	return versionWithRailsMetadata(DefaultMastodonVersion, "", "MASTODON_VERSION_PRERELEASE", "MASTODON_VERSION_METADATA")
 }
 
 func versionWithRailsMetadata(base string, defaultPrerelease string, prereleaseEnv string, metadataEnv string) string {
