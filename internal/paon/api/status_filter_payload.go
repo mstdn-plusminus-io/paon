@@ -18,6 +18,7 @@ func serializeStatusesWithFilterContext(cfg config.Config, statuses []models.Sta
 }
 
 func statusWithFilterContext(cfg config.Config, status models.Status, current *models.Account, filters []streamingFilter, filterContext string) serializer.Status {
+	status = statusWithoutHashtagPreviewCards(status)
 	item := serializer.StatusFromModel(cfg, status, current)
 	if current == nil || len(filters) == 0 || strings.TrimSpace(filterContext) == "" {
 		return item
@@ -26,6 +27,7 @@ func statusWithFilterContext(cfg config.Config, status models.Status, current *m
 }
 
 func statusWithAllFilterContexts(cfg config.Config, status models.Status, current *models.Account, filters []streamingFilter) serializer.Status {
+	status = statusWithoutHashtagPreviewCards(status)
 	item := serializer.StatusFromModel(cfg, status, current)
 	if current == nil || len(filters) == 0 {
 		return item
@@ -34,6 +36,7 @@ func statusWithAllFilterContexts(cfg config.Config, status models.Status, curren
 }
 
 func statusWithSourceAndFilterContext(cfg config.Config, status models.Status, current *models.Account, filters []streamingFilter, filterContext string) serializer.Status {
+	status = statusWithoutHashtagPreviewCards(status)
 	item := serializer.StatusFromModelWithSource(cfg, status, current)
 	if current == nil || len(filters) == 0 || strings.TrimSpace(filterContext) == "" {
 		return item
@@ -42,6 +45,7 @@ func statusWithSourceAndFilterContext(cfg config.Config, status models.Status, c
 }
 
 func statusWithStreamingFilterContext(cfg config.Config, status models.Status, current *models.Account, filters []streamingFilter, filterContext string) serializer.Status {
+	status = statusWithoutHashtagPreviewCards(status)
 	item := serializer.StatusFromModel(cfg, status, current)
 	if current == nil || len(filters) == 0 || strings.TrimSpace(filterContext) == "" {
 		return item

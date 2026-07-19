@@ -80,6 +80,73 @@ func TestRemotePreviewCardURLSelectionSkipsMicroformatAnchors(t *testing.T) {
 	}
 }
 
+func TestRemotePreviewCardURLSelectionSkipsSanitizedHashtagAnchors(t *testing.T) {
+	server := &Server{cfg: config.Config{LocalDomain: "social.example", WebDomain: "social.example", Scheme: "https"}}
+	status := models.Status{
+		Text: `<p><a href="https://remote.example/tags/%E5%AE%9F%E6%B3%81" rel="nofollow noopener noreferrer">#<span>実況</span></a>
+<a href="https://article.example/post">article</a></p>`,
+		Local: sql.NullBool{Bool: false, Valid: true},
+		Tags:  []models.Tag{{Name: "実況"}},
+	}
+	if got := server.previewCardURLFromStatus(status); got != "https://article.example/post" {
+		t.Fatalf("preview URL = %q, want ordinary article after sanitized hashtag", got)
+	}
+}
+
+func TestRemotePreviewCardURLSelectionSkipsHashtagPathWithoutStoredTag(t *testing.T) {
+	server := &Server{cfg: config.Config{LocalDomain: "social.example", WebDomain: "social.example", Scheme: "https"}}
+	status := models.Status{
+		Text:  `<p><a href="https://remote.example/tags/%E5%AE%9F%E6%B3%81" rel="nofollow noopener noreferrer">#実況</a></p>`,
+		Local: sql.NullBool{Bool: false, Valid: true},
+	}
+	if got := server.previewCardURLFromStatus(status); got != "" {
+		t.Fatalf("preview URL = %q, want hashtag URL excluded", got)
+	}
+}
+
+func TestRemotePreviewCardURLSelectionKeepsHashLabelledOrdinaryLink(t *testing.T) {
+	server := &Server{cfg: config.Config{LocalDomain: "social.example", WebDomain: "social.example", Scheme: "https"}}
+	status := models.Status{
+		Text:  `<p><a href="https://article.example/post">#documentation</a></p>`,
+		Local: sql.NullBool{Bool: false, Valid: true},
+	}
+	if got := server.previewCardURLFromStatus(status); got != "https://article.example/post" {
+		t.Fatalf("preview URL = %q, want non-tag URL retained", got)
+	}
+}
+
+func TestStatusSerializationSuppressesAlreadyAttachedHashtagCard(t *testing.T) {
+	status := models.Status{
+		Text: `<p><a href="https://remote.example/tags/%E5%AE%9F%E6%B3%81" rel="nofollow noopener noreferrer">#実況</a>
+<a href="https://article.example/post">article</a></p>`,
+		Local: sql.NullBool{Bool: false, Valid: true},
+		Tags:  []models.Tag{{Name: "実況"}},
+		PreviewCards: []models.PreviewCard{
+			{ID: 1, URL: "https://remote.example/tags/%E5%AE%9F%E6%B3%81"},
+			{ID: 2, URL: "https://article.example/post"},
+		},
+	}
+	filtered := statusWithoutHashtagPreviewCards(status)
+	if len(filtered.PreviewCards) != 1 || filtered.PreviewCards[0].ID != 2 {
+		t.Fatalf("filtered cards = %#v, want only ordinary article", filtered.PreviewCards)
+	}
+	if len(status.PreviewCards) != 2 || status.PreviewCards[0].ID != 1 || status.PreviewCards[1].ID != 2 {
+		t.Fatalf("source status was mutated: %#v", status.PreviewCards)
+	}
+}
+
+func TestStatusSerializationSuppressesRedirectedHashtagCard(t *testing.T) {
+	status := models.Status{
+		Text:         `<p><a href="https://remote.example/tags/%E5%AE%9F%E6%B3%81" rel="nofollow noopener noreferrer">#実況</a></p>`,
+		Local:        sql.NullBool{Bool: false, Valid: true},
+		Tags:         []models.Tag{{Name: "実況"}},
+		PreviewCards: []models.PreviewCard{{ID: 1, URL: "https://remote.example/redirected-tag-page"}},
+	}
+	if filtered := statusWithoutHashtagPreviewCards(status); len(filtered.PreviewCards) != 0 {
+		t.Fatalf("redirected hashtag card was retained: %#v", filtered.PreviewCards)
+	}
+}
+
 func TestPreviewCardImagePathUsesRailsCachePaperclipLayout(t *testing.T) {
 	server := &Server{cfg: config.Config{PublicDir: "/srv/paon/public"}}
 	got := server.previewCardImagePath(42, "cover.png")
@@ -134,6 +201,7 @@ func TestPreviewCardFetchAppliesRailsAttachSideEffects(t *testing.T) {
 	}
 	for _, want := range []string{
 		`if err := s.attachPreviewCardToStatus(ctx, statusID, card.ID); err != nil {`,
+		`DELETE FROM preview_cards_statuses WHERE status_id = ? AND preview_card_id IN ?`,
 		`s.uploadPaperclipObject(ctx, previewCardImageObjectKey(card.ID, download.filename), path, download.contentType)`,
 		`s.invalidateStatusCache(ctx, statusID)`,
 		`s.recordPreviewCardTrendUseForStatus(ctx, status.AccountID, status.ID, status.Visibility, time.Now().UTC())`,

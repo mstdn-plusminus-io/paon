@@ -162,6 +162,14 @@ type asynqFeedInsertPayload struct {
 	Update           bool   `json:"update,omitempty"`
 }
 
+type feedInsertFilterResult uint8
+
+const (
+	feedInsertFilterNone feedInsertFilterResult = iota
+	feedInsertFilterStatus
+	feedInsertSkipHome
+)
+
 // asynqLocalNotificationPayload mirrors LocalNotificationWorker.perform(receiver_account_id,
 // activity_id, activity_class_name, type).
 type asynqLocalNotificationPayload struct {
@@ -2188,12 +2196,18 @@ func (s *Server) handleAsynqFeedInsert(ctx context.Context, t *asynq.Task) error
 	if err := s.db.WithContext(ctx).Where("id = ?", p.StatusID).First(&status).Error; err != nil {
 		return workerLookupError("feed insert status lookup", err)
 	}
-	if filtered, err := s.asynqFeedInsertFiltered(ctx, p, status); err != nil {
+	filterResult, err := s.asynqFeedInsertFilter(ctx, p, status)
+	if err != nil {
 		return err
-	} else if filtered {
+	}
+	if filterResult != feedInsertFilterNone {
 		if p.Update {
-			_, err := s.removeStatusFromFeedContext(ctx, p.FeedType, p.FeedID, status, p.AggregateReblogs)
-			return err
+			if _, err := s.removeStatusFromFeedContext(ctx, p.FeedType, p.FeedID, status, p.AggregateReblogs); err != nil {
+				return err
+			}
+		}
+		if filterResult == feedInsertSkipHome {
+			return s.notifyFeedInsertedStatus(ctx, p, status)
 		}
 		return nil
 	}
@@ -2270,19 +2284,34 @@ func (s *Server) publishStatusUpdateToTimeline(ctx context.Context, accountID in
 	_, _ = s.redisCommand(ctx, "PUBLISH", redisConfig(s.cfg).prefix+timelineID, payload)
 }
 
-func (s *Server) asynqFeedInsertFiltered(ctx context.Context, p asynqFeedInsertPayload, status models.Status) (bool, error) {
+func (s *Server) asynqFeedInsertFilter(ctx context.Context, p asynqFeedInsertPayload, status models.Status) (feedInsertFilterResult, error) {
 	switch p.FeedType {
+	case "home":
+		if p.FeedID == status.AccountID {
+			return feedInsertFilterNone, nil
+		}
+		excluded, err := statusAuthorInExclusiveList(ctx, s.db, p.FeedID, status.AccountID)
+		if err != nil {
+			return feedInsertFilterNone, fmt.Errorf("feed insert exclusive list lookup: %w", err)
+		}
+		if excluded {
+			return feedInsertSkipHome, nil
+		}
+		return feedInsertFilterNone, nil
 	case "list":
 		var list models.List
 		if err := s.db.WithContext(ctx).Where("id = ?", p.FeedID).First(&list).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return true, nil
+				return feedInsertFilterStatus, nil
 			}
-			return false, fmt.Errorf("feed insert list lookup: %w", err)
+			return feedInsertFilterNone, fmt.Errorf("feed insert list lookup: %w", err)
 		}
-		return s.filterStatusFromList(ctx, s.db, status, list), nil
+		if s.filterStatusFromList(ctx, s.db, status, list) {
+			return feedInsertFilterStatus, nil
+		}
+		return feedInsertFilterNone, nil
 	default:
-		return false, nil
+		return feedInsertFilterNone, nil
 	}
 }
 
