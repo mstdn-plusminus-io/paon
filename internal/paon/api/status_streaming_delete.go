@@ -17,6 +17,7 @@ func statusStreamPayload(event string, payload any) string {
 }
 
 func statusUpdateStreamPayload(cfg config.Config, event string, status models.Status) string {
+	status = statusWithoutHashtagPreviewCards(status)
 	return statusStreamPayload(event, serializer.StatusFromModel(cfg, status, nil))
 }
 

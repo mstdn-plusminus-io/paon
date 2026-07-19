@@ -162,9 +162,13 @@ func (s *Server) statusCard(c *echo.Context) error {
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
+	*status = statusWithoutHashtagPreviewCards(*status)
 	if len(status.PreviewCards) == 0 {
 		_ = s.fetchLinkCardForStatus(c.Request().Context(), status.ID)
 		status, _, err = s.findVisibleStatusForRequest(c, c.Param("id"))
+		if err == nil {
+			*status = statusWithoutHashtagPreviewCards(*status)
+		}
 		if err != nil || len(status.PreviewCards) == 0 {
 			return apiError(c, http.StatusNotFound, "Record not found")
 		}

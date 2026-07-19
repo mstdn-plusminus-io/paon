@@ -6965,6 +6965,7 @@ func (s *Server) userAccountUnavailable(user models.User) bool {
 func serializeStatuses(cfg config.Config, statuses []models.Status, current *models.Account) []serializer.Status {
 	out := make([]serializer.Status, 0, len(statuses))
 	for _, status := range statuses {
+		status = statusWithoutHashtagPreviewCards(status)
 		out = append(out, serializer.StatusFromModel(cfg, status, current))
 	}
 	return out

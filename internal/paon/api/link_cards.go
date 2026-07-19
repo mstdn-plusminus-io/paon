@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	nethtml "golang.org/x/net/html"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -30,7 +31,6 @@ type fetchedPreviewCard struct {
 }
 
 var previewCardURLPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
-var previewCardHTMLAnchorPattern = regexp.MustCompile(`(?is)<a\s+[^>]*>`)
 var previewCardHTMLTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 var previewCardHTMLMetaPattern = regexp.MustCompile(`(?is)<meta\s+[^>]*>`)
 var previewCardHTMLAttrPattern = regexp.MustCompile(`(?is)([a-zA-Z_:.-]+)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))`)
@@ -68,11 +68,32 @@ func (s *Server) fetchLinkCardForStatus(ctx context.Context, statusID int64) err
 		return nil
 	}
 	var status models.Status
-	if err := s.db.WithContext(ctx).Preload("PreviewCards").Preload("Mentions.Account").Where("id = ? AND deleted_at IS NULL", statusID).First(&status).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("PreviewCards").Preload("Mentions.Account").Preload("Tags").Where("id = ? AND deleted_at IS NULL", statusID).First(&status).Error; err != nil {
 		return nil
 	}
 	if len(status.PreviewCards) > 0 {
-		return nil
+		visibleStatus := statusWithoutHashtagPreviewCards(status)
+		if len(visibleStatus.PreviewCards) == len(status.PreviewCards) {
+			return nil
+		}
+		visibleCardIDs := make(map[int64]struct{}, len(visibleStatus.PreviewCards))
+		for _, card := range visibleStatus.PreviewCards {
+			visibleCardIDs[card.ID] = struct{}{}
+		}
+		skippedCardIDs := make([]int64, 0, len(status.PreviewCards)-len(visibleStatus.PreviewCards))
+		for _, card := range status.PreviewCards {
+			if _, visible := visibleCardIDs[card.ID]; !visible {
+				skippedCardIDs = append(skippedCardIDs, card.ID)
+			}
+		}
+		if err := s.db.WithContext(ctx).Exec("DELETE FROM preview_cards_statuses WHERE status_id = ? AND preview_card_id IN ?", statusID, skippedCardIDs).Error; err != nil {
+			return err
+		}
+		s.invalidateStatusCache(ctx, statusID)
+		status.PreviewCards = visibleStatus.PreviewCards
+		if len(status.PreviewCards) > 0 {
+			return nil
+		}
 	}
 	rawURL := s.previewCardURLFromStatus(status)
 	if rawURL == "" {
@@ -110,12 +131,12 @@ func (s *Server) previewCardURLFromStatus(status models.Status) string {
 
 func (s *Server) previewCardURLFromRemoteStatus(status models.Status) string {
 	mentionURLs := previewCardMentionURLs(s, status.Mentions)
-	for _, tag := range previewCardHTMLAnchorPattern.FindAllString(status.Text, -1) {
-		attrs := htmlTagAttrs(tag)
-		if previewCardSkipRemoteAnchor(attrs, mentionURLs) {
+	hashtagNames := previewCardHashtagNames(status.Tags)
+	for _, anchor := range previewCardRemoteAnchors(status.Text) {
+		if previewCardSkipRemoteAnchor(anchor, mentionURLs, hashtagNames) {
 			continue
 		}
-		cleaned := cleanPreviewCardURL(attrs["href"])
+		cleaned := cleanPreviewCardURL(anchor.attrs["href"])
 		if s.previewCardURLAllowed(cleaned) {
 			return cleaned
 		}
@@ -123,16 +144,61 @@ func (s *Server) previewCardURLFromRemoteStatus(status models.Status) string {
 	return ""
 }
 
+func statusWithoutHashtagPreviewCards(status models.Status) models.Status {
+	if status.Local.Valid && !status.Local.Bool && len(status.PreviewCards) > 0 {
+		mentionURLs := previewCardMentionURLs(nil, status.Mentions)
+		hashtagNames := previewCardHashtagNames(status.Tags)
+		anchors := previewCardRemoteAnchors(status.Text)
+		hasOrdinaryLink := false
+		for _, anchor := range anchors {
+			if !previewCardSkipRemoteAnchor(anchor, mentionURLs, hashtagNames) {
+				hasOrdinaryLink = true
+				break
+			}
+		}
+		if !hasOrdinaryLink {
+			status.PreviewCards = nil
+		} else {
+			cards := make([]models.PreviewCard, 0, len(status.PreviewCards))
+			for _, card := range status.PreviewCards {
+				if !previewCardURLMatchesSkippedAnchor(anchors, card.URL, mentionURLs, hashtagNames) {
+					cards = append(cards, card)
+				}
+			}
+			status.PreviewCards = cards
+		}
+	}
+	if status.Reblog != nil {
+		reblog := statusWithoutHashtagPreviewCards(*status.Reblog)
+		status.Reblog = &reblog
+	}
+	return status
+}
+
+func previewCardURLMatchesSkippedAnchor(anchors []previewCardRemoteAnchor, cardURL string, mentionURLs map[string]struct{}, hashtagNames map[string]struct{}) bool {
+	cardURL = cleanPreviewCardURL(cardURL)
+	if cardURL == "" {
+		return false
+	}
+	for _, anchor := range anchors {
+		if cleanPreviewCardURL(anchor.attrs["href"]) == cardURL && previewCardSkipRemoteAnchor(anchor, mentionURLs, hashtagNames) {
+			return true
+		}
+	}
+	return false
+}
+
 func previewCardMentionURLs(s *Server, mentions []models.Mention) map[string]struct{} {
 	out := map[string]struct{}{}
-	if s == nil {
-		return out
-	}
 	for _, mention := range mentions {
 		if mention.Account.ID == 0 {
 			continue
 		}
-		if uri := strings.TrimSpace(activityPubAccountURI(s, mention.Account)); uri != "" {
+		if s != nil {
+			if uri := strings.TrimSpace(activityPubAccountURI(s, mention.Account)); uri != "" {
+				out[strings.ToLower(uri)] = struct{}{}
+			}
+		} else if uri := strings.TrimSpace(mention.Account.URI); uri != "" {
 			out[strings.ToLower(uri)] = struct{}{}
 		}
 		if mention.Account.URL.Valid {
@@ -144,20 +210,96 @@ func previewCardMentionURLs(s *Server, mentions []models.Mention) map[string]str
 	return out
 }
 
-func previewCardSkipRemoteAnchor(attrs map[string]string, mentionURLs map[string]struct{}) bool {
-	href := strings.TrimSpace(attrs["href"])
+type previewCardRemoteAnchor struct {
+	attrs map[string]string
+	text  string
+}
+
+func previewCardRemoteAnchors(content string) []previewCardRemoteAnchor {
+	nodes, err := parseHTMLFragment(content)
+	if err != nil {
+		return nil
+	}
+	out := make([]previewCardRemoteAnchor, 0)
+	var walk func(*nethtml.Node)
+	walk = func(node *nethtml.Node) {
+		if node.Type == nethtml.ElementNode && node.Data == "a" {
+			attrs := make(map[string]string, len(node.Attr))
+			for _, attr := range node.Attr {
+				attrs[strings.ToLower(attr.Key)] = attr.Val
+			}
+			out = append(out, previewCardRemoteAnchor{attrs: attrs, text: textContent(node)})
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	for _, node := range nodes {
+		walk(node)
+	}
+	return out
+}
+
+func previewCardHashtagNames(tags []models.Tag) map[string]struct{} {
+	out := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		if normalized, _, ok := normalizeTagName(tag.Name); ok {
+			out[strings.ToLower(normalized)] = struct{}{}
+		}
+	}
+	return out
+}
+
+func previewCardSkipRemoteAnchor(anchor previewCardRemoteAnchor, mentionURLs map[string]struct{}, hashtagNames map[string]struct{}) bool {
+	href := strings.TrimSpace(anchor.attrs["href"])
 	if href == "" {
 		return true
 	}
-	if strings.Contains(strings.ToLower(attrs["rel"]), "tag") {
+	if activityRelContains(anchor.attrs["rel"], "tag") {
 		return true
 	}
-	className := strings.ToLower(attrs["class"])
-	if strings.Contains(className, "u-url") || strings.Contains(className, "h-card") {
+	classNames := strings.Fields(strings.ToLower(anchor.attrs["class"]))
+	if stringSliceContains(classNames, "u-url") || stringSliceContains(classNames, "h-card") || stringSliceContains(classNames, "hashtag") {
+		return true
+	}
+	if previewCardAnchorMatchesHashtag(anchor, hashtagNames) {
 		return true
 	}
 	_, mentioned := mentionURLs[strings.ToLower(href)]
 	return mentioned
+}
+
+func previewCardAnchorMatchesHashtag(anchor previewCardRemoteAnchor, hashtagNames map[string]struct{}) bool {
+	text := strings.TrimSpace(anchor.text)
+	if !strings.HasPrefix(text, "#") {
+		return false
+	}
+	normalized, _, ok := normalizeTagName(text)
+	if !ok {
+		return false
+	}
+	normalized = strings.ToLower(normalized)
+	if _, ok := hashtagNames[normalized]; ok {
+		return true
+	}
+	parsed, err := url.Parse(strings.TrimSpace(anchor.attrs["href"]))
+	if err != nil {
+		return false
+	}
+	segments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	for i := 0; i+1 < len(segments); i++ {
+		switch strings.ToLower(segments[i]) {
+		case "tag", "tags", "hashtag", "hashtags":
+			candidate, err := url.PathUnescape(segments[i+1])
+			if err != nil {
+				continue
+			}
+			if candidateNormalized, _, ok := normalizeTagName(candidate); ok && strings.EqualFold(candidateNormalized, normalized) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func cleanPreviewCardURL(raw string) string {
