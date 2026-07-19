@@ -266,6 +266,89 @@ func TestTranslationHTTPDoPreservesLibreTranslateAllowLocal(t *testing.T) {
 	}
 }
 
+func TestTranslationHTTPDoAllowLocalUsesGuardedActivityTransport(t *testing.T) {
+	previousTranslationClient := translationHTTPClient
+	previousExceptions := activityPrivateAddressExceptions
+	previousProxyConfigured := activityHTTPProxyConfigured
+	t.Cleanup(func() {
+		translationHTTPClient = previousTranslationClient
+		activityPrivateAddressExceptions = previousExceptions
+		activityHTTPProxyConfigured = previousProxyConfigured
+	})
+	activityPrivateAddressExceptions = nil
+	activityHTTPProxyConfigured = false
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	client := activityHTTPClientFromConfig(config.Config{})
+	translationHTTPClient = client
+	t.Cleanup(client.CloseIdleConnections)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/languages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := translationHTTPDo(req, false); !errors.Is(err, errUnexpectedTranslationResponse) {
+		t.Fatalf("non-allow-local translation request err = %v, want %v", err, errUnexpectedTranslationResponse)
+	}
+	if requests != 0 {
+		t.Fatalf("non-allow-local request reached local server %d times", requests)
+	}
+
+	resp, err := translationHTTPDo(req, true)
+	if err != nil {
+		t.Fatalf("allow-local request through activity transport err = %v", err)
+	}
+	_ = resp.Body.Close()
+	if requests != 1 {
+		t.Fatalf("allow-local request count = %d, want 1", requests)
+	}
+}
+
+func TestTranslationHTTPDoAllowLocalFollowsSafeLocalRedirect(t *testing.T) {
+	previousTranslationClient := translationHTTPClient
+	previousExceptions := activityPrivateAddressExceptions
+	previousProxyConfigured := activityHTTPProxyConfigured
+	t.Cleanup(func() {
+		translationHTTPClient = previousTranslationClient
+		activityPrivateAddressExceptions = previousExceptions
+		activityHTTPProxyConfigured = previousProxyConfigured
+	})
+	activityPrivateAddressExceptions = nil
+	activityHTTPProxyConfigured = false
+
+	destinationRequests := 0
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		destinationRequests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(destination.Close)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, destination.URL+"/languages", http.StatusFound)
+	}))
+	t.Cleanup(source.Close)
+	client := activityHTTPClientFromConfig(config.Config{})
+	translationHTTPClient = client
+	t.Cleanup(client.CloseIdleConnections)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, source.URL+"/languages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := translationHTTPDo(req, true)
+	if err != nil {
+		t.Fatalf("allow-local redirected request err = %v", err)
+	}
+	_ = resp.Body.Close()
+	if destinationRequests != 1 {
+		t.Fatalf("local redirect destination request count = %d, want 1", destinationRequests)
+	}
+}
+
 func TestStatusTranslationPollOptionCacheKeysUsePollOptionIDsLikeRails(t *testing.T) {
 	status := models.Status{
 		ID:          10,

@@ -17,10 +17,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -45,7 +47,52 @@ const (
 var (
 	errActivitySignatureDomainNotAllowed = errors.New("domain is not allowed")
 	errActivitySignatureFailed           = errors.New("activitypub signature verification failed")
+	errActivityPrivateNetworkAddress     = errors.New("remote host resolves to a private network address")
 )
+
+type activityHTTPAllowPrivateNetworkContextKey struct{}
+
+func activityHTTPPrivateNetworkAllowed(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	allowed, _ := ctx.Value(activityHTTPAllowPrivateNetworkContextKey{}).(bool)
+	return allowed
+}
+
+// Keep this list aligned with Mastodon 4.2's private_address_check ranges.
+// Addresses are normalized with Unmap before matching so IPv4-mapped IPv6
+// forms such as ::ffff:0.0.0.1 cannot bypass the IPv4 ranges.
+var activityForbiddenAddressPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("255.255.255.255/32"),
+	netip.MustParsePrefix("::/128"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/32"),
+	netip.MustParsePrefix("2001:10::/28"),
+	netip.MustParsePrefix("2001:20::/28"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("fc00::/7"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
+}
 
 var (
 	defaultActivityHTTPClient        = activityHTTPClientFromConfig(config.Config{HTTPProxyURL: os.Getenv("http_proxy"), HTTPHiddenProxyURL: os.Getenv("http_hidden_proxy"), MaxRequestPoolSize: intFromEnvForActivityHTTP("MAX_REQUEST_POOL_SIZE", 512)})
@@ -66,7 +113,10 @@ func configureActivityHTTPClient(cfg config.Config) {
 }
 
 func activityHTTPClientFromConfig(cfg config.Config) *http.Client {
-	client := &http.Client{Timeout: activityHTTPReadDeadline}
+	client := &http.Client{
+		Timeout:       activityHTTPReadDeadline,
+		CheckRedirect: activityHTTPCheckRedirect,
+	}
 	transport := activityHTTPTransportFromConfig(cfg)
 	if transport == nil {
 		return client
@@ -107,7 +157,11 @@ func intFromEnvForActivityHTTP(key string, fallback int) int {
 
 func activityHTTPTransportFromConfig(cfg config.Config) *http.Transport {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DialContext = activityHTTPDialer().DialContext
+	// Paon's proxy contract is configured explicitly through http_proxy and
+	// http_hidden_proxy. Do not inherit Go's process-wide HTTP_PROXY/HTTPS_PROXY
+	// handling, which would bypass the configured proxy allowlist below.
+	transport.Proxy = nil
+	transport.DialContext = activityHTTPDialContext(cfg)
 	transport.TLSHandshakeTimeout = activityHTTPConnectTimeout
 	transport.ResponseHeaderTimeout = activityHTTPReadTimeout
 	transport.ExpectContinueTimeout = activityHTTPWriteTimeout
@@ -137,6 +191,71 @@ func activityHTTPDialer() *net.Dialer {
 		Timeout:   activityHTTPConnectTimeout,
 		KeepAlive: 30 * time.Second,
 	}
+}
+
+func activityHTTPDialContext(cfg config.Config) func(context.Context, string, string) (net.Conn, error) {
+	dialer := activityHTTPDialer()
+	proxyAddresses := activityHTTPProxyDialAddresses(cfg)
+	return func(ctx context.Context, network string, address string) (net.Conn, error) {
+		guardedDialer := *dialer
+		guardedDialer.ControlContext = activityHTTPDialControl(address, proxyAddresses)
+		return guardedDialer.DialContext(ctx, network, address)
+	}
+}
+
+func activityHTTPDialControl(address string, proxyAddresses map[string]struct{}) func(context.Context, string, string, syscall.RawConn) error {
+	if _, ok := proxyAddresses[activityHTTPDialAddressKey(address)]; ok {
+		return nil
+	}
+	return func(ctx context.Context, _ string, resolvedAddress string, _ syscall.RawConn) error {
+		if activityHTTPPrivateNetworkAllowed(ctx) {
+			return nil
+		}
+		host, _, err := net.SplitHostPort(resolvedAddress)
+		if err != nil {
+			return fmt.Errorf("%w: %s", errActivityPrivateNetworkAddress, resolvedAddress)
+		}
+		if zone := strings.LastIndexByte(host, '%'); zone >= 0 {
+			host = host[:zone]
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || !activityIPAllowed(ip) {
+			return fmt.Errorf("%w: %s", errActivityPrivateNetworkAddress, host)
+		}
+		return nil
+	}
+}
+
+func activityHTTPProxyDialAddresses(cfg config.Config) map[string]struct{} {
+	addresses := make(map[string]struct{}, 2)
+	for _, raw := range []string{cfg.HTTPProxyURL, cfg.HTTPHiddenProxyURL} {
+		parsed, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || parsed.Hostname() == "" {
+			continue
+		}
+		port := parsed.Port()
+		if port == "" {
+			switch strings.ToLower(parsed.Scheme) {
+			case "http":
+				port = "80"
+			case "https":
+				port = "443"
+			default:
+				continue
+			}
+		}
+		addresses[activityHTTPDialAddressKey(net.JoinHostPort(parsed.Hostname(), port))] = struct{}{}
+	}
+	return addresses
+}
+
+func activityHTTPDialAddressKey(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(address))
+	}
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	return net.JoinHostPort(host, port)
 }
 
 func (s *Server) verifyActivityPubSignature(c *echo.Context, body []byte) (*models.Account, error) {
@@ -1900,7 +2019,27 @@ func activityFetchHostAllowed(host string) bool {
 	return true
 }
 
+func activityHTTPCheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 3 {
+		return http.ErrUseLastResponse
+	}
+	if req != nil && activityHTTPPrivateNetworkAllowed(req.Context()) {
+		if !activityRedirectSchemeAllowed(req, via) {
+			return fmt.Errorf("remote host is not allowed")
+		}
+		return nil
+	}
+	if !activityRedirectAllowed(req, via) {
+		return fmt.Errorf("remote host is not allowed")
+	}
+	return nil
+}
+
 func activityRedirectAllowed(req *http.Request, via []*http.Request) bool {
+	return activityRedirectSchemeAllowed(req, via) && activityFetchHostAllowed(req.URL.Hostname())
+}
+
+func activityRedirectSchemeAllowed(req *http.Request, via []*http.Request) bool {
 	if req == nil || req.URL == nil || req.URL.Host == "" {
 		return false
 	}
@@ -1912,7 +2051,7 @@ func activityRedirectAllowed(req *http.Request, via []*http.Request) bool {
 	} else if !railsOpenURIRedirectable(req.URL.Scheme, req.URL.Scheme) {
 		return false
 	}
-	return activityFetchHostAllowed(req.URL.Hostname())
+	return true
 }
 
 func railsOpenURIRedirectable(fromScheme string, toScheme string) bool {
@@ -1945,7 +2084,17 @@ func activityIPAllowed(ip net.IP) bool {
 			return true
 		}
 	}
-	return !(ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate())
+	address, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	address = address.Unmap()
+	for _, prefix := range activityForbiddenAddressPrefixes {
+		if prefix.Contains(address) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseActivityPrivateAddressExceptions(raw string) []*net.IPNet {

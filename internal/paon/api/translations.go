@@ -62,7 +62,8 @@ func translationHTTPDo(req *http.Request, allowLocal bool) (*http.Response, erro
 		return nil, errUnexpectedTranslationResponse
 	}
 	if allowLocal {
-		return client.Do(req)
+		ctx := context.WithValue(req.Context(), activityHTTPAllowPrivateNetworkContextKey{}, true)
+		return client.Do(req.WithContext(ctx))
 	}
 	if req.URL == nil || req.URL.Host == "" || !activityFetchHostAllowed(req.URL.Hostname()) {
 		return nil, errUnexpectedTranslationResponse

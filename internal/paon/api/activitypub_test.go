@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -2024,14 +2025,184 @@ func TestActivityFetchPrivateIPRejected(t *testing.T) {
 	activityPrivateAddressExceptions = nil
 	t.Cleanup(func() { activityPrivateAddressExceptions = old })
 
-	for _, raw := range []string{"127.0.0.1", "::1", "10.0.0.1", "192.168.1.10", "169.254.1.1"} {
+	for _, raw := range []string{
+		"127.0.0.1",
+		"0.0.0.1",
+		"169.254.1.1",
+		"10.0.0.1",
+		"100.64.0.1",
+		"172.16.0.1",
+		"192.0.0.1",
+		"192.0.2.1",
+		"192.88.99.1",
+		"192.168.1.10",
+		"198.18.0.1",
+		"198.51.100.1",
+		"203.0.113.1",
+		"224.0.0.1",
+		"240.0.0.1",
+		"255.255.255.255",
+		"::",
+		"::1",
+		"::ffff:0.0.0.1",
+		"64:ff9b::1",
+		"100::1",
+		"2001::1",
+		"2001:10::1",
+		"2001:20::1",
+		"2001:db8::1",
+		"2002::1",
+		"fc00::1",
+		"fe80::1",
+		"ff00::1",
+	} {
 		ip := net.ParseIP(raw)
 		if activityIPAllowed(ip) {
 			t.Fatalf("expected %s to be rejected", raw)
 		}
 	}
-	if !activityIPAllowed(net.ParseIP("8.8.8.8")) {
-		t.Fatal("expected public IP to be allowed")
+	for _, raw := range []string{"8.8.8.8", "2001:4860:4860::8888"} {
+		if !activityIPAllowed(net.ParseIP(raw)) {
+			t.Fatalf("expected public IP %s to be allowed", raw)
+		}
+	}
+}
+
+func TestActivityFetchPrivateIPExceptionsTakePrecedence(t *testing.T) {
+	old := activityPrivateAddressExceptions
+	activityPrivateAddressExceptions = parseActivityPrivateAddressExceptions("0.0.0.0/8, 100::/64")
+	t.Cleanup(func() { activityPrivateAddressExceptions = old })
+
+	for _, raw := range []string{"0.0.0.1", "::ffff:0.0.0.1", "100::1"} {
+		if !activityIPAllowed(net.ParseIP(raw)) {
+			t.Fatalf("expected configured private address exception %s to be allowed", raw)
+		}
+	}
+	if activityIPAllowed(net.ParseIP("127.0.0.1")) {
+		t.Fatal("an unrelated private address must remain rejected")
+	}
+}
+
+func TestActivityHTTPDialControlRejectsResolvedPrivateAddresses(t *testing.T) {
+	old := activityPrivateAddressExceptions
+	activityPrivateAddressExceptions = nil
+	t.Cleanup(func() { activityPrivateAddressExceptions = old })
+
+	control := activityHTTPDialControl("remote.example:443", nil)
+	if control == nil {
+		t.Fatal("direct connections must install a dial-time address check")
+	}
+	for _, address := range []string{"0.0.0.1:443", "[::ffff:0.0.0.1]:443", "[64:ff9b::1]:443"} {
+		err := control(context.Background(), "tcp", address, nil)
+		if !errors.Is(err, errActivityPrivateNetworkAddress) {
+			t.Fatalf("resolved address %s error = %v, want private-network rejection", address, err)
+		}
+	}
+	for _, address := range []string{"8.8.8.8:443", "[2001:4860:4860::8888]:443"} {
+		if err := control(context.Background(), "tcp", address, nil); err != nil {
+			t.Fatalf("public resolved address %s error = %v", address, err)
+		}
+	}
+}
+
+func TestActivityHTTPDialControlPreservesConfiguredProxyConnections(t *testing.T) {
+	proxyAddresses := activityHTTPProxyDialAddresses(config.Config{
+		HTTPProxyURL:       "http://127.0.0.1:8080",
+		HTTPHiddenProxyURL: "https://proxy.example",
+	})
+	for _, address := range []string{"127.0.0.1:8080", "proxy.example:443"} {
+		if control := activityHTTPDialControl(address, proxyAddresses); control != nil {
+			t.Fatalf("configured proxy address %s must bypass direct-destination filtering", address)
+		}
+	}
+	if control := activityHTTPDialControl("remote.example:443", proxyAddresses); control == nil {
+		t.Fatal("non-proxy destinations must retain dial-time filtering")
+	}
+}
+
+func TestActivityHTTPTransportUsesOnlyConfiguredProxySettings(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:8080")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:8443")
+
+	transport := activityHTTPTransportFromConfig(config.Config{})
+	if transport.Proxy != nil {
+		t.Fatal("unconfigured process-wide proxy settings must not bypass Paon's proxy guard")
+	}
+}
+
+func TestActivityHTTPClientChecksActualDialedAddress(t *testing.T) {
+	old := activityPrivateAddressExceptions
+	activityPrivateAddressExceptions = nil
+	t.Cleanup(func() { activityPrivateAddressExceptions = old })
+
+	requests := 0
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(origin.Close)
+
+	client := activityHTTPClientFromConfig(config.Config{})
+	t.Cleanup(client.CloseIdleConnections)
+	if _, err := client.Get(origin.URL); !errors.Is(err, errActivityPrivateNetworkAddress) {
+		t.Fatalf("actual loopback dial error = %v, want private-network rejection", err)
+	}
+	if requests != 0 {
+		t.Fatalf("blocked private-address request reached local server %d times", requests)
+	}
+
+	activityPrivateAddressExceptions = parseActivityPrivateAddressExceptions("127.0.0.1")
+	resp, err := client.Get(origin.URL)
+	if err != nil {
+		t.Fatalf("configured private-address exception did not permit actual dial: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("allowed private-address response = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if requests != 1 {
+		t.Fatalf("allowed private-address request count = %d, want 1", requests)
+	}
+}
+
+func TestActivityHTTPClientChecksActualRedirectTarget(t *testing.T) {
+	old := activityPrivateAddressExceptions
+	activityPrivateAddressExceptions = parseActivityPrivateAddressExceptions("127.0.0.1")
+	t.Cleanup(func() { activityPrivateAddressExceptions = old })
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://[::ffff:0.0.0.1]/metadata", http.StatusFound)
+	}))
+	t.Cleanup(origin.Close)
+
+	_, err := activityHTTPClientFromConfig(config.Config{}).Get(origin.URL)
+	if err == nil {
+		t.Fatal("actual redirect to an IPv4-mapped forbidden address was allowed")
+	}
+}
+
+func TestDefaultActivityHTTPClientRejectsPrivateRedirects(t *testing.T) {
+	oldProxyConfigured := activityHTTPProxyConfigured
+	activityHTTPProxyConfigured = false
+	t.Cleanup(func() { activityHTTPProxyConfigured = oldProxyConfigured })
+
+	client := activityHTTPClientFromConfig(config.Config{})
+	if client.CheckRedirect == nil {
+		t.Fatal("default activity HTTP client must install a redirect guard")
+	}
+	previous, err := http.NewRequest(http.MethodGet, "https://remote.example/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirect, err := http.NewRequest(http.MethodGet, "http://[::ffff:0.0.0.1]/metadata", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CheckRedirect(redirect, []*http.Request{previous}); err == nil {
+		t.Fatal("default activity HTTP client allowed a redirect to a forbidden address")
+	}
+	if err := client.CheckRedirect(nil, make([]*http.Request, 3)); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("redirect limit error = %v, want http.ErrUseLastResponse", err)
 	}
 }
 
