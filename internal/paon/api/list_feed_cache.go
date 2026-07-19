@@ -397,6 +397,21 @@ func (s *Server) filterStatusFromList(ctx context.Context, database *gorm.DB, st
 	}
 }
 
+func statusAuthorInExclusiveList(ctx context.Context, database *gorm.DB, recipientID int64, statusAccountID int64) (bool, error) {
+	if database == nil || recipientID == 0 || statusAccountID == 0 || recipientID == statusAccountID {
+		return false, nil
+	}
+	var count int64
+	err := database.WithContext(ctx).
+		Table("lists").
+		Joins("JOIN list_accounts ON list_accounts.list_id = lists.id").
+		Where("lists.account_id = ? AND lists.exclusive = true", recipientID).
+		Where("list_accounts.account_id = ?", statusAccountID).
+		Limit(1).
+		Count(&count).Error
+	return count > 0, err
+}
+
 func (s *Server) regenerateHomeFeedForReturningUser(ctx context.Context, user models.User, now time.Time) {
 	if s == nil || s.db == nil || user.AccountID == 0 || !user.ConfirmedAt.Valid || !returningUserNeedsFeedUpdate(user, now) {
 		return

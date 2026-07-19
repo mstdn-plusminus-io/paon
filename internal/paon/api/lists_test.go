@@ -363,6 +363,52 @@ func TestFeedTargetsUseRailsAggregateReblogSetting(t *testing.T) {
 	}
 }
 
+func TestExclusiveListFiltersHomeFeedInsertAtWorkerExecution(t *testing.T) {
+	workerSrc, err := os.ReadFile("asynq_workers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		fn   string
+		want string
+	}{
+		{"handleAsynqFeedInsert", `filterResult, err := s.asynqFeedInsertFilter(ctx, p, status)`},
+		{"handleAsynqFeedInsert", `filterResult == feedInsertSkipHome`},
+		{"handleAsynqFeedInsert", `return s.notifyFeedInsertedStatus(ctx, p, status)`},
+		{"asynqFeedInsertFilter", `case "home":`},
+		{"asynqFeedInsertFilter", `statusAuthorInExclusiveList(ctx, s.db, p.FeedID, status.AccountID)`},
+		{"asynqFeedInsertFilter", `return feedInsertSkipHome, nil`},
+	} {
+		if !functionBodyContains(t, workerSrc, check.fn, check.want) {
+			t.Fatalf("asynq_workers.go:%s missing exclusive home behavior %q", check.fn, check.want)
+		}
+	}
+
+	cacheSrc, err := os.ReadFile("list_feed_cache.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`Joins("JOIN list_accounts ON list_accounts.list_id = lists.id")`,
+		`Where("lists.account_id = ? AND lists.exclusive = true", recipientID)`,
+		`Where("list_accounts.account_id = ?", statusAccountID)`,
+	} {
+		if !functionBodyContains(t, cacheSrc, "statusAuthorInExclusiveList", want) {
+			t.Fatalf("list_feed_cache.go:statusAuthorInExclusiveList missing %q", want)
+		}
+	}
+}
+
+func TestExclusiveListDoesNotFilterOwnStatuses(t *testing.T) {
+	excluded, err := statusAuthorInExclusiveList(context.Background(), nil, 42, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if excluded {
+		t.Fatal("an account's own status must remain in its home timeline")
+	}
+}
+
 func TestStatusDeleteUnpushesRailsFeedCaches(t *testing.T) {
 	serverSrc, err := os.ReadFile("server.go")
 	if err != nil {
