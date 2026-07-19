@@ -18,32 +18,17 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
-func TestS3SignatureVersionV2CanonicalStringAndPresign(t *testing.T) {
+func TestS3SDKPresignsGetObjectWithSigV4(t *testing.T) {
 	s := &Server{cfg: config.Config{
 		S3Enabled:          true,
 		S3Bucket:           "bucket-name",
 		S3Endpoint:         "https://storage.example.test",
 		S3AccessKeyID:      "access",
 		S3SecretAccessKey:  "secret",
-		S3SignatureVersion: "v2",
+		S3Region:           "ap-northeast-1",
+		S3SignatureVersion: "v4",
 		S3SessionToken:     "session-token",
 	}}
-	req, err := http.NewRequest(http.MethodPut, "https://storage.example.test/bucket-name/media/file.png?acl=", http.NoBody)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Date", "Tue, 07 Jul 2026 00:00:00 GMT")
-	req.Header.Set("Content-Type", "image/png")
-	req.Header.Set("X-Amz-Acl", "public-read")
-	req.Header.Set("X-Amz-Storage-Class", "STANDARD_IA")
-	req.Header.Set("X-Amz-Security-Token", "session-token")
-	wantString := "PUT\n\nimage/png\nTue, 07 Jul 2026 00:00:00 GMT\nx-amz-acl:public-read\nx-amz-security-token:session-token\nx-amz-storage-class:STANDARD_IA\n/bucket-name/media/file.png?acl"
-	if got := s3V2StringToSign(req, "bucket-name", false); got != wantString {
-		t.Fatalf("S3 v2 string-to-sign:\n%s\nwant:\n%s", got, wantString)
-	}
-	if got := s.signS3V2String(wantString); got == "" || strings.Contains(got, ":") {
-		t.Fatalf("S3 v2 signature = %q", got)
-	}
 
 	raw := s.presignedS3ObjectURL("media/file.png", time.Minute)
 	parsed, err := url.Parse(raw)
@@ -51,60 +36,69 @@ func TestS3SignatureVersionV2CanonicalStringAndPresign(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := parsed.Query()
-	if query.Get("AWSAccessKeyId") != "access" || query.Get("Expires") == "" || query.Get("Signature") == "" {
-		t.Fatalf("S3 v2 presigned query = %#v", query)
+	if query.Get("X-Amz-Algorithm") != "AWS4-HMAC-SHA256" || query.Get("X-Amz-Credential") == "" || query.Get("X-Amz-Signature") == "" {
+		t.Fatalf("S3 SDK presigned query = %#v", query)
 	}
-	if query.Get("X-Amz-Algorithm") != "" || query.Get("X-Amz-Signature") != "" {
-		t.Fatalf("S3 v2 presigned URL must not contain v4 query params: %s", raw)
+	if query.Get("X-Amz-Expires") != "60" {
+		t.Fatalf("S3 SDK presigned expiry = %q", query.Get("X-Amz-Expires"))
 	}
-	if query.Get("x-amz-security-token") != "session-token" {
-		t.Fatalf("S3 v2 presigned session token missing: %#v", query)
+	if query.Get("X-Amz-Security-Token") != "session-token" {
+		t.Fatalf("S3 SDK presigned session token missing: %#v", query)
 	}
 }
 
-func TestS3ObjectRequestURLUsesPathStyleForDottedBucketOverHTTPS(t *testing.T) {
+func TestS3SDKUsesPathStyleForDottedBucketOverHTTPS(t *testing.T) {
 	s := &Server{cfg: config.Config{
-		S3Bucket:   "media.stg.mstdn.plusminus.io",
-		S3Region:   "ap-northeast-1",
-		S3Protocol: "https",
-		S3Hostname: "s3-ap-northeast-1.amazonaws.com",
+		S3Enabled:         true,
+		S3Bucket:          "media.stg.mstdn.plusminus.io",
+		S3Region:          "ap-northeast-1",
+		S3Protocol:        "https",
+		S3ProtocolSet:     true,
+		S3Hostname:        "s3-ap-northeast-1.amazonaws.com",
+		S3HostnameSet:     true,
+		S3AccessKeyID:     "access",
+		S3SecretAccessKey: "secret",
 	}}
 
-	got := s.s3ObjectRequestURL("media_attachments/files/000/000/042/original/photo.png")
-	want := "https://s3-ap-northeast-1.amazonaws.com/media.stg.mstdn.plusminus.io/media_attachments/files/000/000/042/original/photo.png"
-	if got != want {
-		t.Fatalf("S3 object request URL = %q, want %q", got, want)
+	raw := s.presignedS3ObjectURL("media_attachments/files/000/000/042/original/photo.png", time.Minute)
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Host != "s3-ap-northeast-1.amazonaws.com" || parsed.Path != "/media.stg.mstdn.plusminus.io/media_attachments/files/000/000/042/original/photo.png" {
+		t.Fatalf("S3 SDK dotted-bucket URL = %q", raw)
 	}
 }
 
-func TestS3ObjectRequestURLCanOverrideDottedBucketPathStyle(t *testing.T) {
+func TestS3SDKCanOverrideCustomEndpointPathStyle(t *testing.T) {
 	s := &Server{cfg: config.Config{
-		S3Bucket:            "media.stg.mstdn.plusminus.io",
+		S3Enabled:           true,
+		S3Bucket:            "media-bucket",
+		S3Endpoint:          "https://storage.example.test",
 		S3Region:            "ap-northeast-1",
-		S3Protocol:          "https",
-		S3Hostname:          "s3-ap-northeast-1.amazonaws.com",
 		S3OverridePathStyle: true,
+		S3AccessKeyID:       "access",
+		S3SecretAccessKey:   "secret",
 	}}
 
-	got := s.s3ObjectRequestURL("media/file.png")
-	want := "https://media.stg.mstdn.plusminus.io.s3-ap-northeast-1.amazonaws.com/media/file.png"
-	if got != want {
-		t.Fatalf("S3 object request URL = %q, want %q", got, want)
+	raw := s.presignedS3ObjectURL("media/file.png", time.Minute)
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Host != "media-bucket.storage.example.test" || parsed.Path != "/media/file.png" {
+		t.Fatalf("S3 SDK virtual-hosted URL = %q", raw)
 	}
 }
 
-func TestS3ObjectRequestURLKeepsVirtualHostedStyleForDNSCompatibleBucket(t *testing.T) {
-	s := &Server{cfg: config.Config{
-		S3Bucket:   "media-stg-mstdn-plusminus-io",
-		S3Region:   "ap-northeast-1",
-		S3Protocol: "https",
-		S3Hostname: "s3-ap-northeast-1.amazonaws.com",
-	}}
-
-	got := s.s3ObjectRequestURL("media/file.png")
-	want := "https://media-stg-mstdn-plusminus-io.s3-ap-northeast-1.amazonaws.com/media/file.png"
-	if got != want {
-		t.Fatalf("S3 object request URL = %q, want %q", got, want)
+func TestS3SDKRejectsSignatureVersionV2(t *testing.T) {
+	_, err := newS3SDKStorage(context.Background(), config.Config{
+		S3Enabled:          true,
+		S3Bucket:           "bucket-name",
+		S3SignatureVersion: "v2",
+	})
+	if err == nil || !strings.Contains(err.Error(), "AWS SDK for Go v2 uses SigV4") {
+		t.Fatalf("newS3SDKStorage error = %v", err)
 	}
 }
 
@@ -134,6 +128,9 @@ func TestS3ACLHeadersPreserveRawRailsPermissionValue(t *testing.T) {
 	oldClient := s3HTTPClient
 	defer func() { s3HTTPClient = oldClient }()
 	s3HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.Header.Get("X-Amz-Multipart-Threshold"); got != "" {
+			t.Fatalf("AWS SDK upload sent internal multipart threshold header %q", got)
+		}
 		if r.URL.RawQuery == "acl=" {
 			gotObjectACL = r.Header.Get("X-Amz-Acl")
 		} else {
@@ -175,7 +172,7 @@ func TestAccountImageObjectKeyUsesRailsPaperclipIDPartition(t *testing.T) {
 	}
 }
 
-func TestS3SigningPreservesExplicitBlankRailsRegion(t *testing.T) {
+func TestS3SDKDefaultsBlankRegionToUSEast1(t *testing.T) {
 	var gotAuthorization string
 	oldClient := s3HTTPClient
 	defer func() { s3HTTPClient = oldClient }()
@@ -196,8 +193,8 @@ func TestS3SigningPreservesExplicitBlankRailsRegion(t *testing.T) {
 	if _, _, err := s.getS3Object(context.Background(), "media_attachments/files/000/000/042/original/photo.png"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(gotAuthorization, "//s3/aws4_request") {
-		t.Fatalf("Authorization should preserve explicit blank S3 region, got %q", gotAuthorization)
+	if !strings.Contains(gotAuthorization, "/us-east-1/s3/aws4_request") {
+		t.Fatalf("AWS SDK Authorization region = %q", gotAuthorization)
 	}
 }
 

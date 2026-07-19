@@ -1,21 +1,19 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
@@ -35,44 +33,49 @@ type statusQuoteStore interface {
 }
 
 type dynamoDBStatusQuoteStore struct {
-	cfg       config.Config
 	tableName string
-	endpoint  string
-	client    *http.Client
+	client    *dynamodb.Client
 }
 
-const (
-	dynamoDBStatusQuoteHTTPTimeout         = 2 * time.Second
-	maxDynamoDBStatusQuoteResponseBodySize = 1 << 20
-)
-
-type dynamoDBStringAttribute struct {
-	S string `json:"S,omitempty"`
-}
+const dynamoDBStatusQuoteHTTPTimeout = 2 * time.Second
 
 func newStatusQuoteStore(cfg config.Config, client *http.Client) (statusQuoteStore, error) {
 	if !cfg.DynamoDBEnabled {
 		return nil, nil
 	}
-	if strings.TrimSpace(cfg.DynamoDBAccessKey) == "" || strings.TrimSpace(cfg.DynamoDBSecretKey) == "" {
-		return nil, nil
-	}
 	if strings.TrimSpace(cfg.DynamoDBNamespace) == "" {
-		return nil, errors.New("DYNAMODB_NAMESPACE is required when DYNAMODB_ENABLED=true and DynamoDB credentials are configured")
+		return nil, errors.New("DYNAMODB_NAMESPACE is required when DYNAMODB_ENABLED=true")
+	}
+	if (strings.TrimSpace(cfg.DynamoDBAccessKey) == "") != (strings.TrimSpace(cfg.DynamoDBSecretKey) == "") {
+		return nil, errors.New("DYNAMODB_AWS_ACCESS_KEY_ID and DYNAMODB_AWS_SECRET_ACCESS_KEY must be configured together")
 	}
 	if client == nil {
 		client = &http.Client{Timeout: dynamoDBStatusQuoteHTTPTimeout}
 	}
-	endpoint := strings.TrimRight(cfg.DynamoDBEndpoint, "/")
-	if endpoint == "" {
-		region := dynamoDBRegionForRequest(cfg)
-		endpoint = "https://dynamodb." + region + ".amazonaws.com"
+	loadOptions := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion(dynamoDBRegionForRequest(cfg)),
 	}
+	if strings.TrimSpace(cfg.DynamoDBAccessKey) != "" {
+		loadOptions = append(loadOptions, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			cfg.DynamoDBAccessKey,
+			cfg.DynamoDBSecretKey,
+			cfg.DynamoDBSessionToken,
+		)))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), loadOptions...)
+	if err != nil {
+		return nil, err
+	}
+	clientOptions := []func(*dynamodb.Options){func(options *dynamodb.Options) {
+		options.HTTPClient = client
+		options.Retryer = aws.NopRetryer{}
+		if endpoint := strings.TrimSpace(cfg.DynamoDBEndpoint); endpoint != "" {
+			options.BaseEndpoint = aws.String(endpoint)
+		}
+	}}
 	return &dynamoDBStatusQuoteStore{
-		cfg:       cfg,
 		tableName: dynamoDBTableName(cfg.DynamoDBNamespace, "status_quotes"),
-		endpoint:  endpoint,
-		client:    client,
+		client:    dynamodb.NewFromConfig(awsCfg, clientOptions...),
 	}, nil
 }
 
@@ -191,29 +194,19 @@ func (d *dynamoDBStatusQuoteStore) Get(ctx context.Context, statusID string) (st
 	if strings.TrimSpace(statusID) == "" {
 		return out, false, nil
 	}
-	body := map[string]any{
-		"TableName": d.tableName,
-		"Key":       map[string]any{"status_id": dynamoDBStringAttribute{S: statusID}},
-	}
-	raw, err := d.do(ctx, "GetItem", body)
+	ctx, cancel := dynamoDBStatusQuoteContext(ctx)
+	defer cancel()
+	output, err := d.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(d.tableName),
+		Key:       map[string]dynamodbtypes.AttributeValue{"status_id": dynamoDBStringAttribute(statusID)},
+	})
 	if err != nil {
 		return out, false, err
 	}
-	var decoded struct {
-		Item map[string]dynamoDBStringAttribute `json:"Item"`
-	}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return out, false, err
-	}
-	if len(decoded.Item) == 0 {
+	if len(output.Item) == 0 {
 		return out, false, nil
 	}
-	out = statusQuote{
-		StatusID:    decoded.Item["status_id"].S,
-		QuoteID:     decoded.Item["quote_id"].S,
-		OriginalURL: decoded.Item["original_url"].S,
-		LocalURL:    decoded.Item["local_url"].S,
-	}
+	out = statusQuoteFromDynamoDBItem(output.Item)
 	if out.StatusID == "" {
 		out.StatusID = statusID
 	}
@@ -240,34 +233,22 @@ func (d *dynamoDBStatusQuoteStore) getManyChunk(ctx context.Context, statusIDs [
 	if len(statusIDs) == 0 {
 		return nil
 	}
-	keys := make([]map[string]dynamoDBStringAttribute, 0, len(statusIDs))
+	keys := make([]map[string]dynamodbtypes.AttributeValue, 0, len(statusIDs))
 	for _, statusID := range statusIDs {
-		keys = append(keys, map[string]dynamoDBStringAttribute{"status_id": {S: statusID}})
+		keys = append(keys, map[string]dynamodbtypes.AttributeValue{"status_id": dynamoDBStringAttribute(statusID)})
 	}
-	body := map[string]any{
-		"RequestItems": map[string]any{
-			d.tableName: map[string]any{
-				"Keys": keys,
-			},
+	ctx, cancel := dynamoDBStatusQuoteContext(ctx)
+	defer cancel()
+	output, err := d.client.BatchGetItem(ctx, &dynamodb.BatchGetItemInput{
+		RequestItems: map[string]dynamodbtypes.KeysAndAttributes{
+			d.tableName: {Keys: keys},
 		},
-	}
-	raw, err := d.do(ctx, "BatchGetItem", body)
+	})
 	if err != nil {
 		return err
 	}
-	var decoded struct {
-		Responses map[string][]map[string]dynamoDBStringAttribute `json:"Responses"`
-	}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return err
-	}
-	for _, item := range decoded.Responses[d.tableName] {
-		quote := statusQuote{
-			StatusID:    item["status_id"].S,
-			QuoteID:     item["quote_id"].S,
-			OriginalURL: item["original_url"].S,
-			LocalURL:    item["local_url"].S,
-		}
+	for _, item := range output.Responses[d.tableName] {
+		quote := statusQuoteFromDynamoDBItem(item)
 		if quote.StatusID != "" {
 			out[quote.StatusID] = quote
 		}
@@ -279,13 +260,15 @@ func (d *dynamoDBStatusQuoteStore) Put(ctx context.Context, quote statusQuote) e
 	if strings.TrimSpace(quote.StatusID) == "" || strings.TrimSpace(quote.QuoteID) == "" {
 		return nil
 	}
-	item := map[string]dynamoDBStringAttribute{
-		"status_id":    {S: quote.StatusID},
-		"quote_id":     {S: quote.QuoteID},
-		"original_url": {S: quote.OriginalURL},
-		"local_url":    {S: firstNonEmpty(quote.LocalURL, quote.OriginalURL)},
+	item := map[string]dynamodbtypes.AttributeValue{
+		"status_id":    dynamoDBStringAttribute(quote.StatusID),
+		"quote_id":     dynamoDBStringAttribute(quote.QuoteID),
+		"original_url": dynamoDBStringAttribute(quote.OriginalURL),
+		"local_url":    dynamoDBStringAttribute(firstNonEmpty(quote.LocalURL, quote.OriginalURL)),
 	}
-	_, err := d.do(ctx, "PutItem", map[string]any{"TableName": d.tableName, "Item": item})
+	ctx, cancel := dynamoDBStatusQuoteContext(ctx)
+	defer cancel()
+	_, err := d.client.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(d.tableName), Item: item})
 	return err
 }
 
@@ -293,141 +276,44 @@ func (d *dynamoDBStatusQuoteStore) Delete(ctx context.Context, statusID string) 
 	if strings.TrimSpace(statusID) == "" {
 		return nil
 	}
-	_, err := d.do(ctx, "DeleteItem", map[string]any{
-		"TableName": d.tableName,
-		"Key":       map[string]any{"status_id": dynamoDBStringAttribute{S: statusID}},
+	ctx, cancel := dynamoDBStatusQuoteContext(ctx)
+	defer cancel()
+	_, err := d.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(d.tableName),
+		Key:       map[string]dynamodbtypes.AttributeValue{"status_id": dynamoDBStringAttribute(statusID)},
 	})
 	return err
 }
 
-func (d *dynamoDBStatusQuoteStore) do(ctx context.Context, operation string, body any) ([]byte, error) {
+func dynamoDBStatusQuoteContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(ctx, dynamoDBStatusQuoteHTTPTimeout)
-	defer cancel()
-
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	target := "DynamoDB_20120810." + operation
-	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
-	req.Header.Set("X-Amz-Target", target)
-	d.sign(req, payload)
-
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, err := readDynamoDBStatusQuoteResponseBody(resp)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("dynamodb %s failed: %s", operation, resp.Status)
-	}
-	return raw, nil
+	return context.WithTimeout(ctx, dynamoDBStatusQuoteHTTPTimeout)
 }
 
-func readDynamoDBStatusQuoteResponseBody(resp *http.Response) ([]byte, error) {
-	if resp == nil || resp.Body == nil {
-		return nil, fmt.Errorf("dynamodb response body is empty")
-	}
-	if resp.ContentLength > maxDynamoDBStatusQuoteResponseBodySize {
-		return nil, fmt.Errorf("dynamodb response body is too large")
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDynamoDBStatusQuoteResponseBodySize+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > maxDynamoDBStatusQuoteResponseBodySize {
-		return nil, fmt.Errorf("dynamodb response body is too large")
-	}
-	return body, nil
+func dynamoDBStringAttribute(value string) dynamodbtypes.AttributeValue {
+	return &dynamodbtypes.AttributeValueMemberS{Value: value}
 }
 
-func (d *dynamoDBStatusQuoteStore) sign(req *http.Request, payload []byte) {
-	now := time.Now().UTC()
-	amzDate := now.Format("20060102T150405Z")
-	shortDate := now.Format("20060102")
-	region := dynamoDBRegionForRequest(d.cfg)
-	service := "dynamodb"
-	credentialScope := shortDate + "/" + region + "/" + service + "/aws4_request"
-	payloadHash := sha256Hex(payload)
+func statusQuoteFromDynamoDBItem(item map[string]dynamodbtypes.AttributeValue) statusQuote {
+	return statusQuote{
+		StatusID:    dynamoDBStringAttributeValue(item["status_id"]),
+		QuoteID:     dynamoDBStringAttributeValue(item["quote_id"]),
+		OriginalURL: dynamoDBStringAttributeValue(item["original_url"]),
+		LocalURL:    dynamoDBStringAttributeValue(item["local_url"]),
+	}
+}
 
-	req.Header.Set("X-Amz-Date", amzDate)
-	if d.cfg.DynamoDBSessionToken != "" {
-		req.Header.Set("X-Amz-Security-Token", d.cfg.DynamoDBSessionToken)
+func dynamoDBStringAttributeValue(attribute dynamodbtypes.AttributeValue) string {
+	if value, ok := attribute.(*dynamodbtypes.AttributeValueMemberS); ok {
+		return value.Value
 	}
-
-	canonicalURI := req.URL.EscapedPath()
-	if canonicalURI == "" {
-		canonicalURI = "/"
-	}
-	headers := []string{"content-type", "host", "x-amz-date", "x-amz-target"}
-	if d.cfg.DynamoDBSessionToken != "" {
-		headers = append(headers, "x-amz-security-token")
-	}
-	canonicalHeaders := ""
-	for _, header := range headers {
-		canonicalHeaders += header + ":" + strings.TrimSpace(headerValue(req, header)) + "\n"
-	}
-	signedHeaders := strings.Join(headers, ";")
-	canonicalRequest := strings.Join([]string{
-		req.Method,
-		canonicalURI,
-		req.URL.RawQuery,
-		canonicalHeaders,
-		signedHeaders,
-		payloadHash,
-	}, "\n")
-	stringToSign := strings.Join([]string{
-		"AWS4-HMAC-SHA256",
-		amzDate,
-		credentialScope,
-		sha256Hex([]byte(canonicalRequest)),
-	}, "\n")
-	signingKey := awsSigningKey(d.cfg.DynamoDBSecretKey, shortDate, region, service)
-	signature := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+d.cfg.DynamoDBAccessKey+"/"+credentialScope+", SignedHeaders="+signedHeaders+", Signature="+signature)
+	return ""
 }
 
 func dynamoDBRegionForRequest(cfg config.Config) string {
-	if !cfg.DynamoDBRegionSet && strings.TrimSpace(cfg.DynamoDBRegion) == "" {
-		return "ap-northeast-1"
-	}
-	return cfg.DynamoDBRegion
-}
-
-func headerValue(req *http.Request, name string) string {
-	if name == "host" {
-		return req.URL.Host
-	}
-	return req.Header.Get(name)
-}
-
-func awsSigningKey(secret string, date string, region string, service string) []byte {
-	kDate := hmacSHA256([]byte("AWS4"+secret), []byte(date))
-	kRegion := hmacSHA256(kDate, []byte(region))
-	kService := hmacSHA256(kRegion, []byte(service))
-	return hmacSHA256(kService, []byte("aws4_request"))
-}
-
-func hmacSHA256(key []byte, data []byte) []byte {
-	mac := hmac.New(sha256.New, key)
-	mac.Write(data)
-	return mac.Sum(nil)
-}
-
-func sha256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return firstNonEmptyString(cfg.DynamoDBRegion, "ap-northeast-1")
 }
 
 func sqlNullString(value string) sql.NullString {

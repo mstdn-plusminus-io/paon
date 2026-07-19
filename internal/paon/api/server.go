@@ -50,6 +50,7 @@ type Server struct {
 	renderer          *web.Renderer
 	webPushDeliverer  webPushDeliverFunc
 	quoteStore        statusQuoteStore
+	s3Storage         *s3SDKStorage
 	asynqClient       *asynq.Client
 	asynqInspector    asynqInspectorClient
 	asynqTaskRetryer  asynqTaskRetryer
@@ -195,6 +196,10 @@ const (
 func NewServer(cfg config.Config, database *gorm.DB) (*Server, error) {
 	configureActivityHTTPClient(cfg)
 	configureS3HTTPClient(cfg)
+	s3Storage, err := newS3SDKStorage(context.Background(), cfg)
+	if err != nil {
+		return nil, err
+	}
 	renderer, err := web.NewRenderer(cfg)
 	if err != nil {
 		return nil, err
@@ -239,7 +244,7 @@ func NewServer(cfg config.Config, database *gorm.DB) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	server := &Server{echo: e, cfg: cfg, browserSessionKey: browserSessionKey, db: database, pgHeroStatsDB: pgHeroStatsDB, pgHeroOtherDB: pgHeroOtherDB, renderer: renderer, quoteStore: quoteStore, asynqClient: asynq.NewClient(asynqRedisOpt(cfg)), asynqInspector: asynq.NewInspector(asynqRedisOpt(cfg)), asynqTaskRetryer: asynqTaskRetryer}
+	server := &Server{echo: e, cfg: cfg, browserSessionKey: browserSessionKey, db: database, pgHeroStatsDB: pgHeroStatsDB, pgHeroOtherDB: pgHeroOtherDB, renderer: renderer, quoteStore: quoteStore, s3Storage: s3Storage, asynqClient: asynq.NewClient(asynqRedisOpt(cfg)), asynqInspector: asynq.NewInspector(asynqRedisOpt(cfg)), asynqTaskRetryer: asynqTaskRetryer}
 	e.HTTPErrorHandler = server.handleHTTPError
 	setAppAssets(renderer)
 	i18nStore := i18n.NewStore(localesDirFor(cfg.PublicDir))

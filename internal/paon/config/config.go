@@ -1383,6 +1383,17 @@ func (c Config) ValidateRuntime() error {
 			problems = append(problems, err)
 		}
 	}
+	if c.S3Enabled {
+		if signatureVersion := strings.TrimSpace(c.S3SignatureVersion); signatureVersion != "" && !strings.EqualFold(signatureVersion, "v4") {
+			problems = append(problems, fmt.Errorf("S3_SIGNATURE_VERSION=%q is unsupported: AWS SDK for Go v2 uses SigV4", signatureVersion))
+		}
+		if (strings.TrimSpace(c.S3AccessKeyID) == "") != (strings.TrimSpace(c.S3SecretAccessKey) == "") {
+			problems = append(problems, errors.New("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together when either is set"))
+		}
+		if strings.TrimSpace(c.S3Region) == "" {
+			problems = append(problems, errors.New("S3_REGION must not be blank when S3_ENABLED=true"))
+		}
+	}
 	if c.CloudflareTurnstileEnabled {
 		if strings.TrimSpace(c.CloudflareTurnstileSiteKey) == "" {
 			problems = append(problems, errors.New("CLOUDFLARE_TURNSTILE_SITE_KEY is required when CLOUDFLARE_TURNSTILE_ENABLED=true"))
@@ -1391,14 +1402,20 @@ func (c Config) ValidateRuntime() error {
 			problems = append(problems, errors.New("CLOUDFLARE_TURNSTILE_SECRET_KEY is required when CLOUDFLARE_TURNSTILE_ENABLED=true"))
 		}
 	}
-	if c.DynamoDBEnabled && strings.TrimSpace(c.DynamoDBAccessKey) != "" && strings.TrimSpace(c.DynamoDBSecretKey) != "" {
+	if c.DynamoDBEnabled {
 		if strings.TrimSpace(c.DynamoDBNamespace) == "" {
-			problems = append(problems, errors.New("DYNAMODB_NAMESPACE is required when DYNAMODB_ENABLED=true and DynamoDB credentials are configured"))
+			problems = append(problems, errors.New("DYNAMODB_NAMESPACE is required when DYNAMODB_ENABLED=true"))
 		}
 		if strings.TrimSpace(c.DynamoDBEndpoint) != "" {
 			if err := validateHTTPURL("DYNAMODB_ENDPOINT", c.DynamoDBEndpoint); err != nil {
 				problems = append(problems, err)
 			}
+		}
+		if (strings.TrimSpace(c.DynamoDBAccessKey) == "") != (strings.TrimSpace(c.DynamoDBSecretKey) == "") {
+			problems = append(problems, errors.New("DYNAMODB_AWS_ACCESS_KEY_ID and DYNAMODB_AWS_SECRET_ACCESS_KEY must be configured together when either is set"))
+		}
+		if strings.TrimSpace(c.DynamoDBRegion) == "" {
+			problems = append(problems, errors.New("DYNAMODB_REGION must not be blank when DYNAMODB_ENABLED=true"))
 		}
 	}
 	if (strings.TrimSpace(c.VapidPublicKey) == "") != (strings.TrimSpace(c.VapidPrivateKey) == "") {
@@ -1418,14 +1435,11 @@ func (c Config) RuntimeWarnings() []string {
 	if strings.TrimSpace(c.VapidPublicKey) == "" && strings.TrimSpace(c.VapidPrivateKey) == "" {
 		warnings = append(warnings, "VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY are not configured; Web Push delivery is disabled")
 	}
-	if c.DynamoDBEnabled && (strings.TrimSpace(c.DynamoDBAccessKey) == "" || strings.TrimSpace(c.DynamoDBSecretKey) == "") {
-		warnings = append(warnings, "DYNAMODB_ENABLED=true but DynamoDB credentials are not configured; quote metadata storage is disabled")
+	if c.DynamoDBEnabled && strings.TrimSpace(c.DynamoDBNamespace) == "" {
+		warnings = append(warnings, "DYNAMODB_ENABLED=true but DYNAMODB_NAMESPACE is not configured; quote metadata storage is disabled")
 	}
-	if c.S3Enabled && (strings.TrimSpace(c.S3Bucket) == "" || strings.TrimSpace(c.S3AccessKeyID) == "" || strings.TrimSpace(c.S3SecretAccessKey) == "") {
-		warnings = append(warnings, "S3_ENABLED=true but S3_BUCKET/AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY are not fully configured; Paperclip files are kept locally but object-storage writes and deletes are disabled")
-	}
-	if c.S3Enabled && strings.TrimSpace(c.S3SignatureVersion) != "" && strings.ToLower(strings.TrimSpace(c.S3SignatureVersion)) != "v4" && strings.ToLower(strings.TrimSpace(c.S3SignatureVersion)) != "v2" {
-		warnings = append(warnings, "S3_SIGNATURE_VERSION is configured as "+strings.TrimSpace(c.S3SignatureVersion)+"; Paon supports S3-compatible request signing with v4 or v2")
+	if c.S3Enabled && strings.TrimSpace(c.S3Bucket) == "" {
+		warnings = append(warnings, "S3_ENABLED=true but S3_BUCKET is not configured; Paperclip files are kept locally but object-storage writes and deletes are disabled")
 	}
 	if c.AzureEnabled && (strings.TrimSpace(c.AzureStorageAccount) == "" || strings.TrimSpace(c.AzureStorageAccessKey) == "" || strings.TrimSpace(c.AzureContainerName) == "") {
 		warnings = append(warnings, "AZURE_ENABLED=true but AZURE_STORAGE_ACCOUNT/AZURE_STORAGE_ACCESS_KEY/AZURE_CONTAINER_NAME are not fully configured; Paperclip files are kept locally but Azure object-storage writes and deletes are disabled")
