@@ -4,11 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -21,6 +20,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
+	tmtypes "github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	awshttp "github.com/aws/smithy-go/transport/http"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
@@ -33,6 +40,12 @@ const (
 )
 
 var s3HTTPClient = &http.Client{Transport: s3HTTPTransport()}
+
+type s3SDKStorage struct {
+	client    *s3.Client
+	presigner *s3.PresignClient
+	uploader  *transfermanager.Client
+}
 
 func s3HTTPTransport() *http.Transport {
 	return s3HTTPTransportForConfig(config.Config{
@@ -65,6 +78,87 @@ func railsS3TimeoutDuration(seconds int) time.Duration {
 		return 0
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func newS3SDKStorage(ctx context.Context, cfg config.Config) (*s3SDKStorage, error) {
+	if !cfg.S3Enabled || strings.TrimSpace(cfg.S3Bucket) == "" {
+		return nil, nil
+	}
+	if signatureVersion := strings.TrimSpace(cfg.S3SignatureVersion); signatureVersion != "" && !strings.EqualFold(signatureVersion, "v4") {
+		return nil, fmt.Errorf("S3_SIGNATURE_VERSION=%q is unsupported: AWS SDK for Go v2 uses SigV4", signatureVersion)
+	}
+	if (strings.TrimSpace(cfg.S3AccessKeyID) == "") != (strings.TrimSpace(cfg.S3SecretAccessKey) == "") {
+		return nil, errors.New("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together")
+	}
+
+	loadOptions := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion(firstNonEmptyString(cfg.S3Region, "us-east-1")),
+	}
+	if strings.TrimSpace(cfg.S3AccessKeyID) != "" {
+		loadOptions = append(loadOptions, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			cfg.S3AccessKeyID,
+			cfg.S3SecretAccessKey,
+			cfg.S3SessionToken,
+		)))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOptions...)
+	if err != nil {
+		return nil, fmt.Errorf("load AWS SDK config: %w", err)
+	}
+	awsCfg.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+	if cfg.S3EnableChecksumMode {
+		awsCfg.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenSupported
+	} else {
+		awsCfg.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+	}
+
+	client := s3.NewFromConfig(awsCfg, func(options *s3.Options) {
+		options.HTTPClient = s3HTTPClient
+		options.Retryer = aws.NopRetryer{}
+		if endpoint := s3SDKBaseEndpoint(cfg); endpoint != "" {
+			options.BaseEndpoint = aws.String(endpoint)
+		}
+		if strings.TrimSpace(cfg.S3Endpoint) != "" {
+			options.UsePathStyle = !cfg.S3OverridePathStyle
+		}
+	})
+	uploader := transfermanager.New(client, func(options *transfermanager.Options) {
+		options.MultipartUploadThreshold = int64(s3MultipartThresholdForConfig(cfg))
+		options.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+	})
+	return &s3SDKStorage{
+		client:    client,
+		presigner: s3.NewPresignClient(client),
+		uploader:  uploader,
+	}, nil
+}
+
+func s3SDKBaseEndpoint(cfg config.Config) string {
+	if endpoint := strings.TrimSpace(cfg.S3Endpoint); endpoint != "" {
+		return endpoint
+	}
+	if !cfg.S3HostnameSet && !cfg.S3ProtocolSet {
+		return ""
+	}
+	protocol := strings.Trim(strings.TrimSpace(cfg.S3Protocol), ":/")
+	if protocol == "" {
+		protocol = "https"
+	}
+	host := strings.Trim(strings.TrimSpace(cfg.S3Hostname), "/")
+	if host == "" {
+		return ""
+	}
+	return protocol + "://" + host
+}
+
+func (s *Server) s3SDK(ctx context.Context) (*s3SDKStorage, error) {
+	if s == nil || !s.s3ObjectStorageEnabled() {
+		return nil, nil
+	}
+	if s.s3Storage != nil {
+		return s.s3Storage, nil
+	}
+	return newS3SDKStorage(ctx, s.cfg)
 }
 
 func (s *Server) uploadPaperclipObject(ctx context.Context, key string, localPath string, contentType string) error {
@@ -135,58 +229,26 @@ func (s *Server) presignedS3ObjectURL(key string, expires time.Duration) string 
 	if expires <= 0 {
 		expires = time.Hour
 	}
-	rawURL := s.s3ObjectRequestURL(key)
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	storage, err := s.s3SDK(context.Background())
 	if err != nil {
 		return ""
 	}
-	if s.s3SignatureVersionV2() {
-		query := req.URL.Query()
-		query.Set("AWSAccessKeyId", s.cfg.S3AccessKeyID)
-		query.Set("Expires", strconv.FormatInt(time.Now().UTC().Add(expires).Unix(), 10))
-		if token := strings.TrimSpace(s.cfg.S3SessionToken); token != "" {
-			query.Set("x-amz-security-token", token)
-		}
-		req.URL.RawQuery = query.Encode()
-		query.Set("Signature", s.signS3V2Query(req))
-		req.URL.RawQuery = query.Encode()
-		return req.URL.String()
+	output, err := storage.presigner.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
+		Key:    aws.String(strings.TrimLeft(key, "/")),
+	}, func(options *s3.PresignOptions) {
+		options.Expires = expires
+	})
+	if err != nil {
+		return ""
 	}
-	now := time.Now().UTC()
-	amzDate := now.Format("20060102T150405Z")
-	date := now.Format("20060102")
-	region := s.s3RegionForRequest()
-	scope := date + "/" + region + "/s3/aws4_request"
-	query := req.URL.Query()
-	query.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
-	query.Set("X-Amz-Credential", s.cfg.S3AccessKeyID+"/"+scope)
-	query.Set("X-Amz-Date", amzDate)
-	query.Set("X-Amz-Expires", strconv.FormatInt(int64(expires/time.Second), 10))
-	query.Set("X-Amz-SignedHeaders", "host")
-	if token := strings.TrimSpace(s.cfg.S3SessionToken); token != "" {
-		query.Set("X-Amz-Security-Token", token)
-	}
-	req.URL.RawQuery = query.Encode()
-
-	canonical := http.MethodGet + "\n" +
-		canonicalURI(req.URL.EscapedPath()) + "\n" +
-		req.URL.RawQuery + "\n" +
-		"host:" + req.URL.Host + "\n\n" +
-		"host\n" +
-		"UNSIGNED-PAYLOAD"
-	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + s3SHA256HexString(canonical)
-	signature := hmacHex(s3SigningKey(s.cfg.S3SecretAccessKey, date, region, "s3"), stringToSign)
-	query.Set("X-Amz-Signature", signature)
-	req.URL.RawQuery = query.Encode()
-	return req.URL.String()
+	return output.URL
 }
 
 func (s *Server) s3ObjectStorageEnabled() bool {
 	return s != nil &&
 		s.cfg.S3Enabled &&
-		strings.TrimSpace(s.cfg.S3Bucket) != "" &&
-		strings.TrimSpace(s.cfg.S3AccessKeyID) != "" &&
-		strings.TrimSpace(s.cfg.S3SecretAccessKey) != ""
+		strings.TrimSpace(s.cfg.S3Bucket) != ""
 }
 
 func (s *Server) azureObjectStorageEnabled() bool {
@@ -213,13 +275,7 @@ func (s *Server) putS3Object(ctx context.Context, key string, body []byte, conte
 }
 
 func (s *Server) putS3ObjectWithACL(ctx context.Context, key string, body []byte, contentType string, acl string) error {
-	hash := s3SHA256Hex(body)
-	req, err := s.newS3ObjectRequestWithPayloadHash(ctx, http.MethodPut, key, bytes.NewReader(body), hash)
-	if err != nil {
-		return err
-	}
-	req.ContentLength = int64(len(body))
-	return s.doPutS3ObjectWithACL(req, contentType, acl, hash)
+	return s.uploadS3Object(ctx, key, bytes.NewReader(body), int64(len(body)), contentType, acl)
 }
 
 func (s *Server) putS3ObjectFileWithACL(ctx context.Context, key string, localPath string, contentType string, acl string) error {
@@ -227,104 +283,88 @@ func (s *Server) putS3ObjectFileWithACL(ctx context.Context, key string, localPa
 	if err != nil {
 		return err
 	}
-	hash, size, err := s3FileSHA256Hex(file)
-	if err != nil {
-		_ = file.Close()
-		return err
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		_ = file.Close()
-		return err
-	}
-	req, err := s.newS3ObjectRequestWithPayloadHash(ctx, http.MethodPut, key, file, hash)
-	if err != nil {
-		_ = file.Close()
-		return err
-	}
-	req.ContentLength = size
-	req.GetBody = func() (io.ReadCloser, error) {
-		return os.Open(localPath)
-	}
 	defer file.Close()
-	return s.doPutS3ObjectWithACL(req, contentType, acl, hash)
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	return s.uploadS3Object(ctx, key, file, info.Size(), contentType, acl)
 }
 
-func (s *Server) doPutS3ObjectWithACL(req *http.Request, contentType string, acl string, payloadHash string) error {
-	if contentType = strings.TrimSpace(contentType); contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	req.Header.Set("X-Amz-Multipart-Threshold", strconv.Itoa(s.s3MultipartThreshold()))
-	req.Header.Set("Cache-Control", paperclipImmutableCacheControl)
-	if acl != "" {
-		req.Header.Set("X-Amz-Acl", acl)
-	}
-	if s.cfg.S3StorageClassSet {
-		req.Header.Set("X-Amz-Storage-Class", s.cfg.S3StorageClass)
-	}
-	s.signS3RequestWithPayloadHash(req, payloadHash)
-	resp, err := s3HTTPClient.Do(req)
+func (s *Server) uploadS3Object(ctx context.Context, key string, body io.Reader, size int64, contentType string, acl string) error {
+	storage, err := s.s3SDK(ctx)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return s3HTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
+	if storage == nil {
+		return nil
 	}
-	return nil
+	input := &transfermanager.UploadObjectInput{
+		Bucket:        aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
+		Key:           aws.String(strings.TrimLeft(key, "/")),
+		Body:          body,
+		ContentLength: aws.Int64(size),
+		CacheControl:  aws.String(paperclipImmutableCacheControl),
+	}
+	if contentType = strings.TrimSpace(contentType); contentType != "" {
+		input.ContentType = aws.String(contentType)
+	}
+	if acl != "" {
+		input.ACL = tmtypes.ObjectCannedACL(acl)
+	}
+	if s.cfg.S3StorageClassSet {
+		input.StorageClass = tmtypes.StorageClass(s.cfg.S3StorageClass)
+	}
+	_, err = storage.uploader.UploadObject(ctx, input)
+	return err
 }
 
 func (s *Server) deleteS3Object(ctx context.Context, key string) error {
-	req, err := s.newS3ObjectRequest(ctx, http.MethodDelete, key, http.NoBody, nil)
+	storage, err := s.s3SDK(ctx)
 	if err != nil {
 		return err
 	}
-	s.signS3Request(req, nil)
-	resp, err := s3HTTPClient.Do(req)
-	if err != nil {
-		return err
+	if storage == nil {
+		return nil
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return s3HTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
-	}
-	return nil
+	_, err = storage.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
+		Key:    aws.String(strings.TrimLeft(key, "/")),
+	})
+	return err
 }
 
 func (s *Server) s3MultipartThreshold() int {
-	if s == nil || !s.cfg.S3MultipartThresholdSet {
+	if s == nil {
 		return 15 * 1024 * 1024
 	}
-	return s.cfg.S3MultipartThreshold
+	return s3MultipartThresholdForConfig(s.cfg)
+}
+
+func s3MultipartThresholdForConfig(cfg config.Config) int {
+	if !cfg.S3MultipartThresholdSet {
+		return 15 * 1024 * 1024
+	}
+	return cfg.S3MultipartThreshold
 }
 
 func (s *Server) putS3ObjectACL(ctx context.Context, key string, acl string) error {
 	if !s.s3ObjectStorageEnabled() || strings.TrimSpace(key) == "" || acl == "" {
 		return nil
 	}
-	req, err := s.newS3ObjectRequest(ctx, http.MethodPut, key, http.NoBody, nil)
+	storage, err := s.s3SDK(ctx)
 	if err != nil {
 		return err
 	}
-	query := req.URL.Query()
-	query.Set("acl", "")
-	req.URL.RawQuery = query.Encode()
-	req.Header.Set("X-Amz-Acl", acl)
-	s.signS3Request(req, nil)
-	resp, err := s3HTTPClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNotImplemented {
+	_, err = storage.client.PutObjectAcl(ctx, &s3.PutObjectAclInput{
+		ACL:    s3types.ObjectCannedACL(acl),
+		Bucket: aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
+		Key:    aws.String(strings.TrimLeft(key, "/")),
+	})
+	if status := s3SDKHTTPStatusCode(err); status == http.StatusNotFound || status == http.StatusNotImplemented {
 		return nil
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return s3HTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
-	}
-	return nil
+	return err
 }
 
 func (s *Server) getS3Object(ctx context.Context, key string) ([]byte, bool, error) {
@@ -344,28 +384,33 @@ func (s *Server) getS3ObjectReader(ctx context.Context, key string) (io.ReadClos
 	if !s.s3ObjectStorageEnabled() || strings.TrimSpace(key) == "" {
 		return nil, false, nil
 	}
-	req, err := s.newS3ObjectRequest(ctx, http.MethodGet, key, http.NoBody, nil)
+	storage, err := s.s3SDK(ctx)
 	if err != nil {
 		return nil, false, err
+	}
+	input := &s3.GetObjectInput{
+		Bucket: aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
+		Key:    aws.String(strings.TrimLeft(key, "/")),
 	}
 	if s.cfg.S3EnableChecksumMode {
-		req.Header.Set("X-Amz-Checksum-Mode", "ENABLED")
+		input.ChecksumMode = s3types.ChecksumModeEnabled
 	}
-	s.signS3Request(req, nil)
-	resp, err := s3HTTPClient.Do(req)
+	output, err := storage.client.GetObject(ctx, input)
 	if err != nil {
+		if s3SDKHTTPStatusCode(err) == http.StatusNotFound {
+			return nil, false, nil
+		}
 		return nil, false, err
 	}
-	if resp.StatusCode == http.StatusNotFound {
-		_ = resp.Body.Close()
-		return nil, false, nil
+	return output.Body, true, nil
+}
+
+func s3SDKHTTPStatusCode(err error) int {
+	var responseError *awshttp.ResponseError
+	if errors.As(err, &responseError) {
+		return responseError.HTTPStatusCode()
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		_ = resp.Body.Close()
-		return nil, false, s3HTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
-	}
-	return resp.Body, true, nil
+	return 0
 }
 
 func (s *Server) putAzureBlobObject(ctx context.Context, key string, body []byte, contentType string) error {
@@ -665,328 +710,11 @@ func azureBlobCanonicalizedHeaders(req *http.Request) string {
 	return out.String()
 }
 
-func (s *Server) newS3ObjectRequest(ctx context.Context, method string, key string, body io.Reader, payload []byte) (*http.Request, error) {
-	return s.newS3ObjectRequestWithPayloadHash(ctx, method, key, body, s3SHA256Hex(payload))
-}
-
-func (s *Server) newS3ObjectRequestWithPayloadHash(ctx context.Context, method string, key string, body io.Reader, payloadHash string) (*http.Request, error) {
-	rawURL := s.s3ObjectRequestURL(key)
-	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
-	if err != nil {
-		return nil, err
-	}
-	if !s.s3SignatureVersionV2() {
-		req.Header.Set("X-Amz-Content-Sha256", payloadHash)
-	}
-	return req, nil
-}
-
-func (s *Server) s3ObjectRequestURL(key string) string {
-	key = strings.TrimLeft(key, "/")
-	bucket := strings.Trim(s.cfg.S3Bucket, "/")
-	if endpoint := strings.TrimRight(strings.TrimSpace(s.cfg.S3Endpoint), "/"); endpoint != "" {
-		if parsed, err := url.Parse(endpoint); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-			if s.cfg.S3OverridePathStyle && bucket != "" {
-				parsed.Host = bucket + "." + parsed.Host
-				parsed.Path = "/" + path.Join(strings.Trim(parsed.Path, "/"), key)
-			} else {
-				parsed.Path = "/" + path.Join(strings.Trim(parsed.Path, "/"), bucket, key)
-			}
-			parsed.RawPath = ""
-			return parsed.String()
-		}
-		parsed := url.URL{Path: "/" + path.Join(strings.Trim(s.cfg.S3Bucket, "/"), key)}
-		return endpoint + parsed.String()
-	}
-	protocol := strings.TrimRight(strings.TrimSpace(s.cfg.S3Protocol), ":/")
-	if protocol == "" && !s.cfg.S3ProtocolSet {
-		protocol = "https"
-	}
-	host := strings.Trim(strings.TrimSpace(s.cfg.S3Hostname), "/")
-	if host == "" && !s.cfg.S3HostnameSet {
-		host = "s3-" + s.s3RegionForRequest() + ".amazonaws.com"
-	}
-	if strings.EqualFold(protocol, "https") && strings.Contains(bucket, ".") && !s.cfg.S3OverridePathStyle {
-		return (&url.URL{
-			Scheme: protocol,
-			Host:   host,
-			Path:   "/" + path.Join(bucket, key),
-		}).String()
-	}
-	return (&url.URL{
-		Scheme: protocol,
-		Host:   bucket + "." + host,
-		Path:   "/" + key,
-	}).String()
-}
-
-func (s *Server) signS3Request(req *http.Request, payload []byte) {
-	s.signS3RequestWithPayloadHash(req, s3SHA256Hex(payload))
-}
-
-func (s *Server) signS3RequestWithPayloadHash(req *http.Request, payloadHash string) {
-	if s.s3SignatureVersionV2() {
-		s.signS3V2Request(req)
-		return
-	}
-	now := time.Now().UTC()
-	amzDate := now.Format("20060102T150405Z")
-	date := now.Format("20060102")
-	region := s.s3RegionForRequest()
-	service := "s3"
-	scope := date + "/" + region + "/" + service + "/aws4_request"
-
-	req.Header.Set("X-Amz-Date", amzDate)
-	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
-	if token := strings.TrimSpace(s.cfg.S3SessionToken); token != "" {
-		req.Header.Set("X-Amz-Security-Token", token)
-	}
-
-	canonicalRequest, signedHeaders := canonicalS3Request(req)
-	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + s3SHA256HexString(canonicalRequest)
-	signingKey := s3SigningKey(s.cfg.S3SecretAccessKey, date, region, service)
-	signature := hmacHex(signingKey, stringToSign)
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+s.cfg.S3AccessKeyID+"/"+scope+", SignedHeaders="+signedHeaders+", Signature="+signature)
-}
-
-func (s *Server) s3SignatureVersionV2() bool {
-	return strings.EqualFold(strings.TrimSpace(s.cfg.S3SignatureVersion), "v2")
-}
-
-func (s *Server) s3RegionForRequest() string {
-	if s.cfg.S3RegionSet {
-		return s.cfg.S3Region
-	}
-	return firstNonEmptyString(s.cfg.S3Region, "us-east-1")
-}
-
 func (s *Server) swiftDomainNameForRequest() string {
 	if s.cfg.SwiftDomainNameSet {
 		return s.cfg.SwiftDomainName
 	}
 	return firstNonEmptyString(s.cfg.SwiftDomainName, "default")
-}
-
-func canonicalS3Request(req *http.Request) (string, string) {
-	headers := map[string]string{
-		"host":                 req.URL.Host,
-		"x-amz-content-sha256": req.Header.Get("X-Amz-Content-Sha256"),
-		"x-amz-date":           req.Header.Get("X-Amz-Date"),
-	}
-	for _, name := range []string{"X-Amz-Acl", "X-Amz-Checksum-Mode", "X-Amz-Security-Token", "X-Amz-Storage-Class"} {
-		if values, ok := req.Header[name]; ok && len(values) > 0 {
-			value := values[0]
-			headers[strings.ToLower(name)] = strings.Join(strings.Fields(value), " ")
-		}
-	}
-	names := make([]string, 0, len(headers))
-	for name := range headers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	var canonicalHeaders strings.Builder
-	for _, name := range names {
-		canonicalHeaders.WriteString(name)
-		canonicalHeaders.WriteByte(':')
-		canonicalHeaders.WriteString(headers[name])
-		canonicalHeaders.WriteByte('\n')
-	}
-	signedHeaders := strings.Join(names, ";")
-	return req.Method + "\n" +
-		canonicalURI(req.URL.EscapedPath()) + "\n" +
-		req.URL.RawQuery + "\n" +
-		canonicalHeaders.String() + "\n" +
-		signedHeaders + "\n" +
-		req.Header.Get("X-Amz-Content-Sha256"), signedHeaders
-}
-
-func (s *Server) signS3V2Request(req *http.Request) {
-	req.Header.Del("X-Amz-Date")
-	req.Header.Del("X-Amz-Content-Sha256")
-	req.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
-	if token := strings.TrimSpace(s.cfg.S3SessionToken); token != "" {
-		req.Header.Set("X-Amz-Security-Token", token)
-	}
-	signature := s.signS3V2String(s3V2StringToSign(req, s.cfg.S3Bucket, false))
-	req.Header.Set("Authorization", "AWS "+s.cfg.S3AccessKeyID+":"+signature)
-}
-
-func (s *Server) signS3V2Query(req *http.Request) string {
-	return s.signS3V2String(s3V2StringToSign(req, s.cfg.S3Bucket, true))
-}
-
-func (s *Server) signS3V2String(value string) string {
-	mac := hmac.New(sha1.New, []byte(s.cfg.S3SecretAccessKey))
-	_, _ = mac.Write([]byte(value))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
-}
-
-func s3V2StringToSign(req *http.Request, bucket string, presigned bool) string {
-	date := req.Header.Get("Date")
-	if presigned {
-		date = req.URL.Query().Get("Expires")
-	}
-	if req.Header.Get("X-Amz-Date") != "" {
-		date = ""
-	}
-	return strings.Join([]string{
-		req.Method,
-		req.Header.Get("Content-Md5"),
-		req.Header.Get("Content-Type"),
-		date,
-		s3V2CanonicalizedAmzHeaders(req) + s3V2CanonicalizedResource(req, bucket),
-	}, "\n")
-}
-
-func s3V2CanonicalizedAmzHeaders(req *http.Request) string {
-	values := map[string][]string{}
-	for name, headerValues := range req.Header {
-		lower := strings.ToLower(name)
-		if strings.HasPrefix(lower, "x-amz-") {
-			values[lower] = append(values[lower], headerValues...)
-		}
-	}
-	for name, queryValues := range req.URL.Query() {
-		lower := strings.ToLower(name)
-		if strings.HasPrefix(lower, "x-amz-") {
-			values[lower] = append(values[lower], queryValues...)
-		}
-	}
-	names := make([]string, 0, len(values))
-	for name := range values {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	var out strings.Builder
-	for _, name := range names {
-		headerValues := values[name]
-		for i, value := range headerValues {
-			headerValues[i] = strings.Join(strings.Fields(value), " ")
-		}
-		sort.Strings(headerValues)
-		out.WriteString(name)
-		out.WriteByte(':')
-		out.WriteString(strings.Join(headerValues, ","))
-		out.WriteByte('\n')
-	}
-	return out.String()
-}
-
-func s3V2CanonicalizedResource(req *http.Request, bucket string) string {
-	resource := req.URL.EscapedPath()
-	if resource == "" {
-		resource = "/"
-	}
-	trimmedBucket := strings.Trim(bucket, "/")
-	if trimmedBucket != "" && strings.HasPrefix(strings.ToLower(req.URL.Host), strings.ToLower(trimmedBucket)+".") {
-		resource = "/" + trimmedBucket + resource
-	}
-	if subresource := s3V2CanonicalSubresources(req.URL.Query()); subresource != "" {
-		resource += "?" + subresource
-	}
-	return resource
-}
-
-func s3V2CanonicalSubresources(query url.Values) string {
-	allowed := map[string]struct{}{
-		"acl":                          {},
-		"cors":                         {},
-		"delete":                       {},
-		"lifecycle":                    {},
-		"location":                     {},
-		"logging":                      {},
-		"notification":                 {},
-		"partNumber":                   {},
-		"policy":                       {},
-		"requestPayment":               {},
-		"response-cache-control":       {},
-		"response-content-disposition": {},
-		"response-content-encoding":    {},
-		"response-content-language":    {},
-		"response-content-type":        {},
-		"response-expires":             {},
-		"torrent":                      {},
-		"uploadId":                     {},
-		"uploads":                      {},
-		"versionId":                    {},
-		"versioning":                   {},
-		"versions":                     {},
-		"website":                      {},
-	}
-	keys := make([]string, 0)
-	for key := range query {
-		if _, ok := allowed[key]; ok {
-			keys = append(keys, key)
-		}
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		values := append([]string(nil), query[key]...)
-		sort.Strings(values)
-		if len(values) == 0 || (len(values) == 1 && values[0] == "") {
-			parts = append(parts, key)
-			continue
-		}
-		for _, value := range values {
-			parts = append(parts, key+"="+value)
-		}
-	}
-	return strings.Join(parts, "&")
-}
-
-func canonicalURI(escapedPath string) string {
-	if escapedPath == "" {
-		return "/"
-	}
-	parsed, err := url.PathUnescape(escapedPath)
-	if err != nil {
-		return escapedPath
-	}
-	segments := strings.Split(parsed, "/")
-	for i, segment := range segments {
-		segments[i] = url.PathEscape(segment)
-	}
-	return strings.Join(segments, "/")
-}
-
-func s3SigningKey(secret string, date string, region string, service string) []byte {
-	kDate := hmacBytes([]byte("AWS4"+secret), date)
-	kRegion := hmacBytes(kDate, region)
-	kService := hmacBytes(kRegion, service)
-	return hmacBytes(kService, "aws4_request")
-}
-
-func hmacBytes(key []byte, value string) []byte {
-	h := hmac.New(sha256.New, key)
-	_, _ = h.Write([]byte(value))
-	return h.Sum(nil)
-}
-
-func hmacHex(key []byte, value string) string {
-	return hex.EncodeToString(hmacBytes(key, value))
-}
-
-func s3SHA256Hex(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-func s3FileSHA256Hex(file *os.File) (string, int64, error) {
-	if file == nil {
-		return "", 0, fmt.Errorf("file is nil")
-	}
-	hash := sha256.New()
-	size, err := io.Copy(hash, file)
-	if err != nil {
-		return "", 0, err
-	}
-	return hex.EncodeToString(hash.Sum(nil)), size, nil
-}
-
-func s3SHA256HexString(value string) string {
-	return s3SHA256Hex([]byte(value))
 }
 
 func firstNonEmptyString(values ...string) string {

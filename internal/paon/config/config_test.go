@@ -1310,6 +1310,39 @@ func TestValidateRuntimeRejectsEnabledFeatureMisconfigurations(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeUsesAWSSDKConfigurationContracts(t *testing.T) {
+	cfg := FromEnv()
+	cfg.S3Enabled = true
+	cfg.S3Bucket = "media-bucket"
+	cfg.S3Region = "ap-northeast-1"
+	cfg.S3SignatureVersion = "v4"
+	cfg.S3AccessKeyID = ""
+	cfg.S3SecretAccessKey = ""
+	cfg.DynamoDBEnabled = true
+	cfg.DynamoDBNamespace = "paon-test"
+	cfg.DynamoDBRegion = "ap-northeast-1"
+	cfg.DynamoDBAccessKey = ""
+	cfg.DynamoDBSecretKey = ""
+	if err := cfg.ValidateRuntime(); err != nil {
+		t.Fatalf("AWS SDK default credential chain should be valid: %v", err)
+	}
+
+	cfg.S3SignatureVersion = "v2"
+	if err := cfg.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "AWS SDK for Go v2 uses SigV4") {
+		t.Fatalf("S3_SIGNATURE_VERSION=v2 error = %v", err)
+	}
+	cfg.S3SignatureVersion = "v4"
+	cfg.S3AccessKeyID = "access-only"
+	if err := cfg.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY") {
+		t.Fatalf("partial S3 credentials error = %v", err)
+	}
+	cfg.S3AccessKeyID = ""
+	cfg.DynamoDBSecretKey = "secret-only"
+	if err := cfg.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "DYNAMODB_AWS_ACCESS_KEY_ID") {
+		t.Fatalf("partial DynamoDB credentials error = %v", err)
+	}
+}
+
 func TestRuntimeWarningsReportDropInCompatibilityGaps(t *testing.T) {
 	cfg := FromEnv()
 	cfg.SecretKeyBase = ""

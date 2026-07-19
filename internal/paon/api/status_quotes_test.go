@@ -51,13 +51,20 @@ func (f *fakeStatusQuoteStore) Delete(_ context.Context, statusID string) error 
 }
 
 func TestNewStatusQuoteStoreUsesDynamoidTableName(t *testing.T) {
+	var gotHost string
+	var gotPath string
+	client := &http.Client{Transport: statusQuoteRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotHost = req.URL.Host
+		gotPath = req.URL.Path
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header), Request: req}, nil
+	})}
 	store, err := newStatusQuoteStore(config.Config{
 		DynamoDBEnabled:   true,
 		DynamoDBAccessKey: "access",
 		DynamoDBSecretKey: "secret",
 		DynamoDBNamespace: "paon-prod",
 		DynamoDBRegion:    "us-west-2",
-	}, &http.Client{})
+	}, client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,10 +75,15 @@ func TestNewStatusQuoteStoreUsesDynamoidTableName(t *testing.T) {
 	if dynamo.tableName != "paon-prod_status_quotes" {
 		t.Fatalf("tableName = %q", dynamo.tableName)
 	}
-	if dynamo.endpoint != "https://dynamodb.us-west-2.amazonaws.com" {
-		t.Fatalf("endpoint = %q", dynamo.endpoint)
+	if err := dynamo.Put(context.Background(), statusQuote{StatusID: "1", QuoteID: "2"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotHost != "dynamodb.us-west-2.amazonaws.com" || gotPath != "/" {
+		t.Fatalf("AWS SDK DynamoDB endpoint host=%q path=%q", gotHost, gotPath)
 	}
 
+	gotHost = ""
+	gotPath = ""
 	store, err = newStatusQuoteStore(config.Config{
 		DynamoDBEnabled:   true,
 		DynamoDBAccessKey: "access",
@@ -79,7 +91,7 @@ func TestNewStatusQuoteStoreUsesDynamoidTableName(t *testing.T) {
 		DynamoDBNamespace: "paon-prod",
 		DynamoDBRegion:    "us-west-2",
 		DynamoDBEndpoint:  "http://dynamodb.test/",
-	}, &http.Client{})
+	}, client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,8 +99,11 @@ func TestNewStatusQuoteStoreUsesDynamoidTableName(t *testing.T) {
 	if !ok {
 		t.Fatalf("store = %#v", store)
 	}
-	if dynamo.endpoint != "http://dynamodb.test" {
-		t.Fatalf("raw trailing-slash DynamoDB endpoint = %q", dynamo.endpoint)
+	if err := dynamo.Put(context.Background(), statusQuote{StatusID: "1", QuoteID: "2"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotHost != "dynamodb.test" || gotPath != "/" {
+		t.Fatalf("AWS SDK custom DynamoDB endpoint host=%q path=%q", gotHost, gotPath)
 	}
 }
 
@@ -109,12 +124,13 @@ func TestNewStatusQuoteStoreUsesDefaultHTTPTimeout(t *testing.T) {
 	if dynamo.client == nil {
 		t.Fatal("dynamo client is nil")
 	}
-	if dynamo.client.Timeout != dynamoDBStatusQuoteHTTPTimeout {
-		t.Fatalf("dynamo client timeout = %s, want %s", dynamo.client.Timeout, dynamoDBStatusQuoteHTTPTimeout)
+	httpClient, ok := dynamo.client.Options().HTTPClient.(*http.Client)
+	if !ok || httpClient.Timeout != dynamoDBStatusQuoteHTTPTimeout {
+		t.Fatalf("DynamoDB SDK HTTP client = %#v", dynamo.client.Options().HTTPClient)
 	}
 }
 
-func TestDynamoDBStatusQuoteStorePreservesExplicitBlankRailsRegion(t *testing.T) {
+func TestDynamoDBStatusQuoteStoreDefaultsBlankRegion(t *testing.T) {
 	store, err := newStatusQuoteStore(config.Config{
 		DynamoDBEnabled:   true,
 		DynamoDBAccessKey: "access",
@@ -124,7 +140,7 @@ func TestDynamoDBStatusQuoteStorePreservesExplicitBlankRailsRegion(t *testing.T)
 		DynamoDBRegionSet: true,
 	}, &http.Client{Transport: statusQuoteRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		auth := req.Header.Get("Authorization")
-		if !strings.Contains(auth, "Credential=access/") || !strings.Contains(auth, "//dynamodb/aws4_request") {
+		if !strings.Contains(auth, "Credential=access/") || !strings.Contains(auth, "/ap-northeast-1/dynamodb/aws4_request") {
 			t.Fatalf("authorization credential scope = %q", auth)
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header), Request: req}, nil
@@ -135,9 +151,6 @@ func TestDynamoDBStatusQuoteStorePreservesExplicitBlankRailsRegion(t *testing.T)
 	dynamo, ok := store.(*dynamoDBStatusQuoteStore)
 	if !ok {
 		t.Fatalf("store = %#v", store)
-	}
-	if dynamo.endpoint != "https://dynamodb..amazonaws.com" {
-		t.Fatalf("endpoint = %q", dynamo.endpoint)
 	}
 	if err := dynamo.Put(context.Background(), statusQuote{StatusID: "1", QuoteID: "2"}); err != nil {
 		t.Fatal(err)
@@ -183,17 +196,18 @@ func TestDynamoDBStatusQuoteStoreUsesRailsCompatibleItems(t *testing.T) {
 			Header:     http.Header{},
 		}, nil
 	})}
-	store := &dynamoDBStatusQuoteStore{
-		cfg: config.Config{
-			DynamoDBAccessKey:    "access",
-			DynamoDBSecretKey:    "secret",
-			DynamoDBSessionToken: "session",
-			DynamoDBRegion:       "us-west-2",
-		},
-		tableName: "paon-prod_status_quotes",
-		endpoint:  "https://dynamodb.us-west-2.amazonaws.com",
-		client:    client,
+	quoteStore, err := newStatusQuoteStore(config.Config{
+		DynamoDBEnabled:      true,
+		DynamoDBAccessKey:    "access",
+		DynamoDBSecretKey:    "secret",
+		DynamoDBSessionToken: "session",
+		DynamoDBRegion:       "us-west-2",
+		DynamoDBNamespace:    "paon-prod",
+	}, client)
+	if err != nil {
+		t.Fatal(err)
 	}
+	store := quoteStore.(*dynamoDBStatusQuoteStore)
 
 	quote, ok, err := store.Get(context.Background(), "100")
 	if err != nil {
@@ -234,42 +248,17 @@ func TestDynamoDBStatusQuoteStoreUsesRailsCompatibleItems(t *testing.T) {
 	}
 }
 
-func TestDynamoDBStatusQuoteStoreRejectsOversizedResponses(t *testing.T) {
-	store := &dynamoDBStatusQuoteStore{
-		cfg: config.Config{
-			DynamoDBAccessKey: "access",
-			DynamoDBSecretKey: "secret",
-			DynamoDBRegion:    "us-west-2",
-		},
-		tableName: "paon-prod_status_quotes",
-		endpoint:  "https://dynamodb.us-west-2.amazonaws.com",
-		client: &http.Client{Transport: statusQuoteRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-			return &http.Response{
-				StatusCode:    http.StatusOK,
-				Status:        "200 OK",
-				Body:          io.NopCloser(strings.NewReader(`{}`)),
-				Header:        http.Header{},
-				ContentLength: maxDynamoDBStatusQuoteResponseBodySize + 1,
-				Request:       req,
-			}, nil
-		})},
+func TestNewStatusQuoteStoreAllowsAWSDefaultCredentialChain(t *testing.T) {
+	store, err := newStatusQuoteStore(config.Config{
+		DynamoDBEnabled:   true,
+		DynamoDBRegion:    "ap-northeast-1",
+		DynamoDBNamespace: "paon-prod",
+	}, &http.Client{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, _, err := store.Get(context.Background(), "100"); err == nil {
-		t.Fatal("expected advertised oversized DynamoDB response to fail")
-	}
-
-	store.client = &http.Client{Transport: statusQuoteRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode:    http.StatusOK,
-			Status:        "200 OK",
-			Body:          io.NopCloser(strings.NewReader(strings.Repeat("x", maxDynamoDBStatusQuoteResponseBodySize+1))),
-			Header:        http.Header{},
-			ContentLength: -1,
-			Request:       req,
-		}, nil
-	})}
-	if _, _, err := store.Get(context.Background(), "100"); err == nil {
-		t.Fatal("expected streamed oversized DynamoDB response to fail")
+	if store == nil {
+		t.Fatal("DynamoDB SDK store is nil without static credentials")
 	}
 }
 
