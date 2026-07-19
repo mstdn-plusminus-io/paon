@@ -28,17 +28,21 @@ func (s *Server) bustAccountImageCache(account models.Account) {
 		return
 	}
 	if account.AvatarFileName.Valid && strings.TrimSpace(account.AvatarFileName.String) != "" {
-		s.bustAccountImageKindCache(account.ID, "avatar", account.AvatarFileName.String, account.AvatarContentType.String)
+		s.bustAccountImageKindCacheWithPrefix(account.ID, "avatar", account.AvatarFileName.String, account.AvatarContentType.String, account.AvatarUsesCachePrefix())
 	}
 	if account.HeaderFileName.Valid && strings.TrimSpace(account.HeaderFileName.String) != "" {
-		s.bustAccountImageKindCache(account.ID, "header", account.HeaderFileName.String, account.HeaderContentType.String)
+		s.bustAccountImageKindCacheWithPrefix(account.ID, "header", account.HeaderFileName.String, account.HeaderContentType.String, account.HeaderUsesCachePrefix())
 	}
 }
 
 func (s *Server) bustAccountImageKindCache(accountID int64, kind string, filename string, contentType string) {
-	s.bustCacheURL(s.cacheBusterAccountImageURL(accountID, kind, "original", filename))
+	s.bustAccountImageKindCacheWithPrefix(accountID, kind, filename, contentType, false)
+}
+
+func (s *Server) bustAccountImageKindCacheWithPrefix(accountID int64, kind string, filename string, contentType string, cachePrefix bool) {
+	s.bustCacheURL(s.cacheBusterAccountImageURLWithPrefix(accountID, kind, "original", filename, cachePrefix))
 	if static := profileImageStaticFilename(filename, contentType); static != "" {
-		s.bustCacheURL(s.cacheBusterAccountImageURL(accountID, kind, "static", static))
+		s.bustCacheURL(s.cacheBusterAccountImageURLWithPrefix(accountID, kind, "static", static, cachePrefix))
 	}
 }
 
@@ -92,11 +96,19 @@ func (s *Server) cacheBusterMediaAttachmentURL(id int64, attachment string, styl
 }
 
 func (s *Server) cacheBusterAccountImageURL(id int64, kind string, style string, filename string) string {
+	return s.cacheBusterAccountImageURLWithPrefix(id, kind, style, filename, false)
+}
+
+func (s *Server) cacheBusterAccountImageURLWithPrefix(id int64, kind string, style string, filename string, cachePrefix bool) string {
 	dir := "avatars"
 	if kind == "header" {
 		dir = "headers"
 	}
-	path := "accounts/" + dir + "/" + strings.ReplaceAll(mediaPaperclipIDPartition(id), "\\", "/") + "/" + style + "/" + url.PathEscape(filename)
+	prefix := ""
+	if cachePrefix {
+		prefix = "cache/"
+	}
+	path := prefix + "accounts/" + dir + "/" + strings.ReplaceAll(mediaPaperclipIDPartition(id), "\\", "/") + "/" + style + "/" + url.PathEscape(filename)
 	return s.cacheBusterAssetURL(path)
 }
 

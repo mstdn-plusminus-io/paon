@@ -1577,11 +1577,11 @@ func activityPubAccountImage(s *Server, account models.Account) map[string]any {
 }
 
 func activityPubAccountAvatarURL(s *Server, account models.Account) string {
-	return s.cfg.SystemAssetURL("accounts/avatars/" + mediaPaperclipIDPartition(account.ID) + "/original/" + url.PathEscape(account.AvatarFileName.String))
+	return s.cfg.SystemAssetURL(accountImageAssetPath(account, "avatar", "original", account.AvatarFileName.String))
 }
 
 func activityPubAccountHeaderURL(s *Server, account models.Account) string {
-	return s.cfg.SystemAssetURL("accounts/headers/" + mediaPaperclipIDPartition(account.ID) + "/original/" + url.PathEscape(account.HeaderFileName.String))
+	return s.cfg.SystemAssetURL(accountImageAssetPath(account, "header", "original", account.HeaderFileName.String))
 }
 
 func activityPubAccountImageObject(contentType string, value string) map[string]any {

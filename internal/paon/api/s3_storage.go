@@ -199,11 +199,42 @@ func (s *Server) deletePaperclipObject(ctx context.Context, key string) {
 }
 
 func accountImageObjectKey(accountID int64, kind string, style string, filename string) string {
+	return accountImageObjectKeyWithCachePrefix(accountID, kind, style, filename, false)
+}
+
+func accountImageObjectKeyForAccount(account models.Account, kind string, style string, filename string) string {
+	return accountImageObjectKeyWithCachePrefix(account.ID, kind, style, filename, accountImageUsesCachePrefix(account, kind))
+}
+
+func accountImageObjectKeyWithCachePrefix(accountID int64, kind string, style string, filename string, cachePrefix bool) string {
 	dir := "avatars"
 	if kind == "header" {
 		dir = "headers"
 	}
-	return path.Join("accounts", dir, strings.ReplaceAll(mediaPaperclipIDPartition(accountID), string(os.PathSeparator), "/"), style, filename)
+	parts := []string{"accounts", dir, strings.ReplaceAll(mediaPaperclipIDPartition(accountID), string(os.PathSeparator), "/"), style, filename}
+	if cachePrefix {
+		parts = append([]string{"cache"}, parts...)
+	}
+	return path.Join(parts...)
+}
+
+func accountImageUsesCachePrefix(account models.Account, kind string) bool {
+	if kind == "header" {
+		return account.HeaderUsesCachePrefix()
+	}
+	return account.AvatarUsesCachePrefix()
+}
+
+func accountImageAssetPath(account models.Account, kind string, style string, filename string) string {
+	dir := "avatars"
+	if kind == "header" {
+		dir = "headers"
+	}
+	prefix := ""
+	if accountImageUsesCachePrefix(account, kind) {
+		prefix = "cache/"
+	}
+	return prefix + "accounts/" + dir + "/" + strings.ReplaceAll(mediaPaperclipIDPartition(account.ID), string(os.PathSeparator), "/") + "/" + style + "/" + url.PathEscape(filename)
 }
 
 func customEmojiObjectKey(emoji models.CustomEmoji, style string, filename string) string {

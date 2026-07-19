@@ -288,20 +288,32 @@ func (s *Server) storeAccountImageFile(header *multipart.FileHeader, accountID i
 }
 
 func (s *Server) accountImagePath(accountID int64, kind string, filename string) string {
-	return s.accountImagePathStyle(accountID, kind, "original", filename)
+	return s.accountImagePathStyleWithCachePrefix(accountID, kind, "original", filename, false)
 }
 
 func (s *Server) accountImagePathStyle(accountID int64, kind string, style string, filename string) string {
+	return s.accountImagePathStyleWithCachePrefix(accountID, kind, style, filename, false)
+}
+
+func (s *Server) accountImagePathStyleWithCachePrefix(accountID int64, kind string, style string, filename string, cachePrefix bool) string {
 	dir := "avatars"
 	if kind == "header" {
 		dir = "headers"
 	}
-	return s.cfg.SystemAssetPath("accounts", dir, mediaPaperclipIDPartition(accountID), style, filename)
+	parts := []string{"accounts", dir, mediaPaperclipIDPartition(accountID), style, filename}
+	if cachePrefix {
+		parts = append([]string{"cache"}, parts...)
+	}
+	return s.cfg.SystemAssetPath(parts...)
 }
 
 func (s *Server) storeAccountImageStaticStyle(accountID int64, kind string, filename string, originalPath string, contentType string) error {
+	return s.storeAccountImageStaticStyleWithCachePrefix(accountID, kind, filename, originalPath, contentType, false)
+}
+
+func (s *Server) storeAccountImageStaticStyleWithCachePrefix(accountID int64, kind string, filename string, originalPath string, contentType string, cachePrefix bool) error {
 	staticFilename := profileImageStaticFilename(filename, contentType)
-	staticTarget := s.accountImagePathStyle(accountID, kind, "static", staticFilename)
+	staticTarget := s.accountImagePathStyleWithCachePrefix(accountID, kind, "static", staticFilename, cachePrefix)
 	staticContentType := contentType
 	if strings.EqualFold(strings.TrimSpace(strings.Split(contentType, ";")[0]), "image/gif") {
 		staticContentType = "image/png"
@@ -311,7 +323,7 @@ func (s *Server) storeAccountImageStaticStyle(accountID int64, kind string, file
 	} else if err := copyFile(originalPath, staticTarget); err != nil {
 		return err
 	}
-	return s.uploadPaperclipObject(context.Background(), accountImageObjectKey(accountID, kind, "static", staticFilename), staticTarget, staticContentType)
+	return s.uploadPaperclipObject(context.Background(), accountImageObjectKeyWithCachePrefix(accountID, kind, "static", staticFilename, cachePrefix), staticTarget, staticContentType)
 }
 
 func profileImageStaticFilename(filename string, contentType string) string {

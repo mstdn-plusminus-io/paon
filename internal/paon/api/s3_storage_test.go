@@ -170,6 +170,18 @@ func TestAccountImageObjectKeyUsesRailsPaperclipIDPartition(t *testing.T) {
 	if got := accountImageObjectKey(42, "header", "static", "header.png"); got != "accounts/headers/000/000/042/static/header.png" {
 		t.Fatalf("header key = %q", got)
 	}
+	remote := models.Account{
+		ID:                         42,
+		Domain:                     sql.NullString{String: "remote.example", Valid: true},
+		AvatarStorageSchemaVersion: sql.NullInt64{Int64: 1, Valid: true},
+		HeaderStorageSchemaVersion: sql.NullInt64{Int64: 1, Valid: true},
+	}
+	if got := accountImageObjectKeyForAccount(remote, "avatar", "original", "avatar.png"); got != "cache/accounts/avatars/000/000/042/original/avatar.png" {
+		t.Fatalf("remote avatar key = %q", got)
+	}
+	if got := accountImageObjectKeyForAccount(remote, "header", "static", "header.png"); got != "cache/accounts/headers/000/000/042/static/header.png" {
+		t.Fatalf("remote header key = %q", got)
+	}
 }
 
 func TestS3SDKDefaultsBlankRegionToUSEast1(t *testing.T) {

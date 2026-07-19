@@ -251,6 +251,14 @@ func (Account) TableName() string { return "accounts" }
 
 func (a Account) Local() bool { return !a.Domain.Valid || a.Domain.String == "" }
 
+func (a Account) AvatarUsesCachePrefix() bool {
+	return !a.Local() && a.AvatarStorageSchemaVersion.Valid && a.AvatarStorageSchemaVersion.Int64 >= 1
+}
+
+func (a Account) HeaderUsesCachePrefix() bool {
+	return !a.Local() && a.HeaderStorageSchemaVersion.Valid && a.HeaderStorageSchemaVersion.Int64 >= 1
+}
+
 func (a Account) Acct() string {
 	if a.Local() {
 		return a.Username

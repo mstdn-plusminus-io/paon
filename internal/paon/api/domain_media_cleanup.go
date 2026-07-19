@@ -233,6 +233,8 @@ func (s *Server) removeAccountLocalImageFiles(accountID int64) {
 	for _, root := range []string{
 		s.cfg.SystemAssetPath("accounts", "avatars", id),
 		s.cfg.SystemAssetPath("accounts", "headers", id),
+		s.cfg.SystemAssetPath("cache", "accounts", "avatars", id),
+		s.cfg.SystemAssetPath("cache", "accounts", "headers", id),
 	} {
 		_ = os.RemoveAll(root)
 	}
@@ -246,7 +248,12 @@ func (s *Server) removeAccountLocalImageFilesForKind(accountID int64, kind strin
 	if kind == "header" {
 		dir = "headers"
 	}
-	_ = os.RemoveAll(s.cfg.SystemAssetPath("accounts", dir, mediaPaperclipIDPartition(accountID)))
+	for _, root := range []string{
+		s.cfg.SystemAssetPath("accounts", dir, mediaPaperclipIDPartition(accountID)),
+		s.cfg.SystemAssetPath("cache", "accounts", dir, mediaPaperclipIDPartition(accountID)),
+	} {
+		_ = os.RemoveAll(root)
+	}
 }
 
 func (s *Server) removeAccountImageObjects(account models.Account) {
@@ -255,12 +262,12 @@ func (s *Server) removeAccountImageObjects(account models.Account) {
 	}
 	s.bustAccountImageCache(account)
 	if account.AvatarFileName.Valid && strings.TrimSpace(account.AvatarFileName.String) != "" {
-		s.deletePaperclipObject(context.Background(), accountImageObjectKey(account.ID, "avatar", "original", account.AvatarFileName.String))
-		s.deletePaperclipObject(context.Background(), accountImageObjectKey(account.ID, "avatar", "static", profileImageStaticFilename(account.AvatarFileName.String, account.AvatarContentType.String)))
+		s.deletePaperclipObject(context.Background(), accountImageObjectKeyForAccount(account, "avatar", "original", account.AvatarFileName.String))
+		s.deletePaperclipObject(context.Background(), accountImageObjectKeyForAccount(account, "avatar", "static", profileImageStaticFilename(account.AvatarFileName.String, account.AvatarContentType.String)))
 	}
 	if account.HeaderFileName.Valid && strings.TrimSpace(account.HeaderFileName.String) != "" {
-		s.deletePaperclipObject(context.Background(), accountImageObjectKey(account.ID, "header", "original", account.HeaderFileName.String))
-		s.deletePaperclipObject(context.Background(), accountImageObjectKey(account.ID, "header", "static", profileImageStaticFilename(account.HeaderFileName.String, account.HeaderContentType.String)))
+		s.deletePaperclipObject(context.Background(), accountImageObjectKeyForAccount(account, "header", "original", account.HeaderFileName.String))
+		s.deletePaperclipObject(context.Background(), accountImageObjectKeyForAccount(account, "header", "static", profileImageStaticFilename(account.HeaderFileName.String, account.HeaderContentType.String)))
 	}
 }
 

@@ -3471,7 +3471,11 @@ func accountAvatar(cfg config.Config, account models.Account, static bool) strin
 			style = "static"
 			filename = paperclipStaticFilename(filename)
 		}
-		return cfg.SystemAssetURL("accounts/avatars/" + paperclipIDPartition(account.ID) + "/" + style + "/" + url.PathEscape(filename))
+		prefix := ""
+		if account.AvatarUsesCachePrefix() {
+			prefix = "cache/"
+		}
+		return cfg.SystemAssetURL(prefix + "accounts/avatars/" + paperclipIDPartition(account.ID) + "/" + style + "/" + url.PathEscape(filename))
 	}
 	return cfg.BaseURL() + "/avatars/original/missing.png"
 }
@@ -3490,7 +3494,11 @@ func accountHeader(cfg config.Config, account models.Account, static bool) strin
 			style = "static"
 			filename = paperclipStaticFilename(filename)
 		}
-		return cfg.SystemAssetURL("accounts/headers/" + paperclipIDPartition(account.ID) + "/" + style + "/" + url.PathEscape(filename))
+		prefix := ""
+		if account.HeaderUsesCachePrefix() {
+			prefix = "cache/"
+		}
+		return cfg.SystemAssetURL(prefix + "accounts/headers/" + paperclipIDPartition(account.ID) + "/" + style + "/" + url.PathEscape(filename))
 	}
 	return cfg.BaseURL() + "/headers/original/missing.png"
 }

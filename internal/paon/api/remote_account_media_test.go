@@ -1,8 +1,13 @@
 package api
 
 import (
+	"database/sql"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 )
 
 func TestDownloadAndStoreRemoteAccountImageGuardsAndPipeline(t *testing.T) {
@@ -15,11 +20,47 @@ func TestDownloadAndStoreRemoteAccountImageGuardsAndPipeline(t *testing.T) {
 		`fetchRemoteImageMedia(ctx, remoteURL, remoteAccountImageLimit)`,
 		`profileImageContentTypeSupported(contentType)`,
 		`resizeAccountImageBuffer(kind, download.body, contentType)`,
-		`profileImageUpdates(kind, filename, contentType, int64(len(data)), now)`,
+		`remoteProfileImageUpdates(kind, filename, contentType, int64(len(data)), remoteURL, now)`,
 	} {
 		if !functionBodyContains(t, src, "downloadAndStoreRemoteAccountImage", want) {
 			t.Fatalf("downloadAndStoreRemoteAccountImage missing %q", want)
 		}
+	}
+}
+
+func TestRemoteProfileImageUpdatesPreserveRemoteURLAndCacheSchema(t *testing.T) {
+	now := time.Date(2026, 7, 19, 15, 0, 0, 0, time.UTC)
+	avatar := remoteProfileImageUpdates("avatar", "avatar.png", "image/png", 123, "https://remote.example/avatar.png", now)
+	if avatar["avatar_remote_url"] != (sql.NullString{String: "https://remote.example/avatar.png", Valid: true}) {
+		t.Fatalf("avatar remote URL = %#v", avatar["avatar_remote_url"])
+	}
+	if avatar["avatar_storage_schema_version"] != (sql.NullInt64{Int64: 1, Valid: true}) {
+		t.Fatalf("avatar storage schema = %#v", avatar["avatar_storage_schema_version"])
+	}
+
+	header := remoteProfileImageUpdates("header", "header.png", "image/png", 456, "https://remote.example/header.png", now)
+	if header["header_remote_url"] != "https://remote.example/header.png" {
+		t.Fatalf("header remote URL = %#v", header["header_remote_url"])
+	}
+	if header["header_storage_schema_version"] != (sql.NullInt64{Int64: 1, Valid: true}) {
+		t.Fatalf("header storage schema = %#v", header["header_storage_schema_version"])
+	}
+}
+
+func TestStoreRemoteAccountImageUsesRailsCachePrefix(t *testing.T) {
+	root := t.TempDir()
+	s := &Server{cfg: config.Config{PublicDir: root}}
+	if err := s.storeAccountImageBytes(42, "avatar", "avatar.png", "image/png", siteUploadTestPNG(t, 20, 20)); err != nil {
+		t.Fatal(err)
+	}
+	for _, style := range []string{"original", "static"} {
+		path := filepath.Join(root, "system", "cache", "accounts", "avatars", "000", "000", "042", style, "avatar.png")
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("remote avatar %s missing: %v", style, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "system", "accounts", "avatars", "000", "000", "042", "original", "avatar.png")); !os.IsNotExist(err) {
+		t.Fatalf("remote avatar must not be stored in local account path: %v", err)
 	}
 }
 

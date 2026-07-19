@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,7 +61,7 @@ func (s *Server) downloadAndStoreRemoteAccountImage(ctx context.Context, account
 		return err
 	}
 	now := time.Now().UTC()
-	return s.db.WithContext(ctx).Model(&models.Account{}).Where("id = ?", accountID).Updates(profileImageUpdates(kind, filename, contentType, int64(len(data)), now)).Error
+	return s.db.WithContext(ctx).Model(&models.Account{}).Where("id = ?", accountID).Updates(remoteProfileImageUpdates(kind, filename, contentType, int64(len(data)), remoteURL, now)).Error
 }
 
 // resizeAccountImageBuffer applies the Rails avatar (400x400# fill crop) or header
@@ -80,7 +81,7 @@ func resizeAccountImageBuffer(kind string, data []byte, contentType string) ([]b
 // (profile_credentials.go): it writes the original style locally + S3 and writes the
 // static style through the shared Rails-style profile image pipeline.
 func (s *Server) storeAccountImageBytes(accountID int64, kind string, filename string, contentType string, data []byte) error {
-	target := s.accountImagePath(accountID, kind, filename)
+	target := s.accountImagePathStyleWithCachePrefix(accountID, kind, "original", filename, true)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
@@ -88,8 +89,20 @@ func (s *Server) storeAccountImageBytes(accountID int64, kind string, filename s
 		return err
 	}
 	ctx := context.Background()
-	if err := s.uploadPaperclipObject(ctx, accountImageObjectKey(accountID, kind, "original", filename), target, contentType); err != nil {
+	if err := s.uploadPaperclipObject(ctx, accountImageObjectKeyWithCachePrefix(accountID, kind, "original", filename, true), target, contentType); err != nil {
 		return err
 	}
-	return s.storeAccountImageStaticStyle(accountID, kind, filename, target, contentType)
+	return s.storeAccountImageStaticStyleWithCachePrefix(accountID, kind, filename, target, contentType, true)
+}
+
+func remoteProfileImageUpdates(kind string, filename string, contentType string, size int64, remoteURL string, now time.Time) map[string]any {
+	updates := profileImageUpdates(kind, filename, contentType, size, now)
+	if kind == "avatar" {
+		updates["avatar_remote_url"] = sql.NullString{String: remoteURL, Valid: strings.TrimSpace(remoteURL) != ""}
+		updates["avatar_storage_schema_version"] = sql.NullInt64{Int64: 1, Valid: true}
+		return updates
+	}
+	updates["header_remote_url"] = remoteURL
+	updates["header_storage_schema_version"] = sql.NullInt64{Int64: 1, Valid: true}
+	return updates
 }

@@ -358,42 +358,45 @@ func TestAccountFromModelKeepsSuspendedGroupFlagLikeRails(t *testing.T) {
 
 func TestAccountFromModelRemoteAvatarHonorsCacheSettingAndStaticStyle(t *testing.T) {
 	account := models.Account{
-		ID:                42,
-		Username:          "alice",
-		CreatedAt:         time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC),
-		AvatarRemoteURL:   sql.NullString{String: "https://remote.example/avatar.gif", Valid: true},
-		HeaderRemoteURL:   "https://remote.example/header.gif",
-		AvatarFileName:    sql.NullString{String: "avatar.gif", Valid: true},
-		AvatarContentType: sql.NullString{String: "image/gif", Valid: true},
-		HeaderFileName:    sql.NullString{String: "header.gif", Valid: true},
-		HeaderContentType: sql.NullString{String: "image/gif", Valid: true},
+		ID:                         42,
+		Username:                   "alice",
+		Domain:                     sql.NullString{String: "remote.example", Valid: true},
+		CreatedAt:                  time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC),
+		AvatarRemoteURL:            sql.NullString{String: "https://remote.example/avatar.gif", Valid: true},
+		HeaderRemoteURL:            "https://remote.example/header.gif",
+		AvatarFileName:             sql.NullString{String: "avatar.gif", Valid: true},
+		AvatarContentType:          sql.NullString{String: "image/gif", Valid: true},
+		AvatarStorageSchemaVersion: sql.NullInt64{Int64: 1, Valid: true},
+		HeaderFileName:             sql.NullString{String: "header.gif", Valid: true},
+		HeaderContentType:          sql.NullString{String: "image/gif", Valid: true},
+		HeaderStorageSchemaVersion: sql.NullInt64{Int64: 1, Valid: true},
 	}
 
 	cached := AccountFromModel(config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}, account)
-	if cached.Avatar != "https://example.test/system/accounts/avatars/000/000/042/original/avatar.gif" {
+	if cached.Avatar != "https://example.test/system/cache/accounts/avatars/000/000/042/original/avatar.gif" {
 		t.Fatalf("cached avatar = %q", cached.Avatar)
 	}
-	if cached.AvatarStatic != "https://example.test/system/accounts/avatars/000/000/042/static/avatar.png" {
+	if cached.AvatarStatic != "https://example.test/system/cache/accounts/avatars/000/000/042/static/avatar.png" {
 		t.Fatalf("cached avatar_static = %q", cached.AvatarStatic)
 	}
-	if cached.Header != "https://example.test/system/accounts/headers/000/000/042/original/header.gif" {
+	if cached.Header != "https://example.test/system/cache/accounts/headers/000/000/042/original/header.gif" {
 		t.Fatalf("cached header = %q", cached.Header)
 	}
-	if cached.HeaderStatic != "https://example.test/system/accounts/headers/000/000/042/static/header.png" {
+	if cached.HeaderStatic != "https://example.test/system/cache/accounts/headers/000/000/042/static/header.png" {
 		t.Fatalf("cached header_static = %q", cached.HeaderStatic)
 	}
 
 	stored := AccountFromModel(config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https", StorageHost: "https://media.example.test/"}, account)
-	if stored.Avatar != "https://media.example.test/accounts/avatars/000/000/042/original/avatar.gif" {
+	if stored.Avatar != "https://media.example.test/cache/accounts/avatars/000/000/042/original/avatar.gif" {
 		t.Fatalf("storage-host avatar = %q", stored.Avatar)
 	}
-	if stored.AvatarStatic != "https://media.example.test/accounts/avatars/000/000/042/static/avatar.png" {
+	if stored.AvatarStatic != "https://media.example.test/cache/accounts/avatars/000/000/042/static/avatar.png" {
 		t.Fatalf("storage-host avatar_static = %q", stored.AvatarStatic)
 	}
-	if stored.Header != "https://media.example.test/accounts/headers/000/000/042/original/header.gif" {
+	if stored.Header != "https://media.example.test/cache/accounts/headers/000/000/042/original/header.gif" {
 		t.Fatalf("storage-host header = %q", stored.Header)
 	}
-	if stored.HeaderStatic != "https://media.example.test/accounts/headers/000/000/042/static/header.png" {
+	if stored.HeaderStatic != "https://media.example.test/cache/accounts/headers/000/000/042/static/header.png" {
 		t.Fatalf("storage-host header_static = %q", stored.HeaderStatic)
 	}
 
