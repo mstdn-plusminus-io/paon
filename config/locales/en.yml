@@ -416,7 +416,6 @@ en:
       elapsed: Elapsed
       empty: No data
       error: Last error
-      error_detail_redacted: "[Error detail redacted because it may contain sensitive data]"
       failed: Failed
       failed_total: Failed total
       filter: Filter
@@ -443,15 +442,11 @@ en:
       next: Next
       next_process_at: Next attempt
       no_messages: No messages
-      non_json_payload: "[non-JSON payload: %d bytes]"
       orphaned: Orphaned
       overview: Overview
       page_of: Page %d · %d tasks
       pagination: Pagination
       payload: Payload
-      payload_omitted: "[payload omitted: %d bytes]"
-      payload_shape_omitted: "[scalar or array payload omitted: %d bytes]"
-      payload_unavailable: "[payload unavailable: %d bytes]"
       pending: Pending
       queue: Queue
       queues: Queues
@@ -461,7 +456,7 @@ en:
       relation: Relation
       retries: Retries
       retry: Retry
-      safe_preview: Redacted preview
+      raw_payload: Raw payload
       scheduled: Scheduled
       servers: Servers and running tasks
       sent_at: Sent at

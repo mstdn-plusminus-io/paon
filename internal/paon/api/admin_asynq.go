@@ -1,8 +1,6 @@
 package api
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -13,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/hibiken/asynq"
 	"github.com/labstack/echo/v5"
@@ -21,11 +18,9 @@ import (
 )
 
 const (
-	asynqHistoryDays       = 90
-	asynqTaskPageSize      = 50
-	asynqTaskMaxPage       = 200
-	asynqPayloadDecodeMax  = 64 * 1024
-	asynqPayloadPreviewMax = 2048
+	asynqHistoryDays  = 90
+	asynqTaskPageSize = 50
+	asynqTaskMaxPage  = 200
 )
 
 var errUnknownAsynqQueue = errors.New("unknown asynq queue")
@@ -142,25 +137,25 @@ type asynqDashboardData struct {
 }
 
 type asynqTaskView struct {
-	ID             string
-	Queue          string
-	DisplayQueue   string
-	Type           string
-	State          string
-	Retried        int
-	MaxRetry       int
-	LastError      string
-	LastFailedAt   time.Time
-	NextProcessAt  time.Time
-	Deadline       time.Time
-	StartedAt      time.Time
-	Elapsed        time.Duration
-	IsOrphaned     bool
-	PayloadBytes   int
-	PayloadPreview string
-	WorkerHost     string
-	WorkerPID      int
-	Sequence       int
+	ID            string
+	Queue         string
+	DisplayQueue  string
+	Type          string
+	State         string
+	Retried       int
+	MaxRetry      int
+	LastError     string
+	LastFailedAt  time.Time
+	NextProcessAt time.Time
+	Deadline      time.Time
+	StartedAt     time.Time
+	Elapsed       time.Duration
+	IsOrphaned    bool
+	PayloadBytes  int
+	RawPayload    string
+	WorkerHost    string
+	WorkerPID     int
+	Sequence      int
 }
 
 type asynqTaskPage struct {
@@ -212,138 +207,6 @@ func asynqDuration(value time.Duration) string {
 		return "<1s"
 	}
 	return value.Round(time.Second).String()
-}
-
-func asynqSafeText(value string, limit int) string {
-	value = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
-			return -1
-		}
-		return r
-	}, value)
-	value = strings.TrimSpace(value)
-	if limit > 0 && len(value) > limit {
-		value = value[:limit] + "…"
-	}
-	return value
-}
-
-func asynqLocale(locales ...string) string {
-	if len(locales) > 0 && strings.TrimSpace(locales[0]) != "" {
-		return locales[0]
-	}
-	return "en"
-}
-
-func asynqErrorPreview(value string, locales ...string) string {
-	value = asynqSafeText(value, 1000)
-	lower := strings.ToLower(value)
-	compact := strings.NewReplacer("_", "", "-", "", " ", "").Replace(lower)
-	redacted := adminT(asynqLocale(locales...), "admin.devops.error_detail_redacted", "[Error detail redacted because it may contain sensitive data]")
-	for _, marker := range []string{"token", "password", "secret", "privatekey", "apikey", "authorization", "credential", "cookie", "signature"} {
-		if strings.Contains(compact, marker) {
-			return redacted
-		}
-	}
-	for _, marker := range []string{`"body"`, "body=", "body:", `"content"`, "content=", `"headers"`, `"htmlbody"`, `"textbody"`, `"mailmessage"`, `"recipient"`, `"email"`, `"subject"`, `"message":`, "message="} {
-		if strings.Contains(lower, marker) {
-			return redacted
-		}
-	}
-	return value
-}
-
-func asynqPayloadKeySensitive(key string) bool {
-	normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"))
-	compact := strings.ReplaceAll(normalized, "_", "")
-	for _, fragment := range []string{"token", "password", "secret", "privatekey", "apikey", "credential", "authorization", "cookie", "signature", "encrypted"} {
-		if strings.Contains(compact, fragment) {
-			return true
-		}
-	}
-	switch compact {
-	case "body", "htmlbody", "textbody", "rawbody", "content", "json", "message", "mailmessage", "headers", "recipient", "recipients", "to", "email", "address", "subject":
-		return true
-	default:
-		return false
-	}
-}
-
-func asynqSanitizePayloadValue(value any, depth int) any {
-	if depth >= 6 {
-		return "[truncated]"
-	}
-	switch value := value.(type) {
-	case map[string]any:
-		keys := make([]string, 0, len(value))
-		for key := range value {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		if len(keys) > 30 {
-			keys = keys[:30]
-		}
-		out := make(map[string]any, len(keys)+1)
-		for _, key := range keys {
-			if asynqPayloadKeySensitive(key) {
-				out[key] = "[REDACTED]"
-				continue
-			}
-			out[key] = asynqSanitizePayloadValue(value[key], depth+1)
-		}
-		if len(value) > len(keys) {
-			out["_truncated"] = true
-		}
-		return out
-	case []any:
-		limit := len(value)
-		if limit > 10 {
-			limit = 10
-		}
-		out := make([]any, 0, limit+1)
-		for _, item := range value[:limit] {
-			out = append(out, asynqSanitizePayloadValue(item, depth+1))
-		}
-		if len(value) > limit {
-			out = append(out, "[truncated]")
-		}
-		return out
-	case string:
-		return asynqSafeText(value, 256)
-	default:
-		return value
-	}
-}
-
-func asynqPayloadPreview(payload []byte, locales ...string) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	locale := asynqLocale(locales...)
-	if len(payload) > asynqPayloadDecodeMax {
-		return fmt.Sprintf(adminT(locale, "admin.devops.payload_omitted", "[payload omitted: %d bytes]"), len(payload))
-	}
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return fmt.Sprintf(adminT(locale, "admin.devops.non_json_payload", "[non-JSON payload: %d bytes]"), len(payload))
-	}
-	if _, ok := value.(map[string]any); !ok {
-		return fmt.Sprintf(adminT(locale, "admin.devops.payload_shape_omitted", "[scalar or array payload omitted: %d bytes]"), len(payload))
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err == nil {
-		return fmt.Sprintf(adminT(locale, "admin.devops.non_json_payload", "[non-JSON payload: %d bytes]"), len(payload))
-	}
-	encoded, err := json.MarshalIndent(asynqSanitizePayloadValue(value, 0), "", "  ")
-	if err != nil {
-		return fmt.Sprintf(adminT(locale, "admin.devops.payload_unavailable", "[payload unavailable: %d bytes]"), len(payload))
-	}
-	if len(encoded) > asynqPayloadPreviewMax {
-		return string(encoded[:asynqPayloadPreviewMax]) + "\n…"
-	}
-	return string(encoded)
 }
 
 func asynqUnavailableSnapshot(locale string, err error) asynqDashboardSnapshot {
@@ -822,8 +685,7 @@ func asynqResolveQueueFilter(s *Server, data *asynqDashboardData, filter string)
 	return match
 }
 
-func (s *Server) asynqTaskPage(data *asynqDashboardData, state string, queueFilter string, page int, locales ...string) (asynqTaskPage, error) {
-	locale := asynqLocale(locales...)
+func (s *Server) asynqTaskPage(data *asynqDashboardData, state string, queueFilter string, page int) (asynqTaskPage, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -899,23 +761,23 @@ func (s *Server) asynqTaskPage(data *asynqDashboardData, state string, queueFilt
 				nextProcessAt = time.Time{}
 			}
 			view := asynqTaskView{
-				ID:             task.ID,
-				Queue:          queue,
-				DisplayQueue:   asynqLogicalQueueName(s.cfg.RedisNamespace, queue),
-				Type:           task.Type,
-				State:          state,
-				Retried:        task.Retried,
-				MaxRetry:       task.MaxRetry,
-				LastError:      asynqErrorPreview(task.LastErr, locale),
-				LastFailedAt:   task.LastFailedAt,
-				NextProcessAt:  nextProcessAt,
-				Deadline:       deadline,
-				StartedAt:      startedAt,
-				Elapsed:        elapsed,
-				IsOrphaned:     task.IsOrphaned,
-				PayloadBytes:   len(task.Payload),
-				PayloadPreview: asynqPayloadPreview(task.Payload, locale),
-				Sequence:       sequence,
+				ID:            task.ID,
+				Queue:         queue,
+				DisplayQueue:  asynqLogicalQueueName(s.cfg.RedisNamespace, queue),
+				Type:          task.Type,
+				State:         state,
+				Retried:       task.Retried,
+				MaxRetry:      task.MaxRetry,
+				LastError:     task.LastErr,
+				LastFailedAt:  task.LastFailedAt,
+				NextProcessAt: nextProcessAt,
+				Deadline:      deadline,
+				StartedAt:     startedAt,
+				Elapsed:       elapsed,
+				IsOrphaned:    task.IsOrphaned,
+				PayloadBytes:  len(task.Payload),
+				RawPayload:    string(task.Payload),
+				Sequence:      sequence,
 			}
 			if server != nil {
 				view.WorkerHost = server.Host
@@ -1052,7 +914,7 @@ func (s *Server) sidekiqPage(c *echo.Context) error {
 	}
 	var taskPage *asynqTaskPage
 	if dashboardAvailable && (view == "active" || view == "pending" || view == "retry" || view == "scheduled" || view == "archived") {
-		page, pageErr := s.asynqTaskPage(data, view, c.QueryParam("queue"), asynqPageNumber(c), locale)
+		page, pageErr := s.asynqTaskPage(data, view, c.QueryParam("queue"), asynqPageNumber(c))
 		if pageErr != nil {
 			if errors.Is(pageErr, errUnknownAsynqQueue) {
 				return echo.NewHTTPError(http.StatusBadRequest, adminT(locale, "admin.devops.unknown_queue", "Unknown queue"))
@@ -1338,8 +1200,8 @@ func asynqTaskRowsHTML(page *asynqTaskPage, locale string) string {
 			lastError = `<details><summary>` + asynqHTMLAttr(adminT(locale, "admin.devops.details", "Details")) + `</summary><pre>` + asynqHTMLAttr(task.LastError) + `</pre></details>`
 		}
 		payload := `<small>` + strconv.Itoa(task.PayloadBytes) + ` ` + asynqHTMLAttr(adminT(locale, "admin.devops.bytes", "bytes")) + `</small>`
-		if task.PayloadPreview != "" {
-			payload += `<details><summary>` + asynqHTMLAttr(adminT(locale, "admin.devops.safe_preview", "Redacted preview")) + `</summary><pre>` + asynqHTMLAttr(task.PayloadPreview) + `</pre></details>`
+		if task.RawPayload != "" {
+			payload += `<details><summary>` + asynqHTMLAttr(adminT(locale, "admin.devops.raw_payload", "Raw payload")) + `</summary><pre>` + asynqHTMLAttr(task.RawPayload) + `</pre></details>`
 		}
 		body.WriteString(`<tr><td><code>` + asynqHTMLAttr(task.ID) + `</code>` + orphan + `</td><td><strong>` + asynqHTMLAttr(task.DisplayQueue) + `</strong>`)
 		if task.Queue != task.DisplayQueue {
