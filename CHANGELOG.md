@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.2.29] - 2026-01-07
+
+### Security
+
+- Fix SSRF protection bypass for IPv4-mapped IPv6 addresses ([CVE-2026-22245](https://github.com/mastodon/mastodon/security/advisories/GHSA-xfrj-c749-jxxq))
+- Enforce private-network filtering when the Go HTTP client follows redirects and opens direct connections
+
+### Fixed
+
+- Fix mentions of domain-blocked users being processed (#37257 by @ClearlyClaire)
+- Prevent queued notifications from being recreated after a blocked mention is removed
+- Preserve explicitly allowed local LibreTranslate connections under the hardened HTTP guard
+
+## [4.2.28] - 2025-12-08
+
+### Security
+
+- Verify missing and inaccessible private posts keep identical localized 404 responses ([CVE-2025-67500](https://github.com/mastodon/mastodon/security/advisories/GHSA-gwhw-gcjx-72v8))
+
+### Fixed
+
+- Fix old previously-undiscovered posts being treated as new when receiving an `Update` (#36848 by @ClearlyClaire)
+- Fix reference-form ActivityPub `Update` objects being dereferenced repeatedly
+
 ## [4.2.27] - 2025-10-13
 
 ### Security
