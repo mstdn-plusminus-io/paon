@@ -2,6 +2,6 @@ package config
 
 const (
 	DefaultVersion         = "7.0.0"
-	DefaultPrerelease      = "rc1"
+	DefaultPrerelease      = "rc2"
 	DefaultMastodonVersion = "4.2.29"
 )
