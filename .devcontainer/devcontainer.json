@@ -12,6 +12,10 @@
 
   "forwardPorts": [3000],
 
+  "containerEnv": {
+    "GOFLAGS": "-tags=libvips"
+  },
+
   "portsAttributes": {
     "3000": {
       "label": "web",

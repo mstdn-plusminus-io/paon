@@ -1,17 +1,16 @@
+//go:build libvips
+
 package api
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	vips "github.com/cshum/vipsgen/vips816"
 )
 
-const vipsJPEGQuality = 90
-
-func convertVIPSFileToJPEG(source string, target string) error {
+func tryConvertVIPSFileToJPEG(source string, target string) error {
 	img, err := vips.NewImageFromFile(source, vips.DefaultLoadOptions())
 	if err != nil {
 		return fmt.Errorf("load image with libvips: %w", err)
@@ -20,7 +19,7 @@ func convertVIPSFileToJPEG(source string, target string) error {
 	return saveVIPSImageFile(img, target, "image/jpeg")
 }
 
-func resizeVIPSFileToMaxPixels(source string, target string, contentType string, maxPixels int) error {
+func tryResizeVIPSFileToMaxPixels(source string, target string, contentType string, maxPixels int) error {
 	probe, err := vips.NewImageFromFile(source, vips.DefaultLoadOptions())
 	if err != nil {
 		return fmt.Errorf("load image dimensions with libvips: %w", err)
@@ -41,7 +40,7 @@ func resizeVIPSFileToMaxPixels(source string, target string, contentType string,
 	return saveVIPSImageFile(img, target, contentType)
 }
 
-func resizeVIPSBufferToMaxPixels(data []byte, contentType string, maxPixels int) ([]byte, error) {
+func tryResizeVIPSBufferToMaxPixels(data []byte, contentType string, maxPixels int) ([]byte, error) {
 	probe, err := vips.NewImageFromBuffer(data, vips.DefaultLoadOptions())
 	if err != nil {
 		return nil, fmt.Errorf("load image dimensions with libvips: %w", err)
@@ -62,7 +61,7 @@ func resizeVIPSBufferToMaxPixels(data []byte, contentType string, maxPixels int)
 	return encodeVIPSImage(img, contentType)
 }
 
-func resizeVIPSBufferToFill(data []byte, contentType string, width int, height int) ([]byte, error) {
+func tryResizeVIPSBufferToFill(data []byte, contentType string, width int, height int) ([]byte, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("invalid libvips target geometry %dx%d", width, height)
 	}
@@ -80,7 +79,7 @@ func resizeVIPSBufferToFill(data []byte, contentType string, width int, height i
 	return encodeVIPSImage(img, contentType)
 }
 
-func resizeVIPSFileToFill(source string, target string, contentType string, width int, height int) error {
+func tryResizeVIPSFileToFill(source string, target string, contentType string, width int, height int) error {
 	if width <= 0 || height <= 0 {
 		return fmt.Errorf("invalid libvips target geometry %dx%d", width, height)
 	}
@@ -98,7 +97,7 @@ func resizeVIPSFileToFill(source string, target string, contentType string, widt
 	return saveVIPSImageFile(img, target, contentType)
 }
 
-func writeVIPSStaticPNG(source string, target string) error {
+func tryWriteVIPSStaticPNG(source string, target string) error {
 	img, err := vips.NewImageFromFile(source, vips.DefaultLoadOptions())
 	if err != nil {
 		return fmt.Errorf("load static image with libvips: %w", err)
@@ -155,8 +154,4 @@ func encodeVIPSImage(img *vips.Image, contentType string) ([]byte, error) {
 		return nil, fmt.Errorf("encode image with libvips: %w", err)
 	}
 	return data, nil
-}
-
-func normalizedImageContentType(contentType string) string {
-	return strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 }

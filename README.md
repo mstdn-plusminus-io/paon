@@ -49,10 +49,14 @@ Before developing, you need to install the following software.
 - Go 1.25.x
 - Node.js 22.x
 - Yarn 1.22.x
-- libvips 8.16.1 or newer and pkg-config
+- libvips 8.16.1 or newer and pkg-config (recommended for fast image processing)
 - FFmpeg and ffprobe
 
 On macOS, install the native media dependencies with `brew install vips pkg-config ffmpeg`.
+Taskfile builds automatically enable the libvips backend when `pkg-config` finds a
+compatible installation. Direct `go` commands can set `GOFLAGS=-tags=libvips`.
+Without that tag, Paon uses its Go-native image fallback and logs each fallback at
+WARN level.
 
 Then run the following commands.
 

@@ -2,8 +2,17 @@ FROM golang:1.25-trixie AS go-builder
 
 WORKDIR /src
 
-RUN apt-get update && \
-	apt-get install -y --no-install-recommends libvips-dev pkg-config && \
+ARG PAON_IMAGE_PROCESSOR=auto
+
+RUN set -eux; \
+	mkdir -p /out/native /out/libvips; \
+	apt-get update; \
+	if [ "${PAON_IMAGE_PROCESSOR}" != "native" ] && apt-get install -y --no-install-recommends libvips-dev pkg-config; then \
+		echo libvips > /out/image-processor; \
+	else \
+		echo 'level=WARN event=image_processor_fallback processor=libvips fallback=go-native phase=docker_builder'; \
+		echo native > /out/image-processor; \
+	fi; \
 	rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
@@ -13,11 +22,17 @@ COPY cmd ./cmd
 COPY internal ./internal
 
 RUN go list -mod=mod ./cmd/paon ./cmd/paon-admin ./cmd/paon-cutover ./cmd/paon-meili-deploy ./cmd/paon-migrate >/dev/null
-RUN CGO_ENABLED=1 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon ./cmd/paon && \
-	CGO_ENABLED=1 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-admin ./cmd/paon-admin && \
-	CGO_ENABLED=1 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-cutover ./cmd/paon-cutover && \
-	CGO_ENABLED=1 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-meili-deploy ./cmd/paon-meili-deploy && \
-	CGO_ENABLED=1 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/paon-migrate ./cmd/paon-migrate
+RUN set -eux; \
+	for command in paon paon-admin paon-cutover paon-meili-deploy paon-migrate; do \
+		CGO_ENABLED=0 go build -mod=mod -trimpath -ldflags="-s -w" -o "/out/native/${command}" "./cmd/${command}"; \
+	done; \
+	if [ "$(cat /out/image-processor)" = libvips ]; then \
+		for command in paon paon-admin paon-cutover paon-meili-deploy paon-migrate; do \
+			CGO_ENABLED=1 go build -tags=libvips -mod=mod -trimpath -ldflags="-s -w" -o "/out/libvips/${command}" "./cmd/${command}"; \
+		done; \
+	else \
+		cp /out/native/* /out/libvips/; \
+	fi
 
 FROM node:22-bookworm-slim AS assets
 
@@ -49,9 +64,21 @@ ENV REDIS_PORT=6379
 ARG UID=991
 ARG GID=991
 
+COPY --from=go-builder /out /tmp/paon-build
+
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates ffmpeg libvips42t64 pamtester tzdata tini wget; \
+    apt-get install -y --no-install-recommends ca-certificates ffmpeg pamtester tzdata tini wget; \
+    image_processor=native; \
+    if [ "$(cat /tmp/paon-build/image-processor)" = libvips ] && apt-get install -y --no-install-recommends libvips42t64; then \
+        image_processor=libvips; \
+    else \
+        echo 'level=WARN event=image_processor_fallback processor=libvips fallback=go-native phase=docker_runtime'; \
+    fi; \
+    for command in paon paon-admin paon-cutover paon-meili-deploy paon-migrate; do \
+        install -m 0755 "/tmp/paon-build/${image_processor}/${command}" "/usr/local/bin/${command}"; \
+    done; \
+    rm -rf /tmp/paon-build; \
     groupadd --gid "${GID}" mastodon; \
     useradd --home-dir /opt/mastodon --create-home --uid "${UID}" --gid "${GID}" mastodon; \
     mkdir -p /opt/mastodon/public/system /opt/mastodon/tmp; \
@@ -59,11 +86,6 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=go-builder --chown=mastodon:mastodon /out/paon /usr/local/bin/paon
-COPY --from=go-builder --chown=mastodon:mastodon /out/paon-admin /usr/local/bin/paon-admin
-COPY --from=go-builder --chown=mastodon:mastodon /out/paon-cutover /usr/local/bin/paon-cutover
-COPY --from=go-builder --chown=mastodon:mastodon /out/paon-meili-deploy /usr/local/bin/paon-meili-deploy
-COPY --from=go-builder --chown=mastodon:mastodon /out/paon-migrate /usr/local/bin/paon-migrate
 COPY --from=assets --chown=mastodon:mastodon /src/public /opt/mastodon/public
 COPY --from=assets --chown=mastodon:mastodon /src/config/locales /opt/mastodon/config/locales
 
