@@ -375,6 +375,53 @@ func TestAsynqServeMuxRegistersAllHandlers(t *testing.T) {
 	}
 }
 
+func TestLocalNotificationMentionPayloadRequiresExistingMatchingMention(t *testing.T) {
+	payload := asynqLocalNotificationPayload{
+		ReceiverAccountID: 23,
+		FromAccountID:     11,
+		ActivityID:        42,
+		ActivityType:      "Mention",
+		Type:              "mention",
+	}
+	if localNotificationMentionMatchesPayload(nil, payload) {
+		t.Fatal("a deleted mention must discard its queued notification")
+	}
+	if localNotificationMentionMatchesPayload(&models.Mention{
+		ID:        payload.ActivityID,
+		AccountID: models.MentionAccountID(99),
+	}, payload) {
+		t.Fatal("a mention for another receiver must discard its queued notification")
+	}
+	if !localNotificationMentionMatchesPayload(&models.Mention{
+		ID:        payload.ActivityID,
+		AccountID: models.MentionAccountID(payload.ReceiverAccountID),
+	}, payload) {
+		t.Fatal("an existing mention for the receiver must keep its queued notification")
+	}
+
+	src, err := os.ReadFile("asynq_workers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sourceContains([]byte(functionBody(t, src, "createLocalNotificationFromPayload")), `if p.ActivityType == "Mention" { notification, err = s.createMentionLocalNotificationFromPayload(ctx, p)`) {
+		t.Fatal("local notification creation must atomically validate Mention payloads before creating notification rows")
+	}
+	atomicBody := functionBody(t, src, "createMentionLocalNotificationFromPayload")
+	for _, want := range []string{
+		`s.db.WithContext(ctx).Transaction`,
+		`localNotificationMentionForPayload(tx, p)`,
+		`s.createRelationshipNotificationRowAndEnqueue(tx`,
+	} {
+		if !sourceContains([]byte(atomicBody), want) {
+			t.Fatalf("atomic Mention notification creation missing %q", want)
+		}
+	}
+	lookupBody := functionBody(t, src, "localNotificationMentionForPayload")
+	if !sourceContains([]byte(lookupBody), `Clauses(clause.Locking{Strength: "UPDATE"})`) {
+		t.Fatal("Mention notification validation must lock its Mention row until notification creation commits")
+	}
+}
+
 // TestNotificationMailHelpersEnqueueAfterCreation locks in that notifications created via
 // relationship helpers enqueue their mail worker, while the worker itself mirrors Rails
 // NotifyService#email_needed? before actually sending. Missing rows are discarded like

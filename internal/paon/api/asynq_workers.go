@@ -17,6 +17,7 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // asynq task types mirroring Rails Sidekiq workers. Queue names match Rails where sensible
@@ -2326,20 +2327,75 @@ func (s *Server) createLocalNotificationFromPayload(ctx context.Context, p asynq
 	if s == nil || s.db == nil || p.ReceiverAccountID == 0 || p.ActivityID == 0 || strings.TrimSpace(p.ActivityType) == "" || strings.TrimSpace(p.Type) == "" {
 		return nil, nil
 	}
-	fromAccountID := p.FromAccountID
-	if fromAccountID == 0 {
-		var err error
-		fromAccountID, err = s.localNotificationFromAccountID(ctx, p.ActivityType, p.ActivityID)
-		if err != nil {
-			return nil, err
+	var notification *models.Notification
+	var err error
+	if p.ActivityType == "Mention" {
+		notification, err = s.createMentionLocalNotificationFromPayload(ctx, p)
+	} else {
+		fromAccountID := p.FromAccountID
+		if fromAccountID == 0 {
+			fromAccountID, err = s.localNotificationFromAccountID(ctx, p.ActivityType, p.ActivityID)
+			if err != nil {
+				return nil, err
+			}
 		}
+		notification, err = s.createRelationshipNotificationRowAndEnqueue(s.db.WithContext(ctx), p.ReceiverAccountID, fromAccountID, p.ActivityID, p.ActivityType, p.Type, time.Now().UTC())
 	}
-	notification, err := s.createRelationshipNotificationRowAndEnqueue(s.db.WithContext(ctx), p.ReceiverAccountID, fromAccountID, p.ActivityID, p.ActivityType, p.Type, time.Now().UTC())
 	if err != nil || notification == nil {
 		return notification, err
 	}
 	s.publishNotificationIDWithContext(ctx, notification.ID)
 	return notification, nil
+}
+
+func (s *Server) createMentionLocalNotificationFromPayload(ctx context.Context, p asynqLocalNotificationPayload) (*models.Notification, error) {
+	var notification *models.Notification
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		mention, err := localNotificationMentionForPayload(tx, p)
+		if err != nil || mention == nil {
+			return err
+		}
+		fromAccountID := p.FromAccountID
+		if fromAccountID == 0 {
+			if !mention.StatusID.Valid {
+				return nil
+			}
+			var status models.Status
+			err := tx.Select("account_id").Where("id = ?", mention.StatusID.Int64).First(&status).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			fromAccountID = status.AccountID
+		}
+		notification, err = s.createRelationshipNotificationRowAndEnqueue(tx, p.ReceiverAccountID, fromAccountID, p.ActivityID, p.ActivityType, p.Type, time.Now().UTC())
+		return err
+	})
+	return notification, err
+}
+
+func localNotificationMentionForPayload(tx *gorm.DB, p asynqLocalNotificationPayload) (*models.Mention, error) {
+	var mention models.Mention
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id", "status_id", "account_id").
+		Where("id = ?", p.ActivityID).
+		First(&mention).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !localNotificationMentionMatchesPayload(&mention, p) {
+		return nil, nil
+	}
+	return &mention, nil
+}
+
+func localNotificationMentionMatchesPayload(mention *models.Mention, p asynqLocalNotificationPayload) bool {
+	return mention != nil && mention.ID == p.ActivityID && mention.AccountID.Valid && mention.AccountID.Int64 == p.ReceiverAccountID
 }
 
 func (s *Server) enqueueOrCreateLocalNotification(ctx context.Context, p asynqLocalNotificationPayload) (*models.Notification, error) {
