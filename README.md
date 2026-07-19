@@ -1,4 +1,4 @@
-![](./lib/assets/logo_full.png)
+![](./app/javascript/images/logo_full.svg)
 
 [![GitHub release](https://img.shields.io/github/release/mstdn-plusminus-io/paon.svg)][releases]
 [![build latest image](https://github.com/mstdn-plusminus-io/paon/actions/workflows/latest.yml/badge.svg?branch=master)](https://github.com/mstdn-plusminus-io/paon/actions/workflows/latest.yml)
@@ -8,14 +8,9 @@
 [releases]: https://github.com/mstdn-plusminus-io/paon/releases
 [docker]: https://hub.docker.com/r/plusminusio/paon/
 
-Paon -ぱおん- is a fork of Mastodon. It aims to maintain the look and feel of Mastodon v4.2.x while adding features from 4.3.x onwards and unique features, and to provide security updates.  
-Since the database schema remains unchanged, it can be used as a drop-in replacement for 4.2.x.
+Paon -ぱおん- is a Go + labstack/echo/v5 drop-in replacement for this Mastodon fork. It keeps the existing PostgreSQL schema, REST/ActivityPub contracts, and UI assets while replacing the Rails, Sidekiq, and standalone Node streaming runtimes.
 
-## Updated
-
-- Rails 7.0.x -> 7.2.x
-- Webpacker + webpack -> Shakapacker + rspack
-- Some gems
+The former Ruby application, RSpec suite, Sidekiq workers, Rails migrations, and standalone Node streaming server have been removed. The existing database contract is represented by Go models, startup schema guards, and the embedded PostgreSQL snapshot in `internal/paon/migrate/schema.sql`.
 
 ## Additional and/or changed features
 
@@ -51,19 +46,70 @@ Since the database schema remains unchanged, it can be used as a drop-in replace
 
 Before developing, you need to install the following software.
 
-- Ruby 3.2.x
+- Go 1.25.x
 - Node.js 22.x
 - Yarn 1.22.x
+- libvips 8.16.1 or newer and pkg-config (recommended for fast image processing)
+- FFmpeg and ffprobe
+
+On macOS, install the native media dependencies with `brew install vips pkg-config ffmpeg`.
+Taskfile builds automatically enable the libvips backend when `pkg-config` finds a
+compatible installation. Direct `go` commands can set `GOFLAGS=-tags=libvips`.
+Without that tag, Paon uses its Go-native image fallback and logs each fallback at
+WARN level.
 
 Then run the following commands.
 
 ```sh
-yarn docker:dev up -d
-bundle install
+yarn install --frozen-lockfile
 cp .env.sample .env
-rails db:migrate
-yarn watch
+task db:migrate
+task dev
 ```
+
+## Go runtime
+
+`paon` uses the existing Mastodon PostgreSQL schema and serves the existing built UI assets. The same web listener on port 3000 serves HTML, REST, ActivityPub, SSE, and WebSocket traffic; the worker role runs Asynq jobs.
+
+Build and validate the local binaries:
+
+```sh
+task build
+task check-config:bin
+task meili-deploy:check-config:bin
+```
+
+Run it directly against an existing development database:
+
+```sh
+export DATABASE_URL=postgres://mastodon:mastodon@localhost:5432/mastodon_development?sslmode=disable
+export LOCAL_DOMAIN=localhost:3000
+export PAON_GO_ADDR=:3000
+export PAON_PROCESS_ROLE=all
+
+task check-config
+task run
+```
+
+For local development with automatic backend restarts and frontend rebuilds, install the existing Yarn dependencies and run:
+
+```sh
+yarn install --frozen-lockfile
+task dev
+```
+
+`task dev` first writes a complete development build to `public/packs`, then runs the Go backend watcher and Rspack watcher together. Changes to `public/packs/manifest.json` restart the backend so server-rendered pages use the latest hashed asset names. In `RAILS_ENV=development`, Paon preserves Rails 7.2's default authorization for `.localhost`, `.test`, IPv4/IPv6 hosts, and `RAILS_DEVELOPMENT_HOSTS`, in addition to this fork's configured instance domains.
+
+Or replace the Rails `web` service in the existing Compose stack:
+
+```sh
+task compose:db-migrate
+task compose:config
+task compose:check-config
+task compose:up
+```
+
+See [docs/paon-go.md](docs/paon-go.md) for compatibility notes, environment variable precedence, Meilisearch rebuild commands, readiness checks, and the currently implemented API surface.
 
 ## License
 

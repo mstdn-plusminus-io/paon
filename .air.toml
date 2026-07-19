@@ -1,0 +1,31 @@
+root = "."
+tmp_dir = "tmp/air"
+
+[build]
+  bin = "./tmp/air/paon"
+  cmd = "go build -mod=mod -o ./tmp/air/paon ./cmd/paon"
+  delay = 500
+  exclude_dir = [".git", ".go-buildcache", ".go-modcache", ".go-tmp", "node_modules", "public/assets", "public/system", "tmp"]
+  exclude_regex = ["_test.go"]
+  exclude_unchanged = true
+  follow_symlink = false
+  include_dir = ["cmd/paon", "internal/paon", "config/locales"]
+  include_ext = ["go", "html", "json", "tmpl", "yaml", "yml"]
+  include_file = ["go.mod", "go.sum", "public/packs/manifest.json"]
+  kill_delay = "5s"
+  log = "build-errors.log"
+  poll = false
+  rerun = false
+  send_interrupt = false
+  stop_on_error = true
+
+[log]
+  main_only = false
+  time = true
+
+[misc]
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true

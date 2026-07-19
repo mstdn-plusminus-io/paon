@@ -55,7 +55,8 @@ module.exports = merge(sharedConfig, {
       }),
       exclude: [
         /(?:base|extra)_polyfills-.*\.js$/,
-        /locale_.*\.js$/,
+        /i18n-pluralrules-polyfill-.*\.js$/,
+        /[\\/]locale[\\/].*\.js$/,
         /mailer-.*\.(?:css|js)$/,
       ],
       include: [/\.js$/, /\.css$/],

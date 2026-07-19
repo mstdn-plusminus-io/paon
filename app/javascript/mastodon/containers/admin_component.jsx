@@ -1,6 +1,8 @@
 import PropTypes from 'prop-types';
 import { PureComponent } from 'react';
 
+import { BrowserRouter } from 'react-router-dom';
+
 import { IntlProvider } from 'mastodon/locales';
 
 export default class AdminComponent extends PureComponent {
@@ -13,9 +15,11 @@ export default class AdminComponent extends PureComponent {
     const { children } = this.props;
 
     return (
-      <IntlProvider>
-        {children}
-      </IntlProvider>
+      <BrowserRouter>
+        <IntlProvider>
+          {children}
+        </IntlProvider>
+      </BrowserRouter>
     );
   }
 

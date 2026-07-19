@@ -21,7 +21,6 @@ export async function loadLocale() {
       /* webpackMode: "lazy" */
       /* webpackChunkName: "locale/[request]" */
       /* webpackInclude: /\.json$/ */
-      /* webpackPreload: true */
       `mastodon/locales/${locale}.json`
     )) as LocaleData['messages'];
 
