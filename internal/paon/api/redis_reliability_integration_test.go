@@ -51,6 +51,82 @@ func TestRedisRetryLeaseAndOwnerFencingAgainstRedis(t *testing.T) {
 	}
 }
 
+func TestPrivateAndMissingStatusResponsesAreIndistinguishable(t *testing.T) {
+	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("PAON_TEST_DATABASE_URL is required for integration tests")
+	}
+	cfg := config.Config{
+		DatabaseURL:          databaseURL,
+		DatabaseMaxOpenConns: 5,
+		DatabaseMaxIdleConns: 2,
+		LocalDomain:          "example.com",
+		SecretKeyBase:        "integration-secret",
+	}
+	database, err := paondb.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := migrate.Run(context.Background(), database); err != nil || !applied {
+		t.Fatalf("migrate = %v, %v", applied, err)
+	}
+
+	var accountID int64
+	if err := database.Raw(`
+		INSERT INTO accounts (username, created_at, updated_at)
+		VALUES ('private-author', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		RETURNING id
+	`).Scan(&accountID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var privateStatusID int64
+	if err := database.Raw(`
+		INSERT INTO statuses (account_id, text, visibility, local, created_at, updated_at)
+		VALUES (?, 'private', 2, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		RETURNING id
+	`, accountID).Scan(&privateStatusID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var privateStatus models.Status
+	if err := database.First(&privateStatus, privateStatusID).Error; err != nil {
+		t.Fatalf("load seeded private status: %v", err)
+	}
+	if privateStatus.Visibility != 2 {
+		t.Fatalf("seeded status visibility = %d, want private (2)", privateStatus.Visibility)
+	}
+
+	server, err := NewServer(cfg, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	requestStatus := func(id int64) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/statuses/"+strconv.FormatInt(id, 10), nil)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Accept-Language", "ja")
+		rec := httptest.NewRecorder()
+		server.echo.ServeHTTP(rec, req)
+		return rec
+	}
+
+	privateResponse := requestStatus(privateStatusID)
+	missingResponse := requestStatus(privateStatusID + 1)
+	if privateResponse.Code != http.StatusNotFound || missingResponse.Code != http.StatusNotFound {
+		t.Fatalf("status codes = private %d, missing %d; want both 404", privateResponse.Code, missingResponse.Code)
+	}
+	if privateResponse.Header().Get("Content-Type") != missingResponse.Header().Get("Content-Type") {
+		t.Fatalf("content types differ: private %q, missing %q", privateResponse.Header().Get("Content-Type"), missingResponse.Header().Get("Content-Type"))
+	}
+	if privateResponse.Body.String() != missingResponse.Body.String() {
+		t.Fatalf("response bodies differ: private %q, missing %q", privateResponse.Body.String(), missingResponse.Body.String())
+	}
+}
+
 func TestOperationalAccountAndSettingsCommandsAgainstRailsSchema(t *testing.T) {
 	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
 	redisURL := os.Getenv("PAON_TEST_REDIS_URL")
