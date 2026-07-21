@@ -1636,6 +1636,8 @@ func TestOAuthScopeFallbackMatrixMatchesRailsDoorkeeperUsage(t *testing.T) {
 		{name: "unrelated read scope rejected", token: "read:notifications", required: []string{"read", "read:statuses"}, want: false},
 		{name: "write umbrella covers accounts", token: "write", required: []string{"write", "write:accounts"}, want: true},
 		{name: "specific write account covers accounts", token: "write:accounts", required: []string{"write", "write:accounts"}, want: true},
+		{name: "specific write status covers posting", token: "read write:media write:statuses", required: []string{"write", "write:statuses"}, want: true},
+		{name: "media write does not cover posting", token: "read write:media", required: []string{"write", "write:statuses"}, want: false},
 		{name: "follow umbrella covers follows", token: "follow", required: []string{"follow", "read", "read:follows"}, want: true},
 		{name: "specific read follows covers follows", token: "read:follows", required: []string{"follow", "read", "read:follows"}, want: true},
 		{name: "push stays separate from write", token: "write", required: []string{"push"}, want: false},

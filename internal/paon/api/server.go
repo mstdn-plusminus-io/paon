@@ -13,6 +13,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -210,6 +211,7 @@ func NewServer(cfg config.Config, database *gorm.DB) (*Server, error) {
 	e.HTTPErrorHandler = handleAPIError
 	e.Pre(headMethodMiddleware)
 	e.Pre(apiTrailingSlashMiddleware)
+	e.Pre(railsFormContentTypeMiddleware)
 	e.Pre(methodOverrideMiddleware)
 	e.Use(requestIDMiddleware)
 	e.Use(accessLogMiddleware(cfg))
@@ -1387,6 +1389,24 @@ func apiTrailingSlashMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 		return next(c)
 	}
+}
+
+func railsFormContentTypeMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		req := c.Request()
+		if railsMultipartFormMissingBoundary(req.Header.Get(echo.HeaderContentType)) {
+			req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		}
+		return next(c)
+	}
+}
+
+func railsMultipartFormMissingBoundary(contentType string) bool {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType = strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])
+	}
+	return strings.EqualFold(mediaType, echo.MIMEMultipartForm) && strings.TrimSpace(params["boundary"]) == ""
 }
 
 func formOverrideMethod(req *http.Request) string {
@@ -2683,6 +2703,10 @@ func (s *Server) ready(c *echo.Context) error {
 }
 
 func (s *Server) webApp(c *echo.Context) error {
+	return s.webAppWithOptions(c, nil)
+}
+
+func (s *Server) webAppWithOptions(c *echo.Context, configure func(*web.AppOptions, *models.User)) error {
 	c.Response().Header().Set("Vary", "Accept, Accept-Language, Cookie")
 	setPublicRESTCacheIfDefault(c, 15)
 	account, token, user, _ := s.currentAccountForWeb(c)
@@ -2703,6 +2727,9 @@ func (s *Server) webApp(c *echo.Context) error {
 	if composeRouteAcceptsQuery(c.Request().URL.Path) {
 		options.ComposeText = shareTextFromQuery(c)
 		options.ComposeVisibility = composeVisibilityFromQuery(c)
+	}
+	if configure != nil {
+		configure(&options, user)
 	}
 	html, err := s.renderer.AppHTML(c.Request().URL.Path, account, token, options)
 	if err != nil {
@@ -7436,10 +7463,68 @@ func requestRawParamValue(c *echo.Context, key string) string {
 	if values, ok := req.PostForm[key]; ok {
 		return lastValue(values)
 	}
+	if value, ok := requestRawJSONParamValue(c, key); ok {
+		return value
+	}
 	if values, ok := req.URL.Query()[key]; ok {
 		return lastValue(values)
 	}
 	return ""
+}
+
+const (
+	requestJSONParamsContextKey = "paon.request_json_params"
+	maxRequestJSONParamsBytes   = 1 << 20
+)
+
+type requestJSONParams struct {
+	values map[string]json.RawMessage
+}
+
+func requestRawJSONParamValue(c *echo.Context, key string) (string, bool) {
+	params := cachedRequestJSONParams(c)
+	raw, ok := params[key]
+	if !ok {
+		return "", false
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func cachedRequestJSONParams(c *echo.Context) map[string]json.RawMessage {
+	if cached, ok := c.Get(requestJSONParamsContextKey).(requestJSONParams); ok {
+		return cached.values
+	}
+	values := readRequestJSONParams(c.Request())
+	c.Set(requestJSONParamsContextKey, requestJSONParams{values: values})
+	return values
+}
+
+func readRequestJSONParams(req *http.Request) map[string]json.RawMessage {
+	if req == nil || req.Body == nil || !requestContentTypeIsJSON(req.Header.Get(echo.HeaderContentType)) {
+		return nil
+	}
+	if req.ContentLength > maxRequestJSONParamsBytes {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(req.Body, maxRequestJSONParamsBytes+1))
+	req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), req.Body))
+	if err != nil || len(body) > maxRequestJSONParamsBytes {
+		return nil
+	}
+	var values map[string]json.RawMessage
+	if json.Unmarshal(body, &values) != nil {
+		return nil
+	}
+	return values
+}
+
+func requestContentTypeIsJSON(value string) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
+	return mediaType == echo.MIMEApplicationJSON || strings.HasSuffix(mediaType, "+json")
 }
 
 func firstRawRequestParamValue(c *echo.Context, keys ...string) string {
