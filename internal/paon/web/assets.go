@@ -24,6 +24,8 @@ type Renderer struct {
 
 type AppOptions struct {
 	DocumentTitle          string
+	HeadMeta               []HeadMeta
+	HeadLinks              []HeadLink
 	SiteTitle              string
 	SiteTitleSet           bool
 	RegistrationsOpen      bool
@@ -42,6 +44,18 @@ type AppOptions struct {
 	ComposeText            string
 	ComposeVisibility      string
 	IncludeCSRFMeta        bool
+}
+
+type HeadMeta struct {
+	Name     string
+	Property string
+	Content  string
+}
+
+type HeadLink struct {
+	Rel  string
+	Type string
+	Href string
 }
 
 func NewRenderer(cfg config.Config) (*Renderer, error) {
@@ -348,7 +362,7 @@ func (r *Renderer) AppHTML(path string, current *models.Account, token string, o
 		r.asset("features/compose.js"),
 		r.asset("features/home_timeline.js"),
 		r.asset("features/notifications.js"),
-	}, CSRFTokenForSession(token), opts.User, "app-body", appHTMLIncludesCSRFMeta(current, opts), opts.DocumentTitle)
+	}, CSRFTokenForSession(token), opts.User, "app-body", appHTMLIncludesCSRFMeta(current, opts), opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks)
 }
 
 func (r *Renderer) ShareHTML(current *models.Account, token string, text string, options ...AppOptions) (string, error) {
@@ -375,7 +389,7 @@ func (r *Renderer) ShareHTML(current *models.Account, token string, text string,
 	return r.appHTML("/share", initial, "mastodon-compose", r.asset("share.js"), []string{
 		r.asset("locale/" + r.cfg.Locale() + "-json.js"),
 		r.asset("features/compose.js"),
-	}, CSRFTokenForSession(token), opts.User, "modal-layout compose-standalone", true, opts.DocumentTitle)
+	}, CSRFTokenForSession(token), opts.User, "modal-layout compose-standalone", true, opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks)
 }
 
 func firstAppOptions(options []AppOptions) AppOptions {
@@ -498,7 +512,7 @@ func rendererLocalesDir(publicDir string) string {
 	return filepath.Join(filepath.Dir(publicDir), "config", "locales")
 }
 
-func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID string, appJS string, preloads []string, csrfToken string, user *models.User, baseBodyClasses string, includeCSRFMeta bool, documentTitle string) (string, error) {
+func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID string, appJS string, preloads []string, csrfToken string, user *models.User, baseBodyClasses string, includeCSRFMeta bool, documentTitle string, headMeta []HeadMeta, headLinks []HeadLink) (string, error) {
 	initialJSON, err := json.Marshal(initial)
 	if err != nil {
 		return "", err
@@ -540,6 +554,8 @@ func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID
 		CSRFParam   string
 		CSRFToken   string
 		Locale      string
+		HeadMeta    []HeadMeta
+		HeadLinks   []HeadLink
 	}{
 		Title:       title,
 		InitialPath: path,
@@ -563,6 +579,8 @@ func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID
 		CSRFParam:   "authenticity_token",
 		CSRFToken:   csrfToken,
 		Locale:      locale,
+		HeadMeta:    headMeta,
+		HeadLinks:   headLinks,
 	}
 
 	var out string
@@ -757,6 +775,16 @@ var appTemplate = template.Must(template.New("app").Parse(`<!DOCTYPE html>
   {{- if .CSRFMeta }}
   <meta name="csrf-param" content="{{ .CSRFParam }}">
   <meta name="csrf-token" content="{{ .CSRFToken }}">
+  {{- end }}
+  {{- range .HeadMeta }}
+  {{- if .Name }}
+  <meta name="{{ .Name }}" content="{{ .Content }}">
+  {{- else if .Property }}
+  <meta property="{{ .Property }}" content="{{ .Content }}">
+  {{- end }}
+  {{- end }}
+  {{- range .HeadLinks }}
+  <link rel="{{ .Rel }}"{{ if .Type }} type="{{ .Type }}"{{ end }} href="{{ .Href }}">
   {{- end }}
   <title>{{ .Title }}</title>
   {{- if .CommonCSS }}

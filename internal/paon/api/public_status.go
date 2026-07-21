@@ -2,13 +2,18 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
 	"gorm.io/gorm"
 )
 
@@ -65,7 +70,185 @@ func (s *Server) publicStatusResolved(c *echo.Context) error {
 		return c.Redirect(http.StatusFound, redirectURL)
 	}
 	publicHTMLCacheIfUnauthenticated(c, 10, 0)
-	return s.webApp(c)
+	return s.webAppWithOptions(c, func(options *web.AppOptions, user *models.User) {
+		s.applyPublicStatusHead(options, *status, s.webLocale(c, user))
+	})
+}
+
+func (s *Server) applyPublicStatusHead(options *web.AppOptions, status models.Status, locale string) {
+	if options == nil || !publicStatusPathStatusAllowed(status, status.Account.Username) {
+		return
+	}
+	displayName := strings.TrimSpace(status.Account.DisplayName)
+	if displayName == "" {
+		displayName = status.Account.Username
+	}
+	quote := truncateRunes(firstNonEmpty(status.SpoilerText, status.Text), 50)
+	options.DocumentTitle = settingsTVars(locale, "statuses.title", `%{name}: "%{quote}"`, map[string]string{"name": displayName, "quote": quote})
+
+	statusURL := activityPubStatusPublicURL(s, status)
+	actorURL := s.cfg.BaseURL() + "/users/" + url.PathEscape(status.Account.Username)
+	activityURL := actorURL + "/statuses/" + strconv.FormatInt(status.ID, 10)
+	localDomain := firstNonEmpty(strings.TrimSpace(s.cfg.LocalDomain), strings.TrimSpace(s.cfg.WebDomain))
+	acct := "@" + status.Account.Username
+	if localDomain != "" {
+		acct += "@" + localDomain
+	}
+	description := publicStatusDescription(status, locale)
+	options.HeadMeta = []web.HeadMeta{
+		{Property: "og:site_name", Content: s.settingStringValue("site_title", s.cfg.Title)},
+		{Property: "og:type", Content: "article"},
+		{Property: "og:title", Content: displayName + " (" + acct + ")"},
+		{Property: "og:url", Content: statusURL},
+		{Property: "og:published_time", Content: status.CreatedAt.UTC().Format(time.RFC3339)},
+		{Property: "profile:username", Content: strings.TrimPrefix(acct, "@")},
+		{Name: "description", Content: description},
+		{Property: "og:description", Content: description},
+	}
+	if status.Account.User.Settings.Valid && rawBool(decodeUserSettings(status.Account.User.Settings.String)["noindex"], false) {
+		options.HeadMeta = append([]web.HeadMeta{{Name: "robots", Content: "noindex, noarchive"}}, options.HeadMeta...)
+	}
+	options.HeadLinks = []web.HeadLink{
+		{Rel: "alternate", Type: "application/json+oembed", Href: s.cfg.BaseURL() + "/api/oembed?url=" + url.QueryEscape(statusURL)},
+		{Rel: "alternate", Type: "application/activity+json", Href: activityURL},
+	}
+	options.HeadMeta = append(options.HeadMeta, s.publicStatusMediaMeta(status)...)
+}
+
+func publicStatusDescription(status models.Status, locale string) string {
+	mediaCounts := map[string]int{"image": 0, "video": 0, "audio": 0}
+	for _, attachment := range activityPubOrderedMediaAttachments(status) {
+		switch attachment.Type {
+		case 2:
+			mediaCounts["video"]++
+		case 4:
+			mediaCounts["audio"]++
+		default:
+			mediaCounts["image"]++
+		}
+	}
+	mediaParts := make([]string, 0, 3)
+	for _, kind := range []string{"image", "video", "audio"} {
+		count := mediaCounts[kind]
+		if count == 0 {
+			continue
+		}
+		key := "statuses.attached." + kind + ".other"
+		if count == 1 {
+			oneKey := "statuses.attached." + kind + ".one"
+			if translated := webT(locale, oneKey, map[string]string{"count": strconv.Itoa(count)}); translated != oneKey {
+				key = oneKey
+			}
+		}
+		fallback := map[string]string{"image": "%{count} images", "video": "%{count} videos", "audio": "%{count} audio"}[kind]
+		if count == 1 {
+			fallback = map[string]string{"image": "%{count} image", "video": "%{count} video", "audio": "%{count} audio"}[kind]
+		}
+		mediaParts = append(mediaParts, settingsTVars(locale, key, fallback, map[string]string{"count": strconv.Itoa(count)}))
+	}
+	headerParts := make([]string, 0, 2)
+	if len(mediaParts) > 0 {
+		headerParts = append(headerParts, settingsTVars(locale, "statuses.attached.description", "Attached: %{attached}", map[string]string{"attached": strings.Join(mediaParts, " · ")}))
+	}
+	if warning := strings.TrimSpace(status.SpoilerText); warning != "" {
+		headerParts = append(headerParts, settingsTVars(locale, "statuses.content_warning", "Content warning: %{warning}", map[string]string{"warning": warning}))
+	}
+	components := []string{strings.Join(headerParts, " · ")}
+	if strings.TrimSpace(status.SpoilerText) == "" {
+		components = append(components, strings.TrimSpace(status.Text))
+		if status.Poll != nil && len(status.Poll.Options) > 0 {
+			poll := make([]string, 0, len(status.Poll.Options))
+			for _, option := range status.Poll.Options {
+				poll = append(poll, "[ ] "+option)
+			}
+			components = append(components, strings.Join(poll, "\n"))
+		}
+	}
+	nonBlank := components[:0]
+	for _, component := range components {
+		if strings.TrimSpace(component) != "" {
+			nonBlank = append(nonBlank, component)
+		}
+	}
+	return strings.Join(nonBlank, "\n\n")
+}
+
+func (s *Server) publicStatusMediaMeta(status models.Status) []web.HeadMeta {
+	if status.Sensitive && !s.settingBoolValue("preview_sensitive_media", false) {
+		return []web.HeadMeta{{Property: "twitter:card", Content: "summary"}}
+	}
+	metaTags := make([]web.HeadMeta, 0)
+	playerCard := false
+	for _, attachment := range activityPubOrderedMediaAttachments(status) {
+		media := serializer.MediaAttachmentFromModel(s.cfg, attachment)
+		fileMeta := mediaAttachmentMeta(attachment)
+		switch attachment.Type {
+		case 0:
+			metaTags = appendPublicStatusImageMeta(metaTags, media.URL, attachment.FileContentType.String, fileMeta, "original", attachment.Description.String)
+		case 1, 2:
+			playerCard = true
+			metaTags = appendPublicStatusImageMeta(metaTags, media.PreviewURL, "image/png", fileMeta, "small", "")
+			metaTags = append(metaTags,
+				web.HeadMeta{Property: "og:video", Content: media.URL},
+				web.HeadMeta{Property: "og:video:secure_url", Content: media.URL},
+				web.HeadMeta{Property: "og:video:type", Content: attachment.FileContentType.String},
+				web.HeadMeta{Property: "twitter:player", Content: s.cfg.BaseURL() + "/media/" + strconv.FormatInt(attachment.ID, 10) + "/player"},
+				web.HeadMeta{Property: "twitter:player:stream", Content: media.URL},
+				web.HeadMeta{Property: "twitter:player:stream:content_type", Content: attachment.FileContentType.String},
+			)
+			metaTags = appendPublicStatusDimensions(metaTags, fileMeta, "original", "og:video", "twitter:player")
+		case 4:
+			playerCard = true
+			metaTags = append(metaTags,
+				web.HeadMeta{Property: "og:image", Content: statusEmbedAccountAvatarURLWithConfig(s.cfg, status.Account)},
+				web.HeadMeta{Property: "og:image:width", Content: "400"},
+				web.HeadMeta{Property: "og:image:height", Content: "400"},
+				web.HeadMeta{Property: "og:audio", Content: media.URL},
+				web.HeadMeta{Property: "og:audio:secure_url", Content: media.URL},
+				web.HeadMeta{Property: "og:audio:type", Content: attachment.FileContentType.String},
+				web.HeadMeta{Property: "twitter:player", Content: s.cfg.BaseURL() + "/media/" + strconv.FormatInt(attachment.ID, 10) + "/player"},
+				web.HeadMeta{Property: "twitter:player:stream", Content: media.URL},
+				web.HeadMeta{Property: "twitter:player:stream:content_type", Content: attachment.FileContentType.String},
+				web.HeadMeta{Property: "twitter:player:width", Content: "670"},
+				web.HeadMeta{Property: "twitter:player:height", Content: "380"},
+			)
+		}
+	}
+	card := "summary_large_image"
+	if len(status.MediaAttachments) == 0 {
+		card = "summary"
+	} else if playerCard {
+		card = "player"
+	}
+	return append(metaTags, web.HeadMeta{Property: "twitter:card", Content: card})
+}
+
+func appendPublicStatusImageMeta(tags []web.HeadMeta, imageURL string, contentType string, meta map[string]any, size string, description string) []web.HeadMeta {
+	if strings.TrimSpace(imageURL) == "" {
+		return tags
+	}
+	tags = append(tags, web.HeadMeta{Property: "og:image", Content: imageURL})
+	if strings.TrimSpace(contentType) != "" {
+		tags = append(tags, web.HeadMeta{Property: "og:image:type", Content: contentType})
+	}
+	tags = appendPublicStatusDimensions(tags, meta, size, "og:image")
+	if strings.TrimSpace(description) != "" {
+		tags = append(tags, web.HeadMeta{Property: "og:image:alt", Content: description})
+	}
+	return tags
+}
+
+func appendPublicStatusDimensions(tags []web.HeadMeta, meta map[string]any, size string, prefixes ...string) []web.HeadMeta {
+	for _, dimension := range []string{"width", "height"} {
+		value, ok := nestedPresentValue(meta, size, dimension)
+		if !ok {
+			continue
+		}
+		for _, prefix := range prefixes {
+			tags = append(tags, web.HeadMeta{Property: prefix + ":" + dimension, Content: fmt.Sprint(value)})
+		}
+	}
+	return tags
 }
 
 func (s *Server) setPublicStatusLinkHeader(c *echo.Context) {

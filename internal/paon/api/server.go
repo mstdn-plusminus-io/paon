@@ -2703,6 +2703,10 @@ func (s *Server) ready(c *echo.Context) error {
 }
 
 func (s *Server) webApp(c *echo.Context) error {
+	return s.webAppWithOptions(c, nil)
+}
+
+func (s *Server) webAppWithOptions(c *echo.Context, configure func(*web.AppOptions, *models.User)) error {
 	c.Response().Header().Set("Vary", "Accept, Accept-Language, Cookie")
 	setPublicRESTCacheIfDefault(c, 15)
 	account, token, user, _ := s.currentAccountForWeb(c)
@@ -2723,6 +2727,9 @@ func (s *Server) webApp(c *echo.Context) error {
 	if composeRouteAcceptsQuery(c.Request().URL.Path) {
 		options.ComposeText = shareTextFromQuery(c)
 		options.ComposeVisibility = composeVisibilityFromQuery(c)
+	}
+	if configure != nil {
+		configure(&options, user)
 	}
 	html, err := s.renderer.AppHTML(c.Request().URL.Path, account, token, options)
 	if err != nil {

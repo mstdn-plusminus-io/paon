@@ -917,6 +917,33 @@ func TestAppHTMLIncludesAnonymousMetaDefaults(t *testing.T) {
 	}
 }
 
+func TestAppHTMLIncludesEscapedHeadMetadataAndLinks(t *testing.T) {
+	renderer := &Renderer{cfg: config.Config{Title: "Paon"}}
+	html, err := renderer.AppHTML("/@alice/123", nil, "", AppOptions{
+		DocumentTitle: `Alice <Admin>: "hello"`,
+		HeadMeta: []HeadMeta{
+			{Property: "og:title", Content: `Alice <Admin> & "friends"`},
+			{Name: "description", Content: `A <post> & "quote"`},
+		},
+		HeadLinks: []HeadLink{
+			{Rel: "alternate", Type: "application/activity+json", Href: `https://example.test/statuses/123?x=1&y=2`},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`<meta property="og:title" content="Alice &lt;Admin&gt; &amp; &#34;friends&#34;">`,
+		`<meta name="description" content="A &lt;post&gt; &amp; &#34;quote&#34;">`,
+		`<link rel="alternate" type="application/activity&#43;json" href="https://example.test/statuses/123?x=1&amp;y=2">`,
+		`<title>Alice &lt;Admin&gt;: &#34;hello&#34;</title>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML missing %q: %s", want, html)
+		}
+	}
+}
+
 func TestAppHTMLIncludesComposeDefaults(t *testing.T) {
 	renderer := &Renderer{cfg: config.Config{Title: "Paon"}}
 	html, err := renderer.AppHTML("/home", &models.Account{ID: 42, Username: "alice"}, "token", AppOptions{
