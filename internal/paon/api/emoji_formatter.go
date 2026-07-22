@@ -8,7 +8,6 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	nethtml "golang.org/x/net/html"
-	"gorm.io/gorm"
 )
 
 // emojiFormatterBounding mirrors Rails EmojiFormatter::DISALLOWED_BOUNDING_REGEX
@@ -143,41 +142,4 @@ func emojiImgTag(emoji models.CustomEmoji, shortcode string, imgSrc func(models.
 		return ":" + shortcode + ":"
 	}
 	return `<img draggable="false" class="emojione" alt=":` + htmlEscape.EscapeString(shortcode) + `:" title=":` + htmlEscape.EscapeString(shortcode) + `:" src="` + htmlEscape.EscapeString(src) + `" />`
-}
-
-// applyActivityPubCustomEmojisToContent mirrors the inbound half of Rails remote status
-// normalization: after custom emojis for the status author's domain are persisted, it
-// rewrites :shortcode: tokens in the already-sanitized status.Content into <img> tags and
-// persists the updated content. It is a no-op when there are no domain custom emojis or no
-// token matches, leaving content untouched. Callers run it inside the status transaction
-// after saveActivityPubCustomEmojis (see saveActivityPubStatusMetadata).
-func (s *Server) applyActivityPubCustomEmojisToContent(tx *gorm.DB, status *models.Status, actor *models.Account) error {
-	if s == nil || tx == nil || status == nil || actor == nil || status.ID == 0 || status.Text == "" {
-		return nil
-	}
-	domain := ""
-	if actor.Domain.Valid {
-		domain = actor.Domain.String
-	}
-	var emojis []models.CustomEmoji
-	if err := tx.Where("lower(domain) = lower(?) AND disabled = false", domain).Find(&emojis).Error; err != nil {
-		return err
-	}
-	if len(emojis) == 0 {
-		return nil
-	}
-	emojiMap := make(map[string]models.CustomEmoji, len(emojis))
-	for _, emoji := range emojis {
-		if emoji.Shortcode != "" {
-			emojiMap[emoji.Shortcode] = emoji
-		}
-	}
-	updated := applyCustomEmojisToContent(status.Text, emojiMap, func(emoji models.CustomEmoji) string {
-		return activityPubCustomEmojiURL(s, emoji)
-	})
-	if updated == status.Text {
-		return nil
-	}
-	status.Text = updated
-	return tx.Model(&models.Status{}).Where("id = ?", status.ID).Update("text", updated).Error
 }

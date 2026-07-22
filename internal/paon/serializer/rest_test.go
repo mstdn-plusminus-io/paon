@@ -3189,6 +3189,62 @@ func TestStatusFromModelSanitizesRemoteHTMLLikeMastodonStrict(t *testing.T) {
 	}
 }
 
+func TestStatusFromModelRestoresLegacyEmbeddedCustomEmojiForMastodonClients(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https", PaperclipRootURL: "/system"}
+	status := models.Status{
+		ID:        100,
+		Text:      `<p>before <img draggable="false" class="emojione" alt=":party:" title=":party:" src="https://media.example/party.gif" /> after</p>`,
+		CreatedAt: time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
+		AccountID: 42,
+		Local:     sql.NullBool{Bool: false, Valid: true},
+		Account: models.Account{
+			ID:        42,
+			Username:  "bob",
+			Domain:    sql.NullString{String: "remote.example", Valid: true},
+			CreatedAt: time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
+		},
+		CustomEmojis: []models.CustomEmoji{{
+			ID:               7,
+			Shortcode:        "party",
+			Domain:           sql.NullString{String: "remote.example", Valid: true},
+			ImageFileName:    sql.NullString{String: "party.gif", Valid: true},
+			ImageContentType: sql.NullString{String: "image/gif", Valid: true},
+		}},
+	}
+
+	out := StatusFromModel(cfg, status, nil)
+	if out.Content != `<p>before :party: after</p>` {
+		t.Fatalf("content = %q", out.Content)
+	}
+	if len(out.Emojis) != 1 || out.Emojis[0].Shortcode != "party" || out.Emojis[0].URL == "" || out.Emojis[0].StaticURL == "" {
+		t.Fatalf("emojis = %#v", out.Emojis)
+	}
+}
+
+func TestStatusFromModelDoesNotRestoreUnrelatedEmbeddedImage(t *testing.T) {
+	status := models.Status{
+		ID:        100,
+		Text:      `<p><img draggable="false" class="emojione" alt=":other:" src="https://remote.example/other.png"></p>`,
+		CreatedAt: time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
+		AccountID: 42,
+		Local:     sql.NullBool{Bool: false, Valid: true},
+		Account: models.Account{
+			ID:        42,
+			Username:  "bob",
+			Domain:    sql.NullString{String: "remote.example", Valid: true},
+			CreatedAt: time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
+		},
+		CustomEmojis: []models.CustomEmoji{{Shortcode: "party"}},
+	}
+
+	out := StatusFromModel(config.Config{}, status, nil)
+	if !strings.Contains(out.Content, `alt=":other:"`) || strings.Contains(out.Content, ":party:") {
+		t.Fatalf("unrelated image was rewritten: %s", out.Content)
+	}
+}
+
 func TestStatusFromModelBlankContentMatchesRailsFormatter(t *testing.T) {
 	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
 	status := models.Status{

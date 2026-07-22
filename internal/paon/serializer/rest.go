@@ -1793,6 +1793,7 @@ func StatusEditFromModel(cfg config.Config, edit models.StatusEdit) StatusEdit {
 func statusEditContentHTML(cfg config.Config, edit models.StatusEdit) string {
 	status := edit.Status
 	status.Text = edit.Text
+	status.CustomEmojis = edit.CustomEmojis
 	if edit.Account.ID != 0 {
 		status.Account = edit.Account
 		status.AccountID = edit.Account.ID
@@ -2968,7 +2969,7 @@ func statusContentHTML(cfg config.Config, status models.Status) string {
 		return ""
 	}
 	if !statusLocal(status) {
-		return sanitizeStatusContentHTML(status.Text)
+		return sanitizeStatusContentHTML(restoreStatusCustomEmojiShortcodes(status.Text, status.CustomEmojis))
 	}
 	paragraphs := strings.Split(strings.ReplaceAll(strings.ReplaceAll(status.Text, "\r\n", "\n"), "\r", "\n"), "\n\n")
 	mentions := newStatusMentionResolver(status.Mentions)
@@ -2983,6 +2984,67 @@ func statusContentHTML(cfg config.Config, status models.Status) string {
 		out.WriteString("</p>")
 	}
 	return out.String()
+}
+
+func restoreStatusCustomEmojiShortcodes(value string, emojis []models.CustomEmoji) string {
+	if len(emojis) == 0 || !strings.Contains(strings.ToLower(value), "<img") {
+		return value
+	}
+	allowed := make(map[string]struct{}, len(emojis))
+	for _, emoji := range emojis {
+		if shortcode := strings.TrimSpace(emoji.Shortcode); shortcode != "" {
+			allowed[shortcode] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return value
+	}
+	var out strings.Builder
+	last := 0
+	for _, match := range previewCardOEmbedHTMLTagPattern.FindAllStringSubmatchIndex(value, -1) {
+		if value[match[2]:match[3]] != "" || !strings.EqualFold(value[match[4]:match[5]], "img") || match[6] < 0 {
+			continue
+		}
+		shortcode := legacyStatusCustomEmojiShortcode(value[match[6]:match[7]], allowed)
+		if shortcode == "" {
+			continue
+		}
+		out.WriteString(value[last:match[0]])
+		out.WriteString(":" + shortcode + ":")
+		last = match[1]
+	}
+	if last == 0 {
+		return value
+	}
+	out.WriteString(value[last:])
+	return out.String()
+}
+
+func legacyStatusCustomEmojiShortcode(attrText string, allowed map[string]struct{}) string {
+	hasEmojiClass := false
+	shortcode := ""
+	for _, match := range previewCardOEmbedAttrPattern.FindAllStringSubmatch(attrText, -1) {
+		if len(match) < 5 {
+			continue
+		}
+		key := strings.ToLower(match[1])
+		value := strings.TrimSpace(firstNonEmptyString(match[2], match[3], match[4]))
+		switch key {
+		case "class":
+			hasEmojiClass = statusContentAllowedImageClasses(value) == "emojione"
+		case "alt":
+			if len(value) >= 3 && strings.HasPrefix(value, ":") && strings.HasSuffix(value, ":") {
+				shortcode = value[1 : len(value)-1]
+			}
+		}
+	}
+	if !hasEmojiClass {
+		return ""
+	}
+	if _, ok := allowed[shortcode]; !ok {
+		return ""
+	}
+	return shortcode
 }
 
 func StatusContentHTML(cfg config.Config, status models.Status) string {

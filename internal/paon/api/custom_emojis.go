@@ -130,15 +130,48 @@ func (s *Server) hydrateStatusesCustomEmojis(statuses []models.Status) error {
 }
 
 func (s *Server) customEmojisFromShortcodes(shortcodes []string, domain sql.NullString) ([]models.CustomEmoji, error) {
-	if s.db == nil || len(shortcodes) == 0 {
+	return customEmojisFromShortcodesDB(s.db, shortcodes, domain)
+}
+
+func customEmojisFromShortcodesDB(db *gorm.DB, shortcodes []string, domain sql.NullString) ([]models.CustomEmoji, error) {
+	if db == nil || len(shortcodes) == 0 {
 		return nil, nil
 	}
 	var emojis []models.CustomEmoji
-	query := customEmojiDomainQuery(s.db.Where("shortcode IN ? AND disabled = false", shortcodes), domain)
+	query := customEmojiDomainQuery(db.Where("shortcode IN ? AND disabled = false", shortcodes), domain)
 	if err := query.Find(&emojis).Error; err != nil {
 		return nil, err
 	}
 	return orderCustomEmojisByShortcode(shortcodes, emojis), nil
+}
+
+// hydrateActivityPubStatusCustomEmojis keeps the inbound ActivityPub body unchanged and
+// supplies the same derived emoji associations Rails exposes through its model methods.
+// Keeping :shortcode: in status.Text is required by the Mastodon REST client contract.
+func (s *Server) hydrateActivityPubStatusCustomEmojis(tx *gorm.DB, status *models.Status, actor *models.Account) error {
+	if tx == nil || status == nil || actor == nil {
+		return nil
+	}
+	accountEmojis, err := customEmojisFromShortcodesDB(tx, statusEmbedEmojiShortcodes(accountEmojiText(*actor)), actor.Domain)
+	if err != nil {
+		return err
+	}
+	actor.CustomEmojis = accountEmojis
+	status.Account.CustomEmojis = accountEmojis
+
+	statusEmojis, err := customEmojisFromShortcodesDB(tx, statusEmbedEmojiShortcodes(statusEmojiText(*status)), actor.Domain)
+	if err != nil {
+		return err
+	}
+	status.CustomEmojis = statusEmojis
+	if status.Poll != nil {
+		pollEmojis, err := customEmojisFromShortcodesDB(tx, statusEmbedEmojiShortcodes(strings.Join(status.Poll.Options, "\n")), actor.Domain)
+		if err != nil {
+			return err
+		}
+		status.Poll.CustomEmojis = pollEmojis
+	}
+	return nil
 }
 
 func customEmojiDomainQuery(query *gorm.DB, domain sql.NullString) *gorm.DB {
