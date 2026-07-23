@@ -1,0 +1,6 @@
+coverage:
+  paths:
+    - coverage.out
+
+comment:
+  if: is_pull_request
