@@ -7,6 +7,7 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func (s *Server) syncActivityPubFeaturedCollectionBestEffort(account *models.Account, collectionURI string, requestID string, syncTags bool) {
@@ -98,23 +99,53 @@ func (s *Server) syncRemoteStatusPinsFromActivityCollection(account *models.Acco
 		}
 		statusIDs = append(statusIDs, status.ID)
 	}
-	now := time.Now().UTC()
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		deleteQuery := tx.Where("account_id = ?", account.ID)
-		if len(statusIDs) > 0 {
-			deleteQuery = deleteQuery.Where("status_id NOT IN ?", statusIDs)
-		}
-		if err := deleteQuery.Delete(&models.StatusPin{}).Error; err != nil {
+		var existingStatusIDs []int64
+		if err := tx.Model(&models.StatusPin{}).Where("account_id = ?", account.ID).Pluck("status_id", &existingStatusIDs).Error; err != nil {
 			return err
 		}
-		for _, statusID := range statusIDs {
-			pin := models.StatusPin{AccountID: account.ID, StatusID: statusID, CreatedAt: now, UpdatedAt: now}
-			if err := tx.Create(&pin).Error; err != nil {
+		toAdd, toRemove := remoteStatusPinChanges(existingStatusIDs, statusIDs)
+		if len(toRemove) > 0 {
+			if err := tx.Where("account_id = ? AND status_id IN ?", account.ID, toRemove).Delete(&models.StatusPin{}).Error; err != nil {
+				return err
+			}
+		}
+		if len(toAdd) > 0 {
+			now := time.Now().UTC()
+			pins := make([]models.StatusPin, 0, len(toAdd))
+			for _, statusID := range toAdd {
+				pins = append(pins, models.StatusPin{AccountID: account.ID, StatusID: statusID, CreatedAt: now, UpdatedAt: now})
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "account_id"}, {Name: "status_id"}},
+				DoNothing: true,
+			}).Create(&pins).Error; err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+func remoteStatusPinChanges(existingStatusIDs []int64, desiredStatusIDs []int64) (toAdd []int64, toRemove []int64) {
+	existing := make(map[int64]struct{}, len(existingStatusIDs))
+	for _, statusID := range existingStatusIDs {
+		existing[statusID] = struct{}{}
+	}
+	desiredStatusIDs = uniqueInt64s(desiredStatusIDs)
+	desired := make(map[int64]struct{}, len(desiredStatusIDs))
+	for _, statusID := range desiredStatusIDs {
+		desired[statusID] = struct{}{}
+		if _, ok := existing[statusID]; !ok {
+			toAdd = append(toAdd, statusID)
+		}
+	}
+	for _, statusID := range existingStatusIDs {
+		if _, ok := desired[statusID]; !ok {
+			toRemove = append(toRemove, statusID)
+		}
+	}
+	return toAdd, toRemove
 }
 
 func (s *Server) activityPubFeaturedCollectionFetchSigner(actor *models.Account) (*models.Account, error) {
