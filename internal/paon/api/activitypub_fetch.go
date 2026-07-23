@@ -57,6 +57,18 @@ func activityFetchGone(err error) bool {
 	return ok && status == http.StatusGone
 }
 
+func activityFetchUnsalvageable(err error) bool {
+	status, ok := activityFetchStatus(err)
+	return ok && activityPubDeliveryResponseErrorUnsalvageable(status)
+}
+
+func activityFetchWorkerError(err error) error {
+	if err == nil || activityFetchUnsalvageable(err) {
+		return nil
+	}
+	return err
+}
+
 func (s *Server) fetchRemoteStatusFromActivityURI(uri string) (*models.Status, error) {
 	return s.fetchRemoteStatusFromActivityURIForRequest(uri, "", "")
 }

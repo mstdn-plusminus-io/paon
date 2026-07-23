@@ -2170,7 +2170,10 @@ func (s *Server) handleAsynqFetchReplies(ctx context.Context, t *asynq.Task) err
 	parentActorURI := status.Account.URI
 	uris, err := s.fetchActivityPubReplyCollectionURIsResult(parentActorURI, p.CollectionURI, paonUserAgent(s.cfg))
 	if err != nil {
-		return fmt.Errorf("fetch replies collection: %w", err)
+		if err = activityFetchWorkerError(err); err != nil {
+			return fmt.Errorf("fetch replies collection: %w", err)
+		}
+		return nil
 	}
 	for _, uri := range uris {
 		s.enqueueFetchReplyTask(uri, p.RequestID)
@@ -3060,7 +3063,7 @@ func (s *Server) handleAsynqFeaturedCollectionSync(ctx context.Context, t *asynq
 	if err := s.db.WithContext(ctx).Where("id = ?", p.AccountID).First(&account).Error; err != nil {
 		return workerLookupError("featured collection account lookup", err)
 	}
-	return s.syncActivityPubFeaturedCollectionNow(&account, p.CollectionURI, p.RequestID, p.SyncTags)
+	return activityFetchWorkerError(s.syncActivityPubFeaturedCollectionNow(&account, p.CollectionURI, p.RequestID, p.SyncTags))
 }
 
 // handleAsynqFeaturedTagsSync mirrors ActivityPub::SynchronizeFeaturedTagsCollectionWorker:
@@ -3077,7 +3080,7 @@ func (s *Server) handleAsynqFeaturedTagsSync(ctx context.Context, t *asynq.Task)
 	if err := s.db.WithContext(ctx).Where("id = ?", p.AccountID).First(&account).Error; err != nil {
 		return workerLookupError("featured tags account lookup", err)
 	}
-	return s.syncActivityPubFeaturedTagsNow(&account, p.CollectionURI)
+	return activityFetchWorkerError(s.syncActivityPubFeaturedTagsNow(&account, p.CollectionURI))
 }
 
 // handleAsynqMoveDistribution mirrors ActivityPub::MoveDistributionWorker: load the
@@ -3125,7 +3128,7 @@ func (s *Server) handleAsynqFollowersSynchronization(ctx context.Context, t *asy
 	if err := s.db.WithContext(ctx).Where("id = ?", p.AccountID).First(&account).Error; err != nil {
 		return workerLookupError("followers synchronization account lookup", err)
 	}
-	return s.synchronizeActivityPubFollowers(ctx, account, p.URL)
+	return activityFetchWorkerError(s.synchronizeActivityPubFollowers(ctx, account, p.URL))
 }
 
 // handleAsynqActivityPubProcessing mirrors ActivityPub::ProcessingWorker: reload the

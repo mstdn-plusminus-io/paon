@@ -2020,6 +2020,34 @@ func TestFetchActivityResourcePreservesHTTPStatus(t *testing.T) {
 	}
 }
 
+func TestActivityFetchUnsalvageableMatchesRails(t *testing.T) {
+	tests := []struct {
+		status int
+		want   bool
+	}{
+		{http.StatusBadRequest, true},
+		{http.StatusUnauthorized, false},
+		{http.StatusForbidden, true},
+		{http.StatusNotFound, true},
+		{http.StatusRequestTimeout, false},
+		{http.StatusGone, true},
+		{http.StatusUnprocessableEntity, true},
+		{http.StatusTooManyRequests, false},
+		{http.StatusInternalServerError, false},
+		{http.StatusNotImplemented, true},
+		{http.StatusServiceUnavailable, false},
+	}
+	for _, tt := range tests {
+		err := activityFetchHTTPError{StatusCode: tt.status, URL: "https://remote.example/statuses/1/replies"}
+		if got := activityFetchUnsalvageable(err); got != tt.want {
+			t.Errorf("status %d: activityFetchUnsalvageable() = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+	if activityFetchUnsalvageable(errors.New("network failure")) {
+		t.Fatal("network errors must remain retryable")
+	}
+}
+
 func TestActivityFetchPrivateIPRejected(t *testing.T) {
 	old := activityPrivateAddressExceptions
 	activityPrivateAddressExceptions = nil
