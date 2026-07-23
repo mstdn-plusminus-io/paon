@@ -1542,7 +1542,8 @@ func asynqTaskDetailsModalHTML(locale string) string {
 	closeLabel := asynqHTMLAttr(adminT(locale, "admin.devops.close", "Close"))
 	copyLabel := asynqHTMLAttr(adminT(locale, "admin.devops.copy_markdown", "Copy as Markdown"))
 	copiedLabel := asynqHTMLAttr(adminT(locale, "admin.devops.copied", "Copied"))
-	return `<dialog class="asynq-task-modal" data-asynq-task-modal aria-labelledby="asynq-task-modal-title">` +
+	return `<style>.admin-wrapper .content h3.asynq-task-modal-title { margin-bottom: 0 !important; }</style>` +
+		`<dialog class="asynq-task-modal" data-asynq-task-modal aria-labelledby="asynq-task-modal-title">` +
 		`<div class="asynq-task-modal__header"><h3 class="asynq-task-modal-title" id="asynq-task-modal-title">` + asynqHTMLAttr(adminT(locale, "admin.devops.task_details", "Task details")) + `</h3></div>` +
 		`<div class="asynq-task-modal__content" data-asynq-task-modal-content></div>` +
 		`<div class="asynq-task-modal__footer"><button type="button" class="button button-secondary" data-asynq-task-copy data-copy-label="` + copyLabel + `" data-copied-label="` + copiedLabel + `"><i class="fa fa-copy fa-fw" aria-hidden="true"></i> <span>` + copyLabel + `</span></button><form method="dialog"><button type="submit" class="button">` + closeLabel + `</button></form></div>` +

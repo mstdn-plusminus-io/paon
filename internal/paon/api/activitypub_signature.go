@@ -2590,7 +2590,7 @@ func (s *Server) activityActorForMovedToURI(actorURI string, requestID string) (
 		actorLookupURI = before
 	}
 	var account models.Account
-	err := s.db.Preload("AccountStat").Where("uri IN ? OR url = ?", []string{actorURI, actorLookupURI}, actorLookupURI).First(&account).Error
+	err := findActivityPubAccountByURIOrURL(s.db, actorURI, actorLookupURI, &account)
 	if err == nil {
 		return &account, nil
 	}

@@ -729,6 +729,9 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 	if modal := asynqTaskDetailsModalHTML("ja"); !strings.Contains(modal, `Markdownとしてコピー`) || !strings.Contains(modal, `コピーしました`) {
 		t.Fatalf("task details modal copy labels are not localized: %s", modal)
 	}
+	if modal := asynqTaskDetailsModalHTML("ja"); !strings.Contains(modal, `<style>.admin-wrapper .content h3.asynq-task-modal-title { margin-bottom: 0 !important; }</style>`) {
+		t.Fatalf("task details modal does not override the admin heading margin inline: %s", modal)
+	}
 	if details := asynqTaskDetailsHTML(task, "en"); !strings.Contains(details, `<dd><code>tenant:pull</code></dd>`) {
 		t.Fatalf("task details do not use the actual queue name: %s", details)
 	}

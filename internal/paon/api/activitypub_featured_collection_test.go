@@ -38,6 +38,30 @@ func TestFeaturedCollectionSyncHasConflictSafeStatsAndBoundedWorker(t *testing.T
 			t.Fatalf("featured collection handler missing %q", want)
 		}
 	}
+
+	collectionSource, err := os.ReadFile("activitypub_featured_collection.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	collectionSync := mustFunctionBody(t, string(collectionSource), "syncRemoteStatusPinsFromActivityCollectionWithContext")
+	if !strings.Contains(collectionSync, "s.statusFromActivityURIWithContext(ctx, uri)") {
+		t.Fatal("featured collection status lookup must use the worker context")
+	}
+	if !strings.Contains(collectionSync, "s.db.WithContext(ctx).Transaction") {
+		t.Fatal("featured collection pin reconciliation must use the worker context")
+	}
+
+	inboxSource, err := os.ReadFile("activitypub_inbox.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusLookup := mustFunctionBody(t, string(inboxSource), "statusFromActivityURIWithContext")
+	if !strings.Contains(statusLookup, `Where("statuses.uri = ? AND statuses.deleted_at IS NULL", lookupURI)`) {
+		t.Fatal("ActivityPub status lookup must use the indexed URI predicate")
+	}
+	if strings.Contains(statusLookup, " OR ") || strings.Contains(statusLookup, `"url = ?"`) {
+		t.Fatal("ActivityPub status lookup must not combine indexed URI lookup with an unindexed URL scan")
+	}
 	worker := mustFunctionBody(t, string(workerSource), "featuredSyncContext")
 	for _, want := range []string{
 		"context.WithTimeout(parent, featuredCollectionWorkerTimeout)",
