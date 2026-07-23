@@ -74,11 +74,7 @@ func TestStatusEmbedUsesRailsSiteTitleSetting(t *testing.T) {
 }
 
 func TestStaticAssetDirectoriesServeFromAbsolutePublicDir(t *testing.T) {
-	s, err := NewServer(config.Config{Title: "Paon", LocalDomain: "example.com", PublicDir: testPublicDir(t)}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
+	testCases := []struct {
 		path string
 		want string
 	}{
@@ -88,7 +84,30 @@ func TestStaticAssetDirectoriesServeFromAbsolutePublicDir(t *testing.T) {
 		{path: "/avatars/original/missing.png"},
 		{path: "/headers/original/missing.png"},
 		{path: "/system/media_attachments/files/109/915/428/643/912/138/original/c19f9af2fe59d814.jpg"},
-	} {
+	}
+	publicDir := t.TempDir()
+	for _, tc := range testCases {
+		assetPath := filepath.Join(publicDir, filepath.FromSlash(strings.TrimPrefix(tc.path, "/")))
+		if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := tc.want
+		if body == "" {
+			body = "fixture"
+		}
+		if err := os.WriteFile(assetPath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(publicDir, "packs", "manifest.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewServer(config.Config{Title: "Paon", LocalDomain: "example.com", PublicDir: publicDir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range testCases {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
 		rec := httptest.NewRecorder()
 		s.echo.ServeHTTP(rec, req)
