@@ -78,6 +78,10 @@ func (s *Server) fetchRemoteStatusFromActivityURIForRequest(uri string, expected
 }
 
 func (s *Server) fetchRemoteStatusFromActivityURIForRequestWithSigner(uri string, expectedActorURI string, requestID string, signer *models.Account) (*models.Status, error) {
+	return s.fetchRemoteStatusFromActivityURIForRequestWithSignerAndContext(context.Background(), uri, expectedActorURI, requestID, signer)
+}
+
+func (s *Server) fetchRemoteStatusFromActivityURIForRequestWithSignerAndContext(ctx context.Context, uri string, expectedActorURI string, requestID string, signer *models.Account) (*models.Status, error) {
 	if strings.TrimSpace(uri) == "" || strings.TrimSpace(uri) != uri || s.db == nil {
 		return nil, nil
 	}
@@ -86,9 +90,17 @@ func (s *Server) fetchRemoteStatusFromActivityURIForRequestWithSigner(uri string
 		return nil, err
 	}
 	requestID = remoteStatusDiscoveryRequestID(requestID, uri)
-	payload, err := s.fetchActivityResourcePayloadStrictWithExpectedIDAndUserAgentAndSigner(uri, expectedURI, paonUserAgent(s.cfg), signer)
+	payload, err := s.fetchActivityResourcePayloadStrictWithExpectedIDAndUserAgentSignerAcceptAndContext(ctx, uri, expectedURI, paonUserAgent(s.cfg), signer, activityResourceAcceptHeader)
 	if err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, nil
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 	}
 	if payload.Type == "Announce" {
 		return s.fetchRemoteAnnounceStatus(uri, payload, expectedActorURI, requestID)
@@ -440,9 +452,13 @@ func (s *Server) fetchActivityResourcePayloadStrictWithExpectedIDAndUserAgentAnd
 }
 
 func (s *Server) fetchActivityResourcePayloadStrictWithExpectedIDAndUserAgentSignerAndAccept(uri string, expectedID string, userAgent string, signer *models.Account, acceptHeader string) (activityPayload, error) {
+	return s.fetchActivityResourcePayloadStrictWithExpectedIDAndUserAgentSignerAcceptAndContext(context.Background(), uri, expectedID, userAgent, signer, acceptHeader)
+}
+
+func (s *Server) fetchActivityResourcePayloadStrictWithExpectedIDAndUserAgentSignerAcceptAndContext(ctx context.Context, uri string, expectedID string, userAgent string, signer *models.Account, acceptHeader string) (activityPayload, error) {
 	signer = s.activityFetchSigner(signer)
 	fetcher := func(uri string, userAgent string) (fetchedActivityResource, error) {
-		return fetchActivityResourceWithMetadataAndUserAgentSignedWithAccept(uri, userAgent, s, signer, acceptHeader)
+		return fetchActivityResourceWithMetadataAndUserAgentSignedWithAcceptAndContext(ctx, uri, userAgent, s, signer, acceptHeader)
 	}
 	return fetchActivityResourcePayloadStrictDepthWithExpectedIDAndFetcher(uri, expectedID, 0, userAgent, fetcher)
 }
@@ -580,6 +596,10 @@ func fetchActivityResourceWithMetadataAndUserAgentSigned(uri string, userAgent s
 }
 
 func fetchActivityResourceWithMetadataAndUserAgentSignedWithAccept(uri string, userAgent string, s *Server, signer *models.Account, acceptHeader string) (fetchedActivityResource, error) {
+	return fetchActivityResourceWithMetadataAndUserAgentSignedWithAcceptAndContext(context.Background(), uri, userAgent, s, signer, acceptHeader)
+}
+
+func fetchActivityResourceWithMetadataAndUserAgentSignedWithAcceptAndContext(ctx context.Context, uri string, userAgent string, s *Server, signer *models.Account, acceptHeader string) (fetchedActivityResource, error) {
 	if strings.TrimSpace(uri) == "" || strings.TrimSpace(uri) != uri {
 		return fetchedActivityResource{}, fmt.Errorf("remote host is not allowed")
 	}
@@ -588,7 +608,10 @@ func fetchActivityResourceWithMetadataAndUserAgentSignedWithAccept(uri string, u
 	if err != nil || parsed.Host == "" || !activityFetchHostAllowed(parsed.Hostname()) {
 		return fetchedActivityResource{}, fmt.Errorf("remote host is not allowed")
 	}
-	req, err := http.NewRequest(http.MethodGet, fetchURI, nil)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURI, nil)
 	if err != nil {
 		return fetchedActivityResource{}, err
 	}

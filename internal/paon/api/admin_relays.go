@@ -321,11 +321,16 @@ func (s *Server) representativeActivityPubAccount() (*models.Account, error) {
 
 func (s *Server) ensureRepresentativeAccountStat(accountID int64) error {
 	now := time.Now().UTC()
-	return s.db.Exec(`
-		INSERT INTO account_stats (account_id, statuses_count, following_count, followers_count, created_at, updated_at)
-		VALUES (?, 0, 0, 0, ?, ?)
-		ON CONFLICT (account_id) DO NOTHING
-	`, accountID, now, now).Error
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := setActivityPubTransactionLockTimeout(tx); err != nil {
+			return err
+		}
+		return tx.Exec(`
+			INSERT INTO account_stats (account_id, statuses_count, following_count, followers_count, created_at, updated_at)
+			VALUES (?, 0, 0, 0, ?, ?)
+			ON CONFLICT (account_id) DO NOTHING
+		`, accountID, now, now).Error
+	})
 }
 
 func adminRelaysIndexHTML(relays []models.Relay, notice string, errorText string, authorizedFetch bool, locale ...string) string {

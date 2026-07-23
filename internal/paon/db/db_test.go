@@ -22,11 +22,13 @@ func TestOpenUsesConfiguredDatabasePool(t *testing.T) {
 	}
 	for _, want := range []string{
 		`postgres.New(postgres.Config{`,
-		`DSN:                  cfg.DatabaseURL`,
+		`primaryDSN := databaseDSNWithLockTimeout(cfg.DatabaseURL, cfg.DatabaseLockTimeout)`,
+		`DSN:                  primaryDSN`,
 		`PreferSimpleProtocol: !cfg.DatabasePreparedStatements`,
 		`if strings.TrimSpace(cfg.ReplicaDatabaseURL) != ""`,
+		`replicaDSN := databaseDSNWithLockTimeout(cfg.ReplicaDatabaseURL, cfg.DatabaseLockTimeout)`,
 		`dbresolver.Register(dbresolver.Config{`,
-		`Replicas: []gorm.Dialector{postgres.Open(cfg.ReplicaDatabaseURL)}`,
+		`Replicas: []gorm.Dialector{postgres.Open(replicaDSN)}`,
 		`sqlDB.SetMaxOpenConns(cfg.DatabaseMaxOpenConns)`,
 		`sqlDB.SetMaxIdleConns(cfg.DatabaseMaxIdleConns)`,
 		`newGORMLogger(os.Stdout, gormLoggerLevel(cfg.RailsLogLevel))`,
@@ -39,6 +41,42 @@ func TestOpenUsesConfiguredDatabasePool(t *testing.T) {
 			t.Fatalf("db.go missing configured pool use %q", want)
 		}
 	}
+}
+
+func TestDatabaseDSNWithLockTimeout(t *testing.T) {
+	t.Run("adds timeout while preserving query", func(t *testing.T) {
+		got := databaseDSNWithLockTimeout(
+			"postgres://user:pass@db.example/paon?sslmode=require",
+			5*time.Second,
+		)
+		if !strings.Contains(got, "lock_timeout=5000") {
+			t.Fatalf("DSN = %q, want lock_timeout=5000", got)
+		}
+		if !strings.Contains(got, "sslmode=require") {
+			t.Fatalf("DSN = %q, want sslmode=require", got)
+		}
+	})
+
+	t.Run("keeps explicit timeout", func(t *testing.T) {
+		const raw = "postgres://db.example/paon?lock_timeout=12000&sslmode=require"
+		if got := databaseDSNWithLockTimeout(raw, 5*time.Second); got != raw {
+			t.Fatalf("DSN = %q, want explicit DSN %q", got, raw)
+		}
+	})
+
+	t.Run("zero disables default", func(t *testing.T) {
+		const raw = "postgres://db.example/paon"
+		if got := databaseDSNWithLockTimeout(raw, 0); got != raw {
+			t.Fatalf("DSN = %q, want %q", got, raw)
+		}
+	})
+
+	t.Run("rounds sub-millisecond timeout up", func(t *testing.T) {
+		got := databaseDSNWithLockTimeout("postgres://db.example/paon", time.Microsecond)
+		if !strings.Contains(got, "lock_timeout=1") {
+			t.Fatalf("DSN = %q, want lock_timeout=1", got)
+		}
+	})
 }
 
 func TestGORMLoggerSuppressesExpectedRecordNotFound(t *testing.T) {

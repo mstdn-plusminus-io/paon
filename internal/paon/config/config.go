@@ -32,6 +32,7 @@ type Config struct {
 	DatabaseMaxOpenConns                int
 	DatabaseMaxIdleConns                int
 	DatabasePreparedStatements          bool
+	DatabaseLockTimeout                 time.Duration
 	PublicDir                           string
 	ShakapackerDevServerPublic          string
 	ShakapackerDevServerHTTPS           bool
@@ -381,6 +382,7 @@ func FromEnv() Config {
 		DatabaseMaxOpenConns:                databasePoolFromEnv(),
 		DatabaseMaxIdleConns:                intFromEnv("PAON_DB_MAX_IDLE_CONNS", 5),
 		DatabasePreparedStatements:          envDefaultTrue("PREPARED_STATEMENTS"),
+		DatabaseLockTimeout:                 databaseLockTimeoutFromEnv(),
 		PublicDir:                           publicDir,
 		ShakapackerDevServerPublic:          shakapackerDevServerPublicFromEnv(),
 		ShakapackerDevServerHTTPS:           os.Getenv("SHAKAPACKER_DEV_SERVER_HTTPS") == "true" || os.Getenv("WEBPACKER_DEV_SERVER_HTTPS") == "true",
@@ -1262,6 +1264,9 @@ func (c Config) ValidateRuntime() error {
 	if c.DatabaseMaxOpenConns > 0 && c.DatabaseMaxIdleConns > c.DatabaseMaxOpenConns {
 		problems = append(problems, errors.New("PAON_DB_MAX_IDLE_CONNS must be less than or equal to DB_POOL"))
 	}
+	if c.DatabaseLockTimeout < 0 {
+		problems = append(problems, errors.New("PAON_DB_LOCK_TIMEOUT must be a non-negative number of seconds or duration"))
+	}
 	if !railsLogLevelValid(c.RailsLogLevel) {
 		problems = append(problems, fmt.Errorf("RAILS_LOG_LEVEL must be one of debug, info, warn, error, fatal, or unknown, got %q", c.RailsLogLevel))
 	}
@@ -1819,6 +1824,25 @@ func parseDurationSeconds(name string, raw string) (int, error) {
 		return 0, fmt.Errorf("%s must be a non-negative number of seconds or duration, got %q", name, raw)
 	}
 	return int(duration / time.Second), nil
+}
+
+func databaseLockTimeoutFromEnv() time.Duration {
+	raw, ok := os.LookupEnv("PAON_DB_LOCK_TIMEOUT")
+	if !ok {
+		return 5 * time.Second
+	}
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		return time.Duration(seconds) * time.Second
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return -1
+	}
+	return duration
 }
 
 func firstNonEmpty(values ...string) string {

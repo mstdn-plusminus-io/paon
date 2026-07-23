@@ -106,6 +106,7 @@ const (
 const asynqTaskAfterAccountDomainBlock = "after_account_domain_block"
 
 const activityPubAccountUpdateDebounceDelay = 5 * time.Second
+const featuredCollectionWorkerTimeout = 2 * time.Minute
 
 func asynqEnqueueAccepted(err error) bool {
 	return err == nil || errors.Is(err, asynq.ErrDuplicateTask) || errors.Is(err, asynq.ErrTaskIDConflict)
@@ -1655,7 +1656,7 @@ func (s *Server) enqueueFeaturedCollectionSyncTask(accountID int64, collectionUR
 	task := asynq.NewTask(asynqTaskFeaturedCollectionSync, payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = s.asynqClient.EnqueueContext(ctx, task, asynq.Queue(s.asynqQueue(asynqQueuePull)), asynq.Unique(24*time.Hour))
+	_, err = s.asynqClient.EnqueueContext(ctx, task, asynq.Queue(s.asynqQueue(asynqQueuePull)), asynq.Unique(24*time.Hour), asynq.Timeout(featuredCollectionWorkerTimeout))
 	return asynqEnqueueAccepted(err)
 }
 
@@ -1672,7 +1673,7 @@ func (s *Server) enqueueFeaturedTagsSyncTask(accountID int64, collectionURI stri
 	task := asynq.NewTask(asynqTaskFeaturedTagsSync, payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = s.asynqClient.EnqueueContext(ctx, task, asynq.Queue(s.asynqQueue(asynqQueuePull)), asynq.Unique(24*time.Hour))
+	_, err = s.asynqClient.EnqueueContext(ctx, task, asynq.Queue(s.asynqQueue(asynqQueuePull)), asynq.Unique(24*time.Hour), asynq.Timeout(featuredCollectionWorkerTimeout))
 	return asynqEnqueueAccepted(err)
 }
 
@@ -3059,11 +3060,16 @@ func (s *Server) handleAsynqFeaturedCollectionSync(ctx context.Context, t *asynq
 	if s == nil || s.db == nil || p.AccountID == 0 {
 		return nil
 	}
+	workerCtx, cleanup, acquired, err := s.featuredSyncContext(ctx, asynqTaskFeaturedCollectionSync, p.AccountID)
+	if err != nil || !acquired {
+		return err
+	}
+	defer cleanup()
 	var account models.Account
-	if err := s.db.WithContext(ctx).Where("id = ?", p.AccountID).First(&account).Error; err != nil {
+	if err := s.db.WithContext(workerCtx).Where("id = ?", p.AccountID).First(&account).Error; err != nil {
 		return workerLookupError("featured collection account lookup", err)
 	}
-	return activityFetchWorkerError(s.syncActivityPubFeaturedCollectionNow(&account, p.CollectionURI, p.RequestID, p.SyncTags))
+	return activityFetchWorkerError(s.syncActivityPubFeaturedCollectionNowWithContext(workerCtx, &account, p.CollectionURI, p.RequestID, p.SyncTags))
 }
 
 // handleAsynqFeaturedTagsSync mirrors ActivityPub::SynchronizeFeaturedTagsCollectionWorker:
@@ -3076,11 +3082,33 @@ func (s *Server) handleAsynqFeaturedTagsSync(ctx context.Context, t *asynq.Task)
 	if s == nil || s.db == nil || p.AccountID == 0 {
 		return nil
 	}
+	workerCtx, cleanup, acquired, err := s.featuredSyncContext(ctx, asynqTaskFeaturedTagsSync, p.AccountID)
+	if err != nil || !acquired {
+		return err
+	}
+	defer cleanup()
 	var account models.Account
-	if err := s.db.WithContext(ctx).Where("id = ?", p.AccountID).First(&account).Error; err != nil {
+	if err := s.db.WithContext(workerCtx).Where("id = ?", p.AccountID).First(&account).Error; err != nil {
 		return workerLookupError("featured tags account lookup", err)
 	}
-	return activityFetchWorkerError(s.syncActivityPubFeaturedTagsNow(&account, p.CollectionURI))
+	return activityFetchWorkerError(s.syncActivityPubFeaturedTagsNowWithContext(workerCtx, &account, p.CollectionURI))
+}
+
+func (s *Server) featuredSyncContext(parent context.Context, taskType string, accountID int64) (context.Context, func(), bool, error) {
+	ctx, cancel := context.WithTimeout(parent, featuredCollectionWorkerTimeout)
+	acquired, release, err := s.acquireActivityPubRedisLock(ctx, "featured_sync:"+taskType+":"+strconv.FormatInt(accountID, 10), featuredCollectionWorkerTimeout+time.Minute)
+	if err != nil {
+		cancel()
+		return nil, nil, false, err
+	}
+	if !acquired {
+		cancel()
+		return nil, nil, false, nil
+	}
+	return ctx, func() {
+		release()
+		cancel()
+	}, true, nil
 }
 
 // handleAsynqMoveDistribution mirrors ActivityPub::MoveDistributionWorker: load the

@@ -190,6 +190,72 @@ func TestEnsureRepresentativeAccountStatConcurrentAgainstPostgres(t *testing.T) 
 	}
 }
 
+func TestCreateActivityPubAccountStatConcurrentAgainstPostgres(t *testing.T) {
+	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("PAON_TEST_DATABASE_URL is required for integration tests")
+	}
+	cfg := config.Config{
+		DatabaseURL:          databaseURL,
+		DatabaseMaxOpenConns: 16,
+		DatabaseMaxIdleConns: 4,
+		LocalDomain:          "example.test",
+		SecretKeyBase:        "integration-secret",
+	}
+	database, err := paondb.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := migrate.Run(context.Background(), database); err != nil || !applied {
+		t.Fatalf("migrate = %v, %v", applied, err)
+	}
+	now := time.Now().UTC()
+	var accountID int64
+	if err := database.Raw(`
+		INSERT INTO accounts (username, domain, uri, protocol, created_at, updated_at)
+		VALUES ('remote', 'remote.example', 'https://remote.example/users/remote', 1, ?, ?)
+		RETURNING id
+	`, now, now).Scan(&accountID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 12
+	start := make(chan struct{})
+	errorsByWorker := make(chan error, workers)
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			errorsByWorker <- createActivityPubAccountStatIfMissing(database, models.AccountStat{
+				AccountID: accountID,
+				CreatedAt: now,
+				UpdatedAt: now,
+			})
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(errorsByWorker)
+	for err := range errorsByWorker {
+		if err != nil {
+			t.Fatalf("concurrent ActivityPub account stat creation: %v", err)
+		}
+	}
+
+	var count int64
+	if err := database.Model(&models.AccountStat{}).Where("account_id = ?", accountID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("ActivityPub account_stats rows = %d, want 1", count)
+	}
+}
+
 func TestRemoteActivityPubActorDeletionCommitsAgainstPostgres(t *testing.T) {
 	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
 	redisURL := os.Getenv("PAON_TEST_REDIS_URL")
