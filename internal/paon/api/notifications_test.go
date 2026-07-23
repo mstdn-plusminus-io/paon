@@ -232,7 +232,6 @@ func TestNotificationStreamingSurfacesPublishCreatedNotifications(t *testing.T) 
 			"toggleStatusJoin": []string{`s.publishNotificationIDs(notificationIDs)`},
 			"createStatus": []string{
 				`s.saveStatusMentionsFromTextAndCollectAccounts(tx, status.ID, account.ID, text, now)`,
-				`s.enqueueOrCreateLocalNotifications(c.Request().Context(), notificationPayloads)`,
 			},
 			"updateStatus": []string{
 				`s.updateStatusMentionsFromTextAndCollectAccounts(tx, status.ID, account.ID, nextText, now)`,
@@ -240,6 +239,12 @@ func TestNotificationStreamingSurfacesPublishCreatedNotifications(t *testing.T) 
 			},
 			"saveStatusMentionsFromTextAndCollectAccounts":   []string{`ActivityType:      "Mention"`},
 			"updateStatusMentionsFromTextAndCollectAccounts": []string{`ActivityType:      "Mention"`},
+		},
+		"local_status_postcommit.go": {
+			"runLocalStatusCreatePostCommit": []string{
+				`s.enqueueOrCreateLocalNotifications(ctx, effects.NotificationPayloads)`,
+				`s.publishNotificationIDs(notificationIDs)`,
+			},
 		},
 		"relationships.go": {
 			"followAccount": []string{

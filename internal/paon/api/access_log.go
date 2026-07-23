@@ -18,6 +18,22 @@ func accessLogMiddlewareWithLogger(cfg config.Config, logf accessLogPrintf) echo
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
 			startedAt := time.Now()
+			if cfg.ShouldLog("info") {
+				request := c.Request()
+				requestID, _ := c.Get("request_id").(string)
+				method := ""
+				path := ""
+				userAgent := ""
+				if request != nil {
+					method = request.Method
+					userAgent = request.UserAgent()
+					if request.URL != nil {
+						path = request.URL.Path
+					}
+				}
+				logf("level=INFO event=http_request_started request_id=%q method=%q path=%q remote_ip=%q user_agent=%q",
+					requestID, method, path, c.RealIP(), userAgent)
+			}
 			err := next(c)
 			if !cfg.ShouldLog("info") {
 				return err

@@ -126,11 +126,13 @@ func TestStatusDeletePrivateStatusDoesNotPublishPublicChannels(t *testing.T) {
 func TestStatusStreamingSurfacesPublishStatusEvents(t *testing.T) {
 	checks := map[string]map[string]string{
 		"server.go": {
-			"createStatus":   `s.publishStatusUpdateEvent("update", *created)`,
 			"updateStatus":   `s.publishStatusUpdateEvent("status.update", *updated)`,
 			"deleteStatus":   `s.enqueueRemovalTask(asynqRemovalPayload{StatusID: status.ID, Redraft: true})`,
 			"reblogStatus":   `s.fanOutStatusToLocalRecipientsSkipNotifications(c.Request().Context(), s.db, *createdStatus)`,
 			"unreblogStatus": `s.enqueueRemovalTask(asynqRemovalPayload{StatusID: reblog.ID})`,
+		},
+		"local_status_postcommit.go": {
+			"runLocalStatusCreatePostCommit": `s.publishStatusUpdateEvent("update", created)`,
 		},
 		"asynq_workers.go": {
 			"applyDeletedStatusRemovalSideEffects": `s.publishStatusDelete(status)`,
