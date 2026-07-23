@@ -196,6 +196,24 @@ func TestAdminRelayStateLabel(t *testing.T) {
 	}
 }
 
+func TestRepresentativeActivityPubAccountInitializationIsConflictSafe(t *testing.T) {
+	src, err := os.ReadFile("admin_relays.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountBody := mustFunctionBody(t, string(src), "representativeActivityPubAccount")
+	if !strings.Contains(accountBody, "clause.OnConflict{DoNothing: true}") {
+		t.Fatal("representative account creation must tolerate concurrent initialization")
+	}
+	statBody := mustFunctionBody(t, string(src), "ensureRepresentativeAccountStat")
+	if !strings.Contains(statBody, "ON CONFLICT (account_id) DO NOTHING") {
+		t.Fatal("representative account_stats creation must use an atomic conflict-safe insert")
+	}
+	if strings.Contains(statBody, "FirstOrCreate") {
+		t.Fatal("representative account_stats creation must not use the racy SELECT-then-INSERT path")
+	}
+}
+
 func mustFunctionBody(t *testing.T, src string, name string) string {
 	t.Helper()
 	start := -1
