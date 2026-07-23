@@ -3047,7 +3047,7 @@ func (s *Server) saveActivityPubStatusMetadata(tx *gorm.DB, status *models.Statu
 		return notifications, err
 	}
 	notifications.CustomEmojiChanges = append(notifications.CustomEmojiChanges, customEmojiChanges...)
-	return notifications, s.applyActivityPubCustomEmojisToContent(tx, status, actor)
+	return notifications, s.hydrateActivityPubStatusCustomEmojis(tx, status, actor)
 }
 
 func (s *Server) replaceActivityPubStatusMetadata(tx *gorm.DB, status *models.Status, note activityObject, actor *models.Account, now time.Time) (activityPubNotificationSaveResult, error) {
@@ -3072,7 +3072,7 @@ func (s *Server) replaceActivityPubStatusMetadata(tx *gorm.DB, status *models.St
 		return notifications, err
 	}
 	notifications.CustomEmojiChanges = append(notifications.CustomEmojiChanges, customEmojiChanges...)
-	return notifications, s.applyActivityPubCustomEmojisToContent(tx, status, actor)
+	return notifications, s.hydrateActivityPubStatusCustomEmojis(tx, status, actor)
 }
 
 func (s *Server) saveActivityPubCustomEmojis(tx *gorm.DB, actor *models.Account, tags []activityTag, now time.Time) ([]models.CustomEmoji, error) {

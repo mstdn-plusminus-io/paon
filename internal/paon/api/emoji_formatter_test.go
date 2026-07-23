@@ -1,11 +1,27 @@
 package api
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
+
+func TestActivityPubStatusMetadataKeepsRESTEmojiShortcodes(t *testing.T) {
+	src, err := os.ReadFile("activitypub_inbox.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, function := range []string{"saveActivityPubStatusMetadata", "replaceActivityPubStatusMetadata"} {
+		if !functionBodyContains(t, src, function, `s.hydrateActivityPubStatusCustomEmojis(tx, status, actor)`) {
+			t.Fatalf("%s must hydrate REST emoji metadata without rewriting status text", function)
+		}
+		if functionBodyContains(t, src, function, `applyActivityPubCustomEmojisToContent`) {
+			t.Fatalf("%s must not persist custom emoji img tags into status text", function)
+		}
+	}
+}
 
 func emojiSrcStub(models.CustomEmoji) string { return "https://cdn.example/emoji.png" }
 
