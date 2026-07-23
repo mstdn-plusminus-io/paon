@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 	"time"
@@ -28,6 +29,10 @@ func (s *Server) syncActivityPubFeaturedTagsBestEffort(account *models.Account, 
 }
 
 func (s *Server) syncActivityPubFeaturedTagsNow(account *models.Account, collectionURI string) error {
+	return s.syncActivityPubFeaturedTagsNowWithContext(context.Background(), account, collectionURI)
+}
+
+func (s *Server) syncActivityPubFeaturedTagsNowWithContext(ctx context.Context, account *models.Account, collectionURI string) error {
 	if s == nil || s.db == nil || account == nil || account.ID == 0 || account.Local() || account.SuspendedAt.Valid || strings.TrimSpace(collectionURI) == "" {
 		return nil
 	}
@@ -35,7 +40,7 @@ func (s *Server) syncActivityPubFeaturedTagsNow(account *models.Account, collect
 	if err != nil {
 		return err
 	}
-	names, err := s.fetchActivityPubFeaturedTagNamesWithSigner(account.URI, collectionURI, paonUserAgent(s.cfg), signer)
+	names, err := s.fetchActivityPubFeaturedTagNamesWithSignerAndContext(ctx, account.URI, collectionURI, paonUserAgent(s.cfg), signer)
 	if err != nil {
 		return err
 	}
@@ -47,8 +52,12 @@ func fetchActivityPubFeaturedTagNames(actorURI string, collectionURI string, use
 }
 
 func (s *Server) fetchActivityPubFeaturedTagNamesWithSigner(actorURI string, collectionURI string, userAgent string, signer *models.Account) ([]activityPubFeaturedTagName, error) {
+	return s.fetchActivityPubFeaturedTagNamesWithSignerAndContext(context.Background(), actorURI, collectionURI, userAgent, signer)
+}
+
+func (s *Server) fetchActivityPubFeaturedTagNamesWithSignerAndContext(ctx context.Context, actorURI string, collectionURI string, userAgent string, signer *models.Account) ([]activityPubFeaturedTagName, error) {
 	fetcher := func(uri string, userAgent string) (fetchedActivityResource, error) {
-		return fetchActivityResourceWithMetadataAndUserAgentSigned(uri, userAgent, s, signer)
+		return fetchActivityResourceWithMetadataAndUserAgentSignedWithAcceptAndContext(ctx, uri, userAgent, s, signer, activityResourceAcceptHeader)
 	}
 	return fetchActivityPubFeaturedTagNamesWithFetcher(actorURI, collectionURI, userAgent, fetcher)
 }

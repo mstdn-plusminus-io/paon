@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -23,6 +24,10 @@ func (s *Server) syncActivityPubFeaturedCollectionBestEffort(account *models.Acc
 }
 
 func (s *Server) syncActivityPubFeaturedCollectionNow(account *models.Account, collectionURI string, requestID string, syncTags bool) error {
+	return s.syncActivityPubFeaturedCollectionNowWithContext(context.Background(), account, collectionURI, requestID, syncTags)
+}
+
+func (s *Server) syncActivityPubFeaturedCollectionNowWithContext(ctx context.Context, account *models.Account, collectionURI string, requestID string, syncTags bool) error {
 	if s == nil || s.db == nil || account == nil || account.ID == 0 || account.Local() || account.SuspendedAt.Valid || strings.TrimSpace(collectionURI) == "" || !activityURIHostsMatch(account.URI, collectionURI) {
 		return nil
 	}
@@ -30,7 +35,7 @@ func (s *Server) syncActivityPubFeaturedCollectionNow(account *models.Account, c
 	if err != nil {
 		return err
 	}
-	collection, err := s.fetchActivityPubFeaturedCollectionWithSigner(account.URI, collectionURI, paonUserAgent(s.cfg), signer)
+	collection, err := s.fetchActivityPubFeaturedCollectionWithSignerAndContext(ctx, account.URI, collectionURI, paonUserAgent(s.cfg), signer)
 	if err != nil {
 		return err
 	}
@@ -39,7 +44,7 @@ func (s *Server) syncActivityPubFeaturedCollectionNow(account *models.Account, c
 			return err
 		}
 	}
-	return s.syncRemoteStatusPinsFromActivityCollection(account, collection, requestID)
+	return s.syncRemoteStatusPinsFromActivityCollectionWithContext(ctx, account, collection, requestID)
 }
 
 func fetchActivityPubFeaturedCollection(actorURI string, collectionURI string, userAgent string) (activityCollection, error) {
@@ -47,8 +52,12 @@ func fetchActivityPubFeaturedCollection(actorURI string, collectionURI string, u
 }
 
 func (s *Server) fetchActivityPubFeaturedCollectionWithSigner(actorURI string, collectionURI string, userAgent string, signer *models.Account) (activityCollection, error) {
+	return s.fetchActivityPubFeaturedCollectionWithSignerAndContext(context.Background(), actorURI, collectionURI, userAgent, signer)
+}
+
+func (s *Server) fetchActivityPubFeaturedCollectionWithSignerAndContext(ctx context.Context, actorURI string, collectionURI string, userAgent string, signer *models.Account) (activityCollection, error) {
 	fetcher := func(uri string, userAgent string) (fetchedActivityResource, error) {
-		return fetchActivityResourceWithMetadataAndUserAgentSigned(uri, userAgent, s, signer)
+		return fetchActivityResourceWithMetadataAndUserAgentSignedWithAcceptAndContext(ctx, uri, userAgent, s, signer, activityResourceAcceptHeader)
 	}
 	return fetchActivityPubFeaturedCollectionWithFetcher(actorURI, collectionURI, userAgent, fetcher)
 }
@@ -74,6 +83,10 @@ func fetchActivityPubFeaturedCollectionWithFetcher(actorURI string, collectionUR
 }
 
 func (s *Server) syncRemoteStatusPinsFromActivityCollection(account *models.Account, collection activityCollection, requestID string) error {
+	return s.syncRemoteStatusPinsFromActivityCollectionWithContext(context.Background(), account, collection, requestID)
+}
+
+func (s *Server) syncRemoteStatusPinsFromActivityCollectionWithContext(ctx context.Context, account *models.Account, collection activityCollection, requestID string) error {
 	uris := activityPubFeaturedStatusURIs(account.URI, collection)
 	statusIDs := make([]int64, 0, len(uris))
 	signer, err := s.activityPubFeaturedCollectionFetchSigner(account)
@@ -89,7 +102,7 @@ func (s *Server) syncRemoteStatusPinsFromActivityCollection(account *models.Acco
 			return err
 		}
 		if status == nil {
-			status, err = s.fetchRemoteStatusFromActivityURIForRequestWithSigner(uri, account.URI, requestID, signer)
+			status, err = s.fetchRemoteStatusFromActivityURIForRequestWithSignerAndContext(ctx, uri, account.URI, requestID, signer)
 			if err != nil {
 				return err
 			}
@@ -100,6 +113,9 @@ func (s *Server) syncRemoteStatusPinsFromActivityCollection(account *models.Acco
 		statusIDs = append(statusIDs, status.ID)
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := setActivityPubTransactionLockTimeout(tx); err != nil {
+			return err
+		}
 		var existingStatusIDs []int64
 		if err := tx.Model(&models.StatusPin{}).Where("account_id = ?", account.ID).Pluck("status_id", &existingStatusIDs).Error; err != nil {
 			return err

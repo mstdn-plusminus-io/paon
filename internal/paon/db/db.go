@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,8 +28,9 @@ func Open(cfg config.Config) (*gorm.DB, error) {
 		return nil, nil
 	}
 
+	primaryDSN := databaseDSNWithLockTimeout(cfg.DatabaseURL, cfg.DatabaseLockTimeout)
 	database, err := gorm.Open(postgres.New(postgres.Config{
-		DSN:                  cfg.DatabaseURL,
+		DSN:                  primaryDSN,
 		PreferSimpleProtocol: !cfg.DatabasePreparedStatements,
 	}), &gorm.Config{
 		DisableForeignKeyConstraintWhenMigrating: true,
@@ -37,8 +40,9 @@ func Open(cfg config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 	if strings.TrimSpace(cfg.ReplicaDatabaseURL) != "" {
+		replicaDSN := databaseDSNWithLockTimeout(cfg.ReplicaDatabaseURL, cfg.DatabaseLockTimeout)
 		if err := database.Use(dbresolver.Register(dbresolver.Config{
-			Replicas: []gorm.Dialector{postgres.Open(cfg.ReplicaDatabaseURL)},
+			Replicas: []gorm.Dialector{postgres.Open(replicaDSN)},
 		})); err != nil {
 			return nil, err
 		}
@@ -52,6 +56,24 @@ func Open(cfg config.Config) (*gorm.DB, error) {
 	sqlDB.SetMaxIdleConns(cfg.DatabaseMaxIdleConns)
 
 	return database, nil
+}
+
+func databaseDSNWithLockTimeout(raw string, timeout time.Duration) string {
+	if timeout <= 0 {
+		return raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	query := parsed.Query()
+	if query.Has("lock_timeout") {
+		return raw
+	}
+	milliseconds := (timeout + time.Millisecond - 1) / time.Millisecond
+	query.Set("lock_timeout", strconv.FormatInt(int64(milliseconds), 10))
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func OpenPgHeroStats(cfg config.Config) (*gorm.DB, error) {

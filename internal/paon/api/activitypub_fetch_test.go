@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -10,6 +12,24 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
+
+func TestActivityFetchUsesWorkerContext(t *testing.T) {
+	previousClient := activityHTTPClient
+	t.Cleanup(func() {
+		activityHTTPClient = previousClient
+	})
+	activityHTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := fetchActivityResourceWithMetadataAndUserAgentSignedWithAcceptAndContext(ctx, "https://remote.example/statuses/1", "", nil, nil, activityResourceAcceptHeader)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("fetch error = %v, want context cancellation", err)
+	}
+}
 
 func TestParseActivityResourcePayloadAcceptsDirectNote(t *testing.T) {
 	payload, err := parseActivityResourcePayload([]byte(activityTestJSON(`{

@@ -2251,6 +2251,9 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 	hadHeaderFile := false
 	var customEmojiChanges []models.CustomEmoji
 	err = database.Transaction(func(tx *gorm.DB) error {
+		if err := setActivityPubTransactionLockTimeout(tx); err != nil {
+			return err
+		}
 		var existing models.Account
 		err := tx.Where("uri = ?", actor.ID).First(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -2345,7 +2348,7 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 			statUpdates := activityActorCollectionStatUpdates(outboxInfo, followingInfo, followersInfo)
 			if len(statUpdates) > 0 {
 				stat := models.AccountStat{AccountID: existing.ID, CreatedAt: now, UpdatedAt: now}
-				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&stat).Error; err != nil {
+				if err := createActivityPubAccountStatIfMissing(tx, stat); err != nil {
 					return err
 				}
 				statUpdates["updated_at"] = now
@@ -2364,7 +2367,7 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 		if !s.remoteActorDiscoveryAllowed(requestID) {
 			return nil
 		}
-		if err := tx.Create(&account).Error; err != nil {
+		if err := tx.Omit(clause.Associations).Create(&account).Error; err != nil {
 			return err
 		}
 		createdAccount = true
@@ -2389,7 +2392,7 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 		}
 		stat := models.AccountStat{AccountID: account.ID, CreatedAt: now, UpdatedAt: now}
 		applyActivityActorCollectionStats(&stat, outboxInfo, followingInfo, followersInfo)
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&stat).Error
+		return createActivityPubAccountStatIfMissing(tx, stat)
 	})
 	if err != nil {
 		return nil, err
@@ -2437,6 +2440,35 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 		s.syncActivityPubFeaturedTagsBestEffort(&account, actor.FeaturedTags)
 	}
 	return &account, nil
+}
+
+func createActivityPubAccountStatIfMissing(tx *gorm.DB, stat models.AccountStat) error {
+	if tx == nil || stat.AccountID == 0 {
+		return nil
+	}
+	return tx.Exec(`
+		INSERT INTO account_stats (
+			account_id, statuses_count, following_count, followers_count,
+			created_at, updated_at, last_status_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (account_id) DO NOTHING
+	`,
+		stat.AccountID,
+		stat.StatusesCount,
+		stat.FollowingCount,
+		stat.FollowersCount,
+		stat.CreatedAt,
+		stat.UpdatedAt,
+		stat.LastStatusAt,
+	).Error
+}
+
+func setActivityPubTransactionLockTimeout(tx *gorm.DB) error {
+	if tx == nil {
+		return nil
+	}
+	return tx.Exec(`SELECT set_config('lock_timeout', '5s', true)`).Error
 }
 
 func (s *Server) applyActivityPubPostUpgrade(ctx context.Context, database *gorm.DB, domain string) error {

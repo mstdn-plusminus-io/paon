@@ -551,6 +551,23 @@ func TestFromEnvPrefersDatabaseURL(t *testing.T) {
 	}
 }
 
+func TestFromEnvLoadsDatabaseLockTimeout(t *testing.T) {
+	unsetEnvForTest(t, "PAON_DB_LOCK_TIMEOUT")
+	if got := FromEnv().DatabaseLockTimeout; got != 5*time.Second {
+		t.Fatalf("default DatabaseLockTimeout = %s, want 5s", got)
+	}
+
+	t.Setenv("PAON_DB_LOCK_TIMEOUT", "750ms")
+	if got := FromEnv().DatabaseLockTimeout; got != 750*time.Millisecond {
+		t.Fatalf("duration DatabaseLockTimeout = %s, want 750ms", got)
+	}
+
+	t.Setenv("PAON_DB_LOCK_TIMEOUT", "3")
+	if got := FromEnv().DatabaseLockTimeout; got != 3*time.Second {
+		t.Fatalf("numeric DatabaseLockTimeout = %s, want 3s", got)
+	}
+}
+
 func TestFromEnvDoesNotEnableReplicaWithoutRailsReplicaEnvKeys(t *testing.T) {
 	unsetEnvForTest(t, "REPLICA_DATABASE_URL")
 	unsetEnvForTest(t, "REPLICA_DB_NAME")
@@ -974,6 +991,12 @@ func TestValidateRuntimeRejectsInvalidDatabasePoolSettings(t *testing.T) {
 	cfg.DatabaseMaxIdleConns = 3
 	if err := cfg.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "less than or equal to DB_POOL") {
 		t.Fatalf("ValidateRuntime pool ordering error = %v", err)
+	}
+
+	cfg = FromEnv()
+	cfg.DatabaseLockTimeout = -1
+	if err := cfg.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "PAON_DB_LOCK_TIMEOUT") {
+		t.Fatalf("ValidateRuntime lock timeout error = %v", err)
 	}
 
 	cfg = FromEnv()

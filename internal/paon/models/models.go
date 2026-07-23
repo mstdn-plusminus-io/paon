@@ -240,7 +240,7 @@ type Account struct {
 	Trendable                  sql.NullBool   `gorm:"column:trendable"`
 	ReviewedAt                 sql.NullTime   `gorm:"column:reviewed_at"`
 	RequestedReviewAt          sql.NullTime   `gorm:"column:requested_review_at"`
-	AccountStat                AccountStat    `gorm:"foreignKey:AccountID"`
+	AccountStat                AccountStat    `gorm:"foreignKey:AccountID;->"`
 	User                       User           `gorm:"foreignKey:AccountID"`
 	MovedToAccount             *Account       `gorm:"foreignKey:MovedToAccountID;references:ID"`
 	CustomEmojis               []CustomEmoji  `gorm:"-"`

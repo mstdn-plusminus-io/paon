@@ -5,8 +5,31 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+
+	"gorm.io/gorm/schema"
 )
+
+func TestAccountStatAssociationIsReadOnly(t *testing.T) {
+	accountSchema, err := schema.Parse(&Account{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	field := accountSchema.LookUpField("AccountStat")
+	if field == nil {
+		t.Fatal("AccountStat association is missing")
+	}
+	if field.Creatable || field.Updatable {
+		t.Fatalf("AccountStat association permissions = creatable:%t updatable:%t, want read-only", field.Creatable, field.Updatable)
+	}
+	if !field.Readable {
+		t.Fatal("AccountStat association must remain readable for Preload")
+	}
+	if accountSchema.Relationships.Relations["AccountStat"] == nil {
+		t.Fatal("AccountStat association must remain available to Preload")
+	}
+}
 
 func TestInt64ArrayScanPostgresLiteral(t *testing.T) {
 	var ids Int64Array

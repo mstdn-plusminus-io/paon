@@ -1608,6 +1608,9 @@ func (s *Server) processActivityPubCreateNote(payload activityPayload, actor *mo
 	postprocessedDeliveredStatus := false
 	addDeliveredStatusToHomeFeed := false
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := setActivityPubTransactionLockTimeout(tx); err != nil {
+			return err
+		}
 		tombstoneExists, err := activityPubTombstoneExists(tx, note.ID)
 		if err != nil || tombstoneExists {
 			return err
@@ -1638,7 +1641,7 @@ func (s *Server) processActivityPubCreateNote(payload activityPayload, actor *mo
 			return err
 		}
 		prepareActivityPubFetchedStatusID(&status, payload.Fetch, now)
-		if err := tx.Create(&status).Error; err != nil {
+		if err := tx.Omit(clause.Associations).Create(&status).Error; err != nil {
 			return err
 		}
 		createdStatusID = status.ID
@@ -4236,6 +4239,9 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 	}
 	var customEmojiChanges []models.CustomEmoji
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := setActivityPubTransactionLockTimeout(tx); err != nil {
+			return err
+		}
 		skipMedia, err := activityPubActorSkipsMedia(tx, actor)
 		if err != nil {
 			return err
@@ -4265,7 +4271,7 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 			statUpdates := activityActorCollectionStatUpdates(outboxInfo, followingInfo, followersInfo)
 			if len(statUpdates) > 0 {
 				stat := models.AccountStat{AccountID: actor.ID, CreatedAt: now, UpdatedAt: now}
-				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&stat).Error; err != nil {
+				if err := createActivityPubAccountStatIfMissing(tx, stat); err != nil {
 					return err
 				}
 				statUpdates["updated_at"] = now
