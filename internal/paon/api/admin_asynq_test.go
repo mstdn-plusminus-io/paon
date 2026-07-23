@@ -715,6 +715,7 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 		`name="source_state" value="retry"`,
 		`Retry all`,
 		`data-asynq-task-modal`,
+		`class="asynq-task-modal-title"`,
 		`data-asynq-task-copy`,
 		`Copy as Markdown`,
 	} {
