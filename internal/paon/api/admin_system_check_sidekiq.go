@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 )
 
 var adminSidekiqRequiredQueues = []string{"default", "push", "mailers", "pull", "scheduler", "ingress"}
@@ -56,12 +58,13 @@ func (s *Server) adminDashboardPaonGoWorkerQueues() []string {
 	return s.adminDashboardPaonGoWorkerQueuesFromHeartbeat(ctx, time.Now().UTC())
 }
 
-func paonGoWorkerQueueCoverage() []string {
+func paonGoWorkerQueueCoverage(cfg config.Config) []string {
 	// Asynq covers queued Rails workers, while dedicated goroutines cover Rails'
 	// scheduler and ingress queue boundaries.
-	queues := make([]string, 0, len(paonGoAsynqQueueWeights())+2)
-	for queue := range paonGoAsynqQueueWeights() {
-		queues = append(queues, queue)
+	weights := paonGoAsynqQueueWeightsForConfig(cfg)
+	queues := make([]string, 0, len(weights)+2)
+	for queue := range weights {
+		queues = append(queues, asynqLogicalQueueName(cfg.RedisNamespace, queue))
 	}
 	queues = append(queues, "scheduler", "ingress")
 	sort.Strings(queues)
@@ -140,7 +143,7 @@ func (s *Server) recordPaonGoWorkerHeartbeat(ctx context.Context, identity strin
 	cfg := redisConfig(s.cfg)
 	processesKey := cfg.prefix + paonGoWorkerProcessesKey
 	processKey := cfg.prefix + paonGoWorkerProcessKeyPrefix + identity
-	queues, err := json.Marshal(paonGoWorkerQueueCoverage())
+	queues, err := json.Marshal(paonGoWorkerQueueCoverage(s.cfg))
 	if err != nil {
 		return
 	}

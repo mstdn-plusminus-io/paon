@@ -5,10 +5,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 )
 
 func TestAdminSidekiqProcessCheckPaonGoQueueCoverageListsRailsQueues(t *testing.T) {
-	got := paonGoWorkerQueueCoverage()
+	got := paonGoWorkerQueueCoverage(config.Config{})
 	for _, want := range adminSidekiqRequiredQueues {
 		if !stringSliceContains(got, want) {
 			t.Fatalf("paon-go worker queue coverage %#v missing Rails queue %q", got, want)
@@ -48,11 +50,22 @@ func TestAdminSidekiqQueueCoverageTracksAsynqRuntimeQueues(t *testing.T) {
 			t.Fatalf("%s must stay covered by dedicated paon-go goroutines, not the asynq queue map", queue)
 		}
 	}
-	got := paonGoWorkerQueueCoverage()
+	got := paonGoWorkerQueueCoverage(config.Config{})
 	for _, want := range adminSidekiqRequiredQueues {
 		if !stringSliceContains(got, want) {
 			t.Fatalf("admin paon-go queue coverage %#v missing Rails queue %q", got, want)
 		}
+	}
+}
+
+func TestPaonGoWorkerQueueCoverageReflectsSelectedAsynqQueues(t *testing.T) {
+	got := paonGoWorkerQueueCoverage(config.Config{
+		RedisNamespace: "mastodon:",
+		AsynqQueues:    []string{"push"},
+	})
+	want := []string{"ingress", "push", "scheduler"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("selected worker queue coverage = %#v, want %#v", got, want)
 	}
 }
 
@@ -109,7 +122,7 @@ func TestPaonGoWorkerHeartbeatUsesRedisExpiryAndQueuePayload(t *testing.T) {
 		{"runPaonGoWorkerHeartbeat", `s.recordPaonGoWorkerHeartbeat(ctx, identity, time.Now().UTC())`},
 		{"runPaonGoWorkerHeartbeat", `time.NewTicker(paonGoWorkerHeartbeatTTL / 3)`},
 		{"runPaonGoWorkerHeartbeat", `defer s.clearPaonGoWorkerHeartbeat(context.Background(), identity)`},
-		{"recordPaonGoWorkerHeartbeat", `json.Marshal(paonGoWorkerQueueCoverage())`},
+		{"recordPaonGoWorkerHeartbeat", `json.Marshal(paonGoWorkerQueueCoverage(s.cfg))`},
 		{"recordPaonGoWorkerHeartbeat", `"ZREMRANGEBYSCORE", processesKey, "-inf", updatedAt`},
 		{"recordPaonGoWorkerHeartbeat", `"ZADD", processesKey, expiresAt, identity`},
 		{"recordPaonGoWorkerHeartbeat", `"HSET", processKey, "queues", string(queues), "updated_at", updatedAt`},
