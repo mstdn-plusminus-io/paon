@@ -396,6 +396,8 @@ ja:
       close: 閉じる
       concurrency: 並行数
       consumers: ワーカー
+      copied: コピーしました
+      copy_markdown: Markdownとしてコピー
       covered: 対応済み
       date: 日付
       days: 日

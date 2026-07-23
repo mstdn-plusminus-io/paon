@@ -403,6 +403,8 @@ en:
       close: Close
       concurrency: Concurrency
       consumers: Consumers
+      copied: Copied
+      copy_markdown: Copy as Markdown
       covered: covered
       date: Date
       days: days
