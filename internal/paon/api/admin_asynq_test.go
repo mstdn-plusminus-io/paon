@@ -715,6 +715,7 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 		`name="source_state" value="retry"`,
 		`Retry all`,
 		`data-asynq-task-modal`,
+		`class="asynq-task-modal-title"`,
 		`data-asynq-task-copy`,
 		`Copy as Markdown`,
 	} {
@@ -740,6 +741,38 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 	filterEnd := strings.Index(pageHTML, `</form><form action="/asynq/tasks/retry_all"`)
 	if filterEnd < 0 {
 		t.Fatalf("retry-all button is not rendered to the right of the filter: %s", pageHTML)
+	}
+}
+
+func TestAsynqSummaryCountsUseLocaleGroupingAcrossViews(t *testing.T) {
+	snapshot := asynqDashboardSnapshot{
+		Available: true,
+		Summary: asynqDashboardSummary{
+			ProcessedTotal: 926360,
+			FailedTotal:    52910,
+			Active:         11,
+			Pending:        0,
+			Retry:          2752,
+			Scheduled:      16,
+			Archived:       1561,
+		},
+	}
+	expected := []string{
+		`data-asynq-counter="processed_total">926,360</strong>`,
+		`data-asynq-counter="failed_total">52,910</strong>`,
+		`data-asynq-counter="active">11</strong>`,
+		`data-asynq-counter="pending">0</strong>`,
+		`data-asynq-counter="retry">2,752</strong>`,
+		`data-asynq-counter="scheduled">16</strong>`,
+		`data-asynq-counter="archived">1,561</strong>`,
+	}
+	for _, view := range []string{"overview", "active", "pending", "queues", "retry", "scheduled", "archived"} {
+		pageHTML := asynqPageHTML(snapshot, nil, view, "ja")
+		for _, want := range expected {
+			if !strings.Contains(pageHTML, want) {
+				t.Fatalf("%s page summary is missing %q: %s", view, want, pageHTML)
+			}
+		}
 	}
 }
 

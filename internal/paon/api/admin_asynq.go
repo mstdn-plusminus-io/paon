@@ -18,6 +18,8 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 )
 
 const (
@@ -1289,6 +1291,7 @@ func asynqTabsHTML(view string, locale string) string {
 }
 
 func asynqSummaryHTML(summary asynqDashboardSummary, available bool, locale string) string {
+	numberPrinter := message.NewPrinter(language.Make(locale))
 	items := []struct {
 		Key      string
 		Value    int
@@ -1308,7 +1311,7 @@ func asynqSummaryHTML(summary asynqDashboardSummary, available bool, locale stri
 	for _, item := range items {
 		value := "—"
 		if available {
-			value = strconv.Itoa(item.Value)
+			value = numberPrinter.Sprintf("%d", item.Value)
 		}
 		body.WriteString(`<div><strong data-asynq-counter="` + item.Key + `">` + value + `</strong>` + asynqHTMLAttr(adminT(locale, item.Locale, item.Fallback)) + `</div>`)
 	}
@@ -1540,7 +1543,7 @@ func asynqTaskDetailsModalHTML(locale string) string {
 	copyLabel := asynqHTMLAttr(adminT(locale, "admin.devops.copy_markdown", "Copy as Markdown"))
 	copiedLabel := asynqHTMLAttr(adminT(locale, "admin.devops.copied", "Copied"))
 	return `<dialog class="asynq-task-modal" data-asynq-task-modal aria-labelledby="asynq-task-modal-title">` +
-		`<div class="asynq-task-modal__header"><h3 id="asynq-task-modal-title">` + asynqHTMLAttr(adminT(locale, "admin.devops.task_details", "Task details")) + `</h3></div>` +
+		`<div class="asynq-task-modal__header"><h3 class="asynq-task-modal-title" id="asynq-task-modal-title">` + asynqHTMLAttr(adminT(locale, "admin.devops.task_details", "Task details")) + `</h3></div>` +
 		`<div class="asynq-task-modal__content" data-asynq-task-modal-content></div>` +
 		`<div class="asynq-task-modal__footer"><button type="button" class="button button-secondary" data-asynq-task-copy data-copy-label="` + copyLabel + `" data-copied-label="` + copiedLabel + `"><i class="fa fa-copy fa-fw" aria-hidden="true"></i> <span>` + copyLabel + `</span></button><form method="dialog"><button type="submit" class="button">` + closeLabel + `</button></form></div>` +
 		`</dialog>`

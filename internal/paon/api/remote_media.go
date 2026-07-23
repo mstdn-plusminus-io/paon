@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -25,13 +24,22 @@ type remoteMediaDownload struct {
 	body        []byte
 }
 
+var (
+	errRemoteMediaURLInvalid             = errors.New("invalid remote media url")
+	errRemoteMediaHostNotAllowed         = errors.New("remote media host is not allowed")
+	errRemoteMediaSizeInvalid            = errors.New("remote media size is invalid")
+	errRemoteMediaContentTypeUnsupported = errors.New("remote media content type is unsupported")
+	errRemoteMediaNotImage               = errors.New("remote media is not an image")
+	errRemoteMediaUnreadable             = errors.New("remote media is unreadable")
+)
+
 func (s *Server) cacheRemoteMediaAttachment(tx *gorm.DB, media *models.MediaAttachment, now time.Time) {
 	s.cacheRemoteMediaAttachmentConfigured(tx, media, now, true)
 }
 
 func (s *Server) cacheRemoteMediaAttachmentConfigured(tx *gorm.DB, media *models.MediaAttachment, now time.Time, enqueueRetry bool) bool {
 	ok, err := s.cacheRemoteMediaAttachmentConfiguredResult(tx, media, now)
-	if err != nil && enqueueRetry {
+	if err != nil && enqueueRetry && !remoteMediaErrorUnsalvageable(err) {
 		s.enqueueRemoteMediaRedownload(media.ID)
 	}
 	return ok
@@ -286,10 +294,10 @@ func fetchRemoteImageMedia(ctx context.Context, rawURL string, maxBytes int) (re
 func fetchRemoteMedia(ctx context.Context, rawURL string, maxBytes int, mediaType int) (remoteMediaDownload, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return remoteMediaDownload{}, fmt.Errorf("invalid remote media url")
+		return remoteMediaDownload{}, errRemoteMediaURLInvalid
 	}
 	if !activityFetchHostAllowed(parsed.Hostname()) {
-		return remoteMediaDownload{}, fmt.Errorf("remote media host is not allowed")
+		return remoteMediaDownload{}, errRemoteMediaHostNotAllowed
 	}
 	if maxBytes <= 0 {
 		maxBytes = 40 * 1024 * 1024
@@ -314,18 +322,18 @@ func fetchRemoteMedia(ctx context.Context, rawURL string, maxBytes int, mediaTyp
 		return remoteMediaDownload{}, err
 	}
 	if len(body) == 0 || len(body) > maxBytes {
-		return remoteMediaDownload{}, fmt.Errorf("remote media size is invalid")
+		return remoteMediaDownload{}, errRemoteMediaSizeInvalid
 	}
 	filename := remoteMediaFilename(rawURL, resp.Header.Get("Content-Type"))
 	contentType := mediaContentType(filename, resp.Header.Get("Content-Type"))
 	if !mediaContentTypeSupported(contentType, mediaType) {
-		return remoteMediaDownload{}, fmt.Errorf("remote media content type is unsupported")
+		return remoteMediaDownload{}, errRemoteMediaContentTypeUnsupported
 	}
 	if (mediaType == 0 || mediaType == 1) && mediaTypeFromContentType(contentType) != 0 && mediaTypeFromContentType(contentType) != 1 {
-		return remoteMediaDownload{}, fmt.Errorf("remote media is not an image")
+		return remoteMediaDownload{}, errRemoteMediaNotImage
 	}
 	if (mediaType == 0 || mediaType == 1) && !remoteMediaImageReadable(body) {
-		return remoteMediaDownload{}, fmt.Errorf("remote media is unreadable")
+		return remoteMediaDownload{}, errRemoteMediaUnreadable
 	}
 	return remoteMediaDownload{filename: filename, contentType: contentType, body: body}, nil
 }

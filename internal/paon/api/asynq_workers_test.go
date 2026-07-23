@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -19,6 +20,41 @@ import (
 
 func sourceContains(src []byte, want string) bool {
 	return strings.Contains(strings.Join(strings.Fields(string(src)), " "), strings.Join(strings.Fields(want), " "))
+}
+
+func TestActivityFetchWorkerErrorMatchesRailsRetryPolicy(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusGone, http.StatusUnprocessableEntity, http.StatusNotImplemented} {
+		err := activityFetchHTTPError{StatusCode: status, URL: "https://remote.example/statuses/1/replies"}
+		if got := activityFetchWorkerError(err); got != nil {
+			t.Errorf("status %d should finish without retry, got %v", status, got)
+		}
+	}
+	for _, status := range []int{http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		err := activityFetchHTTPError{StatusCode: status, URL: "https://remote.example/statuses/1/replies"}
+		if got := activityFetchWorkerError(err); got == nil {
+			t.Errorf("status %d should remain retryable", status)
+		}
+	}
+	if got := activityFetchWorkerError(errors.New("network failure")); got == nil {
+		t.Fatal("network errors should remain retryable")
+	}
+}
+
+func TestRemoteFetchWorkersApplyRailsUnsalvageableResponsePolicy(t *testing.T) {
+	src, err := os.ReadFile("asynq_workers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range []string{
+		"handleAsynqFetchReplies",
+		"handleAsynqFeaturedCollectionSync",
+		"handleAsynqFeaturedTagsSync",
+		"handleAsynqFollowersSynchronization",
+	} {
+		if !strings.Contains(mustFunctionBody(t, string(src), fn), "activityFetchWorkerError(") {
+			t.Errorf("%s must discard Rails-unsalvageable HTTP responses", fn)
+		}
+	}
 }
 
 func TestAsynqTaskTypesAndQueueMatchRailsSidekiq(t *testing.T) {
