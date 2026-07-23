@@ -170,8 +170,10 @@ func TestPreviewCardImagePathUsesRailsCachePaperclipLayout(t *testing.T) {
 func TestStatusLifecycleStartsPreviewCardFetch(t *testing.T) {
 	files := map[string][]string{
 		"server.go": {
-			`s.fetchLinkCardForStatusAsync(created.ID)`,
 			`s.fetchLinkCardForStatusAsync(updated.ID)`,
+		},
+		"local_status_postcommit.go": {
+			`s.fetchLinkCardForStatusAsync(created.ID)`,
 		},
 		"scheduled_status_publish.go": {
 			`s.fetchLinkCardForStatusAsync(created.ID)`,

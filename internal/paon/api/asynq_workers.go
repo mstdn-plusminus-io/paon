@@ -1907,8 +1907,17 @@ func paonGoAsynqQueueWeights() map[string]int {
 
 func paonGoAsynqQueueWeightsForConfig(cfg config.Config) map[string]int {
 	weights := paonGoAsynqQueueWeights()
-	out := make(map[string]int, len(weights))
-	for queue, weight := range weights {
+	selected := weights
+	if len(cfg.AsynqQueues) > 0 {
+		selected = make(map[string]int, len(cfg.AsynqQueues))
+		for _, queue := range cfg.AsynqQueues {
+			if weight, ok := weights[queue]; ok {
+				selected[queue] = weight
+			}
+		}
+	}
+	out := make(map[string]int, len(selected))
+	for queue, weight := range selected {
 		out[asynqQueueName(cfg, queue)] = weight
 	}
 	return out

@@ -116,6 +116,7 @@ type Config struct {
 	RedisDB                             string
 	RedisNamespace                      string
 	SidekiqConcurrency                  int
+	AsynqQueues                         []string
 	StatsDAddr                          string
 	StatsDNamespace                     string
 	StatsDSidekiq                       bool
@@ -464,6 +465,7 @@ func FromEnv() Config {
 		RedisDB:                             envOrDefault("REDIS_DB", "0"),
 		RedisNamespace:                      redisNamespaceFromEnv(),
 		SidekiqConcurrency:                  asynqConcurrencyFromEnv(),
+		AsynqQueues:                         asynqQueuesFromEnv(),
 		StatsDAddr:                          os.Getenv("STATSD_ADDR"),
 		StatsDNamespace:                     envOrDefault("STATSD_NAMESPACE", "Mastodon."+railsEnvName()),
 		StatsDSidekiq:                       os.Getenv("STATSD_SIDEKIQ") == "true",
@@ -1205,6 +1207,18 @@ func (c Config) ValidateRuntime() error {
 	default:
 		problems = append(problems, fmt.Errorf("PAON_PROCESS_ROLE must be all, web, or worker, got %q", c.ProcessRole))
 	}
+	validAsynqQueues := map[string]struct{}{
+		"default": {},
+		"push":    {},
+		"ingress": {},
+		"mailers": {},
+		"pull":    {},
+	}
+	for _, queue := range c.AsynqQueues {
+		if _, ok := validAsynqQueues[queue]; !ok {
+			problems = append(problems, fmt.Errorf("ASYNQ_QUEUES contains unsupported queue %q; supported queues are default, push, ingress, mailers, pull", queue))
+		}
+	}
 	if c.ProcessRole != "worker" {
 		if strings.TrimSpace(c.ListenAddr) == "" {
 			problems = append(problems, errors.New("PAON_GO_ADDR/BIND/PORT must produce a listen address"))
@@ -1906,6 +1920,27 @@ func asynqConcurrencyFromEnv() int {
 		return railsIntFromEnv("ASYNQ_CONCURRENCY", 5)
 	}
 	return railsIntFromEnv("SIDEKIQ_CONCURRENCY", 5)
+}
+
+func asynqQueuesFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv("ASYNQ_QUEUES"))
+	if raw == "" {
+		return nil
+	}
+	queues := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, queue := range strings.Split(raw, ",") {
+		queue = strings.ToLower(strings.TrimSpace(queue))
+		if queue == "" {
+			continue
+		}
+		if _, ok := seen[queue]; ok {
+			continue
+		}
+		seen[queue] = struct{}{}
+		queues = append(queues, queue)
+	}
+	return queues
 }
 
 func railsFloatFromEnv(name string, fallback float64) float64 {

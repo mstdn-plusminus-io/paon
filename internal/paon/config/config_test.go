@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -140,6 +141,33 @@ func TestFromEnvPrefersAsynqConcurrencyOverLegacySidekiqConcurrency(t *testing.T
 	t.Setenv("ASYNQ_CONCURRENCY", "11")
 	if got := FromEnv().SidekiqConcurrency; got != 11 {
 		t.Fatalf("ASYNQ_CONCURRENCY override = %d, want 11", got)
+	}
+}
+
+func TestFromEnvParsesAsynqQueueSelection(t *testing.T) {
+	unsetEnvForTest(t, "ASYNQ_QUEUES")
+	if got := FromEnv().AsynqQueues; got != nil {
+		t.Fatalf("unset ASYNQ_QUEUES = %#v, want nil for all queues", got)
+	}
+
+	t.Setenv("ASYNQ_QUEUES", " push, pull, PUSH, ,mailers ")
+	want := []string{"push", "pull", "mailers"}
+	if got := FromEnv().AsynqQueues; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ASYNQ_QUEUES parsed as %#v, want %#v", got, want)
+	}
+
+	t.Setenv("ASYNQ_QUEUES", " ")
+	if got := FromEnv().AsynqQueues; got != nil {
+		t.Fatalf("empty ASYNQ_QUEUES = %#v, want nil for all queues", got)
+	}
+}
+
+func TestValidateRuntimeRejectsUnsupportedAsynqQueue(t *testing.T) {
+	cfg := FromEnv()
+	cfg.AsynqQueues = []string{"push", "unknown"}
+	err := cfg.ValidateRuntime()
+	if err == nil || !strings.Contains(err.Error(), `ASYNQ_QUEUES contains unsupported queue "unknown"`) {
+		t.Fatalf("ValidateRuntime error = %v", err)
 	}
 }
 

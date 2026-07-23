@@ -14,6 +14,16 @@ Paon is a Go 1.25 + labstack/echo/v5 drop-in replacement for this Mastodon fork.
 
 The web process serves HTML, REST, ActivityPub, SSE, and WebSocket traffic on the same listener. `PAON_GO_ADDR` is the explicit listen override; otherwise `SOCKET` or `BIND`/`PORT` is used. The default TCP port is `3000`.
 
+Worker processes subscribe to all Asynq queues by default. Set `ASYNQ_QUEUES`
+to a comma-separated subset of `default`, `push`, `ingress`, `mailers`, and
+`pull` to dedicate a process to specific queues. `REDIS_NAMESPACE` is applied
+automatically, so queue names remain logical:
+
+```bash
+PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=push ASYNQ_CONCURRENCY=20 paon
+PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=pull ASYNQ_CONCURRENCY=5 paon
+```
+
 When `STREAMING_API_BASE_URL` is unset, streaming uses `ws://LOCAL_DOMAIN` in development and `ws://` or `wss://WEB_DOMAIN` in production. A separate port 4000 process is neither required nor supported.
 
 ## Local development

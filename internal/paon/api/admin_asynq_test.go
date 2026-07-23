@@ -33,6 +33,9 @@ type fakeAsynqInspectorClient struct {
 	queueInfoCalls map[string]int
 	listCalls      map[string]int
 	listRequests   map[string][]fakeAsynqListRequest
+	runAllCounts   map[string]int
+	runAllErrs     map[string]error
+	runAllCalls    []fakeAsynqRunAllRequest
 	closeCalls     int
 }
 
@@ -45,6 +48,11 @@ type fakeAsynqTaskRequest struct {
 	Queue       string
 	TaskID      string
 	SourceState string
+}
+
+type fakeAsynqRunAllRequest struct {
+	State string
+	Queue string
 }
 
 type fakeAsynqTaskRetryer struct {
@@ -155,6 +163,20 @@ func (f *fakeAsynqInspectorClient) ListScheduledTasks(queue string, opts ...asyn
 
 func (f *fakeAsynqInspectorClient) ListArchivedTasks(queue string, opts ...asynq.ListOption) ([]*asynq.TaskInfo, error) {
 	return f.list("archived", queue, opts...)
+}
+
+func (f *fakeAsynqInspectorClient) runAll(state string, queue string) (int, error) {
+	f.runAllCalls = append(f.runAllCalls, fakeAsynqRunAllRequest{State: state, Queue: queue})
+	key := state + "\x00" + queue
+	return f.runAllCounts[key], f.runAllErrs[key]
+}
+
+func (f *fakeAsynqInspectorClient) RunAllRetryTasks(queue string) (int, error) {
+	return f.runAll("retry", queue)
+}
+
+func (f *fakeAsynqInspectorClient) RunAllArchivedTasks(queue string) (int, error) {
+	return f.runAll("archived", queue)
 }
 
 func (f *fakeAsynqTaskRetryer) RetryTask(_ context.Context, queue string, taskID string, sourceState string) error {
@@ -306,6 +328,65 @@ func TestCollectAsynqDashboardWithoutNamespaceIgnoresUnconfiguredQueues(t *testi
 	}
 }
 
+func TestCollectAsynqDashboardDoesNotReportSaturationWhenQueueHasNoActiveTasks(t *testing.T) {
+	pushQueue := "tenant:push"
+	pullQueue := "tenant:pull"
+	inspector := &fakeAsynqInspectorClient{
+		queueInfos: map[string]*asynq.QueueInfo{
+			pushQueue: {Queue: pushQueue, Pending: 26, Active: 0},
+			pullQueue: {Queue: pullQueue, Active: 1},
+		},
+		history: map[string][]*asynq.DailyStats{},
+		servers: []*asynq.ServerInfo{{
+			ID:          "shared-worker",
+			Status:      "active",
+			Concurrency: 1,
+			Queues:      map[string]int{pushQueue: 1, pullQueue: 1},
+			ActiveWorkers: []*asynq.WorkerInfo{{
+				TaskID: "pull-task",
+				Queue:  pullQueue,
+			}},
+		}},
+		tasks: map[string]map[string][]*asynq.TaskInfo{
+			"active": {
+				pullQueue: {{ID: "pull-task", Queue: pullQueue, State: asynq.TaskStateActive}},
+			},
+		},
+		listErr: map[string]error{},
+	}
+	server := &Server{cfg: config.Config{RedisNamespace: "tenant:"}, asynqInspector: inspector}
+
+	data, err := server.collectAsynqDashboard("ja")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := asynqIssueCodesForQueue(data.Snapshot.Issues, "push"); len(got) != 0 {
+		t.Fatalf("push issues = %#v, want no saturation issue while active is zero", got)
+	}
+}
+
+func TestAsynqAlertsHTMLShowsLogicalQueueAndEscapesIt(t *testing.T) {
+	html := asynqAlertsHTML([]asynqDashboardIssue{{
+		Severity: "critical",
+		Label:    "アーカイブ済みタスクを確認してください",
+		Detail:   "1件のタスクがアーカイブされています。",
+		Queue:    `push"><script>alert(1)</script>`,
+	}}, "ja")
+
+	for _, want := range []string{
+		`アーカイブ済みタスクを確認してください`,
+		`class="asynq-alert__queue">キュー: <code>push&#34;&gt;&lt;script&gt;alert(1)&lt;/script&gt;</code>`,
+		`1件のタスクがアーカイブされています。`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("alert HTML missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, "<script>") {
+		t.Fatalf("alert HTML contains executable queue name: %s", html)
+	}
+}
+
 func TestCollectAsynqDashboardPropagatesInspectorFailuresAndStatsUses503(t *testing.T) {
 	redisFailure := errors.New("dial redis://secret@redis.internal:6379: refused")
 	cases := []struct {
@@ -375,7 +456,7 @@ func TestAsynqTaskDetailsShowCompleteRawPayloadAndErrorWithHTMLEscaping(t *testi
 	}
 
 	rows := asynqTaskRowsHTML(&page, "en")
-	for _, want := range []string{"ADMIN-TOKEN", "ERROR-SECRET", "Raw payload", "&lt;/pre&gt;&lt;script&gt;alert(&#39;payload&#39;)&lt;/script&gt;", "&lt;/pre&gt;&lt;script&gt;alert(&#39;error&#39;)&lt;/script&gt;"} {
+	for _, want := range []string{"ADMIN-TOKEN", "ERROR-SECRET", `data-asynq-task-details-template`, "&lt;/pre&gt;&lt;script&gt;alert(&#39;payload&#39;)&lt;/script&gt;", "&lt;/pre&gt;&lt;script&gt;alert(&#39;error&#39;)&lt;/script&gt;"} {
 		if !strings.Contains(rows, want) {
 			t.Fatalf("task HTML missing %q", want)
 		}
@@ -384,6 +465,46 @@ func TestAsynqTaskDetailsShowCompleteRawPayloadAndErrorWithHTMLEscaping(t *testi
 		if strings.Contains(rows, unwanted) {
 			t.Fatalf("task HTML unexpectedly contains %q", unwanted)
 		}
+	}
+}
+
+func TestRunAllAsynqTasksNowUsesOfficialBulkOperationsWithinOwnedQueues(t *testing.T) {
+	inspector := &fakeAsynqInspectorClient{
+		queues: []string{"foreign:default", "tenant:push", "tenant:pull"},
+		runAllCounts: map[string]int{
+			"retry\x00tenant:pull": 7,
+			"retry\x00tenant:push": 5,
+		},
+		runAllErrs: map[string]error{},
+	}
+	server := &Server{cfg: config.Config{RedisNamespace: "tenant:"}, asynqInspector: inspector}
+
+	count, err := server.runAllAsynqTasksNow("retry", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 12 {
+		t.Fatalf("bulk retry count = %d, want 12", count)
+	}
+	wantCalls := []fakeAsynqRunAllRequest{
+		{State: "retry", Queue: "tenant:pull"},
+		{State: "retry", Queue: "tenant:push"},
+	}
+	if !reflect.DeepEqual(inspector.runAllCalls, wantCalls) {
+		t.Fatalf("bulk retry calls = %#v, want %#v", inspector.runAllCalls, wantCalls)
+	}
+
+	inspector.runAllCalls = nil
+	inspector.runAllCounts["archived\x00tenant:push"] = 3
+	count, err = server.runAllAsynqTasksNow("archived", "tenant:push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 || !reflect.DeepEqual(inspector.runAllCalls, []fakeAsynqRunAllRequest{{State: "archived", Queue: "tenant:push"}}) {
+		t.Fatalf("filtered archived retry count=%d calls=%#v", count, inspector.runAllCalls)
+	}
+	if _, err := server.runAllAsynqTasksNow("retry", "foreign:default"); !errors.Is(err, errUnknownAsynqQueue) {
+		t.Fatalf("foreign queue error = %v, want errUnknownAsynqQueue", err)
 	}
 }
 
@@ -568,15 +689,35 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 			t.Fatalf("%s task unexpectedly has a retry action: %s", state, rows)
 		}
 	}
-	if rows := asynqTaskRowsHTML(&asynqTaskPage{State: "retry"}, "en"); !strings.Contains(rows, `colspan="8"`) {
+	if rows := asynqTaskRowsHTML(&asynqTaskPage{State: "retry"}, "en"); !strings.Contains(rows, `colspan="7"`) {
 		t.Fatalf("empty retry rows have the wrong colspan: %s", rows)
 	}
-	if rows := asynqTaskRowsHTML(&asynqTaskPage{State: "pending"}, "en"); !strings.Contains(rows, `colspan="7"`) {
+	if rows := asynqTaskRowsHTML(&asynqTaskPage{State: "pending"}, "en"); !strings.Contains(rows, `colspan="6"`) {
 		t.Fatalf("empty pending rows have the wrong colspan: %s", rows)
 	}
-	retryPage := &asynqTaskPage{State: "retry", Page: 1, Tasks: []asynqTaskView{task}}
-	if pageHTML := asynqTasksHTML(asynqDashboardSnapshot{}, retryPage, "retry", "en"); !strings.Contains(pageHTML, `<th scope="col">Actions</th>`) {
-		t.Fatalf("retry page is missing the Actions header: %s", pageHTML)
+	retryPage := &asynqTaskPage{State: "retry", Page: 1, Total: 1, Tasks: []asynqTaskView{task}}
+	pageHTML := asynqTasksHTML(asynqDashboardSnapshot{Queues: []asynqQueueView{{Name: "tenant:pull", DisplayName: "pull"}}}, retryPage, "retry", "en")
+	for _, want := range []string{
+		`<th scope="col">Details</th>`,
+		`<th scope="col">Actions</th>`,
+		`action="/asynq/tasks/retry_all" method="post"`,
+		`name="source_state" value="retry"`,
+		`Retry all`,
+		`data-asynq-task-modal`,
+	} {
+		if !strings.Contains(pageHTML, want) {
+			t.Fatalf("retry page is missing %q: %s", want, pageHTML)
+		}
+	}
+	if strings.Contains(pageHTML, `<th scope="col">Last error</th>`) || strings.Contains(pageHTML, `<th scope="col">Payload</th>`) {
+		t.Fatalf("retry page retained wide error or payload columns: %s", pageHTML)
+	}
+	if !htmlNeedsBrowserCSRF(`<html><body>` + pageHTML + `</body></html>`) {
+		t.Fatalf("retry-all form was not detected as CSRF-protected: %s", pageHTML)
+	}
+	filterEnd := strings.Index(pageHTML, `</form><form action="/asynq/tasks/retry_all"`)
+	if filterEnd < 0 {
+		t.Fatalf("retry-all button is not rendered to the right of the filter: %s", pageHTML)
 	}
 }
 
@@ -638,6 +779,29 @@ func TestRetryAsynqTaskAuthorizedParsesActionAndRedirectsToListContext(t *testin
 	}
 }
 
+func TestRetryAllAsynqTasksAuthorizedPreservesFilterAndReportsCount(t *testing.T) {
+	inspector := &fakeAsynqInspectorClient{
+		runAllCounts: map[string]int{"archived\x00tenant:pull": 717},
+		runAllErrs:   map[string]error{},
+	}
+	server := &Server{cfg: config.Config{RedisNamespace: "tenant:"}, asynqInspector: inspector}
+	form := url.Values{"source_state": {"archived"}, "queue": {"tenant:pull"}}
+	request := httptest.NewRequest(http.MethodPost, "/asynq/tasks/retry_all", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+
+	if err := server.retryAllAsynqTasksAuthorized(echo.NewContext(request, recorder, echo.New()), "ja"); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	location := recorder.Header().Get("Location")
+	if !strings.HasPrefix(location, "/asynq/archived?") || !strings.Contains(location, "queue=tenant%3Apull") || !strings.Contains(location, "717") {
+		t.Fatalf("Location = %q", location)
+	}
+}
+
 func TestAsynqRetryMutationRequiresBrowserCSRFBeforeCallingRetryer(t *testing.T) {
 	server := newBrowserSecurityTestServer()
 	retryer := &fakeAsynqTaskRetryer{}
@@ -688,6 +852,56 @@ func TestAsynqRetryMutationRequiresBrowserCSRFBeforeCallingRetryer(t *testing.T)
 	}
 	if len(retryer.calls) != 1 {
 		t.Fatalf("valid CSRF retry calls = %#v", retryer.calls)
+	}
+}
+
+func TestAsynqRetryAllMutationRequiresBrowserCSRF(t *testing.T) {
+	server := newBrowserSecurityTestServer()
+	inspector := &fakeAsynqInspectorClient{
+		runAllCounts: map[string]int{"retry\x00default": 2},
+		runAllErrs:   map[string]error{},
+	}
+	server.asynqInspector = inspector
+	e := echo.New()
+	e.Use(server.browserSecurityMiddleware)
+	e.GET("/asynq/retry", func(c *echo.Context) error {
+		return c.HTML(http.StatusOK, `<html><body><form method="post" action="/asynq/tasks/retry_all"></form></body></html>`)
+	})
+	e.POST("/asynq/tasks/retry_all", func(c *echo.Context) error {
+		return server.retryAllAsynqTasksAuthorized(c, "en")
+	})
+
+	authCookie := &http.Cookie{Name: sessionCookieName, Value: "authenticated"}
+	getRequest := httptest.NewRequest(http.MethodGet, "/asynq/retry", nil)
+	getRequest.AddCookie(authCookie)
+	getRecorder := httptest.NewRecorder()
+	e.ServeHTTP(getRecorder, getRequest)
+	browserCookie := browserSessionCookieFromRecorder(t, getRecorder)
+	state, err := server.openBrowserSession(browserCookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{"source_state": {"retry"}, "queue": {"default"}}
+	missingRequest := httptest.NewRequest(http.MethodPost, "/asynq/tasks/retry_all", strings.NewReader(form.Encode()))
+	missingRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	missingRequest.AddCookie(authCookie)
+	missingRequest.AddCookie(browserCookie)
+	missingRecorder := httptest.NewRecorder()
+	e.ServeHTTP(missingRecorder, missingRequest)
+	if missingRecorder.Code != http.StatusUnprocessableEntity || len(inspector.runAllCalls) != 0 {
+		t.Fatalf("missing CSRF status=%d calls=%#v", missingRecorder.Code, inspector.runAllCalls)
+	}
+
+	form.Set("authenticity_token", state.CSRFToken)
+	validRequest := httptest.NewRequest(http.MethodPost, "/asynq/tasks/retry_all", strings.NewReader(form.Encode()))
+	validRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	validRequest.AddCookie(authCookie)
+	validRequest.AddCookie(browserCookie)
+	validRecorder := httptest.NewRecorder()
+	e.ServeHTTP(validRecorder, validRequest)
+	if validRecorder.Code != http.StatusSeeOther || !reflect.DeepEqual(inspector.runAllCalls, []fakeAsynqRunAllRequest{{State: "retry", Queue: "default"}}) {
+		t.Fatalf("valid CSRF status=%d calls=%#v", validRecorder.Code, inspector.runAllCalls)
 	}
 }
 

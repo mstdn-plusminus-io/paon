@@ -74,7 +74,7 @@ func TestStatusCreatePathsRecordTagTrendUse(t *testing.T) {
 		fn   string
 		want string
 	}{
-		{"server.go", "createStatus", "s.recordTagTrendUse(c.Request().Context(), account.ID, created.Visibility, indexedTagIDs, now)"},
+		{"local_status_postcommit.go", "runLocalStatusCreatePostCommit", "s.recordTagTrendUse(ctx, effects.Account.ID, created.Visibility, effects.IndexedTagIDs, effects.CreatedAt)"},
 		{"scheduled_status_publish.go", "publishScheduledStatus", "s.recordTagTrendUse(ctx, account.ID, created.Visibility, indexedTagIDs, now)"},
 		{"activitypub_inbox.go", "processActivityPubCreateNote", "s.recordTagTrendUse(context.Background(), actor.ID, status.Visibility, affectedTagIDs, status.CreatedAt)"},
 	}
@@ -95,7 +95,7 @@ func TestStatusTrendUsedIDsRecordedFromRailsStatusEvents(t *testing.T) {
 		fn   string
 		want string
 	}{
-		{"server.go", "createStatus", "s.recordStatusTrendUse(c.Request().Context(), created.ID, created.CreatedAt)"},
+		{"local_status_postcommit.go", "runLocalStatusCreatePostCommit", "s.recordStatusTrendUse(ctx, created.ID, created.CreatedAt)"},
 		{"server.go", "reblogStatus", "s.recordStatusTrendUse(c.Request().Context(), target.ID, createdStatus.CreatedAt)"},
 		{"server.go", "toggleStatusJoin", "s.recordStatusTrendUse(c.Request().Context(), status.ID, favourite.CreatedAt)"},
 		{"scheduled_status_publish.go", "publishScheduledStatus", "s.recordStatusTrendUse(ctx, created.ID, created.CreatedAt)"},

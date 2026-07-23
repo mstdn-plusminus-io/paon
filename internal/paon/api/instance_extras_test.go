@@ -470,14 +470,16 @@ func TestActivityTrackerWritesOnRailsActivityEvents(t *testing.T) {
 			`activityTrackerIncrementBasic(c.Request().Context(), "activity:interactions", now, 1)`,
 		},
 		"server.go": {
-			`if statusCountsTowardLocalActivity(created.Visibility) {`,
-			`activityTrackerIncrementBasic(c.Request().Context(), "activity:statuses:local", created.CreatedAt, 1)`,
-			`if created.InReplyToAccountID.Valid && created.InReplyToAccountID.Int64 != account.ID {`,
-			`activityTrackerIncrementBasic(c.Request().Context(), "activity:interactions", created.CreatedAt, 1)`,
 			`if statusCountsTowardLocalActivity(createdStatus.Visibility) {`,
 			`activityTrackerIncrementBasic(c.Request().Context(), "activity:statuses:local", createdStatus.CreatedAt, 1)`,
 			`activityTrackerIncrementBasic(c.Request().Context(), "activity:interactions", createdStatus.CreatedAt, 1)`,
 			`activityTrackerIncrementBasic(c.Request().Context(), "activity:interactions", favourite.CreatedAt, 1)`,
+		},
+		"local_status_postcommit.go": {
+			`if statusCountsTowardLocalActivity(created.Visibility) {`,
+			`activityTrackerIncrementBasic(ctx, "activity:statuses:local", created.CreatedAt, 1)`,
+			`if created.InReplyToAccountID.Valid && created.InReplyToAccountID.Int64 != effects.Account.ID {`,
+			`activityTrackerIncrementBasic(ctx, "activity:interactions", created.CreatedAt, 1)`,
 		},
 		"scheduled_status_publish.go": {
 			`if statusCountsTowardLocalActivity(created.Visibility) {`,

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -364,6 +365,18 @@ func TestAsynqQueueNamesUseRedisNamespaceForSharedRedisIsolation(t *testing.T) {
 	weights := paonGoAsynqQueueWeightsForConfig(cfg)
 	if weights["mastodon:pull"] != paonGoAsynqQueueWeights()[asynqQueuePull] || weights[asynqQueuePull] != 0 {
 		t.Fatalf("namespace queue weights = %#v", weights)
+	}
+
+	selected := paonGoAsynqQueueWeightsForConfig(config.Config{
+		RedisNamespace: "mastodon:",
+		AsynqQueues:    []string{"push", "pull"},
+	})
+	wantSelected := map[string]int{
+		"mastodon:push": paonGoAsynqQueueWeights()[asynqQueuePush],
+		"mastodon:pull": paonGoAsynqQueueWeights()[asynqQueuePull],
+	}
+	if !reflect.DeepEqual(selected, wantSelected) {
+		t.Fatalf("selected queue weights = %#v, want %#v", selected, wantSelected)
 	}
 }
 

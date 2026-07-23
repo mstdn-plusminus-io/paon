@@ -59,6 +59,9 @@ type Server struct {
 	ipBlockMu         sync.Mutex
 	noAccessIPBlocks  []models.IPBlock
 	noAccessIPCached  time.Time
+	postCommitMu      sync.Mutex
+	postCommitWG      sync.WaitGroup
+	postCommitClosed  bool
 }
 
 type oauthApplication struct {
@@ -269,6 +272,7 @@ func (s *Server) Close() error {
 	if s == nil {
 		return nil
 	}
+	s.closePostCommitWorkers(30 * time.Second)
 	var closeErrors []error
 	if s.asynqClient != nil {
 		closeErrors = append(closeErrors, s.asynqClient.Close())
@@ -2056,6 +2060,7 @@ func (s *Server) routes() {
 	e.GET("/asynq", s.sidekiqPage)
 	e.GET("/asynq/stats", s.sidekiqStats)
 	e.POST("/asynq/tasks/retry", s.retryAsynqTask)
+	e.POST("/asynq/tasks/retry_all", s.retryAllAsynqTasks)
 	e.GET("/asynq/*", s.sidekiqPage)
 	e.GET("/pghero", s.pgHeroPage)
 	e.GET("/pghero/*", s.pgHeroPage)
@@ -4871,42 +4876,32 @@ func (s *Server) createStatus(c *echo.Context) error {
 		return err
 	}
 
-	created := &status
-	if err := s.runLocalStatusAfterCreateCommitEffects(s.db, created, *account, nil, replyTo, func() {
-		if statusCountsTowardLocalActivity(created.Visibility) {
-			s.activityTrackerIncrementBasic(c.Request().Context(), "activity:statuses:local", created.CreatedAt, 1)
-		}
-	}); err != nil {
-		return err
-	}
-	created, err = s.findStatus(strconv.FormatInt(status.ID, 10))
+	created, err := s.findStatus(strconv.FormatInt(status.ID, 10))
 	if err != nil {
 		return err
 	}
-	createdNotificationIDs, err := s.enqueueOrCreateLocalNotifications(c.Request().Context(), notificationPayloads)
-	if err != nil {
-		return err
+	if statusCountsTowardAccountStats(created.Visibility) {
+		created.Account.AccountStat.StatusesCount++
+		created.Account.AccountStat.LastStatusAt = sql.NullTime{Time: created.CreatedAt, Valid: true}
 	}
-	notificationIDs = append(notificationIDs, createdNotificationIDs...)
-	s.schedulePollExpirationNotifyWorker(created.Poll)
-	s.meiliIndexStatusBestEffort(c.Request().Context(), created.ID)
-	s.meiliIndexTagsBestEffort(c.Request().Context(), indexedTagIDs)
-	s.recordStatusTrendUse(c.Request().Context(), created.ID, created.CreatedAt)
-	if created.InReplyToAccountID.Valid && created.InReplyToAccountID.Int64 != account.ID {
-		s.activityTrackerIncrementBasic(c.Request().Context(), "activity:interactions", created.CreatedAt, 1)
-		s.recordPotentialFriendship(c.Request().Context(), account.ID, created.InReplyToAccountID.Int64, "reply")
-	}
-	s.recordTagTrendUse(c.Request().Context(), account.ID, created.Visibility, indexedTagIDs, now)
-	s.rememberStatusIdempotency(c.Request().Context(), account.ID, idempotencyKey, created.ID)
-	s.putStatusQuoteBestEffort(c.Request().Context(), created.ID, quote)
 	s.applyStatusQuote(created, quote)
-	s.publishStatusUpdateEvent("update", *created)
-	s.publishConversationIDs(c.Request().Context(), conversationIDs)
-	s.publishNotificationIDs(notificationIDs)
-	_ = s.fanOutStatusToLocalRecipientsSkipNotifications(c.Request().Context(), s.db, *created)
-	s.fetchLinkCardForStatusAsync(created.ID)
-	_ = s.enqueueOrDeliverActivityPubDistribution(*created)
-	return c.JSON(http.StatusOK, statusWithFilterContext(s.cfg, *created, account, s.accountFilters(account), "public"))
+	response := statusWithFilterContext(s.cfg, *created, account, s.accountFilters(account), "public")
+	requestID, _ := c.Get("request_id").(string)
+	responseErr := c.JSON(http.StatusOK, response)
+	s.startLocalStatusCreatePostCommit(localStatusCreatePostCommit{
+		RequestID:            requestID,
+		Status:               *created,
+		Account:              *account,
+		ReplyTo:              replyTo,
+		Quote:                quote,
+		NotificationIDs:      notificationIDs,
+		NotificationPayloads: notificationPayloads,
+		ConversationIDs:      conversationIDs,
+		IndexedTagIDs:        indexedTagIDs,
+		IdempotencyKey:       idempotencyKey,
+		CreatedAt:            now,
+	})
+	return responseErr
 }
 
 func (s *Server) findQuoteStatusForAccount(account *models.Account, quoteID string) (*models.Status, error) {

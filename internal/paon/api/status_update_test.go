@@ -847,17 +847,6 @@ func TestCreateAndReblogStatusRunCallbacksAfterPersistenceTransaction(t *testing
 		forbidden   []string
 	}{
 		{
-			name:        "createStatus",
-			transaction: `s.db.Transaction(func(tx *gorm.DB) error {`,
-			effects:     `s.runLocalStatusAfterCreateCommitEffects(s.db, created, *account, nil, replyTo`,
-			find:        `s.findStatus(strconv.FormatInt(status.ID, 10))`,
-			forbidden: []string{
-				`s.storeLocalStatusURI(tx, &status, *account, now)`,
-				`incrementStatusStatCounter(tx, replyTo.ID, statusStatCounterReplies, 1)`,
-				`upsertAccountStatForStatus(tx, account.ID, status.Visibility, now)`,
-			},
-		},
-		{
 			name:        "reblogStatus",
 			transaction: `s.db.Transaction(func(tx *gorm.DB) error {`,
 			effects:     `s.runLocalStatusAfterCreateCommitEffects(s.db, createdStatus, *account, target, nil`,
@@ -884,13 +873,52 @@ func TestCreateAndReblogStatusRunCallbacksAfterPersistenceTransaction(t *testing
 	}
 
 	createBody := functionBody(t, src, "createStatus")
-	effectsIndex := strings.Index(createBody, `s.runLocalStatusAfterCreateCommitEffects(s.db, created, *account, nil, replyTo`)
-	rollbackIndex := strings.Index(createBody, `s.rollbackRailsFamilyRateLimit(c.Request().Context(), *account, railsRateLimitFamilyStatuses, now)`)
-	if rollbackIndex < 0 || effectsIndex < 0 || rollbackIndex > effectsIndex {
-		t.Fatal("createStatus must finish its transaction-failure rate-limit rollback branch before post-commit effects")
+	transactionIndex := strings.Index(createBody, `s.db.Transaction(func(tx *gorm.DB) error {`)
+	findIndex := strings.Index(createBody, `s.findStatus(strconv.FormatInt(status.ID, 10))`)
+	responseIndex := strings.Index(createBody, `response := statusWithFilterContext`)
+	jsonIndex := strings.Index(createBody, `responseErr := c.JSON(http.StatusOK, response)`)
+	postCommitIndex := strings.Index(createBody, `s.startLocalStatusCreatePostCommit(`)
+	returnIndex := strings.Index(createBody, `return responseErr`)
+	if transactionIndex < 0 || findIndex < 0 || responseIndex < 0 || jsonIndex < 0 || postCommitIndex < 0 || returnIndex < 0 ||
+		!(transactionIndex < findIndex && findIndex < responseIndex && responseIndex < jsonIndex && jsonIndex < postCommitIndex && postCommitIndex < returnIndex) {
+		t.Fatal("createStatus must commit, write its JSON response, and only then start detached post-commit work")
 	}
-	if strings.Contains(createBody[effectsIndex:], `rollbackRailsFamilyRateLimit`) {
-		t.Fatal("createStatus must not roll back the committed statuses-family rate-limit record after a post-commit effect failure")
+	for _, forbidden := range []string{
+		`s.runLocalStatusAfterCreateCommitEffects(`,
+		`s.enqueueOrCreateLocalNotifications(`,
+		`s.fanOutStatusToLocalRecipientsSkipNotifications(`,
+		`s.enqueueOrDeliverActivityPubDistribution(`,
+	} {
+		if strings.Contains(createBody, forbidden) {
+			t.Fatalf("createStatus still blocks its HTTP response on post-commit work: %q", forbidden)
+		}
+	}
+	rollbackIndex := strings.Index(createBody, `s.rollbackRailsFamilyRateLimit(c.Request().Context(), *account, railsRateLimitFamilyStatuses, now)`)
+	if rollbackIndex < 0 || rollbackIndex > findIndex {
+		t.Fatal("createStatus must finish its transaction-failure rate-limit rollback branch before response serialization")
+	}
+}
+
+func TestCreateStatusDetachedPostCommitRetainsRequiredEffects(t *testing.T) {
+	src, err := os.ReadFile("local_status_postcommit.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{
+		`s.runLocalStatusAfterCreateCommitEffects(`,
+		`s.enqueueOrCreateLocalNotifications(`,
+		`s.schedulePollExpirationNotifyWorker(`,
+		`s.meiliIndexStatusBestEffort(`,
+		`s.recordStatusTrendUse(`,
+		`s.rememberStatusIdempotency(`,
+		`s.publishStatusUpdateEvent(`,
+		`s.fanOutStatusToLocalRecipientsSkipNotifications(`,
+		`s.fetchLinkCardForStatusAsync(`,
+		`s.enqueueOrDeliverActivityPubDistribution(`,
+	} {
+		if !functionBodyContains(t, src, "runLocalStatusCreatePostCommit", fragment) {
+			t.Fatalf("detached create-status post-commit worker missing %q", fragment)
+		}
 	}
 }
 

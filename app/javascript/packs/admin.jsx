@@ -181,6 +181,38 @@ const convertLocalDatetimeToUTC = (value) => {
   return fullISO8601.slice(0, fullISO8601.indexOf('T') + 6);
 };
 
+const initializeAsynqTaskDetails = (dashboard) => {
+  const dialog = dashboard.querySelector('[data-asynq-task-modal]');
+  const content = dialog?.querySelector('[data-asynq-task-modal-content]');
+  if (!dialog || !content) return;
+
+  let trigger;
+  dashboard.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-asynq-task-details]');
+    if (!button || !dashboard.contains(button)) return;
+
+    const template = button.parentElement?.querySelector('[data-asynq-task-details-template]');
+    if (!template) return;
+
+    trigger = button;
+    content.replaceChildren(template.content.cloneNode(true));
+    if (typeof dialog.showModal === 'function') {
+      dialog.showModal();
+    } else {
+      dialog.setAttribute('open', '');
+    }
+  });
+
+  dialog.addEventListener('click', (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.addEventListener('close', () => {
+    content.replaceChildren();
+    trigger?.focus();
+    trigger = undefined;
+  });
+};
+
 const initializeAsynqPolling = (dashboard) => {
   try {
     const currentURL = new URL(window.location.href);
@@ -344,6 +376,16 @@ const initializeAsynqPolling = (dashboard) => {
       const label = document.createElement('strong');
       label.textContent = text(issue?.label || issue);
       alert.appendChild(label);
+
+      if (issue?.queue) {
+        const queue = document.createElement('span');
+        const queueLabel = dashboard.getAttribute('data-queue-label') || 'Queue';
+        const queueName = document.createElement('code');
+        queue.className = 'asynq-alert__queue';
+        queue.append(`${queueLabel}: `, queueName);
+        queueName.textContent = issue.queue;
+        alert.appendChild(queue);
+      }
 
       if (issue?.detail) {
         const detail = document.createElement('span');
@@ -681,7 +723,10 @@ ready(() => {
   const registrationMode = document.getElementById('form_admin_settings_registrations_mode');
   if (registrationMode) onChangeRegistrationMode(registrationMode);
 
-  document.querySelectorAll('[data-asynq-dashboard]').forEach(initializeAsynqPolling);
+  document.querySelectorAll('[data-asynq-dashboard]').forEach((dashboard) => {
+    initializeAsynqTaskDetails(dashboard);
+    initializeAsynqPolling(dashboard);
+  });
 
   const checkAllElement = document.querySelector('#batch_checkbox_all');
   if (checkAllElement) {

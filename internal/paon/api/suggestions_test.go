@@ -134,9 +134,11 @@ func TestPotentialFriendshipRemoveUsesRailsRedisShape(t *testing.T) {
 func TestPotentialFriendshipTrackerCalledFromRailsInteractionEvents(t *testing.T) {
 	checks := map[string][]string{
 		"server.go": {
-			`s.recordPotentialFriendship(c.Request().Context(), account.ID, created.InReplyToAccountID.Int64, "reply")`,
 			`s.recordPotentialFriendship(c.Request().Context(), account.ID, target.AccountID, "reblog")`,
 			`s.recordPotentialFriendship(c.Request().Context(), account.ID, joinStatus.AccountID, "favourite")`,
+		},
+		"local_status_postcommit.go": {
+			`s.recordPotentialFriendship(ctx, effects.Account.ID, created.InReplyToAccountID.Int64, "reply")`,
 		},
 		"scheduled_status_publish.go": {
 			`s.recordPotentialFriendship(ctx, account.ID, created.InReplyToAccountID.Int64, "reply")`,
