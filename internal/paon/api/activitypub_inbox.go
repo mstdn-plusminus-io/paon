@@ -5056,17 +5056,37 @@ func (s *Server) accountFromActivityURIWithDB(db *gorm.DB, uri string) (*models.
 		return &account, err
 	}
 	var account models.Account
-	lookupURI := uri
-	if before, _, ok := strings.Cut(lookupURI, "#"); ok {
-		lookupURI = before
-	}
-	err := db.Preload("AccountStat").
-		Where("uri IN ? OR url = ?", []string{uri, lookupURI}, uri).
-		First(&account).Error
+	lookupURI := activityPubLookupURI(uri)
+	err := findActivityPubAccountByURIOrURL(db, uri, lookupURI, &account)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
 	return &account, err
+}
+
+func findActivityPubAccountByURIOrURL(db *gorm.DB, uri string, lookupURI string, account *models.Account) error {
+	if db == nil || account == nil {
+		return gorm.ErrInvalidDB
+	}
+	candidates := uniqueStrings([]string{strings.TrimSpace(uri), strings.TrimSpace(lookupURI)})
+	if len(candidates) > 0 {
+		err := db.Preload("AccountStat").Where("uri IN ?", candidates).First(account).Error
+		if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	if strings.TrimSpace(lookupURI) == "" {
+		return gorm.ErrRecordNotFound
+	}
+	return db.Preload("AccountStat").Where("url = ?", lookupURI).First(account).Error
+}
+
+func activityPubLookupURI(uri string) string {
+	lookupURI := strings.TrimSpace(uri)
+	if before, _, ok := strings.Cut(lookupURI, "#"); ok {
+		return before
+	}
+	return lookupURI
 }
 
 func (s *Server) localInstanceActorActivityURI(uri string) bool {
@@ -5079,6 +5099,10 @@ func (s *Server) localInstanceActorActivityURI(uri string) bool {
 }
 
 func (s *Server) localStatusFromActivityURI(uri string) (*models.Status, error) {
+	return s.localStatusFromActivityURIWithContext(context.Background(), uri)
+}
+
+func (s *Server) localStatusFromActivityURIWithContext(ctx context.Context, uri string) (*models.Status, error) {
 	parsed, err := url.Parse(uri)
 	if err != nil || !s.localActivityHost(parsed.Host) {
 		return nil, nil
@@ -5088,7 +5112,8 @@ func (s *Server) localStatusFromActivityURI(uri string) (*models.Status, error) 
 		return nil, nil
 	}
 	var status models.Status
-	err = s.db.Preload("Account.AccountStat").
+	err = s.db.WithContext(ctx).
+		Preload("Account.AccountStat").
 		Preload("Reblog.Account.AccountStat").
 		Where("statuses.id = ? AND statuses.deleted_at IS NULL", parts[3]).
 		First(&status).Error
@@ -5102,19 +5127,21 @@ func (s *Server) localStatusFromActivityURI(uri string) (*models.Status, error) 
 }
 
 func (s *Server) statusFromActivityURI(uri string) (*models.Status, error) {
+	return s.statusFromActivityURIWithContext(context.Background(), uri)
+}
+
+func (s *Server) statusFromActivityURIWithContext(ctx context.Context, uri string) (*models.Status, error) {
 	if uri == "" {
 		return nil, nil
 	}
-	if status, err := s.localStatusFromActivityURI(uri); err != nil || status != nil {
+	if status, err := s.localStatusFromActivityURIWithContext(ctx, uri); err != nil || status != nil {
 		return status, err
 	}
 	var status models.Status
-	lookupURI := uri
-	if before, _, ok := strings.Cut(lookupURI, "#"); ok {
-		lookupURI = before
-	}
-	err := s.db.Preload("Account.AccountStat").
-		Where("deleted_at IS NULL AND (uri IN ? OR url = ?)", []string{uri, lookupURI}, uri).
+	lookupURI := activityPubLookupURI(uri)
+	err := s.db.WithContext(ctx).
+		Preload("Account.AccountStat").
+		Where("statuses.uri = ? AND statuses.deleted_at IS NULL", lookupURI).
 		First(&status).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil

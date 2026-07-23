@@ -334,7 +334,7 @@ func TestFetchRemoteStatusReturnsExpandedNoteURI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !functionBodyContains(t, src, "processFetchedRemoteStatusPayload", `return s.statusFromActivityURI(firstNonEmpty(note.ID, expectedURI))`) {
+	if !functionBodyContains(t, src, "processFetchedRemoteStatusPayloadWithContext", `return s.statusFromActivityURIWithContext(ctx, firstNonEmpty(note.ID, expectedURI))`) {
 		t.Fatal("fetched remote status processing must return the fetched Note URI, not the wrapping Create activity URI")
 	}
 }

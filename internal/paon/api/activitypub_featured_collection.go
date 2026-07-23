@@ -94,10 +94,13 @@ func (s *Server) syncRemoteStatusPinsFromActivityCollectionWithContext(ctx conte
 		return err
 	}
 	for _, uri := range uris {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if s.localActivityURI(uri) {
 			continue
 		}
-		status, err := s.statusFromActivityURI(uri)
+		status, err := s.statusFromActivityURIWithContext(ctx, uri)
 		if err != nil {
 			return err
 		}
@@ -112,7 +115,7 @@ func (s *Server) syncRemoteStatusPinsFromActivityCollectionWithContext(ctx conte
 		}
 		statusIDs = append(statusIDs, status.ID)
 	}
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := setActivityPubTransactionLockTimeout(tx); err != nil {
 			return err
 		}

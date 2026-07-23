@@ -105,7 +105,7 @@ func (s *Server) fetchRemoteStatusFromActivityURIForRequestWithSignerAndContext(
 	if payload.Type == "Announce" {
 		return s.fetchRemoteAnnounceStatus(uri, payload, expectedActorURI, requestID)
 	}
-	return s.processFetchedRemoteStatusPayload(uri, payload, expectedActorURI, requestID)
+	return s.processFetchedRemoteStatusPayloadWithContext(ctx, uri, payload, expectedActorURI, requestID)
 }
 
 func (s *Server) fetchRemoteStatusFromResolvableURL(uri string, current ...*models.Account) (*models.Status, error) {
@@ -159,6 +159,10 @@ func (s *Server) visibleResolvedStatus(account *models.Account, status *models.S
 }
 
 func (s *Server) processFetchedRemoteStatusPayload(uri string, payload activityPayload, expectedActorURI string, requestID string) (*models.Status, error) {
+	return s.processFetchedRemoteStatusPayloadWithContext(context.Background(), uri, payload, expectedActorURI, requestID)
+}
+
+func (s *Server) processFetchedRemoteStatusPayloadWithContext(ctx context.Context, uri string, payload activityPayload, expectedActorURI string, requestID string) (*models.Status, error) {
 	expectedURI := activityPubFetchExpectedID(uri)
 	note := payload.Object
 	actorURI := activityPayloadFetchActorURI(payload)
@@ -195,12 +199,12 @@ func (s *Server) processFetchedRemoteStatusPayload(uri string, payload activityP
 		if err := s.processFetchedActivityPubReferencedStatusForRequest(payload, actor, requestID); err != nil {
 			return nil, err
 		}
-		return s.statusFromActivityURI(objectURI)
+		return s.statusFromActivityURIWithContext(ctx, objectURI)
 	}
 	if err := s.processFetchedActivityPubStatusForRequest(payload, actor, requestID); err != nil {
 		return nil, err
 	}
-	return s.statusFromActivityURI(firstNonEmpty(note.ID, expectedURI))
+	return s.statusFromActivityURIWithContext(ctx, firstNonEmpty(note.ID, expectedURI))
 }
 
 func activityPubFetchExpectedID(uri string) string {
@@ -1061,7 +1065,7 @@ func (s *Server) activityActorForURIForRequest(actorURI string, requestID string
 		actorLookupURI = before
 	}
 	var account models.Account
-	err := s.db.Preload("AccountStat").Where("uri IN ? OR url = ?", []string{actorURI, actorLookupURI}, actorLookupURI).First(&account).Error
+	err := findActivityPubAccountByURIOrURL(s.db, actorURI, actorLookupURI, &account)
 	if err == nil {
 		if strings.TrimSpace(requestID) != "" && remoteActivityActorPossiblyStale(account, time.Now().UTC()) {
 			actor, fetchErr := s.fetchActivityActor(actorLookupURI)
