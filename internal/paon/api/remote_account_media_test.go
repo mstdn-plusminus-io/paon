@@ -95,6 +95,7 @@ func TestHandleAsynqRedownloadAccountMediaIsPerMedia(t *testing.T) {
 		`asynqTaskRedownloadAvatar`,
 		`asynqTaskRedownloadHeader`,
 		`s.downloadAndStoreRemoteAccountImage(ctx, account.ID, kind, remoteURL)`,
+		`remoteMediaErrorUnsalvageable(err)`,
 	} {
 		if !functionBodyContains(t, src, "handleAsynqRedownloadAccountMedia", want) {
 			t.Fatalf("handleAsynqRedownloadAccountMedia missing %q", want)

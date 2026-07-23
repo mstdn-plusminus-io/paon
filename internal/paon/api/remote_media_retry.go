@@ -132,15 +132,20 @@ func (s *Server) redownloadRemoteMediaAttachment(ctx context.Context, mediaAttac
 		return nil
 	}
 	_, err := s.cacheRemoteMediaAttachmentConfiguredResult(s.db.WithContext(ctx), &media, time.Now().UTC())
-	if remoteMediaHTTPErrorUnsalvageable(err) {
+	if remoteMediaErrorUnsalvageable(err) {
 		return nil
 	}
 	return err
 }
 
-func remoteMediaHTTPErrorUnsalvageable(err error) bool {
-	status, ok := activityFetchStatus(err)
-	return ok && activityPubDeliveryResponseErrorUnsalvageable(status)
+func remoteMediaErrorUnsalvageable(err error) bool {
+	return activityFetchUnsalvageable(err) ||
+		errors.Is(err, errRemoteMediaURLInvalid) ||
+		errors.Is(err, errRemoteMediaHostNotAllowed) ||
+		errors.Is(err, errRemoteMediaSizeInvalid) ||
+		errors.Is(err, errRemoteMediaContentTypeUnsupported) ||
+		errors.Is(err, errRemoteMediaNotImage) ||
+		errors.Is(err, errRemoteMediaUnreadable)
 }
 
 func remoteMediaRedownloadDelay() time.Duration {

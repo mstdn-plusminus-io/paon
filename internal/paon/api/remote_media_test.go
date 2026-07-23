@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"image"
 	"io"
 	"net/http"
@@ -58,8 +60,8 @@ func TestFetchRemoteImageMediaUsesActivityHTTPClientAndLimitsSize(t *testing.T) 
 	if download.filename != "photo.png" || download.contentType != "image/png" || len(download.body) != len(body) {
 		t.Fatalf("download = %#v body=%d", download, len(download.body))
 	}
-	if _, err := fetchRemoteImageMedia(context.Background(), "https://remote.example/media/photo", len(body)-1); err == nil {
-		t.Fatal("expected oversized remote media to be rejected")
+	if _, err := fetchRemoteImageMedia(context.Background(), "https://remote.example/media/photo", len(body)-1); !errors.Is(err, errRemoteMediaSizeInvalid) {
+		t.Fatalf("oversized remote media error = %v", err)
 	}
 }
 
@@ -121,15 +123,36 @@ func TestFetchRemoteMediaPreservesHTTPStatusForRailsUnsalvageableRetry(t *testin
 	if status, ok := activityFetchStatus(err); !ok || status != http.StatusNotFound {
 		t.Fatalf("404 fetch status = %d, %v; err=%v", status, ok, err)
 	}
-	if !remoteMediaHTTPErrorUnsalvageable(err) {
+	if !remoteMediaErrorUnsalvageable(err) {
 		t.Fatal("404 remote media fetch should be consumed like Rails response_error_unsalvageable?")
 	}
 	_, err = fetchRemoteMedia(context.Background(), "https://remote.example/media/rate-limited.png", 1024, 0)
 	if status, ok := activityFetchStatus(err); !ok || status != http.StatusTooManyRequests {
 		t.Fatalf("429 fetch status = %d, %v; err=%v", status, ok, err)
 	}
-	if remoteMediaHTTPErrorUnsalvageable(err) {
+	if remoteMediaErrorUnsalvageable(err) {
 		t.Fatal("429 remote media fetch must remain retryable like Rails response_error_unsalvageable?")
+	}
+}
+
+func TestRemoteMediaValidationErrorsAreUnsalvageableLikeRailsRemotable(t *testing.T) {
+	for _, err := range []error{
+		errRemoteMediaURLInvalid,
+		errRemoteMediaHostNotAllowed,
+		errRemoteMediaSizeInvalid,
+		errRemoteMediaContentTypeUnsupported,
+		errRemoteMediaNotImage,
+		errRemoteMediaUnreadable,
+		fmt.Errorf("wrapped: %w", errRemoteMediaSizeInvalid),
+	} {
+		if !remoteMediaErrorUnsalvageable(err) {
+			t.Errorf("%v should not be retried", err)
+		}
+	}
+	for _, err := range []error{context.DeadlineExceeded, errors.New("storage failure")} {
+		if remoteMediaErrorUnsalvageable(err) {
+			t.Errorf("%v must remain retryable", err)
+		}
 	}
 }
 

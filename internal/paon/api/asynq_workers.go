@@ -2055,7 +2055,7 @@ func (s *Server) handleAsynqRedownloadAccountMedia(ctx context.Context, t *asynq
 		remoteURL = strings.TrimSpace(account.AvatarRemoteURL.String)
 	}
 	if err := s.downloadAndStoreRemoteAccountImage(ctx, account.ID, kind, remoteURL); err != nil {
-		if remoteMediaHTTPErrorUnsalvageable(err) {
+		if remoteMediaErrorUnsalvageable(err) {
 			return nil
 		}
 		return fmt.Errorf("redownload account %s: %w", kind, err)
