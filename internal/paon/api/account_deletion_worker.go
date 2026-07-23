@@ -93,6 +93,7 @@ func (s *Server) purgeAccountDeletionRequestWithOptions(ctx context.Context, acc
 	disabledUser := false
 	destroyedUser := false
 	fileCleanup := accountDeletionFileCleanup{}
+	var statusDeleteBroadcasts []batchedAccountDeletionStatusDelete
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		accountIDs := adminSingleAccountIDSubquery(tx, accountID)
 		destroyRows, err := accountDeletionShouldDestroyRows(tx, accountID)
@@ -100,6 +101,11 @@ func (s *Server) purgeAccountDeletionRequestWithOptions(ctx context.Context, acc
 			return err
 		}
 		reportedStatusIDs, err := accountDeletionReportedStatusIDs(tx, accountID)
+		if err != nil {
+			return err
+		}
+		statusIDs, reblogIDs := accountDeletionStatusIDQueries(tx, accountIDs, reportedStatusIDs)
+		statusDeleteBroadcasts, err = s.prepareBatchedAccountDeletionStatusDeletes(ctx, tx, now, statusIDs, reblogIDs)
 		if err != nil {
 			return err
 		}
@@ -164,6 +170,9 @@ func (s *Server) purgeAccountDeletionRequestWithOptions(ctx context.Context, acc
 		return err
 	}
 	fileCleanup.run(s)
+	publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	s.publishPreparedBatchedAccountDeletionStatusDeletes(publishCtx, statusDeleteBroadcasts)
 	if disabledUser || destroyedUser {
 		s.publishStreamingKill(accountID, nil)
 	}
@@ -549,15 +558,7 @@ WHERE status_stats.status_id = favourite_counts.status_id
 }
 
 func (s *Server) tombstoneAccountDeletionStatuses(database *gorm.DB, accountIDs *gorm.DB, reportedStatusIDs []int64, now time.Time) error {
-	statusIDs := database.Model(&models.Status{}).
-		Select("id").
-		Where("account_id IN (?)", accountIDs)
-	if len(reportedStatusIDs) > 0 {
-		statusIDs = statusIDs.Where("id NOT IN ?", reportedStatusIDs)
-	}
-	reblogIDs := database.Model(&models.Status{}).
-		Select("id").
-		Where("reblog_of_id IN (?)", statusIDs)
+	statusIDs, reblogIDs := accountDeletionStatusIDQueries(database, accountIDs, reportedStatusIDs)
 	if err := unlinkDirectStatusesFromConversationsForQuery(context.Background(), database, statusIDs, now); err != nil {
 		return err
 	}
@@ -569,16 +570,20 @@ func (s *Server) tombstoneAccountDeletionStatuses(database *gorm.DB, accountIDs 
 	if err := database.Exec("DELETE FROM status_pins WHERE status_id IN (?) OR status_id IN (?)", statusIDs, reblogIDs).Error; err != nil {
 		return err
 	}
-	if err := recalculateStatusCounters(database, now); err != nil {
-		return err
+	return recalculateStatusCounters(database, now)
+}
+
+func accountDeletionStatusIDQueries(database *gorm.DB, accountIDs *gorm.DB, reportedStatusIDs []int64) (*gorm.DB, *gorm.DB) {
+	statusIDs := database.Model(&models.Status{}).
+		Select("id").
+		Where("account_id IN (?)", accountIDs)
+	if len(reportedStatusIDs) > 0 {
+		statusIDs = statusIDs.Where("id NOT IN ?", reportedStatusIDs)
 	}
-	if s != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		s.publishBatchedAccountDeletionStatusDeletesForQuery(ctx, database, statusIDs, now)
-		s.publishBatchedAccountDeletionStatusDeletesForQuery(ctx, database, reblogIDs, now)
-	}
-	return nil
+	reblogIDs := database.Model(&models.Status{}).
+		Select("id").
+		Where("reblog_of_id IN (?)", statusIDs)
+	return statusIDs, reblogIDs
 }
 
 func unlinkDirectStatusesFromConversationsForQuery(ctx context.Context, database *gorm.DB, statusIDs *gorm.DB, now time.Time) error {

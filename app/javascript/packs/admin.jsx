@@ -181,12 +181,56 @@ const convertLocalDatetimeToUTC = (value) => {
   return fullISO8601.slice(0, fullISO8601.indexOf('T') + 6);
 };
 
+const markdownCodeBlock = (value, language) => {
+  let longestBacktickRun = 0;
+  for (const match of value.matchAll(/`+/g)) longestBacktickRun = Math.max(longestBacktickRun, match[0].length);
+  const fence = '`'.repeat(Math.max(3, longestBacktickRun + 1));
+  return `${fence}${language}\n${value}\n${fence}`;
+};
+
+const asynqTaskDetailsMarkdown = (dialog, content) => {
+  const title = dialog.querySelector('#asynq-task-modal-title')?.textContent.trim() || 'Task details';
+  const metadata = Array.from(content.querySelectorAll('[data-asynq-task-copy-metadata]'), (field) => {
+    const label = field.querySelector('dt')?.textContent.trim() || '';
+    const value = field.querySelector('dd')?.textContent.trim() || '';
+    return `- **${label}:** ${value}`;
+  });
+  const sections = Array.from(content.querySelectorAll('[data-asynq-task-copy-section]'), (section) => {
+    const label = section.querySelector('[data-asynq-task-copy-label]')?.textContent.trim() || '';
+    const value = section.querySelector('pre')?.textContent || '';
+    const language = section.getAttribute('data-asynq-task-copy-language') || 'text';
+    return `## ${label}\n\n${markdownCodeBlock(value, language)}`;
+  });
+  return [`# ${title}`, metadata.join('\n'), ...sections].join('\n\n');
+};
+
+const copyText = async (value) => {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  try {
+    textarea.select();
+    if (!document.execCommand('copy')) throw new Error('Unable to copy text');
+  } finally {
+    textarea.remove();
+  }
+};
+
 const initializeAsynqTaskDetails = (dashboard) => {
   const dialog = dashboard.querySelector('[data-asynq-task-modal]');
   const content = dialog?.querySelector('[data-asynq-task-modal-content]');
-  if (!dialog || !content) return;
+  const copyButton = dialog?.querySelector('[data-asynq-task-copy]');
+  if (!dialog || !content || !copyButton) return;
 
   let trigger;
+  let copiedTimeout;
   dashboard.addEventListener('click', (event) => {
     const button = event.target.closest('[data-asynq-task-details]');
     if (!button || !dashboard.contains(button)) return;
@@ -203,13 +247,32 @@ const initializeAsynqTaskDetails = (dashboard) => {
     }
   });
 
+  copyButton.addEventListener('click', async () => {
+    try {
+      await copyText(asynqTaskDetailsMarkdown(dialog, content));
+      window.clearTimeout(copiedTimeout);
+      copyButton.classList.add('copied');
+      copyButton.querySelector('span').textContent = copyButton.getAttribute('data-copied-label');
+      copiedTimeout = window.setTimeout(() => {
+        copyButton.classList.remove('copied');
+        copyButton.querySelector('span').textContent = copyButton.getAttribute('data-copy-label');
+      }, 1500);
+    } catch (error) {
+      console.error('Unable to copy Asynq task details', error);
+    }
+  });
+
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) dialog.close();
   });
   dialog.addEventListener('close', () => {
+    window.clearTimeout(copiedTimeout);
+    copyButton.classList.remove('copied');
+    copyButton.querySelector('span').textContent = copyButton.getAttribute('data-copy-label');
     content.replaceChildren();
     trigger?.focus();
     trigger = undefined;
+    dashboard.dispatchEvent(new CustomEvent('asynq:task-modal-closed'));
   });
 };
 
@@ -254,6 +317,7 @@ const initializeAsynqPolling = (dashboard) => {
   let timeout;
   let latestHistory = [];
   let latestTimestamp;
+  let reloadPending = false;
 
   try {
     enabledInput.checked = localStorage.getItem(enabledStorageKey) !== 'false';
@@ -652,6 +716,12 @@ const initializeAsynqPolling = (dashboard) => {
 
   const poll = async () => {
     if (reloadOnPoll) {
+      const taskModal = dashboard.querySelector('[data-asynq-task-modal]');
+      if (taskModal?.open) {
+        reloadPending = true;
+        schedule();
+        return;
+      }
       window.location.reload();
       return;
     }
@@ -674,6 +744,10 @@ const initializeAsynqPolling = (dashboard) => {
     }
   };
 
+  dashboard.addEventListener('asynq:task-modal-closed', () => {
+    if (reloadOnPoll && reloadPending && enabledInput.checked) window.location.reload();
+  });
+
   enabledInput.addEventListener('change', () => {
     try {
       localStorage.setItem(enabledStorageKey, enabledInput.checked.toString());
@@ -683,6 +757,7 @@ const initializeAsynqPolling = (dashboard) => {
     if (enabledInput.checked) {
       if (reloadOnPoll) schedule(); else void poll();
     } else {
+      reloadPending = false;
       window.clearTimeout(timeout);
     }
   });

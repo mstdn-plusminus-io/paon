@@ -653,7 +653,7 @@ func TestNewRedisAsynqTaskRetryerUsesSidekiqRedisConnection(t *testing.T) {
 }
 
 func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
-	task := asynqTaskView{ID: `task"><script>alert(1)</script>`, Queue: "tenant:pull", DisplayQueue: "pull", Type: "delivery"}
+	task := asynqTaskView{ID: `task"><script>alert(1)</script>`, Queue: "tenant:pull", Type: "delivery"}
 	for _, state := range []string{"retry", "archived"} {
 		page := &asynqTaskPage{State: state, Queue: "tenant:pull", Page: 3, Tasks: []asynqTaskView{task}}
 		rows := asynqTaskRowsHTML(page, "ja")
@@ -666,6 +666,8 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 			`今すぐ再試行`,
 			`再試行回数はリセットされません`,
 			`task&#34;&gt;&lt;script&gt;alert(1)&lt;/script&gt;`,
+			`data-asynq-task-copy-metadata`,
+			`data-asynq-task-copy-section`,
 		} {
 			if !strings.Contains(rows, want) {
 				t.Fatalf("%s task rows missing %q: %s", state, want, rows)
@@ -673,6 +675,12 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 		}
 		if strings.Contains(rows, `<script>`) {
 			t.Fatalf("%s task rows contain executable task ID: %s", state, rows)
+		}
+		if strings.Contains(rows, `<small>`+state+`</small>`) {
+			t.Fatalf("%s task rows redundantly display the page state in the task cell: %s", state, rows)
+		}
+		if !strings.Contains(rows, `<td><strong>tenant:pull</strong></td>`) || strings.Contains(rows, `<strong>pull</strong><code>tenant:pull</code>`) {
+			t.Fatalf("%s task rows do not show only the actual queue name: %s", state, rows)
 		}
 		if !htmlNeedsBrowserCSRF(`<html><body>` + rows + `</body></html>`) {
 			t.Fatalf("%s retry form was not detected as CSRF-protected", state)
@@ -687,6 +695,9 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 		rows := asynqTaskRowsHTML(&asynqTaskPage{State: state, Page: 1, Tasks: []asynqTaskView{task}}, "en")
 		if strings.Contains(rows, `/asynq/tasks/retry`) || strings.Contains(rows, `Retry now`) {
 			t.Fatalf("%s task unexpectedly has a retry action: %s", state, rows)
+		}
+		if strings.Contains(rows, `<small>`+state+`</small>`) {
+			t.Fatalf("%s task rows redundantly display the page state in the task cell: %s", state, rows)
 		}
 	}
 	if rows := asynqTaskRowsHTML(&asynqTaskPage{State: "retry"}, "en"); !strings.Contains(rows, `colspan="7"`) {
@@ -704,10 +715,21 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 		`name="source_state" value="retry"`,
 		`Retry all`,
 		`data-asynq-task-modal`,
+		`data-asynq-task-copy`,
+		`Copy as Markdown`,
 	} {
 		if !strings.Contains(pageHTML, want) {
 			t.Fatalf("retry page is missing %q: %s", want, pageHTML)
 		}
+	}
+	if strings.Contains(pageHTML, `class="icon-button"`) || strings.Contains(pageHTML, `fa-times`) {
+		t.Fatalf("task details modal retained the duplicate icon close button: %s", pageHTML)
+	}
+	if modal := asynqTaskDetailsModalHTML("ja"); !strings.Contains(modal, `Markdownとしてコピー`) || !strings.Contains(modal, `コピーしました`) {
+		t.Fatalf("task details modal copy labels are not localized: %s", modal)
+	}
+	if details := asynqTaskDetailsHTML(task, "en"); !strings.Contains(details, `<dd><code>tenant:pull</code></dd>`) {
+		t.Fatalf("task details do not use the actual queue name: %s", details)
 	}
 	if strings.Contains(pageHTML, `<th scope="col">Last error</th>`) || strings.Contains(pageHTML, `<th scope="col">Payload</th>`) {
 		t.Fatalf("retry page retained wide error or payload columns: %s", pageHTML)
@@ -1057,7 +1079,7 @@ func TestAsynqTaskPageSupportsEveryReadOnlyStateAndRejectsUnknownQueue(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if page.Queue != "tenant:custom" || len(page.Tasks) != 1 || page.Tasks[0].ID != state+"-task" || page.Tasks[0].State != state {
+			if page.State != state || page.Queue != "tenant:custom" || len(page.Tasks) != 1 || page.Tasks[0].ID != state+"-task" {
 				t.Fatalf("%s page = %#v", state, page)
 			}
 			if inspector.listCalls[state+"\x00tenant:custom"] != 1 {

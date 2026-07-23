@@ -24,6 +24,10 @@ import { decodeAme } from 'mastodon/utils/kaiwai';
 import { komifloLinkify } from 'mastodon/utils/komiflo';
 import { decodeMorse } from 'mastodon/utils/morse';
 
+import { getStatusContent } from './status_content_helper';
+
+export { getStatusContent } from './status_content_helper';
+
 const codeFanceRegex = /<p>```(.*?)<br\/?>(.*?)```<\/p>/g;
 const lineBreakRegex = /<br\/?>/g;
 const languageRegex = /language-(\w+)/;
@@ -32,15 +36,6 @@ const hashTagRegex = /\/tags\/(.*)$/;
 const mentionRegex = /\/@(.*)$/;
 
 const MAX_HEIGHT = 706; // 22px * 32 (+ 2px padding at the top)
-
-/**
- *
- * @param {any} status
- * @returns {string}
- */
-export function getStatusContent(status) {
-  return status.getIn(['translation', 'contentHtml']) || status.get('contentHtml');
-}
 
 const turndownService = new TurndownService({
   codeBlockStyle: 'fenced',

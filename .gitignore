@@ -10,6 +10,7 @@
 !/log/.keep
 /tmp
 /coverage
+/coverage.out
 /public/system
 /public/assets
 /public/packs

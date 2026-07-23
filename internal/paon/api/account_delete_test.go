@@ -120,6 +120,27 @@ func TestAccountDeletionDelayMatchesRails(t *testing.T) {
 	}
 }
 
+func TestAccountDeletionPublishesPreparedStatusDeletesAfterCommit(t *testing.T) {
+	src, err := os.ReadFile("account_deletion_worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`s.prepareBatchedAccountDeletionStatusDeletes(ctx, tx, now, statusIDs, reblogIDs)`,
+		`s.publishPreparedBatchedAccountDeletionStatusDeletes(publishCtx, statusDeleteBroadcasts)`,
+	} {
+		if !functionBodyContains(t, src, "purgeAccountDeletionRequestWithOptions", want) {
+			t.Fatalf("purgeAccountDeletionRequestWithOptions missing %q", want)
+		}
+	}
+	if functionBodyContains(t, src, "tombstoneAccountDeletionStatuses", `context.WithTimeout`) {
+		t.Fatal("tombstoneAccountDeletionStatuses must not cancel database work on its transaction connection")
+	}
+	if functionBodyContains(t, src, "tombstoneAccountDeletionStatuses", `publishBatchedAccountDeletionStatusDeletesForQuery`) {
+		t.Fatal("tombstoneAccountDeletionStatuses must not publish Redis events inside the database transaction")
+	}
+}
+
 func TestRejectedLocalAccountDeletionDestroysRowsLikeRailsReject(t *testing.T) {
 	src, err := os.ReadFile("account_deletion_worker.go")
 	if err != nil {

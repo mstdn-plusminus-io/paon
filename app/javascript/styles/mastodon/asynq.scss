@@ -340,6 +340,13 @@
   min-width: 720px !important;
 }
 
+.asynq-dashboard .pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
 .asynq-task-modal {
   width: min(780px, calc(100vw - 32px));
   max-width: none;
@@ -378,27 +385,6 @@
       margin: 0;
       font-size: 18px;
       line-height: 24px;
-    }
-
-    form {
-      margin: 0;
-    }
-
-    .icon-button {
-      display: grid;
-      width: 32px;
-      height: 32px;
-      padding: 0;
-      border: 0;
-      background: transparent;
-      color: $secondary-text-color;
-      cursor: pointer;
-      place-items: center;
-
-      &:hover,
-      &:focus-visible {
-        color: $primary-text-color;
-      }
     }
   }
 
@@ -462,7 +448,7 @@
   }
 
   &__footer {
-    justify-content: flex-end;
+    justify-content: space-between;
     border-top: 1px solid lighten($ui-base-color, 8%);
 
     form {

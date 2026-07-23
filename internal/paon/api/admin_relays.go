@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -270,7 +271,7 @@ func (s *Server) representativeActivityPubAccount() (*models.Account, error) {
 			return nil, keyErr
 		}
 		now := time.Now().UTC()
-		if err := s.db.Model(&models.Account{}).Create(map[string]any{
+		if err := s.db.Model(&models.Account{}).Clauses(clause.OnConflict{DoNothing: true}).Create(map[string]any{
 			"id":          int64(-99),
 			"username":    instanceActorUsername,
 			"actor_type":  sql.NullString{String: "Application", Valid: true},
@@ -320,13 +321,11 @@ func (s *Server) representativeActivityPubAccount() (*models.Account, error) {
 
 func (s *Server) ensureRepresentativeAccountStat(accountID int64) error {
 	now := time.Now().UTC()
-	stat := models.AccountStat{}
-	return s.db.Where("account_id = ?", accountID).FirstOrCreate(&stat, models.AccountStat{
-		AccountID:     accountID,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		StatusesCount: 0,
-	}).Error
+	return s.db.Exec(`
+		INSERT INTO account_stats (account_id, statuses_count, following_count, followers_count, created_at, updated_at)
+		VALUES (?, 0, 0, 0, ?, ?)
+		ON CONFLICT (account_id) DO NOTHING
+	`, accountID, now, now).Error
 }
 
 func adminRelaysIndexHTML(relays []models.Relay, notice string, errorText string, authorizedFetch bool, locale ...string) string {

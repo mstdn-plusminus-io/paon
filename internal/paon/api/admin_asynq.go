@@ -181,9 +181,7 @@ type asynqDashboardData struct {
 type asynqTaskView struct {
 	ID            string
 	Queue         string
-	DisplayQueue  string
 	Type          string
-	State         string
 	Retried       int
 	MaxRetry      int
 	LastError     string
@@ -888,9 +886,7 @@ func (s *Server) asynqTaskPage(data *asynqDashboardData, state string, queueFilt
 			view := asynqTaskView{
 				ID:            task.ID,
 				Queue:         queue,
-				DisplayQueue:  asynqLogicalQueueName(s.cfg.RedisNamespace, queue),
 				Type:          task.Type,
-				State:         state,
 				Retried:       task.Retried,
 				MaxRetry:      task.MaxRetry,
 				LastError:     task.LastErr,
@@ -1530,22 +1526,23 @@ func asynqTaskDetailsHTML(task asynqTaskView, locale string) string {
 	return `<button type="button" class="table-action-link" data-asynq-task-details aria-haspopup="dialog"><i class="fa fa-info-circle fa-fw" aria-hidden="true"></i> ` + asynqHTMLAttr(adminT(locale, "admin.devops.details", "Details")) + `</button>` +
 		`<template data-asynq-task-details-template>` +
 		`<dl class="asynq-task-modal__metadata">` +
-		`<div><dt>` + asynqHTMLAttr(adminT(locale, "admin.devops.task_id", "Task ID")) + `</dt><dd><code>` + asynqHTMLAttr(task.ID) + `</code></dd></div>` +
-		`<div><dt>` + asynqHTMLAttr(adminT(locale, "admin.devops.queue", "Queue")) + `</dt><dd><code>` + asynqHTMLAttr(task.Queue) + `</code></dd></div>` +
-		`<div><dt>` + asynqHTMLAttr(adminT(locale, "admin.devops.task_type", "Task")) + `</dt><dd><code>` + asynqHTMLAttr(task.Type) + `</code></dd></div>` +
+		`<div data-asynq-task-copy-metadata><dt>` + asynqHTMLAttr(adminT(locale, "admin.devops.task_id", "Task ID")) + `</dt><dd><code>` + asynqHTMLAttr(task.ID) + `</code></dd></div>` +
+		`<div data-asynq-task-copy-metadata><dt>` + asynqHTMLAttr(adminT(locale, "admin.devops.queue", "Queue")) + `</dt><dd><code>` + asynqHTMLAttr(task.Queue) + `</code></dd></div>` +
+		`<div data-asynq-task-copy-metadata><dt>` + asynqHTMLAttr(adminT(locale, "admin.devops.task_type", "Task")) + `</dt><dd><code>` + asynqHTMLAttr(task.Type) + `</code></dd></div>` +
 		`</dl>` +
-		`<section><h4>` + asynqHTMLAttr(adminT(locale, "admin.devops.error", "Last error")) + `</h4><pre>` + lastError + `</pre></section>` +
-		`<section><h4>` + asynqHTMLAttr(adminT(locale, "admin.devops.payload", "Payload")) + ` <small>` + strconv.Itoa(task.PayloadBytes) + ` ` + asynqHTMLAttr(adminT(locale, "admin.devops.bytes", "bytes")) + `</small></h4><pre>` + rawPayload + `</pre></section>` +
+		`<section data-asynq-task-copy-section data-asynq-task-copy-language="text"><h4><span data-asynq-task-copy-label>` + asynqHTMLAttr(adminT(locale, "admin.devops.error", "Last error")) + `</span></h4><pre>` + lastError + `</pre></section>` +
+		`<section data-asynq-task-copy-section data-asynq-task-copy-language="json"><h4><span data-asynq-task-copy-label>` + asynqHTMLAttr(adminT(locale, "admin.devops.payload", "Payload")) + `</span> <small>` + strconv.Itoa(task.PayloadBytes) + ` ` + asynqHTMLAttr(adminT(locale, "admin.devops.bytes", "bytes")) + `</small></h4><pre>` + rawPayload + `</pre></section>` +
 		`</template>`
 }
 
 func asynqTaskDetailsModalHTML(locale string) string {
 	closeLabel := asynqHTMLAttr(adminT(locale, "admin.devops.close", "Close"))
+	copyLabel := asynqHTMLAttr(adminT(locale, "admin.devops.copy_markdown", "Copy as Markdown"))
+	copiedLabel := asynqHTMLAttr(adminT(locale, "admin.devops.copied", "Copied"))
 	return `<dialog class="asynq-task-modal" data-asynq-task-modal aria-labelledby="asynq-task-modal-title">` +
-		`<div class="asynq-task-modal__header"><h3 id="asynq-task-modal-title">` + asynqHTMLAttr(adminT(locale, "admin.devops.task_details", "Task details")) + `</h3>` +
-		`<form method="dialog"><button type="submit" class="icon-button" aria-label="` + closeLabel + `" title="` + closeLabel + `"><i class="fa fa-times" aria-hidden="true"></i></button></form></div>` +
+		`<div class="asynq-task-modal__header"><h3 id="asynq-task-modal-title">` + asynqHTMLAttr(adminT(locale, "admin.devops.task_details", "Task details")) + `</h3></div>` +
 		`<div class="asynq-task-modal__content" data-asynq-task-modal-content></div>` +
-		`<div class="asynq-task-modal__footer"><form method="dialog"><button type="submit" class="button">` + closeLabel + `</button></form></div>` +
+		`<div class="asynq-task-modal__footer"><button type="button" class="button button-secondary" data-asynq-task-copy data-copy-label="` + copyLabel + `" data-copied-label="` + copiedLabel + `"><i class="fa fa-copy fa-fw" aria-hidden="true"></i> <span>` + copyLabel + `</span></button><form method="dialog"><button type="submit" class="button">` + closeLabel + `</button></form></div>` +
 		`</dialog>`
 }
 
@@ -1563,11 +1560,8 @@ func asynqTaskRowsHTML(page *asynqTaskPage, locale string) string {
 		if task.IsOrphaned {
 			orphan = ` <span class="asynq-badge asynq-badge--error">` + asynqHTMLAttr(adminT(locale, "admin.devops.orphaned", "Orphaned")) + `</span>`
 		}
-		body.WriteString(`<tr><td><code>` + asynqHTMLAttr(task.ID) + `</code>` + orphan + `</td><td><strong>` + asynqHTMLAttr(task.DisplayQueue) + `</strong>`)
-		if task.Queue != task.DisplayQueue {
-			body.WriteString(`<code>` + asynqHTMLAttr(task.Queue) + `</code>`)
-		}
-		body.WriteString(`</td><td><strong>` + asynqHTMLAttr(task.Type) + `</strong><small>` + asynqHTMLAttr(task.State) + `</small></td><td class="asynq-table__number">` + strconv.Itoa(task.Retried) + ` / ` + strconv.Itoa(task.MaxRetry) + `</td><td>` + asynqTaskTimingHTML(task, locale) + `</td><td class="asynq-task__details">` + asynqTaskDetailsHTML(task, locale) + `</td>`)
+		body.WriteString(`<tr><td><code>` + asynqHTMLAttr(task.ID) + `</code>` + orphan + `</td><td><strong>` + asynqHTMLAttr(task.Queue) + `</strong>`)
+		body.WriteString(`</td><td><strong>` + asynqHTMLAttr(task.Type) + `</strong></td><td class="asynq-table__number">` + strconv.Itoa(task.Retried) + ` / ` + strconv.Itoa(task.MaxRetry) + `</td><td>` + asynqTaskTimingHTML(task, locale) + `</td><td class="asynq-task__details">` + asynqTaskDetailsHTML(task, locale) + `</td>`)
 		if asynqTaskActionsAvailable(page) {
 			body.WriteString(`<td class="asynq-task__actions">` + asynqTaskActionHTML(page, task, locale) + `</td>`)
 		}

@@ -79,22 +79,77 @@ func (s *Server) publishBatchedAccountDeletionStatusDeletesForQuery(ctx context.
 	if s == nil || database == nil || statusIDs == nil {
 		return
 	}
-	publicCutoffID := mastodonSnowflakeIDAt(now.Add(-14*24*time.Hour), false)
-	var statuses []models.Status
-	if err := database.WithContext(ctx).
-		Preload("Account").
-		Preload("MediaAttachments").
-		Preload("Tags").
-		Where("id IN (?)", statusIDs).
-		Find(&statuses).Error; err != nil {
+	broadcasts, err := s.prepareBatchedAccountDeletionStatusDeletes(ctx, database, now, statusIDs)
+	if err != nil {
 		return
 	}
+	s.publishPreparedBatchedAccountDeletionStatusDeletes(ctx, broadcasts)
+}
+
+type batchedAccountDeletionStatusDelete struct {
+	Payload  string
+	Channels []string
+}
+
+func (s *Server) prepareBatchedAccountDeletionStatusDeletes(ctx context.Context, database *gorm.DB, now time.Time, statusIDQueries ...*gorm.DB) ([]batchedAccountDeletionStatusDelete, error) {
+	if s == nil || database == nil {
+		return nil, nil
+	}
+	var statuses []models.Status
+	for _, statusIDs := range statusIDQueries {
+		if statusIDs == nil {
+			continue
+		}
+		var batch []models.Status
+		if err := database.WithContext(ctx).
+			Preload("Account").
+			Preload("MediaAttachments").
+			Preload("Tags").
+			Where("id IN (?)", statusIDs).
+			Find(&batch).Error; err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, batch...)
+	}
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+
+	publicCutoffID := mastodonSnowflakeIDAt(now.Add(-14*24*time.Hour), false)
 	cfg := redisConfig(s.cfg)
+	accountChannels := make(map[int64][]string)
+	broadcasts := make([]batchedAccountDeletionStatusDelete, 0, len(statuses))
 	for _, status := range statuses {
-		payload := statusDeleteStreamPayload(status.ID)
-		status = s.statusForDeleteStreaming(ctx, database, status)
-		for _, channel := range s.statusBatchedDeletionStreamingChannels(ctx, database, cfg.prefix, status, publicCutoffID) {
-			_, _ = s.redisCommand(ctx, "PUBLISH", channel, payload)
+		channels := make([]string, 0, 8)
+		if status.ID > publicCutoffID {
+			channels = append(channels, statusBatchedDeletePublicStreamingChannels(cfg.prefix, status)...)
+			channels = append(channels, statusBatchedDeleteTagStreamingChannels(cfg.prefix, status)...)
+		}
+		if status.AccountID != 0 {
+			accountSpecific, ok := accountChannels[status.AccountID]
+			if !ok {
+				accountSpecific = append(accountSpecific, s.statusHomeStreamingChannels(ctx, database, cfg.prefix, status.AccountID)...)
+				accountSpecific = append(accountSpecific, s.statusListStreamingChannels(ctx, database, cfg.prefix, status.AccountID)...)
+				accountSpecific = uniqueStrings(accountSpecific)
+				accountChannels[status.AccountID] = accountSpecific
+			}
+			channels = append(channels, accountSpecific...)
+		}
+		broadcasts = append(broadcasts, batchedAccountDeletionStatusDelete{
+			Payload:  statusDeleteStreamPayload(status.ID),
+			Channels: uniqueStrings(channels),
+		})
+	}
+	return broadcasts, nil
+}
+
+func (s *Server) publishPreparedBatchedAccountDeletionStatusDeletes(ctx context.Context, broadcasts []batchedAccountDeletionStatusDelete) {
+	if s == nil {
+		return
+	}
+	for _, broadcast := range broadcasts {
+		for _, channel := range broadcast.Channels {
+			_, _ = s.redisCommand(ctx, "PUBLISH", channel, broadcast.Payload)
 		}
 	}
 }
