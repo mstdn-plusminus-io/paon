@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -124,6 +125,130 @@ func TestPrivateAndMissingStatusResponsesAreIndistinguishable(t *testing.T) {
 	}
 	if privateResponse.Body.String() != missingResponse.Body.String() {
 		t.Fatalf("response bodies differ: private %q, missing %q", privateResponse.Body.String(), missingResponse.Body.String())
+	}
+}
+
+func TestEnsureRepresentativeAccountStatConcurrentAgainstPostgres(t *testing.T) {
+	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("PAON_TEST_DATABASE_URL is required for integration tests")
+	}
+	cfg := config.Config{
+		DatabaseURL:          databaseURL,
+		DatabaseMaxOpenConns: 16,
+		DatabaseMaxIdleConns: 4,
+		LocalDomain:          "example.test",
+		SecretKeyBase:        "integration-secret",
+	}
+	database, err := paondb.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := migrate.Run(context.Background(), database); err != nil || !applied {
+		t.Fatalf("migrate = %v, %v", applied, err)
+	}
+	if err := database.Model(&models.Account{}).Create(map[string]any{
+		"id":         int64(-99),
+		"username":   instanceActorUsername,
+		"created_at": time.Now().UTC(),
+		"updated_at": time.Now().UTC(),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	server := &Server{cfg: cfg, db: database}
+	const workers = 12
+	start := make(chan struct{})
+	errorsByWorker := make(chan error, workers)
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			errorsByWorker <- server.ensureRepresentativeAccountStat(-99)
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(errorsByWorker)
+	for err := range errorsByWorker {
+		if err != nil {
+			t.Fatalf("concurrent ensureRepresentativeAccountStat: %v", err)
+		}
+	}
+
+	var count int64
+	if err := database.Model(&models.AccountStat{}).Where("account_id = ?", int64(-99)).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("representative account_stats rows = %d, want 1", count)
+	}
+}
+
+func TestRemoteActivityPubActorDeletionCommitsAgainstPostgres(t *testing.T) {
+	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
+	redisURL := os.Getenv("PAON_TEST_REDIS_URL")
+	if databaseURL == "" || redisURL == "" {
+		t.Fatal("PAON_TEST_DATABASE_URL and PAON_TEST_REDIS_URL are required for integration tests")
+	}
+	cfg := config.Config{
+		DatabaseURL:          databaseURL,
+		DatabaseMaxOpenConns: 5,
+		DatabaseMaxIdleConns: 2,
+		RedisURL:             redisURL,
+		LocalDomain:          "example.test",
+		SecretKeyBase:        "integration-secret",
+	}
+	database, err := paondb.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := migrate.Run(context.Background(), database); err != nil || !applied {
+		t.Fatalf("migrate = %v, %v", applied, err)
+	}
+
+	var actor models.Account
+	if err := database.Raw(`
+		INSERT INTO accounts (username, domain, uri, protocol, created_at, updated_at)
+		VALUES ('remote-delete', 'remote.example', 'https://remote.example/users/remote-delete', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		RETURNING *
+	`).Scan(&actor).Error; err != nil {
+		t.Fatal(err)
+	}
+	var statusID int64
+	if err := database.Raw(`
+		INSERT INTO statuses (account_id, uri, text, visibility, local, created_at, updated_at)
+		VALUES (?, 'https://remote.example/users/remote-delete/statuses/1', 'delete me', 0, false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		RETURNING id
+	`, actor.ID).Scan(&statusID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	server := &Server{cfg: cfg, db: database}
+	if err := server.deleteRemoteActivityPubActorNow(context.Background(), &actor, time.Now().UTC()); err != nil {
+		t.Fatalf("deleteRemoteActivityPubActorNow error = %v", err)
+	}
+	var accountCount int64
+	if err := database.Model(&models.Account{}).Where("id = ?", actor.ID).Count(&accountCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if accountCount != 0 {
+		t.Fatalf("remote actor remains after Delete: count = %d", accountCount)
+	}
+	var statusCount int64
+	if err := database.Model(&models.Status{}).Where("id = ?", statusID).Count(&statusCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if statusCount != 0 {
+		t.Fatalf("remote actor status remains after Delete: count = %d", statusCount)
 	}
 }
 

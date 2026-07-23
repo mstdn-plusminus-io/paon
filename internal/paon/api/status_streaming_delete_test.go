@@ -67,12 +67,13 @@ func TestBatchedAccountDeletionStreamingChannelsMatchRailsBatchRemoval(t *testin
 	}
 	for _, want := range []string{
 		`publicCutoffID := mastodonSnowflakeIDAt(now.Add(-14*24*time.Hour), false)`,
-		`statusBatchedDeletionStreamingChannels(ctx, database, cfg.prefix, status, publicCutoffID)`,
-		`statusBatchedDeletePublicStreamingChannels(prefix, status)`,
-		`statusBatchedDeleteTagStreamingChannels(prefix, status)`,
+		`statusBatchedDeletePublicStreamingChannels(cfg.prefix, status)`,
+		`statusBatchedDeleteTagStreamingChannels(cfg.prefix, status)`,
+		`s.statusHomeStreamingChannels(ctx, database, cfg.prefix, status.AccountID)`,
+		`s.statusListStreamingChannels(ctx, database, cfg.prefix, status.AccountID)`,
 	} {
-		if !strings.Contains(string(goSrc), want) {
-			t.Fatalf("status_streaming_delete.go missing %q", want)
+		if !functionBodyContains(t, goSrc, "prepareBatchedAccountDeletionStatusDeletes", want) {
+			t.Fatalf("prepareBatchedAccountDeletionStatusDeletes missing %q", want)
 		}
 	}
 	if strings.Contains(string(goSrc), `statusMentionHomeDeleteChannels(ctx, database, prefix, status.ID, publicCutoffID)`) {
