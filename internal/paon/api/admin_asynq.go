@@ -18,6 +18,8 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 )
 
 const (
@@ -1289,6 +1291,7 @@ func asynqTabsHTML(view string, locale string) string {
 }
 
 func asynqSummaryHTML(summary asynqDashboardSummary, available bool, locale string) string {
+	numberPrinter := message.NewPrinter(language.Make(locale))
 	items := []struct {
 		Key      string
 		Value    int
@@ -1308,7 +1311,7 @@ func asynqSummaryHTML(summary asynqDashboardSummary, available bool, locale stri
 	for _, item := range items {
 		value := "—"
 		if available {
-			value = strconv.Itoa(item.Value)
+			value = numberPrinter.Sprintf("%d", item.Value)
 		}
 		body.WriteString(`<div><strong data-asynq-counter="` + item.Key + `">` + value + `</strong>` + asynqHTMLAttr(adminT(locale, item.Locale, item.Fallback)) + `</div>`)
 	}

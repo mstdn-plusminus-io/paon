@@ -744,6 +744,38 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 	}
 }
 
+func TestAsynqSummaryCountsUseLocaleGroupingAcrossViews(t *testing.T) {
+	snapshot := asynqDashboardSnapshot{
+		Available: true,
+		Summary: asynqDashboardSummary{
+			ProcessedTotal: 926360,
+			FailedTotal:    52910,
+			Active:         11,
+			Pending:        0,
+			Retry:          2752,
+			Scheduled:      16,
+			Archived:       1561,
+		},
+	}
+	expected := []string{
+		`data-asynq-counter="processed_total">926,360</strong>`,
+		`data-asynq-counter="failed_total">52,910</strong>`,
+		`data-asynq-counter="active">11</strong>`,
+		`data-asynq-counter="pending">0</strong>`,
+		`data-asynq-counter="retry">2,752</strong>`,
+		`data-asynq-counter="scheduled">16</strong>`,
+		`data-asynq-counter="archived">1,561</strong>`,
+	}
+	for _, view := range []string{"overview", "active", "pending", "queues", "retry", "scheduled", "archived"} {
+		pageHTML := asynqPageHTML(snapshot, nil, view, "ja")
+		for _, want := range expected {
+			if !strings.Contains(pageHTML, want) {
+				t.Fatalf("%s page summary is missing %q: %s", view, want, pageHTML)
+			}
+		}
+	}
+}
+
 func TestAsynqTaskActionRedirectURLPreservesListContext(t *testing.T) {
 	got := asynqTaskActionRedirectURL("retry", "tenant:pull", 3, "notice", "queued now")
 	want := "/asynq/retry?notice=queued+now&page=3&queue=tenant%3Apull"
