@@ -400,6 +400,7 @@ en:
       auto_refresh: Auto refresh
       bytes: bytes
       captured_at: Captured at
+      close: Close
       concurrency: Concurrency
       consumers: Consumers
       covered: covered
@@ -460,6 +461,10 @@ en:
       retry_confirm: Retry this task now? Its retry count will not be reset.
       retry_failed: The task could not be retried. Refresh and try again.
       retry_invalid_state: Only retry and archived tasks can be retried.
+      retry_all: Retry all
+      retry_all_confirm: Retry all tasks matching the current queue filter now? Retry counts will not be reset.
+      retry_all_failed: The matching tasks could not be retried. Refresh and try again.
+      retry_all_success: "%d tasks were moved to the pending queue."
       retry_now: Retry now
       retry_stale: The task is no longer available in this list. Refresh and check its current state.
       retry_success: The task was moved to the pending queue.
@@ -480,6 +485,7 @@ en:
       succeeded: Succeeded
       summary: Asynq summary
       task_id: Task ID
+      task_details: Task details
       task_results_truncated: The view is limited to %d of %d tasks. Filter by queue to narrow the result.
       task_type: Task
       timing: Timing / worker

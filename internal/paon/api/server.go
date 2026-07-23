@@ -2060,6 +2060,7 @@ func (s *Server) routes() {
 	e.GET("/asynq", s.sidekiqPage)
 	e.GET("/asynq/stats", s.sidekiqStats)
 	e.POST("/asynq/tasks/retry", s.retryAsynqTask)
+	e.POST("/asynq/tasks/retry_all", s.retryAllAsynqTasks)
 	e.GET("/asynq/*", s.sidekiqPage)
 	e.GET("/pghero", s.pgHeroPage)
 	e.GET("/pghero/*", s.pgHeroPage)

@@ -393,6 +393,7 @@ ja:
       auto_refresh: 自動更新
       bytes: バイト
       captured_at: 取得日時
+      close: 閉じる
       concurrency: 並行数
       consumers: ワーカー
       covered: 対応済み
@@ -453,6 +454,10 @@ ja:
       retry_confirm: このタスクを今すぐ再試行しますか？再試行回数はリセットされません。
       retry_failed: タスクを再試行できませんでした。画面を更新して、もう一度お試しください。
       retry_invalid_state: 再試行またはアーカイブ状態のタスクのみ再試行できます。
+      retry_all: 全て再試行
+      retry_all_confirm: 現在のキュー絞り込みに一致するすべてのタスクを今すぐ再試行しますか？再試行回数はリセットされません。
+      retry_all_failed: 一致するタスクを再試行できませんでした。画面を更新して、もう一度お試しください。
+      retry_all_success: "%d件のタスクを再実行待ちに移動しました。"
       retry_now: 今すぐ再試行
       retry_stale: このタスクは一覧に存在しません。画面を更新して現在の状態を確認してください。
       retry_success: タスクを再実行待ちに移動しました。
@@ -473,6 +478,7 @@ ja:
       succeeded: 成功
       summary: Asynqサマリー
       task_id: タスクID
+      task_details: タスクの詳細
       task_results_truncated: 表示上限は%d件です（全%d件）。キューで絞り込んでください。
       task_type: タスク
       timing: 時刻 / ワーカー

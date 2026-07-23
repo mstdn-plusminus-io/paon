@@ -195,6 +195,15 @@
     font-weight: 700;
   }
 
+  &__queue {
+    flex: 0 0 auto;
+
+    code {
+      color: $primary-text-color;
+      font-weight: 600;
+    }
+  }
+
   &--critical,
   &--danger,
   &--error {
@@ -305,6 +314,160 @@
 
   form {
     margin: 0;
+  }
+}
+
+.asynq-task__details {
+  white-space: nowrap;
+}
+
+.asynq-task-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+
+  form {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+  }
+}
+
+.asynq-task-table {
+  min-width: 720px !important;
+}
+
+.asynq-task-modal {
+  width: min(780px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 48px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid lighten($ui-base-color, 12%);
+  border-radius: 6px;
+  background: $ui-base-color;
+  color: $primary-text-color;
+  box-shadow: 0 16px 48px rgba($base-shadow-color, 0.55);
+
+  &[open] {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &::backdrop {
+    background: rgba($base-shadow-color, 0.72);
+  }
+
+  &__header,
+  &__footer {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: darken($ui-base-color, 4%);
+  }
+
+  &__header {
+    border-bottom: 1px solid lighten($ui-base-color, 8%);
+
+    h3 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 24px;
+    }
+
+    form {
+      margin: 0;
+    }
+
+    .icon-button {
+      display: grid;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: $secondary-text-color;
+      cursor: pointer;
+      place-items: center;
+
+      &:hover,
+      &:focus-visible {
+        color: $primary-text-color;
+      }
+    }
+  }
+
+  &__content {
+    display: grid;
+    gap: 16px;
+    min-height: 0;
+    padding: 16px;
+    overflow: auto;
+
+    section {
+      min-width: 0;
+    }
+
+    h4 {
+      margin: 0 0 6px;
+      color: $secondary-text-color;
+      font-size: 13px;
+
+      small {
+        color: $darker-text-color;
+        font-weight: 400;
+      }
+    }
+
+    pre {
+      max-height: 280px;
+      margin: 0;
+      padding: 12px;
+      overflow: auto;
+      border: 1px solid lighten($ui-base-color, 8%);
+      border-radius: 4px;
+      background: darken($ui-base-color, 6%);
+      color: $primary-text-color;
+      font: 12px/18px monospace;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+  }
+
+  &__metadata {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px 16px;
+    margin: 0;
+
+    div {
+      min-width: 0;
+    }
+
+    dt {
+      margin-bottom: 2px;
+      color: $darker-text-color;
+      font-size: 11px;
+    }
+
+    dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  &__footer {
+    justify-content: flex-end;
+    border-top: 1px solid lighten($ui-base-color, 8%);
+
+    form {
+      margin: 0;
+    }
   }
 }
 
@@ -512,5 +675,19 @@
 
   .asynq-alert {
     gap: 3px;
+  }
+
+  .asynq-task-toolbar,
+  .asynq-task-toolbar form {
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .asynq-task-toolbar form {
+    flex-wrap: wrap;
+  }
+
+  .asynq-task-modal__metadata {
+    grid-template-columns: 1fr;
   }
 }
