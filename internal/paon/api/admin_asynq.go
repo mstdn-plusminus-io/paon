@@ -181,7 +181,6 @@ type asynqDashboardData struct {
 type asynqTaskView struct {
 	ID            string
 	Queue         string
-	DisplayQueue  string
 	Type          string
 	Retried       int
 	MaxRetry      int
@@ -887,7 +886,6 @@ func (s *Server) asynqTaskPage(data *asynqDashboardData, state string, queueFilt
 			view := asynqTaskView{
 				ID:            task.ID,
 				Queue:         queue,
-				DisplayQueue:  asynqLogicalQueueName(s.cfg.RedisNamespace, queue),
 				Type:          task.Type,
 				Retried:       task.Retried,
 				MaxRetry:      task.MaxRetry,
@@ -1562,10 +1560,7 @@ func asynqTaskRowsHTML(page *asynqTaskPage, locale string) string {
 		if task.IsOrphaned {
 			orphan = ` <span class="asynq-badge asynq-badge--error">` + asynqHTMLAttr(adminT(locale, "admin.devops.orphaned", "Orphaned")) + `</span>`
 		}
-		body.WriteString(`<tr><td><code>` + asynqHTMLAttr(task.ID) + `</code>` + orphan + `</td><td><strong>` + asynqHTMLAttr(task.DisplayQueue) + `</strong>`)
-		if task.Queue != task.DisplayQueue {
-			body.WriteString(`<code>` + asynqHTMLAttr(task.Queue) + `</code>`)
-		}
+		body.WriteString(`<tr><td><code>` + asynqHTMLAttr(task.ID) + `</code>` + orphan + `</td><td><strong>` + asynqHTMLAttr(task.Queue) + `</strong>`)
 		body.WriteString(`</td><td><strong>` + asynqHTMLAttr(task.Type) + `</strong></td><td class="asynq-table__number">` + strconv.Itoa(task.Retried) + ` / ` + strconv.Itoa(task.MaxRetry) + `</td><td>` + asynqTaskTimingHTML(task, locale) + `</td><td class="asynq-task__details">` + asynqTaskDetailsHTML(task, locale) + `</td>`)
 		if asynqTaskActionsAvailable(page) {
 			body.WriteString(`<td class="asynq-task__actions">` + asynqTaskActionHTML(page, task, locale) + `</td>`)

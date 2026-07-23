@@ -653,7 +653,7 @@ func TestNewRedisAsynqTaskRetryerUsesSidekiqRedisConnection(t *testing.T) {
 }
 
 func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
-	task := asynqTaskView{ID: `task"><script>alert(1)</script>`, Queue: "tenant:pull", DisplayQueue: "pull", Type: "delivery"}
+	task := asynqTaskView{ID: `task"><script>alert(1)</script>`, Queue: "tenant:pull", Type: "delivery"}
 	for _, state := range []string{"retry", "archived"} {
 		page := &asynqTaskPage{State: state, Queue: "tenant:pull", Page: 3, Tasks: []asynqTaskView{task}}
 		rows := asynqTaskRowsHTML(page, "ja")
@@ -678,6 +678,9 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 		}
 		if strings.Contains(rows, `<small>`+state+`</small>`) {
 			t.Fatalf("%s task rows redundantly display the page state in the task cell: %s", state, rows)
+		}
+		if !strings.Contains(rows, `<td><strong>tenant:pull</strong></td>`) || strings.Contains(rows, `<strong>pull</strong><code>tenant:pull</code>`) {
+			t.Fatalf("%s task rows do not show only the actual queue name: %s", state, rows)
 		}
 		if !htmlNeedsBrowserCSRF(`<html><body>` + rows + `</body></html>`) {
 			t.Fatalf("%s retry form was not detected as CSRF-protected", state)
@@ -724,6 +727,9 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 	}
 	if modal := asynqTaskDetailsModalHTML("ja"); !strings.Contains(modal, `Markdownとしてコピー`) || !strings.Contains(modal, `コピーしました`) {
 		t.Fatalf("task details modal copy labels are not localized: %s", modal)
+	}
+	if details := asynqTaskDetailsHTML(task, "en"); !strings.Contains(details, `<dd><code>tenant:pull</code></dd>`) {
+		t.Fatalf("task details do not use the actual queue name: %s", details)
 	}
 	if strings.Contains(pageHTML, `<th scope="col">Last error</th>`) || strings.Contains(pageHTML, `<th scope="col">Payload</th>`) {
 		t.Fatalf("retry page retained wide error or payload columns: %s", pageHTML)
