@@ -1383,6 +1383,101 @@ func TestActivityPubDeliveryAvailabilityDefaultsToAvailableWithoutDatabase(t *te
 	server.trackActivityPubDeliverySuccess("https://remote.example/inbox")
 }
 
+func TestActivityPubDeliveryResponseDispositionMatchesRailsTracking(t *testing.T) {
+	tests := []struct {
+		name                       string
+		status                     int
+		sourcePermanentlySuspended bool
+		want                       activityPubDeliveryResponseDisposition
+	}{
+		{name: "accepted", status: http.StatusAccepted, want: activityPubDeliveryResponseSucceeded},
+		{name: "method not allowed", status: http.StatusMethodNotAllowed, want: activityPubDeliveryResponseDiscarded},
+		{name: "gone", status: http.StatusGone, want: activityPubDeliveryResponseDiscarded},
+		{name: "not implemented", status: http.StatusNotImplemented, want: activityPubDeliveryResponseDiscarded},
+		{name: "unauthorized active source", status: http.StatusUnauthorized, want: activityPubDeliveryResponseRetry},
+		{name: "unauthorized permanently suspended source", status: http.StatusUnauthorized, sourcePermanentlySuspended: true, want: activityPubDeliveryResponseDiscarded},
+		{name: "request timeout", status: http.StatusRequestTimeout, want: activityPubDeliveryResponseRetry},
+		{name: "too many requests", status: http.StatusTooManyRequests, want: activityPubDeliveryResponseRetry},
+		{name: "internal server error", status: http.StatusInternalServerError, want: activityPubDeliveryResponseRetry},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := activityPubDeliveryResponseDispositionFor(tt.status, tt.sourcePermanentlySuspended)
+			if got != tt.want {
+				t.Fatalf("disposition for status %d suspended=%t = %d, want %d", tt.status, tt.sourcePermanentlySuspended, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestActivityPubDeliveryUnsalvageableResponseTracksFailureWithoutRetrying(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey error = %v", err)
+	}
+	privatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	local := models.Account{ID: 1, PrivateKey: sql.NullString{String: privatePEM, Valid: true}}
+
+	for _, tt := range []struct {
+		name       string
+		status     int
+		wantResult string
+	}{
+		{name: "accepted", status: http.StatusAccepted, wantResult: "success"},
+		{name: "method not allowed", status: http.StatusMethodNotAllowed, wantResult: "failure"},
+		{name: "gone", status: http.StatusGone, wantResult: "failure"},
+		{name: "not implemented", status: http.StatusNotImplemented, wantResult: "failure"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("Listen error = %v", err)
+			}
+			defer listener.Close()
+			host, port, err := net.SplitHostPort(listener.Addr().String())
+			if err != nil {
+				t.Fatalf("SplitHostPort error = %v", err)
+			}
+			recordedKey := make(chan string, 1)
+			go func() {
+				if tcpListener, ok := listener.(*net.TCPListener); ok {
+					_ = tcpListener.SetDeadline(time.Now().Add(time.Second))
+				}
+				conn, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					recordedKey <- ""
+					return
+				}
+				defer conn.Close()
+				_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+				buffer := make([]byte, 4096)
+				n, _ := conn.Read(buffer)
+				_, _ = conn.Write([]byte(":1\r\n"))
+				recordedKey <- string(buffer[:n])
+			}()
+
+			previousClient := activityHTTPClient
+			activityHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.status,
+					Body:       io.NopCloser(strings.NewReader("response")),
+					Header:     make(http.Header),
+				}, nil
+			})}
+			t.Cleanup(func() { activityHTTPClient = previousClient })
+
+			server := &Server{cfg: config.Config{RedisHost: host, RedisPort: port, RedisNamespace: "mastodon:"}}
+			if err := server.deliverActivityPubOnce(local, "https://remote.example/inbox", []byte(`{}`), "remote.example", false); err != nil {
+				t.Fatalf("deliverActivityPubOnce error = %v", err)
+			}
+			command := <-recordedKey
+			if !strings.Contains(command, ":delivery_stats:remote.example:"+tt.wantResult+":") {
+				t.Fatalf("delivery stats command %q does not record %s", command, tt.wantResult)
+			}
+		})
+	}
+}
+
 func TestActivityPubFollowAndUndoPayloads(t *testing.T) {
 	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "example.com", LocalDomain: "example.com"}}
 	local := models.Account{Username: "bob"}
