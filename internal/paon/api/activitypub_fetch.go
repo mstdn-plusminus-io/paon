@@ -41,7 +41,7 @@ type activityFetchHTTPError struct {
 }
 
 func (e activityFetchHTTPError) Error() string {
-	return fmt.Sprintf("failed to fetch remote activity: %d", e.StatusCode)
+	return fmt.Sprintf("failed to fetch remote activity target=remote host=%q status=%d", remoteTaskTargetHost(e.URL), e.StatusCode)
 }
 
 func activityFetchStatus(err error) (int, bool) {
