@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -9,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1449,11 +1452,14 @@ func TestActivityPubDeliveryUnsalvageableResponseTracksFailureWithoutRetrying(t 
 					return
 				}
 				defer conn.Close()
-				_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-				buffer := make([]byte, 4096)
-				n, _ := conn.Read(buffer)
+				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				command, readErr := readRESPArrayCommand(conn)
 				_, _ = conn.Write([]byte(":1\r\n"))
-				recordedKey <- string(buffer[:n])
+				if readErr != nil {
+					recordedKey <- ""
+					return
+				}
+				recordedKey <- command
 			}()
 
 			previousClient := activityHTTPClient
@@ -1476,6 +1482,43 @@ func TestActivityPubDeliveryUnsalvageableResponseTracksFailureWithoutRetrying(t 
 			}
 		})
 	}
+}
+
+func readRESPArrayCommand(conn net.Conn) (string, error) {
+	reader := bufio.NewReader(conn)
+	var command strings.Builder
+	arrayHeader, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	command.WriteString(arrayHeader)
+	if len(arrayHeader) < 4 || arrayHeader[0] != '*' {
+		return "", fmt.Errorf("invalid RESP array header %q", arrayHeader)
+	}
+	elementCount, err := strconv.Atoi(strings.TrimSuffix(arrayHeader[1:], "\r\n"))
+	if err != nil || elementCount < 0 {
+		return "", fmt.Errorf("invalid RESP array length %q", arrayHeader)
+	}
+	for range elementCount {
+		bulkHeader, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		command.WriteString(bulkHeader)
+		if len(bulkHeader) < 4 || bulkHeader[0] != '$' {
+			return "", fmt.Errorf("invalid RESP bulk header %q", bulkHeader)
+		}
+		length, err := strconv.Atoi(strings.TrimSuffix(bulkHeader[1:], "\r\n"))
+		if err != nil || length < 0 {
+			return "", fmt.Errorf("invalid RESP bulk length %q", bulkHeader)
+		}
+		payload := make([]byte, length+2)
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			return "", err
+		}
+		command.Write(payload)
+	}
+	return command.String(), nil
 }
 
 func TestActivityPubFollowAndUndoPayloads(t *testing.T) {
