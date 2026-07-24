@@ -44,6 +44,10 @@ func (s *Server) processActivityPubInboxForTarget(body []byte, actor *models.Acc
 }
 
 func (s *Server) processActivityPubInboxForDeliveredTo(body []byte, actor *models.Account, target *models.Account, deliveredToAccountID int64) error {
+	return s.processActivityPubInboxForDeliveredToWithContext(context.Background(), body, actor, target, deliveredToAccountID)
+}
+
+func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Context, body []byte, actor *models.Account, target *models.Account, deliveredToAccountID int64) error {
 	body = activityPubProcessCollectionBody(body)
 	actorID := int64(0)
 	if actor != nil {
@@ -91,9 +95,9 @@ func (s *Server) processActivityPubInboxForDeliveredTo(body []byte, actor *model
 		DeliveredToAccountID: deliveredToAccountID,
 	}
 	if activityPayloadIsCollection(payload) {
-		return s.processActivityPubCollection(payload, actor, target, relayedThrough, options)
+		return s.processActivityPubCollectionWithContext(ctx, payload, actor, target, relayedThrough, options)
 	}
-	return s.processActivityPubPayload(payload, actor, target, relayedThrough, options)
+	return s.processActivityPubPayloadWithContext(ctx, payload, actor, target, relayedThrough, options)
 }
 
 func activityPubProcessCollectionBody(body []byte) []byte {
@@ -247,8 +251,12 @@ func activityPubForwardingValueClass(value any) string {
 }
 
 func (s *Server) processActivityPubCollection(payload activityPayload, actor *models.Account, target *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
+	return s.processActivityPubCollectionWithContext(context.Background(), payload, actor, target, relayedThrough, options)
+}
+
+func (s *Server) processActivityPubCollectionWithContext(ctx context.Context, payload activityPayload, actor *models.Account, target *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
 	for i := len(payload.Items) - 1; i >= 0; i-- {
-		if err := s.processActivityPubPayload(activityPayloadWithoutActor(payload.Items[i]), actor, target, relayedThrough, options); err != nil {
+		if err := s.processActivityPubPayloadWithContext(ctx, activityPayloadWithoutActor(payload.Items[i]), actor, target, relayedThrough, options); err != nil {
 			return err
 		}
 	}
@@ -327,6 +335,10 @@ func activityPubCompactSignedActivityDocument(raw map[string]any) (map[string]an
 }
 
 func (s *Server) processActivityPubPayload(payload activityPayload, actor *models.Account, target *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
+	return s.processActivityPubPayloadWithContext(context.Background(), payload, actor, target, relayedThrough, options)
+}
+
+func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, payload activityPayload, actor *models.Account, target *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
 	if activityPayloadDifferentActor(payload, actor) {
 		return nil
 	}
@@ -346,7 +358,7 @@ func (s *Server) processActivityPubPayload(payload activityPayload, actor *model
 		s.scheduleActivityPubActorRefreshIfStale(actor, payload.ID)
 		return s.processActivityPubUpdate(payload, actor, target, relayedThrough, options)
 	case "Delete":
-		return s.processActivityPubDelete(payload, actor)
+		return s.processActivityPubDeleteWithContext(ctx, payload, actor)
 	case "Move":
 		return s.processActivityPubMove(payload, actor)
 	case "Accept":
@@ -2686,28 +2698,41 @@ func (s *Server) processActivityPubImplicitStatusUpdate(status *models.Status, o
 }
 
 func (s *Server) processActivityPubDelete(payload activityPayload, actor *models.Account) error {
+	return s.processActivityPubDeleteWithContext(context.Background(), payload, actor)
+}
+
+func (s *Server) processActivityPubDeleteWithContext(ctx context.Context, payload activityPayload, actor *models.Account) error {
 	target := payload.Object.ID
 	if target == "" && !payload.Object.Reference {
 		return nil
 	}
 	now := time.Now().UTC()
 	if actor.URI != "" && target == actor.URI {
-		acquired, releaseDeleteLock, err := s.acquireActivityPubRedisLock(context.Background(), "delete_in_progress:"+strconv.FormatInt(actor.ID, 10), 2*time.Hour)
+		acquired, releaseDeleteLock, err := s.acquireActivityPubRedisLock(ctx, "delete_in_progress:"+strconv.FormatInt(actor.ID, 10), 2*time.Hour)
 		if err != nil || !acquired {
 			return err
 		}
 		defer releaseDeleteLock()
 		if actor.Local() {
-			if err := s.db.Model(&models.Account{}).Where("id = ?", actor.ID).Updates(map[string]any{"suspended_at": now, "updated_at": now}).Error; err != nil {
+			if err := s.db.WithContext(ctx).Model(&models.Account{}).Where("id = ?", actor.ID).Updates(map[string]any{"suspended_at": now, "updated_at": now}).Error; err != nil {
 				return err
 			}
-		} else if err := s.deleteRemoteActivityPubActorNow(context.Background(), actor, now); err != nil {
-			return err
+		} else {
+			if err := s.suspendRemoteActivityPubActor(ctx, actor, now); err != nil {
+				return err
+			}
+			if s.asynqClient != nil {
+				if err := s.enqueueAccountDeletionTaskContext(ctx, actor.ID); err != nil {
+					return fmt.Errorf("enqueue remote actor deletion account_id=%d domain=%q: %w", actor.ID, actor.Domain.String, err)
+				}
+			} else if err := s.purgeAccountDeletionRequest(ctx, actor.ID, now); err != nil {
+				return err
+			}
 		}
-		s.meiliIndexAccountBestEffort(context.Background(), actor.ID)
+		s.meiliIndexAccountBestEffort(ctx, actor.ID)
 		return nil
 	}
-	acquired, releaseDeleteLock, err := s.acquireActivityPubRedisLock(context.Background(), "delete_status_in_progress:"+target, activityPubRedisLockDefaultTTL)
+	acquired, releaseDeleteLock, err := s.acquireActivityPubRedisLock(ctx, "delete_status_in_progress:"+target, activityPubRedisLockDefaultTTL)
 	if err != nil || !acquired {
 		return err
 	}
@@ -2720,9 +2745,9 @@ func (s *Server) processActivityPubDelete(payload activityPayload, actor *models
 	var affectedTagIDs []int64
 	var forwardPlan *activityPubForwardingPlan
 	deleted := false
-	err = s.db.Transaction(func(tx *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if activityPubURIHostsMatch(actor.URI, target) {
-			acquiredCreate, releaseCreateLock, err := s.acquireActivityPubRedisLock(context.Background(), "create:"+target, activityPubRedisLockDefaultTTL)
+			acquiredCreate, releaseCreateLock, err := s.acquireActivityPubRedisLock(ctx, "create:"+target, activityPubRedisLockDefaultTTL)
 			if err != nil || !acquiredCreate {
 				return err
 			}
@@ -2755,7 +2780,7 @@ func (s *Server) processActivityPubDelete(payload activityPayload, actor *models
 			return err
 		}
 		affectedTagIDs = append(affectedTagIDs, tagIDs...)
-		if err := unlinkDirectStatusFromConversations(context.Background(), tx, status, now); err != nil {
+		if err := unlinkDirectStatusFromConversations(ctx, tx, status, now); err != nil {
 			return err
 		}
 		if err := tx.Model(&models.Status{}).Where("id = ?", status.ID).Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error; err != nil {

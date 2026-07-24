@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -155,7 +157,7 @@ func (s *Server) purgeAccountDeletionRequestWithOptions(ctx context.Context, acc
 		if err := purgeAccountDeletionExtraAssociations(tx, accountIDs, reportedStatusIDs, destroyRows); err != nil {
 			return err
 		}
-		if err := s.tombstoneAccountDeletionStatuses(tx, accountIDs, reportedStatusIDs, now); err != nil {
+		if err := s.tombstoneAccountDeletionStatuses(ctx, tx, accountIDs, reportedStatusIDs, now); err != nil {
 			return err
 		}
 		if err := tx.Where("account_id = ?", accountID).Delete(&models.AccountDeletionRequest{}).Error; err != nil {
@@ -191,7 +193,14 @@ func (s *Server) runOwnAccountDeletionWorkerEffects(ctx context.Context, account
 		return nil
 	}
 	_ = s.deliverActivityPubAccountDelete(account)
-	return s.purgeAccountDeletionRequestWithOptions(ctx, account.ID, now, accountDeletionPurgeOptions{DestroyLocalUser: true})
+	if err := s.purgeAccountDeletionRequestWithOptions(ctx, account.ID, now, accountDeletionPurgeOptions{DestroyLocalUser: true}); err != nil {
+		target := "local"
+		if !account.Local() {
+			target = "remote"
+		}
+		return fmt.Errorf("account deletion target=%s account_id=%d domain=%q: %w", target, account.ID, account.Domain.String, err)
+	}
+	return nil
 }
 
 func accountDeletionShouldDestroyRows(database *gorm.DB, accountID int64) (bool, error) {
@@ -298,6 +307,16 @@ func (s *Server) deleteRemoteAccountNow(ctx context.Context, account *models.Acc
 	if s == nil || s.db == nil || account == nil || account.ID == 0 || account.Local() {
 		return nil
 	}
+	if err := s.suspendRemoteActivityPubActor(ctx, account, now); err != nil {
+		return err
+	}
+	return s.purgeAccountDeletionRequest(ctx, account.ID, now)
+}
+
+func (s *Server) suspendRemoteActivityPubActor(ctx context.Context, account *models.Account, now time.Time) error {
+	if s == nil || s.db == nil || account == nil || account.ID == 0 || account.Local() {
+		return nil
+	}
 	if err := s.db.WithContext(ctx).Model(&models.Account{}).Where("id = ?", account.ID).Updates(map[string]any{
 		"suspended_at":      now,
 		"suspension_origin": int64(1),
@@ -305,7 +324,10 @@ func (s *Server) deleteRemoteAccountNow(ctx context.Context, account *models.Acc
 	}).Error; err != nil {
 		return err
 	}
-	return s.purgeAccountDeletionRequest(ctx, account.ID, now)
+	account.SuspendedAt = sql.NullTime{Time: now, Valid: true}
+	account.SuspensionOrigin = sql.NullInt64{Int64: 1, Valid: true}
+	account.UpdatedAt = now
+	return nil
 }
 
 func disableAccountDeletionUser(database *gorm.DB, accountID int64, now time.Time) (bool, error) {
@@ -557,9 +579,13 @@ WHERE status_stats.status_id = favourite_counts.status_id
 	return database.Exec("DELETE FROM bookmarks WHERE account_id IN (?)", accountIDs).Error
 }
 
-func (s *Server) tombstoneAccountDeletionStatuses(database *gorm.DB, accountIDs *gorm.DB, reportedStatusIDs []int64, now time.Time) error {
+func (s *Server) tombstoneAccountDeletionStatuses(ctx context.Context, database *gorm.DB, accountIDs *gorm.DB, reportedStatusIDs []int64, now time.Time) error {
 	statusIDs, reblogIDs := accountDeletionStatusIDQueries(database, accountIDs, reportedStatusIDs)
-	if err := unlinkDirectStatusesFromConversationsForQuery(context.Background(), database, statusIDs, now); err != nil {
+	affectedStatusIDs, err := statusIDsAffectedByAccountStatusDeletion(database, accountIDs)
+	if err != nil {
+		return err
+	}
+	if err := unlinkDirectStatusesFromConversationsForQuery(ctx, database, statusIDs, now); err != nil {
 		return err
 	}
 	if err := database.Model(&models.Status{}).
@@ -570,7 +596,7 @@ func (s *Server) tombstoneAccountDeletionStatuses(database *gorm.DB, accountIDs 
 	if err := database.Exec("DELETE FROM status_pins WHERE status_id IN (?) OR status_id IN (?)", statusIDs, reblogIDs).Error; err != nil {
 		return err
 	}
-	return recalculateStatusCounters(database, now)
+	return recalculateStatusCountersForStatusIDs(database, affectedStatusIDs, now)
 }
 
 func accountDeletionStatusIDQueries(database *gorm.DB, accountIDs *gorm.DB, reportedStatusIDs []int64) (*gorm.DB, *gorm.DB) {

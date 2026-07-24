@@ -1273,18 +1273,25 @@ func (s *Server) enqueueAdminDomainPurgeTask(domain string) bool {
 
 // enqueueAccountDeletionTask mirrors AccountDeletionWorker.perform_async.
 func (s *Server) enqueueAccountDeletionTask(accountID int64) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return s.enqueueAccountDeletionTaskContext(ctx, accountID) == nil
+}
+
+func (s *Server) enqueueAccountDeletionTaskContext(ctx context.Context, accountID int64) error {
 	if s == nil || s.asynqClient == nil || accountID == 0 {
-		return false
+		return errors.New("account deletion queue is unavailable")
 	}
 	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
 	if err != nil {
-		return false
+		return err
 	}
 	task := asynq.NewTask(asynqTaskAccountDeletion, payload, asynq.Queue(s.asynqQueue(asynqQueuePull)), asynq.MaxRetry(25), asynq.Unique(7*24*time.Hour))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	_, err = s.asynqClient.EnqueueContext(ctx, task)
-	return asynqEnqueueAccepted(err)
+	if asynqEnqueueAccepted(err) {
+		return nil
+	}
+	return err
 }
 
 // enqueueAdminAccountDeletionTask mirrors Admin::AccountDeletionWorker.perform_async.

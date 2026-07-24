@@ -155,7 +155,7 @@ func (s *Server) performActivityPubInboxProcessingOnce(ctx context.Context, job 
 		}
 		return err
 	}
-	err := s.processActivityPubInboxForDeliveredTo(job.Body, &actor, nil, job.DeliveredToAccountID)
+	err := s.processActivityPubInboxForDeliveredToWithContext(ctx, job.Body, &actor, nil, job.DeliveredToAccountID)
 	if activityPubInboxPermanentValidationError(err) {
 		logActivityPubProcessingIssue("rejected", "permanent_validation_error", job.Body, actor.ID, job.DeliveredToAccountID, err)
 		return nil

@@ -128,6 +128,7 @@ func TestAccountDeletionPublishesPreparedStatusDeletesAfterCommit(t *testing.T) 
 	for _, want := range []string{
 		`s.prepareBatchedAccountDeletionStatusDeletes(ctx, tx, now, statusIDs, reblogIDs)`,
 		`s.publishPreparedBatchedAccountDeletionStatusDeletes(publishCtx, statusDeleteBroadcasts)`,
+		`s.tombstoneAccountDeletionStatuses(ctx, tx, accountIDs, reportedStatusIDs, now)`,
 	} {
 		if !functionBodyContains(t, src, "purgeAccountDeletionRequestWithOptions", want) {
 			t.Fatalf("purgeAccountDeletionRequestWithOptions missing %q", want)
@@ -138,6 +139,46 @@ func TestAccountDeletionPublishesPreparedStatusDeletesAfterCommit(t *testing.T) 
 	}
 	if functionBodyContains(t, src, "tombstoneAccountDeletionStatuses", `publishBatchedAccountDeletionStatusDeletesForQuery`) {
 		t.Fatal("tombstoneAccountDeletionStatuses must not publish Redis events inside the database transaction")
+	}
+	if !functionBodyContains(t, src, "tombstoneAccountDeletionStatuses", `recalculateStatusCountersForStatusIDs(database, affectedStatusIDs, now)`) {
+		t.Fatal("tombstoneAccountDeletionStatuses must only recount affected indexed status rows")
+	}
+}
+
+func TestRemoteActivityPubActorDeleteQueuesBoundedAccountDeletion(t *testing.T) {
+	inboxSource, err := os.ReadFile("activitypub_inbox.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := mustFunctionBody(t, string(inboxSource), "processActivityPubDeleteWithContext")
+	for _, want := range []string{
+		`s.acquireActivityPubRedisLock(ctx, "delete_in_progress:"`,
+		`s.suspendRemoteActivityPubActor(ctx, actor, now)`,
+		`s.enqueueAccountDeletionTaskContext(ctx, actor.ID)`,
+		`s.purgeAccountDeletionRequest(ctx, actor.ID, now)`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("processActivityPubDeleteWithContext missing %q", want)
+		}
+	}
+	if strings.Contains(body, `s.deleteRemoteActivityPubActorNow(context.Background()`) {
+		t.Fatal("remote actor Delete must not perform an unbounded synchronous purge on the ingress task")
+	}
+
+	retrySource, err := os.ReadFile("activitypub_retry.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !functionBodyContains(t, retrySource, "performActivityPubInboxProcessingOnce", `processActivityPubInboxForDeliveredToWithContext(ctx`) {
+		t.Fatal("ActivityPub processing worker context must reach the Delete handler")
+	}
+
+	deletionSource, err := os.ReadFile("account_deletion_worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !functionBodyContains(t, deletionSource, "runOwnAccountDeletionWorkerEffects", `account deletion target=%s account_id=%d domain=%q`) {
+		t.Fatal("account deletion errors must identify the local or remote target")
 	}
 }
 
