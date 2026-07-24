@@ -41,7 +41,7 @@ func (s *Server) downloadAndStoreRemoteAccountImage(ctx context.Context, account
 	contentType := download.contentType
 	filename := download.filename
 	if !profileImageContentTypeSupported(contentType) {
-		return fmt.Errorf("remote account %s has unsupported content type %q", kind, contentType)
+		return taskTargetError("remote account "+kind+" fetch", "remote", remoteTaskTargetHost(remoteURL), fmt.Errorf("unsupported content type %q", contentType))
 	}
 	// Keep the existing Paperclip-compatible WebP-to-PNG storage contract now that libvips owns
 	// decoding, resizing, and encoding.
@@ -55,13 +55,16 @@ func (s *Server) downloadAndStoreRemoteAccountImage(ctx context.Context, account
 	}
 	data, err := resizeAccountImageBuffer(kind, download.body, contentType)
 	if err != nil {
-		return err
+		return taskTargetError("remote account "+kind+" processing", "remote", remoteTaskTargetHost(remoteURL), err)
 	}
 	if err := s.storeAccountImageBytes(accountID, kind, filename, contentType, data); err != nil {
-		return err
+		return taskTargetError("remote account "+kind+" storage", "local", serverLocalTaskTargetHost(s), err)
 	}
 	now := time.Now().UTC()
-	return s.db.WithContext(ctx).Model(&models.Account{}).Where("id = ?", accountID).Updates(remoteProfileImageUpdates(kind, filename, contentType, int64(len(data)), remoteURL, now)).Error
+	if err := s.db.WithContext(ctx).Model(&models.Account{}).Where("id = ?", accountID).Updates(remoteProfileImageUpdates(kind, filename, contentType, int64(len(data)), remoteURL, now)).Error; err != nil {
+		return taskTargetError("remote account "+kind+" database update", "local", serverLocalTaskTargetHost(s), err)
+	}
+	return nil
 }
 
 // resizeAccountImageBuffer applies the Rails avatar (400x400# fill crop) or header

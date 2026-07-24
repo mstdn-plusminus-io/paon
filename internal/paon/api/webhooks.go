@@ -243,11 +243,13 @@ func (s *Server) triggerWebhookForRecord(ctx context.Context, event string, clas
 func (s *Server) deliverWebhook(webhook models.Webhook, body []byte) error {
 	finalBody, err := renderWebhookTemplate(body, webhook.Template.String)
 	if err != nil {
+		err = taskTargetError("webhook template rendering", "local", serverLocalTaskTargetHost(s), err)
 		s.recordWebhookDeliveryHistory(webhook, body, "failure", 0, err)
 		return err
 	}
 	req, err := http.NewRequest(http.MethodPost, webhook.URL, bytes.NewReader(finalBody))
 	if err != nil {
+		err = taskTargetError("webhook request creation", "remote", remoteTaskTargetHost(webhook.URL), err)
 		s.recordWebhookDeliveryHistory(webhook, body, "failure", 0, err)
 		return err
 	}
@@ -257,6 +259,7 @@ func (s *Server) deliverWebhook(webhook models.Webhook, body []byte) error {
 
 	resp, err := webhookHTTPClient.Do(req)
 	if err != nil {
+		err = taskTargetError("webhook delivery", "remote", remoteTaskTargetHost(webhook.URL), err)
 		s.recordWebhookDeliveryHistory(webhook, body, "failure", 0, err)
 		return err
 	}
@@ -270,7 +273,7 @@ func (s *Server) deliverWebhook(webhook models.Webhook, body []byte) error {
 		return nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		err := fmt.Errorf("webhook delivery failed with status %d", resp.StatusCode)
+		err := fmt.Errorf("webhook delivery target=remote host=%q status=%d", remoteTaskTargetHost(webhook.URL), resp.StatusCode)
 		s.recordWebhookDeliveryHistory(webhook, body, "failure", resp.StatusCode, err)
 		return err
 	}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -9,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1381,6 +1384,141 @@ func TestActivityPubDeliveryAvailabilityDefaultsToAvailableWithoutDatabase(t *te
 	server.trackActivityPubDeliveryFailure("remote.example")
 	server.trackActivityPubDeliverySuccess("remote.example")
 	server.trackActivityPubDeliverySuccess("https://remote.example/inbox")
+}
+
+func TestActivityPubDeliveryResponseDispositionMatchesRailsTracking(t *testing.T) {
+	tests := []struct {
+		name                       string
+		status                     int
+		sourcePermanentlySuspended bool
+		want                       activityPubDeliveryResponseDisposition
+	}{
+		{name: "accepted", status: http.StatusAccepted, want: activityPubDeliveryResponseSucceeded},
+		{name: "method not allowed", status: http.StatusMethodNotAllowed, want: activityPubDeliveryResponseDiscarded},
+		{name: "gone", status: http.StatusGone, want: activityPubDeliveryResponseDiscarded},
+		{name: "not implemented", status: http.StatusNotImplemented, want: activityPubDeliveryResponseDiscarded},
+		{name: "unauthorized active source", status: http.StatusUnauthorized, want: activityPubDeliveryResponseRetry},
+		{name: "unauthorized permanently suspended source", status: http.StatusUnauthorized, sourcePermanentlySuspended: true, want: activityPubDeliveryResponseDiscarded},
+		{name: "request timeout", status: http.StatusRequestTimeout, want: activityPubDeliveryResponseRetry},
+		{name: "too many requests", status: http.StatusTooManyRequests, want: activityPubDeliveryResponseRetry},
+		{name: "internal server error", status: http.StatusInternalServerError, want: activityPubDeliveryResponseRetry},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := activityPubDeliveryResponseDispositionFor(tt.status, tt.sourcePermanentlySuspended)
+			if got != tt.want {
+				t.Fatalf("disposition for status %d suspended=%t = %d, want %d", tt.status, tt.sourcePermanentlySuspended, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestActivityPubDeliveryUnsalvageableResponseTracksFailureWithoutRetrying(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey error = %v", err)
+	}
+	privatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	local := models.Account{ID: 1, PrivateKey: sql.NullString{String: privatePEM, Valid: true}}
+
+	for _, tt := range []struct {
+		name       string
+		status     int
+		wantResult string
+	}{
+		{name: "accepted", status: http.StatusAccepted, wantResult: "success"},
+		{name: "method not allowed", status: http.StatusMethodNotAllowed, wantResult: "failure"},
+		{name: "gone", status: http.StatusGone, wantResult: "failure"},
+		{name: "not implemented", status: http.StatusNotImplemented, wantResult: "failure"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("Listen error = %v", err)
+			}
+			defer listener.Close()
+			host, port, err := net.SplitHostPort(listener.Addr().String())
+			if err != nil {
+				t.Fatalf("SplitHostPort error = %v", err)
+			}
+			recordedKey := make(chan string, 1)
+			go func() {
+				if tcpListener, ok := listener.(*net.TCPListener); ok {
+					_ = tcpListener.SetDeadline(time.Now().Add(time.Second))
+				}
+				conn, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					recordedKey <- ""
+					return
+				}
+				defer conn.Close()
+				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				command, readErr := readRESPArrayCommand(conn)
+				_, _ = conn.Write([]byte(":1\r\n"))
+				if readErr != nil {
+					recordedKey <- ""
+					return
+				}
+				recordedKey <- command
+			}()
+
+			previousClient := activityHTTPClient
+			activityHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: tt.status,
+					Body:       io.NopCloser(strings.NewReader("response")),
+					Header:     make(http.Header),
+				}, nil
+			})}
+			t.Cleanup(func() { activityHTTPClient = previousClient })
+
+			server := &Server{cfg: config.Config{RedisHost: host, RedisPort: port, RedisNamespace: "mastodon:"}}
+			if err := server.deliverActivityPubOnce(local, "https://remote.example/inbox", []byte(`{}`), "remote.example", false); err != nil {
+				t.Fatalf("deliverActivityPubOnce error = %v", err)
+			}
+			command := <-recordedKey
+			if !strings.Contains(command, ":delivery_stats:remote.example:"+tt.wantResult+":") {
+				t.Fatalf("delivery stats command %q does not record %s", command, tt.wantResult)
+			}
+		})
+	}
+}
+
+func readRESPArrayCommand(conn net.Conn) (string, error) {
+	reader := bufio.NewReader(conn)
+	var command strings.Builder
+	arrayHeader, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	command.WriteString(arrayHeader)
+	if len(arrayHeader) < 4 || arrayHeader[0] != '*' {
+		return "", fmt.Errorf("invalid RESP array header %q", arrayHeader)
+	}
+	elementCount, err := strconv.Atoi(strings.TrimSuffix(arrayHeader[1:], "\r\n"))
+	if err != nil || elementCount < 0 {
+		return "", fmt.Errorf("invalid RESP array length %q", arrayHeader)
+	}
+	for range elementCount {
+		bulkHeader, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		command.WriteString(bulkHeader)
+		if len(bulkHeader) < 4 || bulkHeader[0] != '$' {
+			return "", fmt.Errorf("invalid RESP bulk header %q", bulkHeader)
+		}
+		length, err := strconv.Atoi(strings.TrimSuffix(bulkHeader[1:], "\r\n"))
+		if err != nil || length < 0 {
+			return "", fmt.Errorf("invalid RESP bulk length %q", bulkHeader)
+		}
+		payload := make([]byte, length+2)
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			return "", err
+		}
+		command.Write(payload)
+	}
+	return command.String(), nil
 }
 
 func TestActivityPubFollowAndUndoPayloads(t *testing.T) {

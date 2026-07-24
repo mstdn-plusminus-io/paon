@@ -51,6 +51,7 @@ type asynqInspectorClient interface {
 	ListArchivedTasks(queue string, opts ...asynq.ListOption) ([]*asynq.TaskInfo, error)
 	RunAllRetryTasks(queue string) (int, error)
 	RunAllArchivedTasks(queue string) (int, error)
+	DeleteAllArchivedTasks(queue string) (int, error)
 }
 
 type asynqTaskRetryer interface {
@@ -1018,31 +1019,39 @@ func (s *Server) runAsynqTaskNow(ctx context.Context, sourceState string, queue 
 	return s.asynqTaskRetryer.RetryTask(ctx, queue, taskID, sourceState)
 }
 
-func (s *Server) runAllAsynqTasksNow(sourceState string, queueFilter string) (int, error) {
-	if _, ok := asynqRetryTaskState(sourceState); !ok {
-		return 0, errUnsupportedAsynqRetryState
-	}
+func (s *Server) asynqMutationQueues(queueFilter string) ([]string, error) {
 	if s == nil || s.asynqInspector == nil {
-		return 0, errors.New("asynq inspector is unavailable")
+		return nil, errors.New("asynq inspector is unavailable")
 	}
 
 	queues := []string{}
 	if queueFilter != "" {
 		if !asynqQueueOwnedByServer(s, queueFilter) {
-			return 0, errUnknownAsynqQueue
+			return nil, errUnknownAsynqQueue
 		}
-		queues = append(queues, queueFilter)
-	} else {
-		discovered, err := s.asynqInspector.Queues()
-		if err != nil {
-			return 0, err
+		return append(queues, queueFilter), nil
+	}
+
+	discovered, err := s.asynqInspector.Queues()
+	if err != nil {
+		return nil, err
+	}
+	for _, queue := range discovered {
+		if asynqQueueOwnedByServer(s, queue) {
+			queues = append(queues, queue)
 		}
-		for _, queue := range discovered {
-			if asynqQueueOwnedByServer(s, queue) {
-				queues = append(queues, queue)
-			}
-		}
-		sort.Strings(queues)
+	}
+	sort.Strings(queues)
+	return queues, nil
+}
+
+func (s *Server) runAllAsynqTasksNow(sourceState string, queueFilter string) (int, error) {
+	if _, ok := asynqRetryTaskState(sourceState); !ok {
+		return 0, errUnsupportedAsynqRetryState
+	}
+	queues, err := s.asynqMutationQueues(queueFilter)
+	if err != nil {
+		return 0, err
 	}
 
 	total := 0
@@ -1062,6 +1071,26 @@ func (s *Server) runAllAsynqTasksNow(sourceState string, queueFilter string) (in
 		}
 		if err != nil {
 			return total, err
+		}
+		total += count
+	}
+	return total, nil
+}
+
+func (s *Server) deleteAllArchivedAsynqTasksNow(queueFilter string) (int, error) {
+	queues, err := s.asynqMutationQueues(queueFilter)
+	if err != nil {
+		return 0, err
+	}
+
+	total := 0
+	for _, queue := range queues {
+		count, deleteErr := s.asynqInspector.DeleteAllArchivedTasks(queue)
+		if errors.Is(deleteErr, asynq.ErrQueueNotFound) {
+			continue
+		}
+		if deleteErr != nil {
+			return total, deleteErr
 		}
 		total += count
 	}
@@ -1142,6 +1171,14 @@ func (s *Server) retryAllAsynqTasks(c *echo.Context) error {
 	return s.retryAllAsynqTasksAuthorized(c, locale)
 }
 
+func (s *Server) deleteAllArchivedAsynqTasks(c *echo.Context) error {
+	_, locale, _, err := s.asynqAuthorizedUser(c)
+	if err != nil {
+		return webAuthResponseError(err)
+	}
+	return s.deleteAllArchivedAsynqTasksAuthorized(c, locale)
+}
+
 func (s *Server) retryAllAsynqTasksAuthorized(c *echo.Context, locale string) error {
 	sourceState := c.FormValue("source_state")
 	if _, ok := asynqRetryTaskState(sourceState); !ok {
@@ -1157,6 +1194,19 @@ func (s *Server) retryAllAsynqTasksAuthorized(c *echo.Context, locale string) er
 	}
 	message := fmt.Sprintf(adminT(locale, "admin.devops.retry_all_success", "%d tasks were moved to the pending queue."), count)
 	return c.Redirect(http.StatusSeeOther, asynqTaskActionRedirectURL(sourceState, queue, 1, "notice", message))
+}
+
+func (s *Server) deleteAllArchivedAsynqTasksAuthorized(c *echo.Context, locale string) error {
+	queue := c.FormValue("queue")
+	if queue != "" && !asynqQueueOwnedByServer(s, queue) {
+		return echo.NewHTTPError(http.StatusBadRequest, adminT(locale, "admin.devops.unknown_queue", "Unknown queue"))
+	}
+	count, err := s.deleteAllArchivedAsynqTasksNow(queue)
+	if err != nil {
+		return c.Redirect(http.StatusSeeOther, asynqTaskActionRedirectURL("archived", queue, 1, "error", adminT(locale, "admin.devops.delete_all_failed", "The archived tasks could not be deleted. Refresh and try again.")))
+	}
+	message := fmt.Sprintf(adminT(locale, "admin.devops.delete_all_success", "%d archived tasks were permanently deleted."), count)
+	return c.Redirect(http.StatusSeeOther, asynqTaskActionRedirectURL("archived", queue, 1, "notice", message))
 }
 
 func (s *Server) retryAsynqTaskAuthorized(c *echo.Context, locale string) error {
@@ -1599,7 +1649,13 @@ func asynqTaskFilterHTML(snapshot asynqDashboardSnapshot, page *asynqTaskPage, l
 		`<input type="hidden" name="source_state" value="` + asynqHTMLAttr(page.State) + `">` +
 		`<input type="hidden" name="queue" value="` + asynqHTMLAttr(page.Queue) + `">` +
 		`<button type="submit" class="button" data-confirm="` + asynqHTMLAttr(adminT(locale, "admin.devops.retry_all_confirm", "Retry all tasks matching the current queue filter now? Retry counts will not be reset.")) + `"` + disabled + `><i class="fa fa-refresh fa-fw" aria-hidden="true"></i> ` + asynqHTMLAttr(adminT(locale, "admin.devops.retry_all", "Retry all")) + `</button></form>`
-	return `<div class="asynq-task-toolbar">` + filter + retryAll + `</div>`
+	deleteAll := ""
+	if page.State == "archived" {
+		deleteAll = `<form action="/asynq/tasks/delete_all" method="post">` +
+			`<input type="hidden" name="queue" value="` + asynqHTMLAttr(page.Queue) + `">` +
+			`<button type="submit" class="button asynq-button--destructive" data-confirm="` + asynqHTMLAttr(adminT(locale, "admin.devops.delete_all_confirm", "Permanently delete all archived tasks matching the current queue filter? This action cannot be undone.")) + `"` + disabled + `><i class="fa fa-trash fa-fw" aria-hidden="true"></i> ` + asynqHTMLAttr(adminT(locale, "admin.devops.delete_all", "Delete all")) + `</button></form>`
+	}
+	return `<div class="asynq-task-toolbar">` + filter + retryAll + deleteAll + `</div>`
 }
 
 func asynqTaskPaginationHTML(page *asynqTaskPage, locale string) string {

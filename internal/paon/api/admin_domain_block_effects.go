@@ -622,6 +622,10 @@ func (s *Server) clearAdminSuspendedAccountFeedCaches(ctx context.Context, datab
 }
 
 func purgeAdminDomainSuspendedAccountAssociations(database *gorm.DB, accountIDs *gorm.DB, now time.Time) error {
+	affectedRelationshipAccountIDs, err := accountIDsAffectedByRelationshipDeletion(database, accountIDs)
+	if err != nil {
+		return err
+	}
 	for _, table := range []string{
 		"account_notes",
 		"account_pins",
@@ -665,10 +669,37 @@ WHERE status_stats.status_id = favourite_counts.status_id
 	if err := database.Exec("DELETE FROM bookmarks WHERE account_id IN (?)", accountIDs).Error; err != nil {
 		return err
 	}
-	if err := recalculateRelationshipCounters(database, now); err != nil {
+	if err := recalculateRelationshipCountersForAccountIDs(database, affectedRelationshipAccountIDs, now); err != nil {
 		return err
 	}
 	return nil
+}
+
+func accountIDsAffectedByRelationshipDeletion(database *gorm.DB, accountIDs *gorm.DB) ([]int64, error) {
+	var affected []int64
+	queries := []struct {
+		column string
+		where  string
+	}{
+		{column: "id", where: "id IN (?)"},
+		{column: "target_account_id", where: "account_id IN (?)"},
+		{column: "account_id", where: "target_account_id IN (?)"},
+	}
+	for index, query := range queries {
+		table := "follows"
+		if index == 0 {
+			table = "accounts"
+		}
+		var ids []int64
+		if err := database.Table(table).
+			Select(query.column).
+			Where(query.where, accountIDs).
+			Pluck(query.column, &ids).Error; err != nil {
+			return nil, err
+		}
+		affected = append(affected, ids...)
+	}
+	return uniqueInt64s(affected), nil
 }
 
 func (s *Server) tombstoneAdminDomainSuspendedAccountStatuses(database *gorm.DB, accountIDs *gorm.DB, now time.Time) error {
@@ -678,6 +709,10 @@ func (s *Server) tombstoneAdminDomainSuspendedAccountStatuses(database *gorm.DB,
 	reblogIDs := database.Model(&models.Status{}).
 		Select("id").
 		Where("reblog_of_id IN (?)", statusIDs)
+	affectedStatusIDs, err := statusIDsAffectedByAccountStatusDeletion(database, accountIDs)
+	if err != nil {
+		return err
+	}
 	if err := unlinkDirectStatusesFromConversationsForQuery(context.Background(), database, statusIDs, now); err != nil {
 		return err
 	}
@@ -689,7 +724,7 @@ func (s *Server) tombstoneAdminDomainSuspendedAccountStatuses(database *gorm.DB,
 	if err := database.Exec("DELETE FROM status_pins WHERE status_id IN (?) OR status_id IN (?)", statusIDs, reblogIDs).Error; err != nil {
 		return err
 	}
-	if err := recalculateStatusCounters(database, now); err != nil {
+	if err := recalculateStatusCountersForStatusIDs(database, affectedStatusIDs, now); err != nil {
 		return err
 	}
 	if s != nil {
@@ -699,6 +734,20 @@ func (s *Server) tombstoneAdminDomainSuspendedAccountStatuses(database *gorm.DB,
 		s.publishBatchedAccountDeletionStatusDeletesForQuery(ctx, database, reblogIDs, now)
 	}
 	return nil
+}
+
+func statusIDsAffectedByAccountStatusDeletion(database *gorm.DB, accountIDs *gorm.DB) ([]int64, error) {
+	var affected []int64
+	for _, column := range []string{"in_reply_to_id", "reblog_of_id"} {
+		var ids []int64
+		if err := database.Model(&models.Status{}).
+			Where("account_id IN (?) AND deleted_at IS NULL AND "+column+" IS NOT NULL", accountIDs).
+			Pluck(column, &ids).Error; err != nil {
+			return nil, err
+		}
+		affected = append(affected, ids...)
+	}
+	return uniqueInt64s(affected), nil
 }
 
 func adminDomainSuspendedAccountIDSubquery(database *gorm.DB, domain string, suspendedAt time.Time) *gorm.DB {

@@ -289,12 +289,54 @@ func TestRemoteActivityPubActorDeletionCommitsAgainstPostgres(t *testing.T) {
 	`).Scan(&actor).Error; err != nil {
 		t.Fatal(err)
 	}
-	var statusID int64
+	var peer models.Account
+	if err := database.Raw(`
+		INSERT INTO accounts (username, domain, uri, protocol, created_at, updated_at)
+		VALUES ('remote-peer', 'peer.example', 'https://peer.example/users/remote-peer', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		RETURNING *
+	`).Scan(&peer).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`
+		INSERT INTO account_stats (account_id, statuses_count, following_count, followers_count, created_at, updated_at)
+		VALUES (?, 0, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+		       (?, 2, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, peer.ID, actor.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var parentStatusID int64
 	if err := database.Raw(`
 		INSERT INTO statuses (account_id, uri, text, visibility, local, created_at, updated_at)
-		VALUES (?, 'https://remote.example/users/remote-delete/statuses/1', 'delete me', 0, false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		VALUES (?, 'https://peer.example/users/remote-peer/statuses/1', 'parent', 0, false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		RETURNING id
-	`, actor.ID).Scan(&statusID).Error; err != nil {
+	`, peer.ID).Scan(&parentStatusID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`
+		INSERT INTO status_stats (status_id, replies_count, reblogs_count, favourites_count, created_at, updated_at)
+		VALUES (?, 1, 1, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, parentStatusID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var statusID int64
+	if err := database.Raw(`
+		INSERT INTO statuses (account_id, uri, text, visibility, local, in_reply_to_id, reply, created_at, updated_at)
+		VALUES (?, 'https://remote.example/users/remote-delete/statuses/1', 'delete me', 0, false, ?, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		RETURNING id
+	`, actor.ID, parentStatusID).Scan(&statusID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`
+		INSERT INTO statuses (account_id, uri, text, visibility, local, reblog_of_id, created_at, updated_at)
+		VALUES (?, 'https://remote.example/users/remote-delete/statuses/2', '', 0, false, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, actor.ID, parentStatusID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`
+		INSERT INTO follows (account_id, target_account_id, created_at, updated_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+		       (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`, peer.ID, actor.ID, actor.ID, peer.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -315,6 +357,34 @@ func TestRemoteActivityPubActorDeletionCommitsAgainstPostgres(t *testing.T) {
 	}
 	if statusCount != 0 {
 		t.Fatalf("remote actor status remains after Delete: count = %d", statusCount)
+	}
+	var peerCounts struct {
+		Following int64
+		Followers int64
+	}
+	if err := database.Raw(`
+		SELECT following_count AS following, followers_count AS followers
+		FROM account_stats
+		WHERE account_id = ?
+	`, peer.ID).Scan(&peerCounts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if peerCounts.Following != 0 || peerCounts.Followers != 0 {
+		t.Fatalf("peer relationship counters after remote Delete = %#v", peerCounts)
+	}
+	var parentCounts struct {
+		Replies int64
+		Reblogs int64
+	}
+	if err := database.Raw(`
+		SELECT replies_count AS replies, reblogs_count AS reblogs
+		FROM status_stats
+		WHERE status_id = ?
+	`, parentStatusID).Scan(&parentCounts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if parentCounts.Replies != 0 || parentCounts.Reblogs != 0 {
+		t.Fatalf("parent status counters after remote Delete = %#v", parentCounts)
 	}
 }
 

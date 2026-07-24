@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,11 @@ func TestFetchRemoteMediaPreservesHTTPStatusForRailsUnsalvageableRetry(t *testin
 	_, err = fetchRemoteMedia(context.Background(), "https://remote.example/media/rate-limited.png", 1024, 0)
 	if status, ok := activityFetchStatus(err); !ok || status != http.StatusTooManyRequests {
 		t.Fatalf("429 fetch status = %d, %v; err=%v", status, ok, err)
+	}
+	for _, want := range []string{`target=remote`, `host="remote.example"`, `status=429`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("429 fetch error %q missing %q", err, want)
+		}
 	}
 	if remoteMediaErrorUnsalvageable(err) {
 		t.Fatal("429 remote media fetch must remain retryable like Rails response_error_unsalvageable?")

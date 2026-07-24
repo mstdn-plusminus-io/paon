@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -371,6 +372,38 @@ func TestWebPushDelivererReceivesVAPIDHeaderInputs(t *testing.T) {
 	}
 	if webPushTTL != 48*60*60 || string(webPushUrgency) != "normal" {
 		t.Fatalf("web push options = ttl:%d urgency:%q", webPushTTL, webPushUrgency)
+	}
+}
+
+func TestWebPushWorkerErrorsIdentifyRemoteEndpointHost(t *testing.T) {
+	subscription := models.WebPushSubscription{
+		ID:       42,
+		Endpoint: "https://push.example/send/private-subscription-token",
+	}
+	server := &Server{
+		webPushDeliverer: func(context.Context, config.Config, models.WebPushSubscription, []byte) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusInternalServerError, Body: http.NoBody}, nil
+		},
+	}
+	err := server.deliverWebPushTargetForWorker(context.Background(), subscription, []byte(`{}`))
+	if err == nil {
+		t.Fatal("web push status 500 unexpectedly succeeded")
+	}
+	for _, want := range []string{`web push delivery`, `target=remote`, `host="push.example"`, `status=500`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("web push status error %q missing %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "private-subscription-token") {
+		t.Fatalf("web push status error leaks endpoint path: %v", err)
+	}
+
+	server.webPushDeliverer = func(context.Context, config.Config, models.WebPushSubscription, []byte) (*http.Response, error) {
+		return nil, errors.New("connection reset")
+	}
+	err = server.deliverWebPushTargetForWorker(context.Background(), subscription, []byte(`{}`))
+	if err == nil || !strings.Contains(err.Error(), `target=remote host="push.example": connection reset`) {
+		t.Fatalf("web push transport error lacks target context: %v", err)
 	}
 }
 

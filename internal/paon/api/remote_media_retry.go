@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand"
 	"strconv"
 	"time"
@@ -126,7 +127,7 @@ func (s *Server) redownloadRemoteMediaAttachment(ctx context.Context, mediaAttac
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
-		return err
+		return taskTargetError("redownload media lookup", "local", serverLocalTaskTargetHost(s), err)
 	}
 	if media.RemoteURL == "" || s.cfg.DisableRemoteMediaCache {
 		return nil
@@ -135,7 +136,10 @@ func (s *Server) redownloadRemoteMediaAttachment(ctx context.Context, mediaAttac
 	if remoteMediaErrorUnsalvageable(err) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return fmt.Errorf("redownload media attachment_id=%d: %w", mediaAttachmentID, err)
+	}
+	return nil
 }
 
 func remoteMediaErrorUnsalvageable(err error) bool {

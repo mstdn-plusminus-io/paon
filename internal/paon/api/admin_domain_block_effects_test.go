@@ -237,13 +237,13 @@ func TestAdminDomainSuspendCleanupKeepsRailsSafeAssociationPurge(t *testing.T) {
 			`UPDATE status_stats`,
 			`DELETE FROM favourites`,
 			`DELETE FROM bookmarks`,
-			`recalculateRelationshipCounters(database, now)`,
+			`recalculateRelationshipCountersForAccountIDs(database, affectedRelationshipAccountIDs, now)`,
 		},
 		"tombstoneAdminDomainSuspendedAccountStatuses": {
 			`unlinkDirectStatusesFromConversationsForQuery(context.Background(), database, statusIDs, now)`,
 			`Updates(map[string]any{"deleted_at": now, "updated_at": now})`,
 			`DELETE FROM status_pins WHERE status_id IN (?) OR status_id IN (?)`,
-			`recalculateStatusCounters(database, now)`,
+			`recalculateStatusCountersForStatusIDs(database, affectedStatusIDs, now)`,
 			`s.publishBatchedAccountDeletionStatusDeletesForQuery(ctx, database, statusIDs, now)`,
 			`s.publishBatchedAccountDeletionStatusDeletesForQuery(ctx, database, reblogIDs, now)`,
 		},
@@ -253,6 +253,18 @@ func TestAdminDomainSuspendCleanupKeepsRailsSafeAssociationPurge(t *testing.T) {
 			if !functionBodyContains(t, src, fn, want) {
 				t.Fatalf("%s does not contain %q", fn, want)
 			}
+		}
+	}
+	instancesSrc, err := os.ReadFile("admin_instances.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for fn, want := range map[string]string{
+		"recalculateRelationshipCountersForAccountIDs": `WHERE account_id IN ?`,
+		"recalculateStatusCountersForStatusIDs":        `WHERE status_id IN ?`,
+	} {
+		if !functionBodyContains(t, instancesSrc, fn, want) {
+			t.Fatalf("%s must scope its indexed recount with %q", fn, want)
 		}
 	}
 }

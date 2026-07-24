@@ -460,6 +460,10 @@ en:
       relation: Relation
       retries: Retries
       retry: Retry
+      delete_all: Delete all
+      delete_all_confirm: Permanently delete all archived tasks matching the current queue filter? This action cannot be undone.
+      delete_all_failed: The archived tasks could not be deleted. Refresh and try again.
+      delete_all_success: "%d archived tasks were permanently deleted."
       retry_confirm: Retry this task now? Its retry count will not be reset.
       retry_failed: The task could not be retried. Refresh and try again.
       retry_invalid_state: Only retry and archived tasks can be retried.

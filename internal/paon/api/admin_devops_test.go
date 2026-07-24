@@ -31,7 +31,7 @@ func TestDevopsPagesRequireWebSession(t *testing.T) {
 			t.Fatalf("%s Location = %q, want %q", path, got, want)
 		}
 	}
-	for _, path := range []string{"/asynq/tasks/retry", "/asynq/tasks/retry_all"} {
+	for _, path := range []string{"/asynq/tasks/retry", "/asynq/tasks/retry_all", "/asynq/tasks/delete_all"} {
 		retryRequest := httptest.NewRequest(http.MethodPost, path+"?x=1", strings.NewReader(url.Values{
 			"source_state": {"retry"},
 			"queue":        {"default"},

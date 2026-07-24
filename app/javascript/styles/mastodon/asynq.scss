@@ -336,6 +336,16 @@
   }
 }
 
+.asynq-button--destructive {
+  background-color: $ui-button-destructive-background-color;
+
+  &:active,
+  &:focus,
+  &:hover {
+    background-color: $ui-button-destructive-focus-background-color;
+  }
+}
+
 .asynq-task-table {
   min-width: 720px !important;
 }

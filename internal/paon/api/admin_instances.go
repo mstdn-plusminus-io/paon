@@ -295,6 +295,21 @@ SET following_count = (SELECT COUNT(*) FROM follows WHERE follows.account_id = a
 `, now).Error
 }
 
+func recalculateRelationshipCountersForAccountIDs(tx *gorm.DB, accountIDs []int64, now time.Time) error {
+	for _, batch := range int64Batches(uniqueInt64s(accountIDs), 1_000) {
+		if err := tx.Exec(`
+UPDATE account_stats
+SET following_count = (SELECT COUNT(*) FROM follows WHERE follows.account_id = account_stats.account_id),
+    followers_count = (SELECT COUNT(*) FROM follows WHERE follows.target_account_id = account_stats.account_id),
+    updated_at = ?
+WHERE account_id IN ?
+`, now, batch).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func recalculateStatusCounters(tx *gorm.DB, now time.Time) error {
 	return tx.Exec(`
 UPDATE status_stats
@@ -303,6 +318,22 @@ SET replies_count = (SELECT COUNT(*) FROM statuses WHERE statuses.in_reply_to_id
     favourites_count = (SELECT COUNT(*) FROM favourites WHERE favourites.status_id = status_stats.status_id),
     updated_at = ?
 `, now).Error
+}
+
+func recalculateStatusCountersForStatusIDs(tx *gorm.DB, statusIDs []int64, now time.Time) error {
+	for _, batch := range int64Batches(uniqueInt64s(statusIDs), 1_000) {
+		if err := tx.Exec(`
+UPDATE status_stats
+SET replies_count = (SELECT COUNT(*) FROM statuses WHERE statuses.in_reply_to_id = status_stats.status_id AND statuses.deleted_at IS NULL),
+    reblogs_count = (SELECT COUNT(*) FROM statuses WHERE statuses.reblog_of_id = status_stats.status_id AND statuses.deleted_at IS NULL),
+    favourites_count = (SELECT COUNT(*) FROM favourites WHERE favourites.status_id = status_stats.status_id),
+    updated_at = ?
+WHERE status_id IN ?
+`, now, batch).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) refreshInstancesMaterializedView() error {

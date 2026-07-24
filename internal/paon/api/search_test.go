@@ -696,10 +696,10 @@ func TestMeiliActivityPubStatusIndexHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks := map[string]string{
-		"processActivityPubCreateNote": `s.meiliIndexTagsBestEffort(context.Background(), affectedTagIDs)`,
-		"processActivityPubUpdate":     `s.meiliIndexTagsBestEffort(context.Background(), affectedTagIDs)`,
-		"processActivityPubDelete":     `s.meiliIndexTagsBestEffort(context.Background(), affectedTagIDs)`,
-		"activityPubStatusTagIDs":      `tx.Table("statuses_tags").Select("tag_id AS id").Where("status_id = ?", statusID).Find(&rows).Error`,
+		"processActivityPubCreateNote":        `s.meiliIndexTagsBestEffort(context.Background(), affectedTagIDs)`,
+		"processActivityPubUpdate":            `s.meiliIndexTagsBestEffort(context.Background(), affectedTagIDs)`,
+		"processActivityPubDeleteWithContext": `s.meiliIndexTagsBestEffort(context.Background(), affectedTagIDs)`,
+		"activityPubStatusTagIDs":             `tx.Table("statuses_tags").Select("tag_id AS id").Where("status_id = ?", statusID).Find(&rows).Error`,
 	}
 	for fn, want := range checks {
 		if !functionBodyContains(t, src, fn, want) {
@@ -707,9 +707,9 @@ func TestMeiliActivityPubStatusIndexHooks(t *testing.T) {
 		}
 	}
 	for fn, want := range map[string]string{
-		"processActivityPubCreateNote": `s.meiliIndexStatusBestEffort(context.Background(), createdStatusID)`,
-		"processActivityPubUpdate":     `s.meiliIndexStatusBestEffort(context.Background(), status.ID)`,
-		"processActivityPubDelete":     `s.meiliDeleteStatusBestEffort(context.Background(), status.ID)`,
+		"processActivityPubCreateNote":        `s.meiliIndexStatusBestEffort(context.Background(), createdStatusID)`,
+		"processActivityPubUpdate":            `s.meiliIndexStatusBestEffort(context.Background(), status.ID)`,
+		"processActivityPubDeleteWithContext": `s.meiliDeleteStatusBestEffort(context.Background(), status.ID)`,
 	} {
 		if !functionBodyContains(t, src, fn, want) {
 			t.Fatalf("activitypub_inbox.go:%s does not contain %q", fn, want)
@@ -723,8 +723,8 @@ func TestMeiliActivityPubActorIndexHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks := map[string]string{
-		"updateActivityPubActor":   `s.meiliIndexAccountBestEffort(context.Background(), actor.ID)`,
-		"processActivityPubDelete": `s.meiliIndexAccountBestEffort(context.Background(), actor.ID)`,
+		"updateActivityPubActor":              `s.meiliIndexAccountBestEffort(context.Background(), actor.ID)`,
+		"processActivityPubDeleteWithContext": `s.meiliIndexAccountBestEffort(ctx, actor.ID)`,
 	}
 	for fn, want := range checks {
 		if !functionBodyContains(t, src, fn, want) {

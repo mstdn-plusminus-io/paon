@@ -1255,7 +1255,7 @@ func fetchActivityWebFingerDocument(endpoint string) (activityWebFinger, error) 
 	req.Header.Set("Accept", "application/jrd+json, application/json")
 	resp, err := activityWebFingerHTTPClient().Do(req)
 	if err != nil {
-		return activityWebFinger{}, err
+		return activityWebFinger{}, taskTargetError("webfinger fetch", "remote", remoteTaskTargetHost(endpoint), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -1281,7 +1281,7 @@ func fetchActivityWebFingerHostMetaURL(domain string, resource string) (string, 
 	req.Header.Set("Accept", "application/xrd+xml, application/xml, text/xml")
 	resp, err := activityWebFingerHTTPClient().Do(req)
 	if err != nil {
-		return "", err
+		return "", taskTargetError("webfinger host-meta fetch", "remote", endpoint.Hostname(), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

@@ -1676,30 +1676,26 @@ func (s *Server) deliverActivityPubOnce(local models.Account, inboxURL string, b
 		return fmt.Errorf("activitypub delivery request source_account_id=%d inbox=%q: %w", local.ID, inboxURL, err)
 	}
 	defer resp.Body.Close()
-	if activityPubDeliveryResponseSuccessful(resp.StatusCode) {
-		s.trackActivityPubDeliveryStoplightSuccess(inboxURL)
-		s.trackActivityPubDeliverySuccess(host)
-		return nil
-	}
-	responseSnippet := activityPubResponseSnippet(resp.Body)
+	permanentlySuspended := false
 	if resp.StatusCode == http.StatusUnauthorized {
-		permanentlySuspended, err := s.accountSuspendedPermanently(&local)
+		permanentlySuspended, err = s.accountSuspendedPermanently(&local)
 		if err != nil {
 			return err
 		}
-		if activityPubDeliveryAuthorizationFailureUnsalvageable(resp.StatusCode, permanentlySuspended) {
-			logActivityPubDeliveryRejected(local.ID, inboxURL, resp.StatusCode, responseSnippet)
-			s.trackActivityPubDeliveryStoplightSuccess(inboxURL)
-			s.trackActivityPubDeliverySuccess(host)
-			return nil
-		}
 	}
-	if activityPubDeliveryResponseErrorUnsalvageable(resp.StatusCode) {
-		logActivityPubDeliveryRejected(local.ID, inboxURL, resp.StatusCode, responseSnippet)
+	switch activityPubDeliveryResponseDispositionFor(resp.StatusCode, permanentlySuspended) {
+	case activityPubDeliveryResponseSucceeded:
 		s.trackActivityPubDeliveryStoplightSuccess(inboxURL)
 		s.trackActivityPubDeliverySuccess(host)
 		return nil
+	case activityPubDeliveryResponseDiscarded:
+		responseSnippet := activityPubResponseSnippet(resp.Body)
+		logActivityPubDeliveryRejected(local.ID, inboxURL, resp.StatusCode, responseSnippet)
+		s.trackActivityPubDeliveryStoplightSuccess(inboxURL)
+		s.trackActivityPubDeliveryStats(host, "failure")
+		return nil
 	}
+	responseSnippet := activityPubResponseSnippet(resp.Body)
 	s.trackActivityPubDeliveryStoplightFailure(inboxURL)
 	return fmt.Errorf("activitypub delivery failed source_account_id=%d inbox=%q status=%d response=%q", local.ID, inboxURL, resp.StatusCode, responseSnippet)
 }
@@ -1778,6 +1774,25 @@ func (s *Server) trackActivityPubDeliveryStoplightSuccess(inboxURL string) {
 
 func activityPubDeliveryResponseSuccessful(status int) bool {
 	return status >= 200 && status < 300
+}
+
+type activityPubDeliveryResponseDisposition uint8
+
+const (
+	activityPubDeliveryResponseRetry activityPubDeliveryResponseDisposition = iota
+	activityPubDeliveryResponseSucceeded
+	activityPubDeliveryResponseDiscarded
+)
+
+func activityPubDeliveryResponseDispositionFor(status int, sourcePermanentlySuspended bool) activityPubDeliveryResponseDisposition {
+	if activityPubDeliveryResponseSuccessful(status) {
+		return activityPubDeliveryResponseSucceeded
+	}
+	if activityPubDeliveryResponseErrorUnsalvageable(status) ||
+		activityPubDeliveryAuthorizationFailureUnsalvageable(status, sourcePermanentlySuspended) {
+		return activityPubDeliveryResponseDiscarded
+	}
+	return activityPubDeliveryResponseRetry
 }
 
 func activityPubDeliveryResponseErrorUnsalvageable(status int) bool {
