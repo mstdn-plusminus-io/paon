@@ -2061,6 +2061,7 @@ func (s *Server) routes() {
 	e.GET("/asynq/stats", s.sidekiqStats)
 	e.POST("/asynq/tasks/retry", s.retryAsynqTask)
 	e.POST("/asynq/tasks/retry_all", s.retryAllAsynqTasks)
+	e.POST("/asynq/tasks/delete_all", s.deleteAllArchivedAsynqTasks)
 	e.GET("/asynq/*", s.sidekiqPage)
 	e.GET("/pghero", s.pgHeroPage)
 	e.GET("/pghero/*", s.pgHeroPage)

@@ -20,23 +20,26 @@ import (
 )
 
 type fakeAsynqInspectorClient struct {
-	queues         []string
-	queueInfos     map[string]*asynq.QueueInfo
-	history        map[string][]*asynq.DailyStats
-	servers        []*asynq.ServerInfo
-	tasks          map[string]map[string][]*asynq.TaskInfo
-	queueErr       error
-	queueInfoErr   error
-	historyErr     error
-	serversErr     error
-	listErr        map[string]error
-	queueInfoCalls map[string]int
-	listCalls      map[string]int
-	listRequests   map[string][]fakeAsynqListRequest
-	runAllCounts   map[string]int
-	runAllErrs     map[string]error
-	runAllCalls    []fakeAsynqRunAllRequest
-	closeCalls     int
+	queues          []string
+	queueInfos      map[string]*asynq.QueueInfo
+	history         map[string][]*asynq.DailyStats
+	servers         []*asynq.ServerInfo
+	tasks           map[string]map[string][]*asynq.TaskInfo
+	queueErr        error
+	queueInfoErr    error
+	historyErr      error
+	serversErr      error
+	listErr         map[string]error
+	queueInfoCalls  map[string]int
+	listCalls       map[string]int
+	listRequests    map[string][]fakeAsynqListRequest
+	runAllCounts    map[string]int
+	runAllErrs      map[string]error
+	runAllCalls     []fakeAsynqRunAllRequest
+	deleteAllCounts map[string]int
+	deleteAllErrs   map[string]error
+	deleteAllCalls  []string
+	closeCalls      int
 }
 
 type fakeAsynqListRequest struct {
@@ -177,6 +180,11 @@ func (f *fakeAsynqInspectorClient) RunAllRetryTasks(queue string) (int, error) {
 
 func (f *fakeAsynqInspectorClient) RunAllArchivedTasks(queue string) (int, error) {
 	return f.runAll("archived", queue)
+}
+
+func (f *fakeAsynqInspectorClient) DeleteAllArchivedTasks(queue string) (int, error) {
+	f.deleteAllCalls = append(f.deleteAllCalls, queue)
+	return f.deleteAllCounts[queue], f.deleteAllErrs[queue]
 }
 
 func (f *fakeAsynqTaskRetryer) RetryTask(_ context.Context, queue string, taskID string, sourceState string) error {
@@ -508,6 +516,41 @@ func TestRunAllAsynqTasksNowUsesOfficialBulkOperationsWithinOwnedQueues(t *testi
 	}
 }
 
+func TestDeleteAllArchivedAsynqTasksNowUsesOfficialBulkOperationWithinOwnedQueues(t *testing.T) {
+	inspector := &fakeAsynqInspectorClient{
+		queues: []string{"foreign:default", "tenant:push", "tenant:pull"},
+		deleteAllCounts: map[string]int{
+			"tenant:pull": 20,
+			"tenant:push": 723,
+		},
+		deleteAllErrs: map[string]error{},
+	}
+	server := &Server{cfg: config.Config{RedisNamespace: "tenant:"}, asynqInspector: inspector}
+
+	count, err := server.deleteAllArchivedAsynqTasksNow("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 743 {
+		t.Fatalf("bulk delete count = %d, want 743", count)
+	}
+	if want := []string{"tenant:pull", "tenant:push"}; !reflect.DeepEqual(inspector.deleteAllCalls, want) {
+		t.Fatalf("bulk delete calls = %#v, want %#v", inspector.deleteAllCalls, want)
+	}
+
+	inspector.deleteAllCalls = nil
+	count, err = server.deleteAllArchivedAsynqTasksNow("tenant:pull")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 20 || !reflect.DeepEqual(inspector.deleteAllCalls, []string{"tenant:pull"}) {
+		t.Fatalf("filtered delete count=%d calls=%#v", count, inspector.deleteAllCalls)
+	}
+	if _, err := server.deleteAllArchivedAsynqTasksNow("foreign:default"); !errors.Is(err, errUnknownAsynqQueue) {
+		t.Fatalf("foreign queue error = %v, want errUnknownAsynqQueue", err)
+	}
+}
+
 func TestRunAsynqTaskNowAllowsOnlyRetryAndArchivedTasks(t *testing.T) {
 	for _, sourceState := range []string{"retry", "archived"} {
 		t.Run(sourceState, func(t *testing.T) {
@@ -745,6 +788,32 @@ func TestAsynqTaskRetryActionsRenderOnlyForRetryAndArchived(t *testing.T) {
 	if filterEnd < 0 {
 		t.Fatalf("retry-all button is not rendered to the right of the filter: %s", pageHTML)
 	}
+	if strings.Contains(pageHTML, `/asynq/tasks/delete_all`) {
+		t.Fatalf("retry page unexpectedly contains the archived-task delete action: %s", pageHTML)
+	}
+
+	archivedPage := &asynqTaskPage{State: "archived", Page: 1, Queue: "tenant:pull", Total: 1, Tasks: []asynqTaskView{task}}
+	archivedHTML := asynqTasksHTML(asynqDashboardSnapshot{Queues: []asynqQueueView{{Name: "tenant:pull", DisplayName: "pull"}}}, archivedPage, "archived", "ja")
+	for _, want := range []string{
+		`action="/asynq/tasks/delete_all" method="post"`,
+		`name="queue" value="tenant:pull"`,
+		`class="button asynq-button--destructive"`,
+		`data-confirm="現在のキュー絞り込みに一致するアーカイブ済みタスクをすべて完全に削除します。この操作は取り消せません。よろしいですか？"`,
+		`全て削除`,
+	} {
+		if !strings.Contains(archivedHTML, want) {
+			t.Fatalf("archived page is missing %q: %s", want, archivedHTML)
+		}
+	}
+	retryAllEnd := strings.Index(archivedHTML, `</form><form action="/asynq/tasks/delete_all"`)
+	if retryAllEnd < 0 {
+		t.Fatalf("delete-all button is not rendered to the right of retry-all: %s", archivedHTML)
+	}
+	withCSRF := injectBrowserCSRF(`<html><body>`+archivedHTML+`</body></html>`, "csrf-token")
+	deleteFormStart := strings.Index(withCSRF, `<form action="/asynq/tasks/delete_all"`)
+	if deleteFormStart < 0 || !strings.Contains(withCSRF[deleteFormStart:], `name="authenticity_token" value="csrf-token"`) {
+		t.Fatalf("delete-all form did not receive a CSRF token: %s", withCSRF)
+	}
 }
 
 func TestAsynqSummaryCountsUseLocaleGroupingAcrossViews(t *testing.T) {
@@ -860,6 +929,32 @@ func TestRetryAllAsynqTasksAuthorizedPreservesFilterAndReportsCount(t *testing.T
 	}
 }
 
+func TestDeleteAllArchivedAsynqTasksAuthorizedPreservesFilterAndReportsCount(t *testing.T) {
+	inspector := &fakeAsynqInspectorClient{
+		deleteAllCounts: map[string]int{"tenant:push": 723},
+		deleteAllErrs:   map[string]error{},
+	}
+	server := &Server{cfg: config.Config{RedisNamespace: "tenant:"}, asynqInspector: inspector}
+	form := url.Values{"queue": {"tenant:push"}}
+	request := httptest.NewRequest(http.MethodPost, "/asynq/tasks/delete_all", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+
+	if err := server.deleteAllArchivedAsynqTasksAuthorized(echo.NewContext(request, recorder, echo.New()), "ja"); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	location := recorder.Header().Get("Location")
+	if !strings.HasPrefix(location, "/asynq/archived?") || !strings.Contains(location, "queue=tenant%3Apush") || !strings.Contains(location, "723") {
+		t.Fatalf("Location = %q", location)
+	}
+	if !reflect.DeepEqual(inspector.deleteAllCalls, []string{"tenant:push"}) {
+		t.Fatalf("delete calls = %#v", inspector.deleteAllCalls)
+	}
+}
+
 func TestAsynqRetryMutationRequiresBrowserCSRFBeforeCallingRetryer(t *testing.T) {
 	server := newBrowserSecurityTestServer()
 	retryer := &fakeAsynqTaskRetryer{}
@@ -960,6 +1055,56 @@ func TestAsynqRetryAllMutationRequiresBrowserCSRF(t *testing.T) {
 	e.ServeHTTP(validRecorder, validRequest)
 	if validRecorder.Code != http.StatusSeeOther || !reflect.DeepEqual(inspector.runAllCalls, []fakeAsynqRunAllRequest{{State: "retry", Queue: "default"}}) {
 		t.Fatalf("valid CSRF status=%d calls=%#v", validRecorder.Code, inspector.runAllCalls)
+	}
+}
+
+func TestAsynqDeleteAllMutationRequiresBrowserCSRF(t *testing.T) {
+	server := newBrowserSecurityTestServer()
+	inspector := &fakeAsynqInspectorClient{
+		deleteAllCounts: map[string]int{"default": 2},
+		deleteAllErrs:   map[string]error{},
+	}
+	server.asynqInspector = inspector
+	e := echo.New()
+	e.Use(server.browserSecurityMiddleware)
+	e.GET("/asynq/archived", func(c *echo.Context) error {
+		return c.HTML(http.StatusOK, `<html><body><form method="post" action="/asynq/tasks/delete_all"></form></body></html>`)
+	})
+	e.POST("/asynq/tasks/delete_all", func(c *echo.Context) error {
+		return server.deleteAllArchivedAsynqTasksAuthorized(c, "en")
+	})
+
+	authCookie := &http.Cookie{Name: sessionCookieName, Value: "authenticated"}
+	getRequest := httptest.NewRequest(http.MethodGet, "/asynq/archived", nil)
+	getRequest.AddCookie(authCookie)
+	getRecorder := httptest.NewRecorder()
+	e.ServeHTTP(getRecorder, getRequest)
+	browserCookie := browserSessionCookieFromRecorder(t, getRecorder)
+	state, err := server.openBrowserSession(browserCookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{"queue": {"default"}}
+	missingRequest := httptest.NewRequest(http.MethodPost, "/asynq/tasks/delete_all", strings.NewReader(form.Encode()))
+	missingRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	missingRequest.AddCookie(authCookie)
+	missingRequest.AddCookie(browserCookie)
+	missingRecorder := httptest.NewRecorder()
+	e.ServeHTTP(missingRecorder, missingRequest)
+	if missingRecorder.Code != http.StatusUnprocessableEntity || len(inspector.deleteAllCalls) != 0 {
+		t.Fatalf("missing CSRF status=%d calls=%#v", missingRecorder.Code, inspector.deleteAllCalls)
+	}
+
+	form.Set("authenticity_token", state.CSRFToken)
+	validRequest := httptest.NewRequest(http.MethodPost, "/asynq/tasks/delete_all", strings.NewReader(form.Encode()))
+	validRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	validRequest.AddCookie(authCookie)
+	validRequest.AddCookie(browserCookie)
+	validRecorder := httptest.NewRecorder()
+	e.ServeHTTP(validRecorder, validRequest)
+	if validRecorder.Code != http.StatusSeeOther || !reflect.DeepEqual(inspector.deleteAllCalls, []string{"default"}) {
+		t.Fatalf("valid CSRF status=%d calls=%#v", validRecorder.Code, inspector.deleteAllCalls)
 	}
 }
 
