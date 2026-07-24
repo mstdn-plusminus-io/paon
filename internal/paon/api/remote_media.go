@@ -294,10 +294,10 @@ func fetchRemoteImageMedia(ctx context.Context, rawURL string, maxBytes int) (re
 func fetchRemoteMedia(ctx context.Context, rawURL string, maxBytes int, mediaType int) (remoteMediaDownload, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return remoteMediaDownload{}, errRemoteMediaURLInvalid
+		return remoteMediaDownload{}, taskTargetError("remote media fetch", "remote", remoteTaskTargetHost(rawURL), errRemoteMediaURLInvalid)
 	}
 	if !activityFetchHostAllowed(parsed.Hostname()) {
-		return remoteMediaDownload{}, errRemoteMediaHostNotAllowed
+		return remoteMediaDownload{}, taskTargetError("remote media fetch", "remote", parsed.Hostname(), errRemoteMediaHostNotAllowed)
 	}
 	if maxBytes <= 0 {
 		maxBytes = 40 * 1024 * 1024
@@ -306,12 +306,12 @@ func fetchRemoteMedia(ctx context.Context, rawURL string, maxBytes int, mediaTyp
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return remoteMediaDownload{}, err
+		return remoteMediaDownload{}, taskTargetError("remote media fetch", "remote", parsed.Hostname(), err)
 	}
 	req.Header.Set("Accept", remoteMediaAcceptHeader(mediaType))
 	resp, err := activityHTTPClient.Do(req)
 	if err != nil {
-		return remoteMediaDownload{}, err
+		return remoteMediaDownload{}, taskTargetError("failed to fetch remote media", "remote", parsed.Hostname(), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -319,21 +319,21 @@ func fetchRemoteMedia(ctx context.Context, rawURL string, maxBytes int, mediaTyp
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)+1))
 	if err != nil {
-		return remoteMediaDownload{}, err
+		return remoteMediaDownload{}, taskTargetError("remote media fetch", "remote", parsed.Hostname(), err)
 	}
 	if len(body) == 0 || len(body) > maxBytes {
-		return remoteMediaDownload{}, errRemoteMediaSizeInvalid
+		return remoteMediaDownload{}, taskTargetError("remote media fetch", "remote", parsed.Hostname(), errRemoteMediaSizeInvalid)
 	}
 	filename := remoteMediaFilename(rawURL, resp.Header.Get("Content-Type"))
 	contentType := mediaContentType(filename, resp.Header.Get("Content-Type"))
 	if !mediaContentTypeSupported(contentType, mediaType) {
-		return remoteMediaDownload{}, errRemoteMediaContentTypeUnsupported
+		return remoteMediaDownload{}, taskTargetError("remote media fetch", "remote", parsed.Hostname(), errRemoteMediaContentTypeUnsupported)
 	}
 	if (mediaType == 0 || mediaType == 1) && mediaTypeFromContentType(contentType) != 0 && mediaTypeFromContentType(contentType) != 1 {
-		return remoteMediaDownload{}, errRemoteMediaNotImage
+		return remoteMediaDownload{}, taskTargetError("remote media fetch", "remote", parsed.Hostname(), errRemoteMediaNotImage)
 	}
 	if (mediaType == 0 || mediaType == 1) && !remoteMediaImageReadable(body) {
-		return remoteMediaDownload{}, errRemoteMediaUnreadable
+		return remoteMediaDownload{}, taskTargetError("remote media fetch", "remote", parsed.Hostname(), errRemoteMediaUnreadable)
 	}
 	return remoteMediaDownload{filename: filename, contentType: contentType, body: body}, nil
 }

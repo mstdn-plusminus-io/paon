@@ -637,7 +637,7 @@ func fetchActivityResourceWithMetadataAndUserAgentSignedWithAcceptAndContext(ctx
 	}
 	resp, err := activityHTTPClientForActivityFetch(s, signer).Do(req)
 	if err != nil {
-		return fetchedActivityResource{}, err
+		return fetchedActivityResource{}, taskTargetError("failed to fetch remote activity", "remote", parsed.Hostname(), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

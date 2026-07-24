@@ -109,7 +109,7 @@ func (s *Server) performWebPushNotificationDelivery(ctx context.Context, subscri
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
-		return err
+		return taskTargetError("web push subscription lookup", "local", serverLocalTaskTargetHost(s), err)
 	}
 	var notification models.Notification
 	if err := s.db.WithContext(ctx).
@@ -119,17 +119,17 @@ func (s *Server) performWebPushNotificationDelivery(ctx context.Context, subscri
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
-		return err
+		return taskTargetError("web push notification lookup", "local", serverLocalTaskTargetHost(s), err)
 	}
 	notifications := []models.Notification{notification}
 	if err := s.hydrateNotificationStatuses(notifications); err != nil {
-		return err
+		return taskTargetError("web push status hydration", "local", serverLocalTaskTargetHost(s), err)
 	}
 	if err := s.hydrateNotificationReports(notifications); err != nil {
-		return err
+		return taskTargetError("web push report hydration", "local", serverLocalTaskTargetHost(s), err)
 	}
 	if err := s.hydrateNotificationAccounts(notifications); err != nil {
-		return err
+		return taskTargetError("web push account hydration", "local", serverLocalTaskTargetHost(s), err)
 	}
 	notification = notifications[0]
 	if !s.webPushNotificationActivityPresent(ctx, notification) || !webPushSubscriptionPushable(s.db.WithContext(ctx), subscription, notification) {
@@ -141,7 +141,7 @@ func (s *Server) performWebPushNotificationDelivery(ctx context.Context, subscri
 	}
 	payload, err := webPushNotificationJSON(s.cfg, webPushDeliveryTarget{Subscription: subscription, AccessToken: token, Locale: locale}, notification)
 	if err != nil {
-		return err
+		return taskTargetError("web push payload generation", "local", serverLocalTaskTargetHost(s), err)
 	}
 	return s.deliverWebPushTargetForWorker(ctx, subscription, payload)
 }
@@ -153,7 +153,7 @@ func (s *Server) deliverWebPushTargetForWorker(ctx context.Context, subscription
 	}
 	response, err := deliver(ctx, s.webPushDeliveryConfig(), subscription, payload)
 	if err != nil {
-		return err
+		return taskTargetError("web push delivery", "remote", remoteTaskTargetHost(subscription.Endpoint), err)
 	}
 	if response != nil && response.Body != nil {
 		_ = response.Body.Close()
@@ -165,7 +165,7 @@ func (s *Server) deliverWebPushTargetForWorker(ctx context.Context, subscription
 		_ = s.db.WithContext(ctx).Delete(&models.WebPushSubscription{}, subscription.ID).Error
 		return nil
 	}
-	return fmt.Errorf("web push endpoint returned status %d", response.StatusCode)
+	return fmt.Errorf("web push delivery target=remote host=%q status=%d", remoteTaskTargetHost(subscription.Endpoint), response.StatusCode)
 }
 
 func (s *Server) deliverWebPushTargetOnce(ctx context.Context, subscription models.WebPushSubscription, payload []byte) bool {

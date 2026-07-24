@@ -2026,7 +2026,7 @@ func logAsynqTaskError(ctx context.Context, task *asynq.Task, err error) {
 func (s *Server) handleAsynqRedownloadAccountMedia(ctx context.Context, t *asynq.Task) error {
 	var p asynqAccountPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("redownload account media: %w", err)
+		return taskTargetError("redownload account media payload", "local", serverLocalTaskTargetHost(s), err)
 	}
 	if s == nil || s.db == nil || p.AccountID == 0 {
 		return nil
@@ -2042,11 +2042,14 @@ func (s *Server) handleAsynqRedownloadAccountMedia(ctx context.Context, t *asynq
 	}
 	var account models.Account
 	if err := s.db.WithContext(ctx).Where("id = ?", p.AccountID).First(&account).Error; err != nil {
-		return workerLookupError("redownload account media lookup", err)
+		if lookupErr := workerLookupError("redownload account media lookup", err); lookupErr != nil {
+			return taskTargetError("redownload account media lookup", "local", serverLocalTaskTargetHost(s), lookupErr)
+		}
+		return nil
 	}
 	allowed, err := s.remoteAccountMediaRedownloadAllowed(ctx, account, kind)
 	if err != nil {
-		return err
+		return taskTargetError("redownload account "+kind+" policy lookup", "local", serverLocalTaskTargetHost(s), err)
 	}
 	if !allowed {
 		return nil
@@ -2059,7 +2062,7 @@ func (s *Server) handleAsynqRedownloadAccountMedia(ctx context.Context, t *asynq
 		if remoteMediaErrorUnsalvageable(err) {
 			return nil
 		}
-		return fmt.Errorf("redownload account %s: %w", kind, err)
+		return fmt.Errorf("redownload account %s account_id=%d: %w", kind, account.ID, err)
 	}
 	return nil
 }
@@ -2067,7 +2070,7 @@ func (s *Server) handleAsynqRedownloadAccountMedia(ctx context.Context, t *asynq
 func (s *Server) handleAsynqRedownloadMedia(ctx context.Context, t *asynq.Task) error {
 	var p asynqMediaAttachmentPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("redownload media: %w", err)
+		return taskTargetError("redownload media payload", "local", serverLocalTaskTargetHost(s), err)
 	}
 	return s.redownloadRemoteMediaAttachment(ctx, p.MediaAttachmentID)
 }
@@ -3658,7 +3661,7 @@ func (s *Server) handleAsynqPushUpdate(ctx context.Context, t *asynq.Task) error
 func (s *Server) handleAsynqWebPushNotification(ctx context.Context, t *asynq.Task) error {
 	var p asynqWebPushNotificationPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("web push notification: %w", err)
+		return taskTargetError("web push notification payload", "local", serverLocalTaskTargetHost(s), err)
 	}
 	if s == nil || s.db == nil || p.SubscriptionID == 0 || p.NotificationID == 0 {
 		return nil
@@ -3753,7 +3756,7 @@ func (s *Server) handleAsynqTriggerWebhook(ctx context.Context, t *asynq.Task) e
 func (s *Server) handleAsynqWebhookDelivery(ctx context.Context, t *asynq.Task) error {
 	var p asynqWebhookDeliveryPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("webhook delivery: %w", err)
+		return taskTargetError("webhook delivery payload", "local", serverLocalTaskTargetHost(s), err)
 	}
 	if s == nil || s.db == nil || p.WebhookID == 0 || len(p.Body) == 0 {
 		return nil
@@ -3763,7 +3766,7 @@ func (s *Server) handleAsynqWebhookDelivery(ctx context.Context, t *asynq.Task) 
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
-		return err
+		return taskTargetError("webhook lookup", "local", serverLocalTaskTargetHost(s), err)
 	}
 	return s.deliverWebhook(webhook, p.Body)
 }

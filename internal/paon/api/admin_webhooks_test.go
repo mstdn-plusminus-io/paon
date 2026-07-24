@@ -480,3 +480,32 @@ func TestDeliverWebhookPostsRailsHeadersAndRenderedBody(t *testing.T) {
 		t.Fatal("webhook request was not received")
 	}
 }
+
+func TestWebhookDeliveryErrorIdentifiesRemoteEndpointHost(t *testing.T) {
+	previousClient := webhookHTTPClient
+	t.Cleanup(func() { webhookHTTPClient = previousClient })
+	webhookHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Body:       http.NoBody,
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	server := &Server{cfg: config.Config{LocalDomain: "local.example"}}
+	webhook := models.Webhook{URL: "https://hooks.example/private/path?token=secret"}
+	err := server.deliverWebhook(webhook, []byte(`{"event":"report.created"}`))
+	if err == nil {
+		t.Fatal("webhook status 500 unexpectedly succeeded")
+	}
+	for _, want := range []string{`webhook delivery`, `target=remote`, `host="hooks.example"`, `status=500`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("webhook error %q missing %q", err, want)
+		}
+	}
+	for _, secret := range []string{"private/path", "token", "secret"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("webhook error leaks endpoint detail %q: %v", secret, err)
+		}
+	}
+}
