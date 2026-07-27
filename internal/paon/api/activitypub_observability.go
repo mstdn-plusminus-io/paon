@@ -127,7 +127,7 @@ func activityPubProcessingError(body []byte, actorID int64, deliveredTo int64, e
 
 func logActivityPubUnsupportedPayload(payload activityPayload, actorID int64, reason string) {
 	fields := activityPubLogFieldsFromPayload(payload)
-	log.Printf("activitypub processing ignored reason=%q actor_id=%d activity_type=%q activity_id=%q actor=%q object_type=%q object=%q",
+	log.Printf("activitypub processing rejected reason=%q actor_id=%d activity_type=%q activity_id=%q actor=%q object_type=%q object=%q",
 		reason, actorID, fields.Type, fields.ID, fields.Actor, activityPubSafeLogValue(payload.Object.TypeExact, activityPubLogValueLimit), fields.Object)
 }
 

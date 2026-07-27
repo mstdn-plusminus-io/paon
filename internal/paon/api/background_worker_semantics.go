@@ -21,7 +21,7 @@ var backgroundWorkerConcurrencyInventory = map[string]backgroundWorkerSemantics{
 	"syncMeiliIndexesBestEffort":          {Concurrency: backgroundWorkerSingleton, Proof: "scheduler cadence marker"},
 	"runStatsDInformantWorker":            {Concurrency: backgroundWorkerDuplicateSafe, Proof: "per-process metrics"},
 	"runActivityPubDeliveryRetryWorker":   {Concurrency: backgroundWorkerQueueConsumer, Proof: "Redis visibility lease and owner-fenced ack"},
-	"runActivityPubInboxProcessingWorker": {Concurrency: backgroundWorkerQueueConsumer, Proof: "Redis visibility lease and owner-fenced ack"},
+	"runActivityPubInboxProcessingWorker": {Concurrency: backgroundWorkerQueueConsumer, Proof: "legacy Redis queue migration into Asynq with owner-fenced ack"},
 	"startAsynqWorker":                    {Concurrency: backgroundWorkerQueueConsumer, Proof: "Asynq reservation and retry"},
 	"runWebhookDeliveryRetryWorker":       {Concurrency: backgroundWorkerQueueConsumer, Proof: "Redis visibility lease and owner-fenced ack"},
 	"runWebPushDeliveryRetryWorker":       {Concurrency: backgroundWorkerQueueConsumer, Proof: "Redis visibility lease and owner-fenced ack"},

@@ -1555,9 +1555,9 @@ func activityPubBlockURIForSerializer(s *Server, local models.Account, blockID i
 }
 
 func (s *Server) deliverActivityPubFollowResponse(kind string, local models.Account, remote models.Account, followID int64, followURI string) error {
-	inboxURL := remote.InboxURL
+	inboxURL := activityPubPreferredInboxURL(remote.SharedInboxURL, remote.InboxURL)
 	if strings.TrimSpace(inboxURL) == "" {
-		return nil
+		return fmt.Errorf("activitypub %s Follow response target account_id=%d has no inbox", kind, remote.ID)
 	}
 	body, err := json.Marshal(activityPubFollowResponsePayload(s, kind, local, remote, followID, followURI))
 	if err != nil {

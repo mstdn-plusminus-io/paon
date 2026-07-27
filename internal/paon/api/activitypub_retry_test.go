@@ -1,29 +1,23 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
-
-	"gorm.io/gorm"
 )
 
-func TestEnqueueActivityPubInboxProcessingJobBackendBoundaries(t *testing.T) {
+func TestEnqueueActivityPubInboxProcessingJobRequiresAsynq(t *testing.T) {
 	job := activityPubInboxProcessingJob{
 		ActorID:   42,
 		ActorType: "Account",
 		Body:      json.RawMessage(`{"type":"Create"}`),
 	}
 
-	t.Run("asynq success skips fallback", func(t *testing.T) {
+	t.Run("accepted", func(t *testing.T) {
 		asynqCalled := false
-		fallbackCalled := false
-		err := enqueueActivityPubInboxProcessingJobWithBackends(
-			context.Background(),
+		err := enqueueActivityPubInboxProcessingJobWithAsynq(
 			job,
 			func(got activityPubInboxProcessingJob) bool {
 				asynqCalled = true
@@ -32,63 +26,24 @@ func TestEnqueueActivityPubInboxProcessingJobBackendBoundaries(t *testing.T) {
 				}
 				return true
 			},
-			func(context.Context, activityPubInboxProcessingJob) error {
-				fallbackCalled = true
-				return nil
-			},
 		)
 		if err != nil {
 			t.Fatalf("enqueue error = %v", err)
 		}
-		if !asynqCalled || fallbackCalled {
-			t.Fatalf("asynqCalled=%t fallbackCalled=%t", asynqCalled, fallbackCalled)
+		if !asynqCalled {
+			t.Fatal("Asynq backend was not called")
 		}
 	})
 
-	t.Run("fallback success is accepted", func(t *testing.T) {
-		fallbackCalled := false
-		err := enqueueActivityPubInboxProcessingJobWithBackends(
-			context.Background(),
+	t.Run("enqueue failure is returned", func(t *testing.T) {
+		err := enqueueActivityPubInboxProcessingJobWithAsynq(
 			job,
 			func(activityPubInboxProcessingJob) bool { return false },
-			func(_ context.Context, got activityPubInboxProcessingJob) error {
-				fallbackCalled = true
-				if got.ActorID != job.ActorID || string(got.Body) != string(job.Body) {
-					t.Fatalf("fallback job = %#v, want %#v", got, job)
-				}
-				return nil
-			},
 		)
-		if err != nil {
+		if err == nil || !strings.Contains(err.Error(), "Asynq enqueue failed") {
 			t.Fatalf("enqueue error = %v", err)
 		}
-		if !fallbackCalled {
-			t.Fatal("fallback was not called after asynq rejected the job")
-		}
 	})
-
-	t.Run("both backends fail", func(t *testing.T) {
-		fallbackErr := errors.New("redis zadd failed")
-		err := enqueueActivityPubInboxProcessingJobWithBackends(
-			context.Background(),
-			job,
-			func(activityPubInboxProcessingJob) bool { return false },
-			func(context.Context, activityPubInboxProcessingJob) error { return fallbackErr },
-		)
-		if !errors.Is(err, fallbackErr) {
-			t.Fatalf("enqueue error = %v, want wrapped fallback error", err)
-		}
-	})
-}
-
-func TestEnqueueActivityPubInboxProcessingJobNoopInputs(t *testing.T) {
-	var nilServer *Server
-	if err := nilServer.enqueueActivityPubInboxProcessingJob(42, 0, "Account", []byte(`{"type":"Create"}`)); err != nil {
-		t.Fatalf("nil server no-op error = %v", err)
-	}
-	if err := (&Server{}).enqueueActivityPubInboxProcessingJob(42, 0, "Account", []byte(`{"type":"Create"}`)); err != nil {
-		t.Fatalf("missing database no-op error = %v", err)
-	}
 
 	for name, job := range map[string]activityPubInboxProcessingJob{
 		"missing actor": {Body: json.RawMessage(`{"type":"Create"}`)},
@@ -96,14 +51,12 @@ func TestEnqueueActivityPubInboxProcessingJobNoopInputs(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := 0
-			err := enqueueActivityPubInboxProcessingJobWithBackends(
-				context.Background(),
+			err := enqueueActivityPubInboxProcessingJobWithAsynq(
 				job,
 				func(activityPubInboxProcessingJob) bool { calls++; return true },
-				func(context.Context, activityPubInboxProcessingJob) error { calls++; return nil },
 			)
-			if err != nil {
-				t.Fatalf("no-op enqueue error = %v", err)
+			if err == nil {
+				t.Fatal("invalid task was accepted")
 			}
 			if calls != 0 {
 				t.Fatalf("backend calls = %d, want 0", calls)
@@ -112,15 +65,10 @@ func TestEnqueueActivityPubInboxProcessingJobNoopInputs(t *testing.T) {
 	}
 }
 
-func TestActivityPubInboxProcessingWorkerIgnoresUnsupportedActorTypeLikeRails(t *testing.T) {
-	server := &Server{db: &gorm.DB{}}
-	job := activityPubInboxProcessingJob{
-		ActorID:   123,
-		ActorType: "InstanceActor",
-		Body:      json.RawMessage(`{"type":"Delete"}`),
-	}
-	if err := server.performActivityPubInboxProcessingOnce(context.Background(), job); err != nil {
-		t.Fatalf("unsupported actor_type should be ignored like Rails, got error: %v", err)
+func TestEnqueueActivityPubInboxProcessingJobRejectsUnavailableServer(t *testing.T) {
+	var server *Server
+	if err := server.enqueueActivityPubInboxProcessingJob(42, 0, "Account", []byte(`{"type":"Create"}`)); err == nil {
+		t.Fatal("missing Asynq backend was accepted")
 	}
 }
 
