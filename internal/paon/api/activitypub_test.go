@@ -2123,6 +2123,36 @@ func TestFetchAndStoreActivityActorForAcctRejectsWebFingerLoopbackMismatch(t *te
 	}
 }
 
+func TestAcquireActivityPubRedisLockSkipsOnlyUnconfiguredRedis(t *testing.T) {
+	previousDial := redisDial
+	t.Cleanup(func() { redisDial = previousDial })
+
+	dialCalls := 0
+	redisDial = func(_ context.Context, _ redisConnConfig) (net.Conn, *bufio.Reader, error) {
+		dialCalls++
+		return nil, nil, errors.New("redis unavailable")
+	}
+
+	unconfigured := &Server{}
+	acquired, release, err := unconfigured.acquireActivityPubRedisLock(t.Context(), "test", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("unconfigured Redis lock = acquired %t, error %v", acquired, err)
+	}
+	release()
+	if dialCalls != 0 {
+		t.Fatalf("unconfigured Redis dial calls = %d, want 0", dialCalls)
+	}
+
+	configured := &Server{cfg: config.Config{RedisHost: "redis.example", RedisPort: "6379"}}
+	acquired, _, err = configured.acquireActivityPubRedisLock(t.Context(), "test", time.Minute)
+	if err == nil || acquired {
+		t.Fatalf("configured Redis lock = acquired %t, error %v", acquired, err)
+	}
+	if dialCalls != 1 {
+		t.Fatalf("configured Redis dial calls = %d, want 1", dialCalls)
+	}
+}
+
 func TestFetchActivityActorURLFromWebFingerPreservesGoneStatus(t *testing.T) {
 	oldClient := activityHTTPClient
 	defer func() { activityHTTPClient = oldClient }()

@@ -38,6 +38,12 @@ type namedRedisConnConfig struct {
 	cfg  redisConnConfig
 }
 
+func redisEndpointConfigured(cfg config.Config) bool {
+	return strings.TrimSpace(cfg.RedisURL) != "" ||
+		strings.TrimSpace(cfg.RedisHost) != "" ||
+		strings.TrimSpace(cfg.RedisPort) != ""
+}
+
 func redisConfig(cfg config.Config) redisConnConfig {
 	out := redisConnConfig{
 		network:  "tcp",
