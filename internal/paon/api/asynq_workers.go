@@ -1735,8 +1735,8 @@ func (s *Server) enqueueFollowersSynchronizationTask(accountID int64, collection
 }
 
 // enqueueActivityPubProcessingTask mirrors ActivityPub::ProcessingWorker.perform_async
-// on Rails' ingress queue. The older Redis ZSET processing queue remains the fallback
-// when asynq is unavailable.
+// on Rails' ingress queue. Processing errors must remain on this Asynq path so retry
+// exhaustion preserves the failed event in the archive.
 func (s *Server) enqueueActivityPubProcessingTask(job activityPubInboxProcessingJob) bool {
 	if s == nil || s.asynqClient == nil || job.ActorID == 0 || len(job.Body) == 0 {
 		return false
@@ -1780,7 +1780,8 @@ func railsExponentialBackoffAsynqTask(task *asynq.Task) bool {
 		return false
 	}
 	switch task.Type() {
-	case asynqTaskRedownloadAvatar,
+	case asynqTaskActivityPubProcessing,
+		asynqTaskRedownloadAvatar,
 		asynqTaskRedownloadHeader,
 		asynqTaskRedownloadMedia,
 		asynqTaskFetchReply,
@@ -3176,8 +3177,11 @@ func (s *Server) handleAsynqActivityPubProcessing(ctx context.Context, t *asynq.
 	if err := json.Unmarshal(t.Payload(), &job); err != nil {
 		return fmt.Errorf("activitypub processing: %w", err)
 	}
-	if s == nil || s.db == nil || job.ActorID == 0 || len(job.Body) == 0 {
-		return nil
+	if s == nil || s.db == nil {
+		return errors.New("activitypub processing: database is unavailable")
+	}
+	if job.ActorID == 0 || len(job.Body) == 0 {
+		return activityPubProcessingError(job.Body, job.ActorID, job.DeliveredToAccountID, errors.New("task is missing actor or body"))
 	}
 	return s.performActivityPubInboxProcessingOnce(ctx, job)
 }

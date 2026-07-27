@@ -40,6 +40,13 @@ func TestActivityFetchWorkerErrorMatchesRailsRetryPolicy(t *testing.T) {
 	}
 }
 
+func TestActivityPubProcessingUsesRailsRetryBackoff(t *testing.T) {
+	task := asynq.NewTask(asynqTaskActivityPubProcessing, nil)
+	if !railsExponentialBackoffAsynqTask(task) {
+		t.Fatal("ActivityPub processing must use the Sidekiq-compatible retry schedule")
+	}
+}
+
 func TestRemoteFetchWorkersApplyRailsUnsalvageableResponsePolicy(t *testing.T) {
 	src, err := os.ReadFile("asynq_workers.go")
 	if err != nil {

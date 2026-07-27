@@ -18,9 +18,8 @@ const activityPubDeliveryRetryKey = "paon:activitypub:delivery:retry"
 const activityPubDeliveryRetryFailureThreshold = 16
 
 // Inbound activity processing mirrors Rails ActivityPub::ProcessingWorker (Sidekiq
-// queue "ingress", retry 8). The inbox enqueues a job after signature verification and
-// returns 202 once a backend accepts it; a background worker re-fetches the actor and runs
-// processActivityPubInboxForTarget, re-enqueuing on failure up to the retry limit.
+// queue "ingress", retry 8). The inbox returns 202 only after Asynq accepts the task.
+// Every processing error is returned to Asynq so retry exhaustion archives the payload.
 const activityPubInboxProcessingRetryKey = "paon:activitypub:ingress:retry"
 const activityPubInboxProcessingRetryLimit = 8
 
@@ -34,9 +33,6 @@ type activityPubInboxProcessingJob struct {
 }
 
 func (s *Server) enqueueActivityPubInboxProcessingJob(actorID, deliveredTo int64, actorType string, body []byte) error {
-	if s == nil || s.db == nil || actorID == 0 || len(body) == 0 {
-		return nil
-	}
 	job := activityPubInboxProcessingJob{
 		ActorID:              actorID,
 		DeliveredToAccountID: deliveredTo,
@@ -45,52 +41,23 @@ func (s *Server) enqueueActivityPubInboxProcessingJob(actorID, deliveredTo int64
 		Attempts:             0,
 		CreatedAt:            time.Now().UTC().Unix(),
 	}
-	return enqueueActivityPubInboxProcessingJobWithBackends(
-		context.Background(),
-		job,
-		s.enqueueActivityPubProcessingTask,
-		s.enqueueActivityPubInboxProcessingJobRetry,
-	)
+	if s == nil {
+		return errors.New("activitypub inbox processing Asynq backend unavailable")
+	}
+	return enqueueActivityPubInboxProcessingJobWithAsynq(job, s.enqueueActivityPubProcessingTask)
 }
 
-func enqueueActivityPubInboxProcessingJobWithBackends(
-	ctx context.Context,
+func enqueueActivityPubInboxProcessingJobWithAsynq(
 	job activityPubInboxProcessingJob,
 	enqueueAsynq func(activityPubInboxProcessingJob) bool,
-	enqueueFallback func(context.Context, activityPubInboxProcessingJob) error,
 ) error {
 	if job.ActorID == 0 || len(job.Body) == 0 {
-		return nil
+		return errors.New("activitypub inbox processing task is missing actor or body")
 	}
 	if enqueueAsynq != nil && enqueueAsynq(job) {
 		return nil
 	}
-	if enqueueFallback == nil {
-		return errors.New("activitypub inbox processing fallback enqueue unavailable")
-	}
-	if err := enqueueFallback(ctx, job); err != nil {
-		return fmt.Errorf("enqueue activitypub inbox processing fallback: %w", err)
-	}
-	return nil
-}
-
-func (s *Server) enqueueActivityPubInboxProcessingJobRetry(ctx context.Context, job activityPubInboxProcessingJob) error {
-	if job.ActorID == 0 || len(job.Body) == 0 {
-		return nil
-	}
-	encoded, runAt, err := nextActivityPubInboxRetry(job, time.Now().UTC())
-	if err != nil {
-		return err
-	}
-	_, err = s.redisCommand(ctx, "ZADD", redisConfig(s.cfg).prefix+activityPubInboxProcessingRetryKey, strconv.FormatInt(runAt.Unix(), 10), encoded)
-	return err
-}
-
-func nextActivityPubInboxRetry(job activityPubInboxProcessingJob, now time.Time) (string, time.Time, error) {
-	job.Attempts++
-	runAt := now.UTC().Add(activityPubDeliveryRetryDelay(job.Attempts))
-	encoded, err := json.Marshal(job)
-	return string(encoded), runAt, err
+	return errors.New("activitypub inbox processing Asynq enqueue failed")
 }
 
 func (s *Server) runActivityPubInboxProcessingWorker(ctx context.Context) {
@@ -120,58 +87,27 @@ func (s *Server) processDueActivityPubInboxProcessingJobs(ctx context.Context, l
 	for _, claim := range claims {
 		var job activityPubInboxProcessingJob
 		if err := json.Unmarshal([]byte(claim.Member), &job); err != nil {
+			continue
+		}
+		if s.enqueueActivityPubProcessingTask(job) {
 			_ = s.acknowledgeRedisRetryJob(ctx, key, claim)
-			continue
 		}
-		if err := s.performActivityPubInboxProcessingOnce(ctx, job); err == nil || job.Attempts >= activityPubInboxProcessingRetryLimit {
-			_ = s.acknowledgeRedisRetryJob(ctx, key, claim)
-			continue
-		}
-		successor, runAt, err := nextActivityPubInboxRetry(job, now)
-		if err != nil {
-			continue
-		}
-		_ = s.replaceRedisRetryJob(ctx, key, claim, successor, runAt)
-	}
-}
-
-func (s *Server) performActivityPubInboxProcessing(ctx context.Context, job activityPubInboxProcessingJob) {
-	if err := s.performActivityPubInboxProcessingOnce(ctx, job); err != nil {
-		s.reenqueueActivityPubInboxProcessing(ctx, job)
 	}
 }
 
 func (s *Server) performActivityPubInboxProcessingOnce(ctx context.Context, job activityPubInboxProcessingJob) error {
 	if job.ActorType != "" && job.ActorType != "Account" {
-		return nil
+		return activityPubProcessingError(job.Body, job.ActorID, job.DeliveredToAccountID, fmt.Errorf("unsupported actor type %q", job.ActorType))
 	}
-	if s.db == nil {
-		return nil
+	if s == nil || s.db == nil {
+		return activityPubProcessingError(job.Body, job.ActorID, job.DeliveredToAccountID, errors.New("database is unavailable"))
 	}
 	var actor models.Account
 	if err := s.db.WithContext(ctx).Where("id = ?", job.ActorID).First(&actor).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
-		return err
+		return activityPubProcessingError(job.Body, job.ActorID, job.DeliveredToAccountID, fmt.Errorf("load verified actor: %w", err))
 	}
 	err := s.processActivityPubInboxForDeliveredToWithContext(ctx, job.Body, &actor, nil, job.DeliveredToAccountID)
-	if activityPubInboxPermanentValidationError(err) {
-		logActivityPubProcessingIssue("rejected", "permanent_validation_error", job.Body, actor.ID, job.DeliveredToAccountID, err)
-		return nil
-	}
 	return activityPubProcessingError(job.Body, actor.ID, job.DeliveredToAccountID, err)
-}
-
-func activityPubInboxPermanentValidationError(err error) bool {
-	return errors.Is(err, errFeaturedTagInvalidName) || errors.Is(err, errFeaturedTagLimit) || errors.Is(err, errFeaturedTagDuplicate)
-}
-
-func (s *Server) reenqueueActivityPubInboxProcessing(ctx context.Context, job activityPubInboxProcessingJob) {
-	if job.Attempts >= activityPubInboxProcessingRetryLimit {
-		return
-	}
-	_ = s.enqueueActivityPubInboxProcessingJobRetry(ctx, job)
 }
 
 type activityPubDeliveryRetryJob struct {

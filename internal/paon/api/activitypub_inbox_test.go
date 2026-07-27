@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -13,7 +14,72 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"gorm.io/gorm"
 )
+
+func TestActivityPubProcessingFailuresReturnForAsynqRetry(t *testing.T) {
+	server := &Server{db: &gorm.DB{}}
+	actor := &models.Account{
+		ID:     42,
+		URI:    "https://remote.example/users/alice",
+		Domain: sql.NullString{String: "remote.example", Valid: true},
+	}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "invalid JSON", body: `{`},
+		{name: "unsupported context", body: `{"type":"Create"}`},
+		{name: "verified actor mismatch", body: `{
+			"@context":"https://www.w3.org/ns/activitystreams",
+			"id":"https://other.example/activities/1",
+			"type":"Delete",
+			"actor":"https://other.example/users/bob",
+			"object":"https://other.example/users/bob"
+		}`},
+		{name: "unsupported activity", body: `{
+			"@context":"https://www.w3.org/ns/activitystreams",
+			"id":"https://remote.example/activities/1",
+			"type":"Travel",
+			"actor":"https://remote.example/users/alice",
+			"object":"https://remote.example/objects/1"
+		}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := server.processActivityPubInboxForDeliveredToWithContext(t.Context(), []byte(test.body), actor, nil, 0)
+			if !errors.Is(err, errActivityPubEventNotApplied) {
+				t.Fatalf("processing error = %v, want errActivityPubEventNotApplied", err)
+			}
+		})
+	}
+}
+
+func TestAcceptFollowPayloadPreservesEmbeddedFollowIdentity(t *testing.T) {
+	payload, err := parseActivityPayload([]byte(`{
+		"@context":["https://www.w3.org/ns/activitystreams","https://w3id.org/security/v1"],
+		"id":"https://remote.example/activities/accept-follow",
+		"type":"Accept",
+		"actor":"https://remote.example/users/bob",
+		"object":{
+			"id":"https://paon.example/payloads/original-follow",
+			"type":"Follow",
+			"actor":"https://paon.example/users/alice",
+			"object":"https://remote.example/users/bob"
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Type != "Accept" || payload.Actor != "https://remote.example/users/bob" {
+		t.Fatalf("Accept identity = type %q actor %q", payload.Type, payload.Actor)
+	}
+	if payload.Object.TypeExact != "Follow" ||
+		payload.Object.ID != "https://paon.example/payloads/original-follow" ||
+		payload.Object.Actor != "https://paon.example/users/alice" ||
+		payload.Object.ObjectID != "https://remote.example/users/bob" {
+		t.Fatalf("embedded Follow = %#v", payload.Object)
+	}
+}
 
 func TestActivityPubNoteParsesRepliesCollection(t *testing.T) {
 	payload, err := parseActivityPayload([]byte(`{
@@ -587,7 +653,7 @@ func TestActivityPubPollVoteChoiceMatchesOptionExactly(t *testing.T) {
 	}
 }
 
-func TestActivityPubDereferenceRejectsMismatchedObjectHostBeforeFetchLikeRails(t *testing.T) {
+func TestActivityPubDereferenceReturnsMismatchedObjectHostForAsynqArchive(t *testing.T) {
 	oldClient := activityHTTPClient
 	defer func() { activityHTTPClient = oldClient }()
 	activityHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -598,20 +664,20 @@ func TestActivityPubDereferenceRejectsMismatchedObjectHostBeforeFetchLikeRails(t
 	server := &Server{cfg: config.Config{LocalDomain: "example.com", WebDomain: "example.com"}}
 	actor := &models.Account{URI: "https://remote.example/users/alice"}
 	createPayload := activityPayload{Type: "Create", Actor: actor.URI, Object: activityObject{ID: "https://evil.example/statuses/1"}}
-	if err := server.processActivityPubDereferencedCreate(createPayload, actor, nil, nil, activityPubProcessingOptions{}); err != nil {
+	if err := server.processActivityPubDereferencedCreate(createPayload, actor, nil, nil, activityPubProcessingOptions{}); !errors.Is(err, errActivityPubEventNotApplied) {
 		t.Fatalf("processActivityPubDereferencedCreate error = %v", err)
 	}
 	updatePayload := activityPayload{Type: "Update", Actor: actor.URI, Object: activityObject{ID: "https://evil.example/statuses/1"}}
-	if err := server.processActivityPubDereferencedUpdate(updatePayload, actor, nil, nil, activityPubProcessingOptions{}); err != nil {
+	if err := server.processActivityPubDereferencedUpdate(updatePayload, actor, nil, nil, activityPubProcessingOptions{}); !errors.Is(err, errActivityPubEventNotApplied) {
 		t.Fatalf("processActivityPubDereferencedUpdate error = %v", err)
 	}
 	bearcap := "bear:?u=https%3A%2F%2Fevil.example%2Fstatuses%2Fbear&t=secret-token"
 	bearcapCreate := activityPayload{Type: "Create", Actor: actor.URI, Object: activityObject{ID: bearcap}}
-	if err := server.processActivityPubDereferencedCreate(bearcapCreate, actor, nil, nil, activityPubProcessingOptions{}); err != nil {
+	if err := server.processActivityPubDereferencedCreate(bearcapCreate, actor, nil, nil, activityPubProcessingOptions{}); !errors.Is(err, errActivityPubEventNotApplied) {
 		t.Fatalf("processActivityPubDereferencedCreate bearcap error = %v", err)
 	}
 	bearcapUpdate := activityPayload{Type: "Update", Actor: actor.URI, Object: activityObject{ID: bearcap}}
-	if err := server.processActivityPubDereferencedUpdate(bearcapUpdate, actor, nil, nil, activityPubProcessingOptions{}); err != nil {
+	if err := server.processActivityPubDereferencedUpdate(bearcapUpdate, actor, nil, nil, activityPubProcessingOptions{}); !errors.Is(err, errActivityPubEventNotApplied) {
 		t.Fatalf("processActivityPubDereferencedUpdate bearcap error = %v", err)
 	}
 }

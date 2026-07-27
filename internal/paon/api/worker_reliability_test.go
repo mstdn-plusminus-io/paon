@@ -2,9 +2,9 @@ package api
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hibiken/asynq"
 	"gorm.io/gorm"
@@ -59,28 +59,23 @@ func TestRedisRetryLeaseScriptsRequireClaimOwnership(t *testing.T) {
 	}
 }
 
-func TestRedisRetrySuccessorsIncrementAttemptsWithoutMutatingCurrentClaim(t *testing.T) {
-	now := time.Unix(1_800_000_000, 0).UTC()
-	job := activityPubInboxProcessingJob{ActorID: 1, Body: []byte(`{"type":"Create"}`), Attempts: 2}
-	encoded, runAt, err := nextActivityPubInboxRetry(job, now)
+func TestActivityPubProcessingFailuresRemainOnAsynqRetryPath(t *testing.T) {
+	retrySource, err := os.ReadFile("activitypub_retry.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.Attempts != 2 {
-		t.Fatalf("current claim was mutated: attempts=%d", job.Attempts)
+	if strings.Contains(string(retrySource), "activityPubInboxPermanentValidationError") {
+		t.Fatal("ActivityPub processing still discards handler errors before Asynq can retry and archive them")
 	}
-	if !strings.Contains(encoded, `"attempts":3`) || !runAt.After(now) {
-		t.Fatalf("successor = %s runAt=%s", encoded, runAt)
+	if !strings.Contains(string(retrySource), "return activityPubProcessingError(job.Body, actor.ID, job.DeliveredToAccountID, err)") {
+		t.Fatal("ActivityPub processing does not return handler errors to Asynq")
 	}
-}
 
-func TestActivityPubInboxValidationClassificationKeepsDatabaseFailuresRetryable(t *testing.T) {
-	for _, err := range []error{errFeaturedTagInvalidName, errFeaturedTagDuplicate, errFeaturedTagLimit} {
-		if !activityPubInboxPermanentValidationError(err) {
-			t.Fatalf("featured-tag validation error must be discarded: %v", err)
-		}
+	asynqSource, err := os.ReadFile("asynq_workers.go")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if activityPubInboxPermanentValidationError(errors.New("postgres serialization failure")) {
-		t.Fatal("transient database error was classified as permanent validation")
+	if !strings.Contains(string(asynqSource), "asynq.MaxRetry(activityPubInboxProcessingRetryLimit)") {
+		t.Fatal("ActivityPub processing task lacks the retry option required for eventual Asynq archival")
 	}
 }

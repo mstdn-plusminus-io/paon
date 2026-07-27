@@ -23,7 +23,14 @@ import (
 
 const activityPubPublicIRI = "https://www.w3.org/ns/activitystreams#Public"
 
-var errActivityPubPollVoteAlreadyVoted = errors.New("activitypub poll vote already voted")
+var (
+	errActivityPubPollVoteAlreadyVoted = errors.New("activitypub poll vote already voted")
+	errActivityPubEventNotApplied      = errors.New("activitypub event was not applied")
+)
+
+func activityPubEventNotAppliedf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errActivityPubEventNotApplied, fmt.Sprintf(format, args...))
+}
 
 type activityPubProcessingOptions struct {
 	OverrideTimestamps   bool
@@ -49,42 +56,40 @@ func (s *Server) processActivityPubInboxForDeliveredTo(body []byte, actor *model
 
 func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Context, body []byte, actor *models.Account, target *models.Account, deliveredToAccountID int64) error {
 	body = activityPubProcessCollectionBody(body)
-	actorID := int64(0)
-	if actor != nil {
-		actorID = actor.ID
-	}
 	if !json.Valid(body) {
-		logActivityPubProcessingIssue("ignored", "invalid_json", body, actorID, deliveredToAccountID, errors.New("invalid JSON document"))
-		return nil
+		return activityPubEventNotAppliedf("invalid JSON document")
 	}
 	if !activityPayloadSupportedContext(body) {
-		logActivityPubProcessingIssue("ignored", "unsupported_jsonld_context", body, actorID, deliveredToAccountID, errors.New("unsupported JSON-LD context"))
-		return nil
+		return activityPubEventNotAppliedf("unsupported JSON-LD context")
 	}
 	payload, err := parseActivityPayload(body)
 	if err != nil {
-		logActivityPubProcessingIssue("ignored", "payload_parse_failed", body, actorID, deliveredToAccountID, err)
-		return nil
+		return activityPubEventNotAppliedf("parse payload: %v", err)
 	}
 	if actor == nil {
-		logActivityPubProcessingIssue("ignored", "verified_actor_missing", body, 0, deliveredToAccountID, errors.New("verified actor is missing"))
-		return nil
+		return activityPubEventNotAppliedf("verified actor is missing")
 	}
-	if s.db == nil || actor.Local() {
-		return nil
+	if s == nil || s.db == nil {
+		return activityPubEventNotAppliedf("database is unavailable")
+	}
+	target, err = s.activityPubDeliveredToAccount(target, deliveredToAccountID)
+	if err != nil {
+		return err
+	}
+	if actor.Local() {
+		return activityPubEventNotAppliedf("verified actor %d is local", actor.ID)
 	}
 	var relayedThrough *models.Account
 	if activityPayloadDifferentActor(payload, actor) {
 		verifiedActor := s.activityPubLinkedDataSignatureActor(body, payload)
 		if verifiedActor == nil {
-			logActivityPubUnsupportedPayload(payload, actor.ID, "actor_mismatch_without_linked_data_signature")
-			return nil
+			return activityPubEventNotAppliedf("activity actor does not match verified HTTP signature actor")
 		}
 		relayedThrough = actor
 		actor = verifiedActor
 	}
 	if actor.Local() {
-		return nil
+		return activityPubEventNotAppliedf("linked-data signature actor %d is local", actor.ID)
 	}
 	if actor.SuspendedAt.Valid && !activityPubActivityAllowedWhileSuspended(payload.Type) {
 		return nil
@@ -98,6 +103,31 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 		return s.processActivityPubCollectionWithContext(ctx, payload, actor, target, relayedThrough, options)
 	}
 	return s.processActivityPubPayloadWithContext(ctx, payload, actor, target, relayedThrough, options)
+}
+
+func (s *Server) activityPubDeliveredToAccount(target *models.Account, deliveredToAccountID int64) (*models.Account, error) {
+	if deliveredToAccountID == 0 {
+		return target, nil
+	}
+	if target != nil {
+		if target.ID != deliveredToAccountID || !target.Local() {
+			return nil, activityPubEventNotAppliedf(
+				"personal inbox account_id=%d conflicts with processing target account_id=%d",
+				deliveredToAccountID,
+				target.ID,
+			)
+		}
+		return target, nil
+	}
+	var deliveredTo models.Account
+	err := s.db.Where("id = ? AND domain IS NULL", deliveredToAccountID).First(&deliveredTo).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, activityPubEventNotAppliedf("personal inbox account %d is not a local account", deliveredToAccountID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load personal inbox account %d: %w", deliveredToAccountID, err)
+	}
+	return &deliveredTo, nil
 }
 
 func activityPubProcessCollectionBody(body []byte) []byte {
@@ -271,7 +301,7 @@ func activityPayloadWithoutActor(payload activityPayload) activityPayload {
 }
 
 func activityPayloadActorValueOrID(payload activityPayload) string {
-	return payload.ActorRaw
+	return firstNonEmpty(payload.Actor, payload.ActorRaw)
 }
 
 func activityPayloadDifferentActor(payload activityPayload, actor *models.Account) bool {
@@ -340,7 +370,7 @@ func (s *Server) processActivityPubPayload(payload activityPayload, actor *model
 
 func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, payload activityPayload, actor *models.Account, target *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
 	if activityPayloadDifferentActor(payload, actor) {
-		return nil
+		return activityPubEventNotAppliedf("activity actor does not match processing actor")
 	}
 	switch payload.Type {
 	case "Create":
@@ -362,9 +392,9 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 	case "Move":
 		return s.processActivityPubMove(payload, actor)
 	case "Accept":
-		return s.processActivityPubAccept(payload, actor)
+		return s.processActivityPubAccept(payload, actor, options.DeliveredToAccountID)
 	case "Reject":
-		return s.processActivityPubReject(payload, actor)
+		return s.processActivityPubReject(payload, actor, options.DeliveredToAccountID)
 	case "Block":
 		return s.processActivityPubBlock(payload, actor)
 	case "Flag":
@@ -400,16 +430,16 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 		}
 	}
 	logActivityPubUnsupportedPayload(payload, actor.ID, "unsupported_activity_or_object_type")
-	return nil
+	return activityPubEventNotAppliedf("unsupported activity type %q or object type %q", payload.Type, payload.Object.TypeExact)
 }
 
 func (s *Server) processActivityPubDereferencedCreate(payload activityPayload, actor *models.Account, target *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
 	objectFetchURI, objectURI := activityPubDereferenceFetchURI(payload.Object.ID)
 	if s == nil || actor == nil || objectFetchURI == "" || objectURI == "" {
-		return nil
+		return activityPubEventNotAppliedf("dereferenced Create has no fetchable object")
 	}
 	if activityPubURIHostMismatch(actor.URI, objectURI) {
-		return nil
+		return activityPubEventNotAppliedf("dereferenced Create object host does not match actor")
 	}
 	if disallowed, err := s.remoteActivityDomainNotAllowed(objectURI); err != nil || disallowed {
 		return err
@@ -430,16 +460,16 @@ func (s *Server) processActivityPubDereferencedCreate(payload activityPayload, a
 		return err
 	}
 	if dereferenced.Type != "Create" || !activityObjectIsStatus(dereferenced.Object) {
-		return nil
+		return activityPubEventNotAppliedf("dereferenced Create did not resolve to a status")
 	}
 	if dereferenced.Actor != "" && actor.URI != "" && dereferenced.Actor != actor.URI {
-		return nil
+		return activityPubEventNotAppliedf("dereferenced Create actor does not match verified actor")
 	}
 	if dereferenced.Object.AttributedTo == "" {
 		dereferenced.Object.AttributedTo = actor.URI
 	}
 	if !activityNoteBelongsToActor(dereferenced.Object, actor) {
-		return nil
+		return activityPubEventNotAppliedf("dereferenced Create object does not belong to verified actor")
 	}
 	dereferenced.ID = firstNonEmpty(payload.ID, dereferenced.ID)
 	dereferenced.Actor = firstNonEmpty(payload.Actor, dereferenced.Actor, actor.URI)
@@ -460,7 +490,7 @@ func firstNonEmptyStringSlice(values ...[]string) []string {
 
 func (s *Server) processActivityPubUndoReference(object activityObject, actor *models.Account) error {
 	if object.ID == "" && !object.Reference && !object.IDPresent {
-		return nil
+		return activityPubEventNotAppliedf("Undo object reference is missing")
 	}
 	if handled, err := s.processActivityPubUndoAnnounceWithTombstone(object, actor, false); err != nil || handled {
 		return err
@@ -492,7 +522,7 @@ func activityPubActorRefreshStale(actor *models.Account, now time.Time) bool {
 
 func (s *Server) processActivityPubAdd(payload activityPayload, actor *models.Account, options activityPubProcessingOptions) error {
 	if actor == nil || actor.ID == 0 || !activityTargetIsFeaturedCollection(payload.Target, s, *actor) {
-		return nil
+		return activityPubEventNotAppliedf("Add target is not the verified actor's featured collection")
 	}
 	if payload.Object.TypeExact == "Hashtag" {
 		_, _, err := s.createFeaturedTagForAccount(actor, payload.Object.Name, true)
@@ -527,10 +557,13 @@ func (s *Server) processActivityPubAdd(payload activityPayload, actor *models.Ac
 		}
 	}
 	if err != nil || status == nil {
-		return err
+		if err != nil {
+			return err
+		}
+		return activityPubEventNotAppliedf("Add object status %q could not be resolved", payload.Object.ID)
 	}
 	if !activityPubStatusPinValidForRails(*actor, *status) {
-		return nil
+		return activityPubEventNotAppliedf("Add object status %q cannot be pinned by actor", payload.Object.ID)
 	}
 	now := time.Now().UTC()
 	return s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&models.StatusPin{AccountID: actor.ID, StatusID: status.ID, CreatedAt: now, UpdatedAt: now}).Error
@@ -542,12 +575,12 @@ func activityPubStatusPinValidForRails(actor models.Account, status models.Statu
 
 func (s *Server) processActivityPubRemove(payload activityPayload, actor *models.Account) error {
 	if actor == nil || actor.ID == 0 || !activityTargetIsFeaturedCollection(payload.Target, s, *actor) {
-		return nil
+		return activityPubEventNotAppliedf("Remove target is not the verified actor's featured collection")
 	}
 	if payload.Object.TypeExact == "Hashtag" {
 		normalized, _, ok := normalizeTagName(payload.Object.Name)
 		if !ok {
-			return nil
+			return activityPubEventNotAppliedf("Remove Hashtag name is invalid")
 		}
 		return s.db.Exec(`
 			DELETE FROM featured_tags
@@ -558,8 +591,15 @@ func (s *Server) processActivityPubRemove(payload activityPayload, actor *models
 		`, actor.ID, normalized).Error
 	}
 	status, err := s.statusFromActivityURI(payload.Object.ID)
-	if err != nil || status == nil || status.AccountID != actor.ID {
+	if err != nil {
 		return err
+	}
+	if status == nil {
+		// The requested final state is already reached when the status is gone.
+		return nil
+	}
+	if status.AccountID != actor.ID {
+		return activityPubEventNotAppliedf("Remove object status %q does not belong to actor", payload.Object.ID)
 	}
 	var pin models.StatusPin
 	deleted := false
@@ -594,7 +634,7 @@ func activityTargetIsFeaturedCollection(target string, s *Server, actor models.A
 
 func (s *Server) processActivityPubFlag(payload activityPayload, actor *models.Account) error {
 	if actor == nil || actor.ID == 0 || actor.Local() {
-		return nil
+		return activityPubEventNotAppliedf("Flag actor must be a persisted remote account")
 	}
 	reject, err := s.activityPubRejectsReportsFromDomain(*actor)
 	if err != nil || reject {
@@ -605,15 +645,18 @@ func (s *Server) processActivityPubFlag(payload activityPayload, actor *models.A
 		uris = []string{payload.Object.ID}
 	}
 	if len(uris) == 0 {
-		return nil
+		return activityPubEventNotAppliedf("Flag has no reportable objects")
 	}
 	statusesByAccount, err := s.activityPubFlagStatusesByAccount(uris)
 	if err != nil {
 		return err
 	}
 	targetAccounts, err := s.activityPubFlagTargetAccounts(uris)
-	if err != nil || len(targetAccounts) == 0 {
+	if err != nil {
 		return err
+	}
+	if len(targetAccounts) == 0 {
+		return activityPubEventNotAppliedf("Flag did not identify a known target account")
 	}
 	comment := activityPubFlagComment(payload.Content)
 	for _, target := range targetAccounts {
@@ -870,17 +913,28 @@ func (s *Server) activityPubFlagReportStatusIDs(source models.Account, target mo
 	return out, nil
 }
 
-func (s *Server) processActivityPubAccept(payload activityPayload, actor *models.Account) error {
+func (s *Server) processActivityPubAccept(payload activityPayload, actor *models.Account, deliveredToAccountID int64) error {
 	if actor == nil || actor.ID == 0 || actor.Local() {
-		return nil
+		return activityPubEventNotAppliedf("Accept actor must be a persisted remote account")
 	}
 	if handled, err := s.processActivityPubRelayFollowResponse(payload.Object.ID, payload.Object.IDPresent, relayStateAccepted); handled || err != nil {
 		return err
 	}
-	request, err := s.outgoingFollowRequestFromActivity(payload.Object, actor)
-	if err != nil || request == nil {
+	match, err := s.outgoingFollowResponseFromActivity(payload.Object, actor, deliveredToAccountID)
+	if err != nil {
 		return err
 	}
+	if match.Request == nil {
+		if match.Follow != nil {
+			return nil
+		}
+		return activityPubEventNotAppliedf(
+			"Accept did not match an outgoing Follow request source_account_id=%d target_account_id=%d",
+			match.SourceAccountID,
+			actor.ID,
+		)
+	}
+	request := match.Request
 	hasLocalFollower, err := s.remoteAccountHasLocalFollowers(actor.ID)
 	if err != nil {
 		return err
@@ -905,39 +959,39 @@ func (s *Server) processActivityPubAccept(payload activityPayload, actor *models
 	return nil
 }
 
-func (s *Server) processActivityPubReject(payload activityPayload, actor *models.Account) error {
+func (s *Server) processActivityPubReject(payload activityPayload, actor *models.Account, deliveredToAccountID int64) error {
 	if actor == nil || actor.ID == 0 || actor.Local() {
-		return nil
+		return activityPubEventNotAppliedf("Reject actor must be a persisted remote account")
 	}
 	if handled, err := s.processActivityPubRelayFollowResponse(payload.Object.ID, payload.Object.IDPresent, relayStateRejected); handled || err != nil {
 		return err
 	}
-	request, err := s.outgoingFollowRequestFromActivity(payload.Object, actor)
+	match, err := s.outgoingFollowResponseFromActivity(payload.Object, actor, deliveredToAccountID)
 	if err != nil {
 		return err
 	}
-	if request != nil {
-		affectedListIDs, err := s.deleteOutgoingFollowRequest(*request)
+	if match.Request != nil {
+		affectedListIDs, err := s.deleteOutgoingFollowRequest(*match.Request)
 		if err != nil {
 			return err
 		}
 		for _, listID := range uniqueInt64s(affectedListIDs) {
 			_ = s.clearListFeedCacheContext(context.Background(), listID)
 		}
-		s.invalidateRelationshipCaches(context.Background(), request.AccountID, actor.ID)
+		s.invalidateRelationshipCaches(context.Background(), match.Request.AccountID, actor.ID)
 		return nil
 	}
-	follow, err := s.outgoingFollowFromActivity(payload.Object, actor)
-	if err != nil || follow == nil {
-		return err
+	if match.Follow == nil {
+		// A repeated Reject is already in its requested final state.
+		return nil
 	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		return deleteFollow(tx, *follow)
+		return deleteFollow(tx, *match.Follow)
 	}); err != nil {
 		return err
 	}
-	s.unmergeAfterUnfollowBestEffort(context.Background(), actor.ID, follow.Account)
-	s.invalidateFollowRelationshipCaches(context.Background(), follow.Account, actor.ID)
+	s.unmergeAfterUnfollowBestEffort(context.Background(), actor.ID, match.Follow.Account)
+	s.invalidateFollowRelationshipCaches(context.Background(), match.Follow.Account, actor.ID)
 	s.meiliReindexPrivateStatusesForAccountsBestEffort(context.Background(), actor.ID)
 	return nil
 }
@@ -995,14 +1049,17 @@ func (s *Server) refreshActivityPubRemoteAccount(ctx context.Context, account *m
 
 func (s *Server) processActivityPubBlock(payload activityPayload, actor *models.Account) error {
 	if actor == nil || actor.ID == 0 || actor.Local() {
-		return nil
+		return activityPubEventNotAppliedf("Block actor must be a persisted remote account")
 	}
 	activityID := activityPayloadIDValueOrID(payload)
 	activityIDPresent := strings.TrimSpace(activityID) != ""
 	generateBlockURI := !payload.IDPresent
 	target, err := s.localAccountFromActivityURI(payload.Object.ID)
-	if err != nil || target == nil || !target.Local() || target.ID == actor.ID {
+	if err != nil {
 		return err
+	}
+	if target == nil || !target.Local() || target.ID == actor.ID {
+		return activityPubEventNotAppliedf("Block target %q is not a distinct local account", payload.Object.ID)
 	}
 	now := time.Now().UTC()
 	var changed bool
@@ -1160,45 +1217,203 @@ func (s *Server) blockTargetFromURI(uri string, accountID int64) (*models.Accoun
 	return &target, nil
 }
 
-func (s *Server) outgoingFollowRequestFromActivity(object activityObject, target *models.Account) (*models.FollowRequest, error) {
+type outgoingFollowResponseMatch struct {
+	Request         *models.FollowRequest
+	Follow          *models.Follow
+	SourceAccountID int64
+}
+
+func (s *Server) outgoingFollowResponseFromActivity(object activityObject, target *models.Account, deliveredToAccountID int64) (outgoingFollowResponseMatch, error) {
+	var match outgoingFollowResponseMatch
 	if s == nil || s.db == nil || target == nil || target.ID == 0 {
-		return nil, nil
+		return match, activityPubEventNotAppliedf("Follow response target is unavailable")
 	}
-	query := s.db.Preload("Account").Where("target_account_id = ?", target.ID)
-	if object.ID != "" {
-		query = query.Where("uri = ?", object.ID)
-	} else if activityPubEmbeddedFollowActorURI(object) != "" {
-		source, err := s.localAccountFromActivityURI(activityPubEmbeddedFollowActorURI(object))
-		if err != nil || source == nil || !source.Local() {
-			return nil, err
+	if object.TypePresent && object.TypeExact != "Follow" {
+		return match, activityPubEventNotAppliedf("Follow response object type is %q", object.TypeExact)
+	}
+	if object.TypeExact == "Follow" && object.ObjectIDPresent && firstNonEmpty(object.ObjectID, activityURIFromBearcapRaw(object.ObjectIDRaw)) != target.URI {
+		return match, activityPubEventNotAppliedf(
+			"embedded Follow target %q does not match response actor %q",
+			firstNonEmpty(object.ObjectID, object.ObjectIDRaw),
+			target.URI,
+		)
+	}
+
+	embeddedSourceAccountID := int64(0)
+	if sourceURI := activityPubEmbeddedFollowActorURI(object); sourceURI != "" {
+		source, err := s.localAccountFromActivityURI(sourceURI)
+		if err != nil {
+			return match, fmt.Errorf("resolve embedded Follow actor %q: %w", sourceURI, err)
 		}
-		query = query.Where("account_id = ?", source.ID)
-	} else {
-		return nil, nil
+		if source == nil || !source.Local() {
+			return match, activityPubEventNotAppliedf("embedded Follow actor %q is not a local account", sourceURI)
+		}
+		embeddedSourceAccountID = source.ID
 	}
+
+	deliveredSourceAccountID := int64(0)
+	if deliveredToAccountID != 0 {
+		var deliveredTo models.Account
+		err := s.db.Select("id", "domain").
+			Where("id = ? AND domain IS NULL", deliveredToAccountID).
+			First(&deliveredTo).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return match, activityPubEventNotAppliedf("personal inbox account %d is not a local account", deliveredToAccountID)
+		}
+		if err != nil {
+			return match, fmt.Errorf("load personal inbox account %d: %w", deliveredToAccountID, err)
+		}
+		deliveredSourceAccountID = deliveredTo.ID
+	}
+	if embeddedSourceAccountID != 0 && deliveredSourceAccountID != 0 && embeddedSourceAccountID != deliveredSourceAccountID {
+		return match, activityPubEventNotAppliedf(
+			"embedded Follow actor account_id=%d conflicts with personal inbox account_id=%d",
+			embeddedSourceAccountID,
+			deliveredSourceAccountID,
+		)
+	}
+	match.SourceAccountID = firstNonZeroInt64(embeddedSourceAccountID, deliveredSourceAccountID)
+
+	if strings.TrimSpace(object.ID) != "" {
+		var request models.FollowRequest
+		err := s.db.Preload("Account").
+			Where("target_account_id = ? AND uri = ?", target.ID, object.ID).
+			First(&request).Error
+		if err == nil {
+			if match.SourceAccountID != 0 && match.SourceAccountID != request.AccountID {
+				return match, activityPubEventNotAppliedf(
+					"Follow request source account_id=%d conflicts with response source account_id=%d",
+					request.AccountID,
+					match.SourceAccountID,
+				)
+			}
+			match.Request = &request
+			match.SourceAccountID = request.AccountID
+			return match, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return match, err
+		}
+
+		var follow models.Follow
+		err = s.db.Preload("Account").
+			Where("target_account_id = ? AND uri = ?", target.ID, object.ID).
+			First(&follow).Error
+		if err == nil {
+			if match.SourceAccountID != 0 && match.SourceAccountID != follow.AccountID {
+				return match, activityPubEventNotAppliedf(
+					"Follow source account_id=%d conflicts with response source account_id=%d",
+					follow.AccountID,
+					match.SourceAccountID,
+				)
+			}
+			match.Follow = &follow
+			match.SourceAccountID = follow.AccountID
+			return match, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return match, err
+		}
+	}
+
+	if match.SourceAccountID == 0 {
+		request, follow, err := s.uniqueOutgoingFollowResponseCandidate(target.ID)
+		if err != nil {
+			return match, err
+		}
+		if request != nil {
+			match.Request = request
+			match.SourceAccountID = request.AccountID
+			return match, nil
+		}
+		if follow != nil {
+			match.Follow = follow
+			match.SourceAccountID = follow.AccountID
+			return match, nil
+		}
+		return match, activityPubEventNotAppliedf("Follow response has no resolvable local source account")
+	}
+
 	var request models.FollowRequest
-	err := query.First(&request).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) && object.ID != "" && object.Actor != "" {
-		source, sourceErr := s.localAccountFromActivityURI(activityPubEmbeddedFollowActorURI(object))
-		if sourceErr != nil || source == nil || !source.Local() {
-			return nil, sourceErr
-		}
-		err = s.db.Preload("Account").Where("target_account_id = ? AND account_id = ?", target.ID, source.ID).First(&request).Error
+	err := s.db.Preload("Account").
+		Where("target_account_id = ? AND account_id = ?", target.ID, match.SourceAccountID).
+		First(&request).Error
+	if err == nil {
+		match.Request = &request
+		return match, nil
 	}
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return match, err
 	}
-	if err != nil {
-		return nil, err
+
+	var follow models.Follow
+	err = s.db.Preload("Account").
+		Where("target_account_id = ? AND account_id = ?", target.ID, match.SourceAccountID).
+		First(&follow).Error
+	if err == nil {
+		match.Follow = &follow
+		return match, nil
 	}
-	return &request, nil
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return match, err
+	}
+	return match, nil
+}
+
+func (s *Server) uniqueOutgoingFollowResponseCandidate(targetAccountID int64) (*models.FollowRequest, *models.Follow, error) {
+	var requests []models.FollowRequest
+	if err := s.db.Preload("Account").
+		Where("target_account_id = ?", targetAccountID).
+		Order("id ASC").
+		Limit(2).
+		Find(&requests).Error; err != nil {
+		return nil, nil, err
+	}
+	switch len(requests) {
+	case 1:
+		return &requests[0], nil, nil
+	case 2:
+		return nil, nil, activityPubEventNotAppliedf(
+			"Follow response is ambiguous for target_account_id=%d: multiple pending requests",
+			targetAccountID,
+		)
+	}
+
+	var follows []models.Follow
+	if err := s.db.Preload("Account").
+		Where("target_account_id = ?", targetAccountID).
+		Order("id ASC").
+		Limit(2).
+		Find(&follows).Error; err != nil {
+		return nil, nil, err
+	}
+	switch len(follows) {
+	case 1:
+		return nil, &follows[0], nil
+	case 2:
+		return nil, nil, activityPubEventNotAppliedf(
+			"Follow response is ambiguous for target_account_id=%d: multiple existing follows",
+			targetAccountID,
+		)
+	default:
+		return nil, nil, nil
+	}
 }
 
 func activityPubEmbeddedFollowActorURI(object activityObject) string {
 	if object.TypeExact != "Follow" {
 		return ""
 	}
-	return firstNonEmpty(object.ActorRaw, object.Actor)
+	return firstNonEmpty(object.Actor, activityURIFromBearcapRaw(object.ActorRaw))
+}
+
+func firstNonZeroInt64(values ...int64) int64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (s *Server) acceptOutgoingFollowRequest(request models.FollowRequest) (*models.Follow, bool, []int64, error) {
@@ -1281,8 +1496,19 @@ func (s *Server) deleteOutgoingFollowRequest(request models.FollowRequest) ([]in
 
 func (s *Server) processActivityPubUndoAccept(object activityObject, actor *models.Account) error {
 	follow, err := s.outgoingFollowFromUndoAccept(object, actor)
-	if err != nil || follow == nil {
+	if err != nil {
 		return err
+	}
+	if follow == nil {
+		request, requestErr := s.outgoingFollowRequestFromUndoAccept(object, actor)
+		if requestErr != nil {
+			return requestErr
+		}
+		if request != nil {
+			// A repeated Undo Accept already restored the outgoing request.
+			return nil
+		}
+		return activityPubEventNotAppliedf("Undo Accept did not match an outgoing Follow")
 	}
 	if err := s.revokeOutgoingFollowToRequest(*follow); err != nil {
 		return err
@@ -1293,9 +1519,30 @@ func (s *Server) processActivityPubUndoAccept(object activityObject, actor *mode
 	return nil
 }
 
+func (s *Server) outgoingFollowRequestFromUndoAccept(object activityObject, target *models.Account) (*models.FollowRequest, error) {
+	if s == nil || s.db == nil || target == nil || target.ID == 0 {
+		return nil, activityPubEventNotAppliedf("Undo Accept target is unavailable")
+	}
+	query := s.db.Where("target_account_id = ?", target.ID)
+	if object.ObjectIDPresent {
+		query = query.Where("uri = ?", activityPubUndoTargetURI(object))
+	} else {
+		query = query.Where("uri IS NULL")
+	}
+	var request models.FollowRequest
+	err := query.First(&request).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &request, nil
+}
+
 func (s *Server) outgoingFollowFromUndoAccept(object activityObject, target *models.Account) (*models.Follow, error) {
 	if s == nil || s.db == nil || target == nil || target.ID == 0 {
-		return nil, nil
+		return nil, activityPubEventNotAppliedf("Undo Accept target is unavailable")
 	}
 	query := s.db.Preload("Account").Where("target_account_id = ?", target.ID)
 	if object.ObjectIDPresent {
@@ -1334,60 +1581,33 @@ func (s *Server) revokeOutgoingFollowToRequest(follow models.Follow) error {
 	})
 }
 
-func (s *Server) outgoingFollowFromActivity(object activityObject, target *models.Account) (*models.Follow, error) {
-	if s == nil || s.db == nil || target == nil || target.ID == 0 {
-		return nil, nil
-	}
-	query := s.db.Preload("Account").Where("target_account_id = ?", target.ID)
-	if object.ID != "" {
-		query = query.Where("uri = ?", object.ID)
-	} else if activityPubEmbeddedFollowActorURI(object) != "" {
-		source, err := s.localAccountFromActivityURI(activityPubEmbeddedFollowActorURI(object))
-		if err != nil || source == nil || !source.Local() {
-			return nil, err
-		}
-		query = query.Where("account_id = ?", source.ID)
-	} else {
-		return nil, nil
-	}
-	var follow models.Follow
-	err := query.First(&follow).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) && object.ID != "" && object.Actor != "" {
-		source, sourceErr := s.localAccountFromActivityURI(activityPubEmbeddedFollowActorURI(object))
-		if sourceErr != nil || source == nil || !source.Local() {
-			return nil, sourceErr
-		}
-		err = s.db.Preload("Account").Where("target_account_id = ? AND account_id = ?", target.ID, source.ID).First(&follow).Error
-	}
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &follow, nil
-}
-
 func (s *Server) processActivityPubMove(payload activityPayload, actor *models.Account) error {
 	if actor == nil || actor.ID == 0 || actor.Local() {
-		return nil
+		return activityPubEventNotAppliedf("Move actor must be a persisted remote account")
 	}
 	sourceURI := actor.URI
 	if payload.Object.ID != sourceURI || payload.Target == "" {
-		return nil
+		return activityPubEventNotAppliedf("Move source or target is invalid")
 	}
 	processing, err := s.markActivityPubMoveAsProcessing(context.Background(), actor.ID)
-	if err != nil || !processing {
+	if err != nil {
 		return err
 	}
+	if !processing {
+		return activityPubEventNotAppliedf("Move for account_id=%d is already being processed", actor.ID)
+	}
 	target, err := s.activityActorForMoveTargetURI(payload.Target)
-	if err != nil || target == nil || target.ID == 0 || target.SuspendedAt.Valid {
+	if err != nil {
 		s.unmarkActivityPubMoveAsProcessing(context.Background(), actor.ID)
 		return err
+	}
+	if target == nil || target.ID == 0 || target.SuspendedAt.Valid {
+		s.unmarkActivityPubMoveAsProcessing(context.Background(), actor.ID)
+		return activityPubEventNotAppliedf("Move target %q is unavailable", payload.Target)
 	}
 	if !stringArrayContains(target.AlsoKnownAs, sourceURI) {
 		s.unmarkActivityPubMoveAsProcessing(context.Background(), actor.ID)
-		return nil
+		return activityPubEventNotAppliedf("Move target does not reference source in alsoKnownAs")
 	}
 	if !(actor.MovedToAccountID.Valid && actor.MovedToAccountID.Int64 == target.ID) {
 		if err := s.setMovedToAccount(actor.ID, sql.NullInt64{Int64: target.ID, Valid: true}); err != nil {
@@ -1408,7 +1628,7 @@ const activityPubRedisLockDefaultTTL = 15 * time.Minute
 
 func (s *Server) activityActorForMoveTargetURI(actorURI string) (*models.Account, error) {
 	if s == nil || s.db == nil || strings.TrimSpace(actorURI) == "" {
-		return nil, nil
+		return nil, activityPubEventNotAppliedf("Move target URI is missing")
 	}
 	if s.localActivityURI(actorURI) {
 		return s.localAccountFromActivityURI(actorURI)
@@ -1417,11 +1637,14 @@ func (s *Server) activityActorForMoveTargetURI(actorURI string) (*models.Account
 		return nil, err
 	}
 	actor, err := s.fetchActivityActor(actorURI)
-	if err != nil || actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
-		return nil, nil
+	if err != nil {
+		return nil, err
+	}
+	if actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+		return nil, activityPubEventNotAppliedf("Move target actor is missing id or public key")
 	}
 	if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
-		return nil, nil
+		return nil, err
 	}
 	return s.upsertRemoteActivityActorForRequest(actor, "")
 }
@@ -1442,13 +1665,16 @@ func activityPubRedisLockKey(prefix string, name string) string {
 
 func (s *Server) markActivityPubDeleteUponArrival(actor *models.Account, uri string) error {
 	if s == nil || actor == nil || actor.ID == 0 {
-		return nil
+		return activityPubEventNotAppliedf("Delete arrival marker is missing a persisted actor")
+	}
+	if strings.TrimSpace(uri) == "" {
+		return activityPubEventNotAppliedf("Delete arrival marker is missing an activity URI")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	key := activityPubDeleteUponArrivalKey(redisConfig(s.cfg).prefix, actor.ID, uri)
-	_, _ = s.redisCommand(ctx, "SETEX", key, strconv.FormatInt(int64(activityPubDeleteUponArrivalTTL/time.Second), 10), "true")
-	return nil
+	_, err := s.redisCommand(ctx, "SETEX", key, strconv.FormatInt(int64(activityPubDeleteUponArrivalTTL/time.Second), 10), "true")
+	return err
 }
 
 func (s *Server) activityPubDeleteArrivedFirst(actor *models.Account, uri string) (bool, error) {
@@ -1460,7 +1686,7 @@ func (s *Server) activityPubDeleteArrivedFirst(actor *models.Account, uri string
 	key := activityPubDeleteUponArrivalKey(redisConfig(s.cfg).prefix, actor.ID, uri)
 	value, err := s.redisCommand(ctx, "EXISTS", key)
 	if err != nil {
-		return false, nil
+		return false, err
 	}
 	switch typed := value.(type) {
 	case int64:
@@ -1490,7 +1716,7 @@ func (s *Server) acquireActivityPubRedisLock(ctx context.Context, name string, t
 	key := activityPubRedisLockKey(redisConfig(s.cfg).prefix, name)
 	value, err := s.redisCommand(ctx, "SET", key, "true", "NX", "EX", strconv.FormatInt(int64(ttl/time.Second), 10))
 	if err != nil {
-		return true, release, nil
+		return false, release, err
 	}
 	if !strings.EqualFold(activityPubRedisString(value), "OK") {
 		return false, release, nil
@@ -1511,7 +1737,7 @@ func (s *Server) markActivityPubMoveAsProcessing(ctx context.Context, accountID 
 	defer cancel()
 	value, err := s.redisCommand(ctx, "SET", activityPubMoveProcessingKey(redisConfig(s.cfg).prefix, accountID), "true", "NX", "EX", strconv.FormatInt(int64(activityPubMoveProcessingCooldown/time.Second), 10))
 	if err != nil {
-		return true, nil
+		return false, err
 	}
 	return strings.EqualFold(activityPubRedisString(value), "OK"), nil
 }
@@ -1539,18 +1765,15 @@ func (s *Server) unmarkActivityPubMoveAsProcessing(ctx context.Context, accountI
 func (s *Server) processActivityPubCreateEncryptedMessage(payload activityPayload, actor *models.Account, target *models.Account) error {
 	object := payload.Object
 	if target == nil || target.ID == 0 || object.TargetDeviceID == "" {
-		return nil
+		return activityPubEventNotAppliedf("EncryptedMessage target account or device is missing")
 	}
 	if activityPubURIHostMismatch(actor.URI, object.ID) {
-		return nil
+		return activityPubEventNotAppliedf("EncryptedMessage object host does not match actor")
 	}
 	now := time.Now().UTC()
 	var targetDevice models.Device
 	if err := s.db.Where("account_id = ? AND device_id = ?", target.ID, object.TargetDeviceID).First(&targetDevice).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
-		return err
+		return fmt.Errorf("load EncryptedMessage target device: %w", err)
 	}
 	messageFranking, err := s.cryptoMessageFrankingWithOriginal(actor.ID, target.ID, object.DigestValue, object.MessageFranking, now)
 	if err != nil {
@@ -1577,13 +1800,13 @@ func (s *Server) processActivityPubCreateEncryptedMessage(payload activityPayloa
 func (s *Server) processActivityPubCreateNote(payload activityPayload, actor *models.Account, deliveredTo *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
 	note := payload.Object
 	if !activityNoteBelongsToActor(note, actor) {
-		return nil
+		return activityPubEventNotAppliedf("Create object does not belong to verified actor")
 	}
 	if !activityObjectIsStatus(note) {
-		return nil
+		return activityPubEventNotAppliedf("Create object is not a supported status")
 	}
 	if activityPubURIHostMismatch(actor.URI, note.ID) {
-		return nil
+		return activityPubEventNotAppliedf("Create object host does not match actor")
 	}
 	tombstoneExists, err := activityPubTombstoneExists(s.db, note.ID)
 	if err != nil || tombstoneExists {
@@ -1596,8 +1819,11 @@ func (s *Server) processActivityPubCreateNote(payload activityPayload, actor *mo
 		}
 	}
 	acquired, releaseCreateLock, err := s.acquireActivityPubRedisLock(context.Background(), "create:"+note.ID, activityPubRedisLockDefaultTTL)
-	if err != nil || !acquired {
+	if err != nil {
 		return err
+	}
+	if !acquired {
+		return activityPubEventNotAppliedf("Create object %q is already being processed", note.ID)
 	}
 	defer releaseCreateLock()
 	deleteArrivedFirst, err := s.activityPubDeleteArrivedFirst(actor, note.ID)
@@ -1606,6 +1832,9 @@ func (s *Server) processActivityPubCreateNote(payload activityPayload, actor *mo
 	}
 	now := time.Now().UTC()
 	handled, err := s.processActivityPubPollVote(note, actor, now)
+	if errors.Is(err, errActivityPubPollVoteAlreadyVoted) {
+		return nil
+	}
 	if err != nil || handled {
 		return err
 	}
@@ -2014,8 +2243,11 @@ func (s *Server) processActivityPubPollVote(note activityObject, actor *models.A
 
 	voteLockName := "vote:" + strconv.FormatInt(poll.ID, 10) + ":" + strconv.FormatInt(actor.ID, 10)
 	acquired, releaseVoteLock, err := s.acquireActivityPubRedisLock(context.Background(), voteLockName, activityPubRedisLockDefaultTTL)
-	if err != nil || !acquired {
+	if err != nil {
 		return true, err
+	}
+	if !acquired {
+		return true, activityPubEventNotAppliedf("poll vote for poll_id=%d account_id=%d is already being processed", poll.ID, actor.ID)
 	}
 	defer releaseVoteLock()
 
@@ -2079,10 +2311,10 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 	if actorType := activityActorTypeValue(object.Types); actorType != "" {
 		object.Type = actorType
 		if object.ID == "" || actor.URI == "" || object.ID != actor.URI {
-			return nil
+			return activityPubEventNotAppliedf("Update actor object does not match verified actor")
 		}
 		if object.Inbox == "" || !activityPubHTTPURIAllowedRaw(object.ID) {
-			return nil
+			return activityPubEventNotAppliedf("Update actor object is missing a valid id or inbox")
 		}
 		if disallowed, err := s.remoteActivityDomainNotAllowed(object.ID); err != nil || disallowed {
 			return err
@@ -2094,10 +2326,10 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 	}
 	if activityObjectIsStatus(object) {
 		if !activityNoteBelongsToActor(object, actor) {
-			return nil
+			return activityPubEventNotAppliedf("Update status does not belong to verified actor")
 		}
 		if activityPubURIHostMismatch(actor.URI, object.ID) {
-			return nil
+			return activityPubEventNotAppliedf("Update status host does not match actor")
 		}
 		var status models.Status
 		statusQuery := s.db.Where("uri = ? AND account_id = ?", object.ID, actor.ID)
@@ -2121,8 +2353,11 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 			return nil
 		}
 		locked, releaseLock, err := s.acquireActivityPubRedisLock(context.Background(), "create:"+object.ID, activityPubRedisLockDefaultTTL)
-		if err != nil || !locked {
+		if err != nil {
 			return err
+		}
+		if !locked {
+			return activityPubEventNotAppliedf("Update object %q is already being processed", object.ID)
 		}
 		defer releaseLock()
 		if !activityPubStatusUpdateIsExplicit(status, editedAt) {
@@ -2238,7 +2473,7 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 		}
 		return nil
 	}
-	return nil
+	return activityPubEventNotAppliedf("Update object type %q is unsupported", object.TypeExact)
 }
 
 // Mastodon 4.2.28 ignores old Update activities only when their object is not
@@ -2256,10 +2491,10 @@ func activityPubUpdateShouldIgnoreUnknownObject(statusMissing bool, object activ
 func (s *Server) processActivityPubDereferencedUpdate(payload activityPayload, actor *models.Account, deliveredTo *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
 	objectFetchURI, objectURI := activityPubDereferenceFetchURI(payload.Object.ID)
 	if s == nil || actor == nil || objectFetchURI == "" || objectURI == "" {
-		return nil
+		return activityPubEventNotAppliedf("dereferenced Update has no fetchable object")
 	}
 	if activityPubURIHostMismatch(actor.URI, objectURI) {
-		return nil
+		return activityPubEventNotAppliedf("dereferenced Update object host does not match actor")
 	}
 	if disallowed, err := s.remoteActivityDomainNotAllowed(objectURI); err != nil || disallowed {
 		return err
@@ -2269,8 +2504,11 @@ func (s *Server) processActivityPubDereferencedUpdate(payload activityPayload, a
 		return err
 	}
 	object, err := s.fetchActivityObjectForUpdateWithFetchURI(objectFetchURI, objectURI, paonUserAgent(s.cfg), signer)
-	if err != nil || object.ID == "" {
-		return nil
+	if err != nil {
+		return err
+	}
+	if object.ID == "" {
+		return activityPubEventNotAppliedf("dereferenced Update object is missing id")
 	}
 	dereferenced := activityPubDereferencedUpdatePayload(payload, object)
 	return s.processActivityPubUpdate(dereferenced, actor, deliveredTo, relayedThrough, options)
@@ -2704,13 +2942,16 @@ func (s *Server) processActivityPubDelete(payload activityPayload, actor *models
 func (s *Server) processActivityPubDeleteWithContext(ctx context.Context, payload activityPayload, actor *models.Account) error {
 	target := payload.Object.ID
 	if target == "" && !payload.Object.Reference {
-		return nil
+		return activityPubEventNotAppliedf("Delete target is missing")
 	}
 	now := time.Now().UTC()
 	if actor.URI != "" && target == actor.URI {
 		acquired, releaseDeleteLock, err := s.acquireActivityPubRedisLock(ctx, "delete_in_progress:"+strconv.FormatInt(actor.ID, 10), 2*time.Hour)
-		if err != nil || !acquired {
+		if err != nil {
 			return err
+		}
+		if !acquired {
+			return activityPubEventNotAppliedf("actor Delete for account_id=%d is already being processed", actor.ID)
 		}
 		defer releaseDeleteLock()
 		if actor.Local() {
@@ -2733,8 +2974,11 @@ func (s *Server) processActivityPubDeleteWithContext(ctx context.Context, payloa
 		return nil
 	}
 	acquired, releaseDeleteLock, err := s.acquireActivityPubRedisLock(ctx, "delete_status_in_progress:"+target, activityPubRedisLockDefaultTTL)
-	if err != nil || !acquired {
+	if err != nil {
 		return err
+	}
+	if !acquired {
+		return activityPubEventNotAppliedf("status Delete for %q is already being processed", target)
 	}
 	defer releaseDeleteLock()
 	var status models.Status
@@ -2748,8 +2992,11 @@ func (s *Server) processActivityPubDeleteWithContext(ctx context.Context, payloa
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if activityPubURIHostsMatch(actor.URI, target) {
 			acquiredCreate, releaseCreateLock, err := s.acquireActivityPubRedisLock(ctx, "create:"+target, activityPubRedisLockDefaultTTL)
-			if err != nil || !acquiredCreate {
+			if err != nil {
 				return err
+			}
+			if !acquiredCreate {
+				return activityPubEventNotAppliedf("status %q is already being created", target)
 			}
 			defer releaseCreateLock()
 			if err := createActivityPubTombstone(tx, actor.ID, target, now); err != nil {
@@ -3730,14 +3977,17 @@ func (s *Server) scheduleActivityPubMentionRefreshIfStale(account *models.Accoun
 func (s *Server) fetchActivityPubMentionAccountByHref(tx *gorm.DB, href string) (*models.Account, error) {
 	actorURI := activityPubHTTPURI(href)
 	if s == nil || tx == nil || actorURI == "" {
-		return nil, nil
+		return nil, activityPubEventNotAppliedf("Mention href %q is not a fetchable actor URI", href)
 	}
 	if disallowed, err := s.remoteActivityDomainNotAllowed(actorURI); err != nil || disallowed {
 		return nil, err
 	}
 	actor, err := s.fetchActivityActor(actorURI)
-	if err != nil || actor.ID == "" {
-		return nil, nil
+	if err != nil {
+		return nil, err
+	}
+	if actor.ID == "" {
+		return nil, activityPubEventNotAppliedf("Mention actor %q is missing id", actorURI)
 	}
 	return s.upsertRemoteActivityActorDB(tx, actor)
 }
@@ -4207,8 +4457,11 @@ func updateReplyCountersAfterChange(tx *gorm.DB, oldReply sql.NullInt64, nextRep
 
 func (s *Server) updateActivityPubActor(actor *models.Account, object activityObject, requestID string) error {
 	acquired, releaseAccountLock, err := s.acquireActivityPubRedisLock(context.Background(), "process_account:"+object.ID, activityPubRedisLockDefaultTTL)
-	if err != nil || !acquired {
+	if err != nil {
 		return err
+	}
+	if !acquired {
+		return activityPubEventNotAppliedf("actor Update for %q is already being processed", object.ID)
 	}
 	defer releaseAccountLock()
 	now := time.Now().UTC()
@@ -4359,11 +4612,14 @@ func clearActivityPubActorHeaderMediaUpdates(updates map[string]any) {
 func (s *Server) processActivityPubFollow(payload activityPayload, actor *models.Account) error {
 	activityID := activityPayloadIDValueOrID(payload)
 	target, err := s.localAccountFromActivityURI(payload.Object.ID)
-	if err != nil || target == nil {
-		return nil
+	if err != nil {
+		return err
+	}
+	if target == nil {
+		return activityPubEventNotAppliedf("Follow target %q is not a known local account", payload.Object.ID)
 	}
 	if target.ID == actor.ID || !target.Local() {
-		return nil
+		return activityPubEventNotAppliedf("Follow target %q is not a distinct local account", payload.Object.ID)
 	}
 	if activityID != "" {
 		deleteArrivedFirst, err := s.activityPubDeleteArrivedFirst(actor, activityID)
@@ -4384,8 +4640,7 @@ func (s *Server) processActivityPubFollow(payload activityPayload, actor *models
 		return err
 	}
 	if rejected {
-		_ = s.deliverActivityPubFollowResponse("Reject", *target, *actor, 0, activityID)
-		return nil
+		return s.deliverActivityPubFollowResponse("Reject", *target, *actor, 0, activityID)
 	}
 	followURI := activityID
 	if !payload.IDPresent {
@@ -4461,7 +4716,9 @@ func (s *Server) processActivityPubFollow(payload activityPayload, actor *models
 			s.invalidateFollowRelationshipCaches(context.Background(), *actor, target.ID)
 			s.meiliReindexPrivateStatusesForAccountsBestEffort(context.Background(), target.ID)
 		}
-		_ = s.deliverActivityPubFollowResponse("Accept", *target, *actor, acceptResponseFollowID, string(accepted.URI))
+		if err := s.deliverActivityPubFollowResponse("Accept", *target, *actor, acceptResponseFollowID, string(accepted.URI)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -4593,7 +4850,10 @@ func (s *Server) followTargetFromURI(uri string, accountID int64) (*models.Accou
 func (s *Server) processActivityPubLike(payload activityPayload, actor *models.Account) error {
 	activityID := activityPayloadIDValueOrID(payload)
 	status, err := s.localStatusFromActivityURI(activityPubLikeTargetURI(payload.Object))
-	if err != nil || status == nil {
+	if err != nil {
+		return err
+	}
+	if status == nil {
 		return nil
 	}
 	if status.AccountID == actor.ID || status.DeletedAt.Valid {
@@ -4642,7 +4902,10 @@ func (s *Server) processActivityPubLike(payload activityPayload, actor *models.A
 
 func (s *Server) processActivityPubUndoLike(object activityObject, actor *models.Account) error {
 	status, err := s.localStatusFromActivityURI(activityPubUndoLikeTargetURI(object))
-	if err != nil || status == nil {
+	if err != nil {
+		return err
+	}
+	if status == nil {
 		return nil
 	}
 	joinStatus := statusJoinTarget(status)
@@ -4695,12 +4958,15 @@ func (s *Server) processActivityPubAnnounce(payload activityPayload, actor *mode
 	targetURI := payload.Object.ID
 	lockTargetURI := activityPubAnnounceLockTargetURI(payload, targetURI)
 	if lockTargetURI == "" {
-		return nil
+		return activityPubEventNotAppliedf("Announce target is missing")
 	}
 	announceURI := activityAnnounceURI(activityPayloadIDValueOrID(payload), actor, targetURI)
 	acquired, releaseAnnounceLock, err := s.acquireActivityPubRedisLock(context.Background(), "announce:"+lockTargetURI, activityPubRedisLockDefaultTTL)
-	if err != nil || !acquired {
+	if err != nil {
 		return err
+	}
+	if !acquired {
+		return activityPubEventNotAppliedf("Announce target %q is already being processed", lockTargetURI)
 	}
 	defer releaseAnnounceLock()
 	if announceURI != "" {
@@ -4733,7 +4999,13 @@ func (s *Server) processActivityPubAnnounce(payload activityPayload, actor *mode
 		}
 		target, err = s.fetchActivityPubAnnounceTarget(targetURI, payload.Object.URL, payload.ID)
 	}
-	if err != nil || target == nil || target.DeletedAt.Valid {
+	if err != nil {
+		return err
+	}
+	if target == nil {
+		return activityPubEventNotAppliedf("Announce target %q could not be resolved", targetURI)
+	}
+	if target.DeletedAt.Valid {
 		return nil
 	}
 	related, err := s.activityPubAnnounceRelatedToLocalActivity(actor, relayedThrough, *target)
@@ -4911,7 +5183,7 @@ func (s *Server) processActivityPubUndoAnnounce(object activityObject, actor *mo
 func (s *Server) processActivityPubUndoAnnounceWithTombstone(object activityObject, actor *models.Account, tombstoneOnMiss bool) (bool, error) {
 	target, err := s.statusFromActivityURI(object.ObjectID)
 	if err != nil {
-		return false, nil
+		return false, err
 	}
 	announceURI := object.ID
 	var reblog models.Status
