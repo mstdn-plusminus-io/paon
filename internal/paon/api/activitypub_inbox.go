@@ -1708,6 +1708,9 @@ func (s *Server) acquireActivityPubRedisLock(ctx context.Context, name string, t
 	if s == nil || name == "" {
 		return true, release, nil
 	}
+	if !redisEndpointConfigured(s.cfg) {
+		return true, release, nil
+	}
 	if ttl <= 0 {
 		ttl = activityPubRedisLockDefaultTTL
 	}
