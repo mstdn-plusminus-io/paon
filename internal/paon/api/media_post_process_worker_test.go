@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,7 +56,9 @@ func TestMediaPostProcessWorkerUsesRailsProcessingTransitions(t *testing.T) {
 		`processing := int64(2)`,
 		`processing = 3`,
 		`if !s.mediaAttachmentOriginalExists(attachment)`,
+		`s.restoreMediaAttachmentOriginal(ctx, attachment)`,
 		`logMediaPostProcessFailure(s, attachment, "load_original"`,
+		`logMediaPostProcessFailure(s, attachment, "restore_original", err)`,
 		`logMediaPostProcessFailure(s, attachment, "transcode_original", err)`,
 		`logMediaPostProcessFailure(s, *attachment, "generate_thumbnail", err)`,
 		`logMediaPostProcessFailure(s, attachment, "persist_result", err)`,
@@ -148,6 +153,56 @@ func TestMediaAttachmentOriginalExistsUsesPaperclipPath(t *testing.T) {
 	attachment.FileFileName = sql.NullString{}
 	if server.mediaAttachmentOriginalExists(attachment) {
 		t.Fatal("invalid filename should not be found")
+	}
+}
+
+func TestRestoreMediaAttachmentOriginalStreamsPrivateS3ObjectToWorker(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	oldClient := s3HTTPClient
+	defer func() { s3HTTPClient = oldClient }()
+	s3HTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		gotMethod = request.Method
+		gotPath = request.URL.Path
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("video-from-s3")),
+			Request:    request,
+		}, nil
+	})}
+
+	server := &Server{cfg: config.Config{
+		PublicDir:         t.TempDir(),
+		S3Enabled:         true,
+		S3Bucket:          "private-media",
+		S3Endpoint:        "https://storage.example.test",
+		S3Region:          "ap-northeast-1",
+		S3AccessKeyID:     "access",
+		S3SecretAccessKey: "secret",
+		S3Permission:      "private",
+	}}
+	attachment := models.MediaAttachment{
+		ID:           42,
+		Type:         2,
+		FileFileName: sql.NullString{String: "attachment.mp4", Valid: true},
+	}
+
+	restored, err := server.restoreMediaAttachmentOriginal(context.Background(), attachment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored {
+		t.Fatal("S3 original was not restored")
+	}
+	body, err := os.ReadFile(server.mediaFilePath(attachment.ID, attachment.FileFileName.String))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "video-from-s3" {
+		t.Fatalf("restored body = %q", body)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/private-media/media_attachments/files/000/000/042/original/attachment.mp4" {
+		t.Fatalf("S3 request method=%q path=%q", gotMethod, gotPath)
 	}
 }
 

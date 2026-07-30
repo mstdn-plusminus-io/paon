@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"log"
 	"time"
 
@@ -40,6 +41,10 @@ func accessLogMiddlewareWithLogger(cfg config.Config, logf accessLogPrintf) echo
 			}
 
 			response, status := echo.ResolveResponseStatus(c.Response(), err)
+			var apiErr apiHTTPError
+			if errors.As(err, &apiErr) {
+				status = apiErr.status
+			}
 			request := c.Request()
 			requestID, _ := c.Get("request_id").(string)
 			if requestID == "" {
