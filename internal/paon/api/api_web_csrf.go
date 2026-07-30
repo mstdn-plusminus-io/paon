@@ -16,25 +16,16 @@ func (s *Server) apiWebCSRF(next func(*echo.Context) error) func(*echo.Context) 
 		if err != nil {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "The access token is invalid"})
 		}
-		if !apiWebCSRFTokenValid(c, web.CSRFTokenForSession(token)) {
+		if !s.apiWebCSRFTokenValid(c, token) {
 			return c.JSON(http.StatusUnprocessableEntity, map[string]string{"error": railsCSRFErrorMessage})
 		}
 		return next(c)
 	}
 }
 
-func apiWebCSRFTokenValid(c *echo.Context, expected string) bool {
-	if expected == "" {
-		return false
+func (s *Server) apiWebCSRFTokenValid(c *echo.Context, token string) bool {
+	if state, err := s.browserSession(c, false); err == nil && browserCSRFTokenValid(c, state.CSRFToken) {
+		return true
 	}
-	for _, value := range []string{
-		c.Request().Header.Get("X-CSRF-Token"),
-		c.Request().Header.Get("X-XSRF-Token"),
-		c.FormValue("authenticity_token"),
-	} {
-		if value == expected {
-			return true
-		}
-	}
-	return false
+	return browserCSRFTokenValid(c, web.CSRFTokenForSession(token))
 }
