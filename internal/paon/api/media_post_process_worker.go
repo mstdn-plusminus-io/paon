@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
@@ -137,9 +138,15 @@ func (s *Server) postProcessMediaAttachment(ctx context.Context, attachment mode
 	s.invalidateMediaAttachmentParentStatusCache(ctx, attachment)
 	processing := int64(2)
 	if !s.mediaAttachmentOriginalExists(attachment) {
-		processing = 3
-		logMediaPostProcessFailure(s, attachment, "load_original",
-			fmt.Errorf("stored original is unavailable in the media-processing filesystem"))
+		restored, err := s.restoreMediaAttachmentOriginal(ctx, attachment)
+		if err != nil {
+			processing = 3
+			logMediaPostProcessFailure(s, attachment, "restore_original", err)
+		} else if !restored {
+			processing = 3
+			logMediaPostProcessFailure(s, attachment, "load_original",
+				fmt.Errorf("stored original is unavailable in the media-processing filesystem and object storage"))
+		}
 	}
 	updates := map[string]any{"processing": processing, "updated_at": time.Now().UTC()}
 	if processing == 2 {
@@ -264,6 +271,44 @@ func (s *Server) mediaAttachmentOriginalExists(attachment models.MediaAttachment
 		return false
 	}
 	return true
+}
+
+func (s *Server) restoreMediaAttachmentOriginal(ctx context.Context, attachment models.MediaAttachment) (bool, error) {
+	if s == nil || !s.s3ObjectStorageEnabled() || attachment.ID == 0 || !attachment.FileFileName.Valid {
+		return false, nil
+	}
+	filename := strings.TrimSpace(attachment.FileFileName.String)
+	if filename == "" {
+		return false, nil
+	}
+	key := mediaAttachmentObjectKey(attachment.ID, "files", "original", filename)
+	source, ok, err := s.getS3ObjectReader(ctx, key)
+	if err != nil || !ok {
+		return false, err
+	}
+	defer source.Close()
+
+	target := s.mediaFilePath(attachment.ID, filename)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return false, err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".restore-*")
+	if err != nil {
+		return false, err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if _, err := io.Copy(temporary, source); err != nil {
+		_ = temporary.Close()
+		return false, err
+	}
+	if err := temporary.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(temporaryPath, target); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // mediaFFmpegTranscodeTimeout bounds ffmpeg re-encode time for a single queued attachment.

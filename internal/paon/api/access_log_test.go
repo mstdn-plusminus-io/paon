@@ -87,6 +87,23 @@ func TestAccessLogMiddlewareResolvesUnhandledErrorStatus(t *testing.T) {
 	}
 }
 
+func TestAccessLogMiddlewareUsesAPIErrorStatus(t *testing.T) {
+	var output []string
+	e := echo.New()
+	e.Use(accessLogMiddlewareWithLogger(config.Config{RailsLogLevel: "info"}, func(format string, args ...any) {
+		output = append(output, fmt.Sprintf(format, args...))
+	}))
+	e.GET("/api/v1/media/:id", func(c *echo.Context) error {
+		return apiError(c, http.StatusUnprocessableEntity, mediaAttachmentProcessingError)
+	})
+
+	e.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/v1/media/42", nil))
+	completed := output[len(output)-1]
+	if !strings.Contains(completed, `path="/api/v1/media/42"`) || !strings.Contains(completed, `status=422`) {
+		t.Fatalf("access log did not use API error status: %s", completed)
+	}
+}
+
 func TestAccessLogMiddlewareIsSuppressedAboveInfo(t *testing.T) {
 	called := false
 	e := echo.New()
