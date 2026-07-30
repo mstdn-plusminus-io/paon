@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,6 +53,10 @@ func TestMediaPostProcessWorkerUsesRailsProcessingTransitions(t *testing.T) {
 		`processing := int64(2)`,
 		`processing = 3`,
 		`if !s.mediaAttachmentOriginalExists(attachment)`,
+		`logMediaPostProcessFailure(s, attachment, "load_original"`,
+		`logMediaPostProcessFailure(s, attachment, "transcode_original", err)`,
+		`logMediaPostProcessFailure(s, *attachment, "generate_thumbnail", err)`,
+		`logMediaPostProcessFailure(s, attachment, "persist_result", err)`,
 	}
 	for _, want := range checks {
 		if !strings.Contains(string(src), want) {
@@ -205,5 +210,27 @@ func TestTranscodeMediaOriginalFileSafelyReplacesMP4Input(t *testing.T) {
 	}
 	if metadata := mediaTranscodeMetadataForFile(source); !metadata.eligibleForPassthrough() {
 		t.Fatalf("transcoded MP4 metadata = %#v", metadata)
+	}
+}
+
+func TestMediaCommandExecutionErrorIncludesBoundedStderr(t *testing.T) {
+	detail := strings.Repeat("x", 5*1024) + "\ninvalid codec"
+	err := mediaCommandExecutionError("/usr/bin/ffmpeg", errors.New("exit status 1"), []byte(detail))
+	message := err.Error()
+	if !strings.Contains(message, "ffmpeg failed: exit status 1") || !strings.Contains(message, "invalid codec") {
+		t.Fatalf("media command error missing command output: %q", message)
+	}
+	if len(message) > 4300 {
+		t.Fatalf("media command error is not bounded: %d bytes", len(message))
+	}
+}
+
+func TestMediaPostProcessStorageBackend(t *testing.T) {
+	if got := mediaPostProcessStorageBackend(&Server{}); got != "local" {
+		t.Fatalf("local backend = %q", got)
+	}
+	s3Server := &Server{cfg: config.Config{S3Enabled: true, S3Bucket: "media"}}
+	if got := mediaPostProcessStorageBackend(s3Server); got != "s3" {
+		t.Fatalf("S3 backend = %q", got)
 	}
 }

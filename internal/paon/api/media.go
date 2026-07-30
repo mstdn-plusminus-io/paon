@@ -1265,7 +1265,12 @@ func generateVideoThumbnailFile(source string, target string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), mediaFFmpegThumbnailTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, mediaFFmpegBinary(), "-y", "-i", source, "-frames:v", "1", "-vf", "thumbnail,scale=480:-2", target).Run()
+	binary := mediaFFmpegBinary()
+	output, err := exec.CommandContext(ctx, binary, "-y", "-i", source, "-frames:v", "1", "-vf", "thumbnail,scale=480:-2", target).CombinedOutput()
+	if err != nil {
+		return mediaCommandExecutionError(binary, err, output)
+	}
+	return nil
 }
 
 func generateAudioThumbnailFile(source string, target string) error {
@@ -1274,7 +1279,12 @@ func generateAudioThumbnailFile(source string, target string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), mediaFFmpegThumbnailTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, mediaFFmpegBinary(), "-y", "-i", source, "-loglevel", "fatal", target).Run()
+	binary := mediaFFmpegBinary()
+	output, err := exec.CommandContext(ctx, binary, "-y", "-i", source, "-loglevel", "fatal", target).CombinedOutput()
+	if err != nil {
+		return mediaCommandExecutionError(binary, err, output)
+	}
+	return nil
 }
 
 func (s *Server) storeMediaAttachmentFile(header *multipart.FileHeader, target string) error {
