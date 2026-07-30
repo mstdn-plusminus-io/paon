@@ -14,6 +14,14 @@ func testWebMFixture(t *testing.T) string {
 	})
 }
 
+func testMP4Fixture(t *testing.T) string {
+	t.Helper()
+	return generateMediaFixture(t, "attachment.mp4", []string{
+		"-f", "lavfi", "-i", "color=c=black:s=64x64:d=1",
+		"-an", "-c:v", "h264", "-pix_fmt", "yuv420p",
+	})
+}
+
 func testAVIFFixture(t *testing.T) string {
 	t.Helper()
 	return generateMediaFixture(t, "600x400.avif", []string{
