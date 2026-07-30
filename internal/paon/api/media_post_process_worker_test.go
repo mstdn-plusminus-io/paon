@@ -186,3 +186,24 @@ func TestMediaPostProcessGeneratesVideoThumbnailWhenFFmpegAvailable(t *testing.T
 		t.Fatalf("small metadata missing after thumbnail generation: %#v", got)
 	}
 }
+
+func TestTranscodeMediaOriginalFileSafelyReplacesMP4Input(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	source := testMP4Fixture(t)
+	args := railsVideoTranscodeFFmpegArgs(source)
+	if err := transcodeMediaOriginalFile(source, source, args); err != nil {
+		t.Fatalf("transcodeMediaOriginalFile() error = %v", err)
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("transcoded MP4 is empty")
+	}
+	if metadata := mediaTranscodeMetadataForFile(source); !metadata.eligibleForPassthrough() {
+		t.Fatalf("transcoded MP4 metadata = %#v", metadata)
+	}
+}

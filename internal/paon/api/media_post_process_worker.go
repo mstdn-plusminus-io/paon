@@ -367,9 +367,30 @@ func transcodeMediaOriginalFile(source string, target string, args []string) err
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
+	output := target
+	if filepath.Clean(source) == filepath.Clean(target) {
+		extension := filepath.Ext(target)
+		stem := strings.TrimSuffix(filepath.Base(target), extension)
+		temporary, err := os.CreateTemp(filepath.Dir(target), "."+stem+".transcode-*"+extension)
+		if err != nil {
+			return err
+		}
+		output = temporary.Name()
+		if err := temporary.Close(); err != nil {
+			_ = os.Remove(output)
+			return err
+		}
+		defer os.Remove(output)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), mediaFFmpegTranscodeTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, mediaFFmpegBinary(), append(args, target)...).Run()
+	if err := exec.CommandContext(ctx, mediaFFmpegBinary(), append(args, output)...).Run(); err != nil {
+		return err
+	}
+	if output != target {
+		return os.Rename(output, target)
+	}
+	return nil
 }
 
 const (
