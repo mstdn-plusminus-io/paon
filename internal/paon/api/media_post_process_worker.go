@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"os/exec"
@@ -47,6 +48,7 @@ func (s *Server) processQueuedMediaAttachments(ctx context.Context, limit int) i
 		Order("id ASC").
 		Limit(limit).
 		Find(&attachments).Error; err != nil {
+		logMediaPostProcessFailure(s, models.MediaAttachment{}, "find_queued_attachments", err)
 		return 0
 	}
 	processed := 0
@@ -72,6 +74,7 @@ func (s *Server) postProcessMediaAttachmentByID(ctx context.Context, mediaAttach
 	if err := s.db.WithContext(ctx).
 		Where("id = ?", mediaAttachmentID).
 		First(&attachment).Error; err != nil {
+		logMediaPostProcessFailure(s, models.MediaAttachment{ID: mediaAttachmentID}, "find_attachment", err)
 		return workerLookupError("post process media attachment lookup", err)
 	}
 	if attachment.Processing.Valid && attachment.Processing.Int64 != 0 && attachment.Processing.Int64 != 1 {
@@ -87,6 +90,7 @@ func (s *Server) postProcessMediaAttachmentByID(ctx context.Context, mediaAttach
 		Select("id", "processing").
 		Where("id = ?", mediaAttachmentID).
 		First(&current).Error; err != nil {
+		logMediaPostProcessFailure(s, attachment, "find_processing_state", err)
 		return workerLookupError("post process media state lookup", err)
 	}
 	if current.Processing.Valid && current.Processing.Int64 != 0 {
@@ -99,13 +103,15 @@ func (s *Server) markMediaPostProcessFailed(ctx context.Context, mediaAttachment
 	if s == nil || s.db == nil || mediaAttachmentID == 0 {
 		return
 	}
-	_ = s.db.WithContext(ctx).
+	if err := s.db.WithContext(ctx).
 		Model(&models.MediaAttachment{}).
 		Where("id = ?", mediaAttachmentID).
 		Updates(map[string]any{
 			"processing": 3,
 			"updated_at": time.Now().UTC(),
-		}).Error
+		}).Error; err != nil {
+		logMediaPostProcessFailure(s, models.MediaAttachment{ID: mediaAttachmentID}, "mark_failed", err)
+	}
 }
 
 func (s *Server) postProcessMediaAttachment(ctx context.Context, attachment models.MediaAttachment, now time.Time, allowInProgress bool) (bool, error) {
@@ -121,13 +127,19 @@ func (s *Server) postProcessMediaAttachment(ctx context.Context, attachment mode
 		query = query.Where("processing = ?", 0)
 	}
 	claimed := query.Updates(map[string]any{"processing": 1, "updated_at": now})
-	if claimed.Error != nil || claimed.RowsAffected == 0 {
+	if claimed.Error != nil {
+		logMediaPostProcessFailure(s, attachment, "claim_attachment", claimed.Error)
+		return false, nil
+	}
+	if claimed.RowsAffected == 0 {
 		return false, nil
 	}
 	s.invalidateMediaAttachmentParentStatusCache(ctx, attachment)
 	processing := int64(2)
 	if !s.mediaAttachmentOriginalExists(attachment) {
 		processing = 3
+		logMediaPostProcessFailure(s, attachment, "load_original",
+			fmt.Errorf("stored original is unavailable in the media-processing filesystem"))
 	}
 	updates := map[string]any{"processing": processing, "updated_at": time.Now().UTC()}
 	if processing == 2 {
@@ -137,6 +149,7 @@ func (s *Server) postProcessMediaAttachment(ctx context.Context, attachment mode
 			}
 		}
 		if transcodeUpdates, _, err := s.transcodeMediaOriginal(&attachment, time.Now().UTC()); err != nil {
+			logMediaPostProcessFailure(s, attachment, "transcode_original", err)
 			return false, err
 		} else if len(transcodeUpdates) > 0 {
 			for key, value := range transcodeUpdates {
@@ -160,6 +173,7 @@ func (s *Server) postProcessMediaAttachment(ctx context.Context, attachment mode
 		Model(&models.MediaAttachment{}).
 		Where("id = ?", attachment.ID).
 		Updates(updates).Error; err != nil {
+		logMediaPostProcessFailure(s, attachment, "persist_result", err)
 		return false, nil
 	}
 	s.invalidateMediaAttachmentParentStatusCache(ctx, attachment)
@@ -184,6 +198,7 @@ func (s *Server) mediaAttachmentPostProcessThumbnail(attachment *models.MediaAtt
 		attrs, err = s.generateVideoThumbnail(attachment.ID, filename, now)
 	}
 	if err != nil {
+		logMediaPostProcessFailure(s, *attachment, "generate_thumbnail", err)
 		return nil
 	}
 	updates := map[string]any{}
@@ -384,13 +399,59 @@ func transcodeMediaOriginalFile(source string, target string, args []string) err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), mediaFFmpegTranscodeTimeout)
 	defer cancel()
-	if err := exec.CommandContext(ctx, mediaFFmpegBinary(), append(args, output)...).Run(); err != nil {
-		return err
+	binary := mediaFFmpegBinary()
+	commandOutput, err := exec.CommandContext(ctx, binary, append(args, output)...).CombinedOutput()
+	if err != nil {
+		return mediaCommandExecutionError(binary, err, commandOutput)
 	}
 	if output != target {
 		return os.Rename(output, target)
 	}
 	return nil
+}
+
+func mediaCommandExecutionError(binary string, err error, output []byte) error {
+	command := filepath.Base(strings.TrimSpace(binary))
+	if command == "" || command == "." {
+		command = "media command"
+	}
+	const outputLimit = 4 * 1024
+	if len(output) > outputLimit {
+		output = append([]byte("..."), output[len(output)-outputLimit+3:]...)
+	}
+	detail := activityPubSafeLogValue(string(output), outputLimit)
+	if detail == "" {
+		return fmt.Errorf("%s failed: %w", command, err)
+	}
+	return fmt.Errorf("%s failed: %w: %s", command, err, detail)
+}
+
+func logMediaPostProcessFailure(s *Server, attachment models.MediaAttachment, stage string, err error) {
+	if err == nil {
+		return
+	}
+	log.Printf("level=ERROR event=media_post_process_failed media_attachment_id=%d media_type=%d stage=%q storage=%q error=%q",
+		attachment.ID,
+		attachment.Type,
+		activityPubSafeLogValue(stage, 128),
+		mediaPostProcessStorageBackend(s),
+		activityPubErrorLogValue(err),
+	)
+}
+
+func mediaPostProcessStorageBackend(s *Server) string {
+	switch {
+	case s == nil:
+		return "unknown"
+	case s.s3ObjectStorageEnabled():
+		return "s3"
+	case s.azureObjectStorageEnabled():
+		return "azure"
+	case s.swiftObjectStorageEnabled():
+		return "swift"
+	default:
+		return "local"
+	}
 }
 
 const (

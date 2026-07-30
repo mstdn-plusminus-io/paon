@@ -7349,7 +7349,13 @@ func logUnexpectedHTTPError(c *echo.Context, err error) {
 			}
 		}
 	}
-	log.Printf("unexpected HTTP error request_id=%q method=%q path=%q type=%T: %v", requestID, method, path, err, err)
+	log.Printf("level=ERROR event=http_request_failed request_id=%q method=%q path=%q error_type=%q error=%q",
+		requestID,
+		method,
+		path,
+		fmt.Sprintf("%T", err),
+		activityPubErrorLogValue(err),
+	)
 }
 
 func errorRequestWantsHTML(c *echo.Context) bool {

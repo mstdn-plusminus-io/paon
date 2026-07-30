@@ -1970,7 +1970,7 @@ func (s *Server) startAsynqWorker(ctx context.Context) {
 	})
 	go func() {
 		if err := srv.Run(s.newAsynqServeMux()); err != nil {
-			log.Printf("asynq worker stopped unexpectedly error=%q", activityPubErrorLogValue(err))
+			log.Printf("level=ERROR event=asynq_worker_stopped error=%q", activityPubErrorLogValue(err))
 		}
 	}()
 	<-ctx.Done()
@@ -2023,7 +2023,7 @@ func logAsynqTaskError(ctx context.Context, task *asynq.Task, err error) {
 	if !maxRetryKnown {
 		maxRetry = -1
 	}
-	log.Printf("asynq task failed task_type=%q task_id=%q queue=%q retry=%d max_retry=%d payload_bytes=%d error=%q",
+	log.Printf("level=ERROR event=asynq_task_failed task_type=%q task_id=%q queue=%q retry=%d max_retry=%d payload_bytes=%d error=%q",
 		task.Type(), taskID, queue, retried, maxRetry, len(task.Payload()), activityPubErrorLogValue(err))
 }
 
