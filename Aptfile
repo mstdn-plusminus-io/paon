@@ -1,5 +1,7 @@
 ffmpeg
+libvips-dev
 libopenblas0-pthread
 libpq-dev
 libxdamage1
 libxfixes3
+pkg-config

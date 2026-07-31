@@ -28,6 +28,9 @@ ja:
       create: 書き込む
       created_msg: モデレーションメモを書き込みました！
       destroyed_msg: モデレーションメモを削除しました！
+      errors:
+        database_unavailable: DATABASE_URLが設定されていません
+        invalid: モデレーションメモが不正です
     accounts:
       add_email_domain_block: メールドメインブロックに追加
       approve: 承認
@@ -38,6 +41,8 @@ ja:
       change_email:
         changed_msg: メールアドレスを変更しました!
         current_email: 現在のメールアドレス
+        errors:
+          database_unavailable: DATABASE_URLが設定されていません
         label: メールアドレスを変更
         new_email: 新しいメールアドレス
         submit: メールアドレスの変更
@@ -294,6 +299,12 @@ ja:
       edit:
         title: お知らせを編集
       empty: お知らせはありません
+      errors:
+        database_unavailable: DATABASE_URLが設定されていません
+        datetime_invalid: お知らせの日時が不正です
+        invalid: お知らせが不正です
+        start_and_end_required: お知らせの開始日時と終了日時は両方入力してください
+        text_blank: お知らせの本文を入力してください
       live: 公開中
       new:
         create: お知らせを作成
@@ -324,6 +335,13 @@ ja:
       enable: 有効化
       enabled: 有効
       enabled_msg: 絵文字を有効化しました
+      errors:
+        database_unavailable: DATABASE_URLが設定されていません
+        image_invalid: 画像が不正です
+        image_required: 画像が必要です
+        shortcode_invalid: ショートコードが不正です
+        shortcode_taken: ショートコードはすでに使われています
+        unknown_batch_action: 不明なカスタム絵文字操作です
       image_hint: "%{size}までのPNGまたはGIF画像を利用できます"
       list: 表示
       listed: 表示
@@ -346,6 +364,7 @@ ja:
       interactions: 交流
       media_storage: メディアストレージ
       new_users: 新規ユーザー
+      not_permitted: ダッシュボードを表示する権限がありません
       opened_reports: 新規通報
       pending_appeals_html:
         other: 保留中の抗議 <strong>%{count}</strong>件
@@ -363,6 +382,117 @@ ja:
       top_languages: トップのアクティブ言語
       top_servers: トップアクティブサーバー
       website: ウェブサイト
+    devops:
+      active: 実行中
+      actions: アクション
+      all_queues: すべてのキュー
+      apply: 適用
+      archived: アーカイブ
+      attention: 要確認
+      backlog: 待機数
+      auto_refresh: 自動更新
+      bytes: バイト
+      captured_at: 取得日時
+      close: 閉じる
+      concurrency: 並行数
+      consumers: ワーカー
+      copied: コピーしました
+      copy_markdown: Markdownとしてコピー
+      covered: 対応済み
+      date: 日付
+      days: 日
+      deadline: デッドライン
+      detail_archived: "%d件のタスクがアーカイブされています。"
+      detail_deadline_exceeded: 実行中のタスクが実効デッドラインを超過しています。
+      detail_no_consumer: "%d件の待機タスクを処理する稼働中のワーカーがありません。"
+      detail_orphaned: 実行中のタスクにワーカーリースがありません。
+      detail_paused: このキューは一時停止中のためタスクを処理しません。
+      detail_retry: "%d件のタスクが再試行を待っています。"
+      detail_saturated: "%d件の待機タスクがあり、すべてのワーカーが上限まで稼働しています。"
+      details: 詳細
+      elapsed: 経過時間
+      empty: データはありません
+      error: 最終エラー
+      failed: 失敗
+      failed_total: 累計失敗
+      filter: 絞り込み
+      healthy: 正常
+      history: 履歴
+      host: ホスト / サーバー
+      idle: アイドル
+      issue_archived: アーカイブ済みタスクを確認してください
+      issue_deadline_exceeded: タスクのデッドライン超過
+      issue_no_consumer: 稼働中のワーカーなし
+      issue_orphaned: 孤立した実行中タスク
+      issue_paused: キュー停止中
+      issue_retry: 再試行待ちタスクあり
+      issue_saturated: ワーカーの処理能力が上限です
+      last_failed_at: 最終失敗
+      last_updated: 最終更新
+      latency: レイテンシ
+      letter_opener_description: SMTP配送なしで生成された開発用メールはメモリに保存され、ここでプレビューできます。
+      letter_opener_title: Letter Opener
+      mailbox: メールボックス
+      memory: メモリ
+      messages: メッセージ
+      missing: 未対応
+      next: 次へ
+      next_process_at: 次回実行
+      no_messages: メッセージはありません
+      orphaned: 孤立
+      overview: 概要
+      page_of: "%dページ · 全%d件"
+      pagination: ページネーション
+      payload: ペイロード
+      pending: 待機中
+      queue: キュー
+      queues: キュー
+      range: 期間
+      recipient: 受信者
+      refresh_error: Asynqデータを更新できませんでした。
+      relation: リレーション
+      retries: 再試行回数
+      retry: 再試行
+      delete_all: 全て削除
+      delete_all_confirm: 現在のキュー絞り込みに一致するアーカイブ済みタスクをすべて完全に削除します。この操作は取り消せません。よろしいですか？
+      delete_all_failed: アーカイブ済みタスクを削除できませんでした。画面を更新して、もう一度お試しください。
+      delete_all_success: "%d件のアーカイブ済みタスクを完全に削除しました。"
+      retry_confirm: このタスクを今すぐ再試行しますか？再試行回数はリセットされません。
+      retry_failed: タスクを再試行できませんでした。画面を更新して、もう一度お試しください。
+      retry_invalid_state: 再試行またはアーカイブ状態のタスクのみ再試行できます。
+      retry_all: 全て再試行
+      retry_all_confirm: 現在のキュー絞り込みに一致するすべてのタスクを今すぐ再試行しますか？再試行回数はリセットされません。
+      retry_all_failed: 一致するタスクを再試行できませんでした。画面を更新して、もう一度お試しください。
+      retry_all_success: "%d件のタスクを再実行待ちに移動しました。"
+      retry_now: 今すぐ再試行
+      retry_stale: このタスクは一覧に存在しません。画面を更新して現在の状態を確認してください。
+      retry_success: タスクを再実行待ちに移動しました。
+      raw_payload: 生のペイロード
+      scheduled: 予定
+      servers: サーバーと実行中タスク
+      sent_at: 送信日時
+      sidekiq_description: このPaonプロセスのAsynqキュー対応状況と待機数です。
+      polling_interval: ポーリング周期
+      previous: 前へ
+      processed: 処理済み
+      processed_total: 累計処理済み
+      size: サイズ
+      stale: 古いデータ
+      started_at: 開始
+      status: 状態
+      subject: 件名
+      succeeded: 成功
+      summary: Asynqサマリー
+      task_id: タスクID
+      task_details: タスクの詳細
+      task_results_truncated: 表示上限は%d件です（全%d件）。キューで絞り込んでください。
+      task_type: タスク
+      timing: 時刻 / ワーカー
+      unavailable_detail: Asynqデータを取得できませんでした。件数は利用できません。
+      unknown_queue: 不明なキューです
+      utilization: サーバー全体の実行中 / 上限
+      worker: ワーカー
+      workers: 実行中タスク
     disputes:
       appeals:
         empty: 抗議はありません。
@@ -371,6 +501,10 @@ ja:
       add_new: 連合を許可
       created_msg: 連合を許可しました
       destroyed_msg: 連合許可を外しました
+      errors:
+        database_unavailable: DATABASE_URL が設定されていません
+        domain_invalid: ドメインが不正です
+        invalid: 連合許可が不正です
       export: エクスポート
       import: インポート
       undo: 連合許可を外す
@@ -389,6 +523,13 @@ ja:
       destroyed_msg: ドメインブロックを外しました
       domain: ドメイン
       edit: ドメインブロックを編集
+      errors:
+        database_unavailable: DATABASE_URL が設定されていません
+        domain_invalid: ドメインが不正です
+        import_invalid: ドメインブロックのインポートが不正です
+        invalid: ドメインブロックが不正です
+        severity_invalid: ドメインブロックの重大度が不正です
+        taken: ドメインはすでに使用されています
       existing_domain_block: あなたは既に%{name}さんに厳しい制限を課しています。
       existing_domain_block_html: 既に%{name}に対して、より厳しい制限を課しています。先に<a href="%{unblock_url}">その制限を解除</a>する必要があります。
       export: エクスポート
@@ -421,11 +562,17 @@ ja:
       attempts_over_week:
         other: 先週は%{count}回サインアップが試みられました
       created_msg: メールドメインブロックに追加しました
+      deleted_msg: メールドメインブロックを削除しました
       delete: 消去
       dns:
         types:
           mx: MXレコード
       domain: ドメイン
+      errors:
+        database_unavailable: DATABASE_URL が設定されていません
+        domain_invalid: ドメインが不正です
+        invalid: メールドメインブロックが不正です
+        taken: ドメインはすでに使用されています
       new:
         create: ドメインを追加
         resolve: ドメイン解決
@@ -436,10 +583,14 @@ ja:
       resolved_through_html: "%{domain}を通して解決しました"
       title: メールドメインブロック
     export_domain_allows:
+      errors:
+        database_unavailable: DATABASE_URLが設定されていません
       new:
         title: ドメイン許可をインポート
       no_file: ファイルが選択されていません
     export_domain_blocks:
+      errors:
+        database_unavailable: DATABASE_URLが設定されていません
       import:
         description_html: ドメインブロックのリストをインポートしようとしています。このリストを自分で作成していない場合は、慎重に確認してください。
         existing_relationships_warning: 既存のフォロー関係
@@ -506,6 +657,8 @@ ja:
       delivery_error_hint: "%{count}日間配送ができない場合は、自動的に配送不可としてマークされます。"
       destroyed_msg: "%{domain}からのデータは、すぐに削除されるように、キューに追加されました。"
       empty: ドメインが見つかりませんでした。
+      errors:
+        database_unavailable: DATABASE_URL が設定されていません
       known_accounts:
         other: 既知のアカウント数 %{count}
       moderation:
@@ -530,11 +683,19 @@ ja:
         available: 使用可能
         expired: 期限切れ
         title: フィルター
+      not_permitted: 招待を管理する権限がありません
       title: 招待
     ip_blocks:
       add_new: ルールを作成
       created_msg: IPルールを追加しました
+      deleted_msg: IPルールを削除しました
       delete: 削除
+      errors:
+        database_unavailable: DATABASE_URL が設定されていません
+        invalid: IPルールが不正です
+        ip_invalid: IPアドレスまたは範囲が不正です
+        severity_invalid: IPルールの重大度が不正です
+        taken: IPアドレスまたは範囲はすでに使用されています
       expires_in:
         '1209600': 2週間
         '15778476': 半年
@@ -557,6 +718,11 @@ ja:
       enable: 有効化
       enable_hint: 有効にすると、リレーから全ての公開投稿を受信するようになり、またこのサーバーの全ての公開投稿をリレーに送信するようになります。
       enabled: 有効
+      errors:
+        database_unavailable: DATABASE_URL が設定されていません
+        inbox_url_blank: リレーのinbox URLを入力してください
+        inbox_url_invalid: リレーのinbox URLが不正です
+        invalid: リレーが不正です
       inbox_url: リレーURL
       pending: リレーサーバーの承認待ちです
       save_and_enable: 保存して有効にする
@@ -597,6 +763,8 @@ ja:
       confirm_action: "@%{acct} さんに対するアクション"
       created_at: 通報日時
       delete_and_resolve: 投稿を削除
+      errors:
+        database_unavailable: DATABASE_URLが設定されていません
       forwarded: 転送済み
       forwarded_to: "%{domain}に転送されました"
       mark_as_resolved: 解決済みとしてマーク
@@ -664,6 +832,11 @@ ja:
       edit: "『%{name}』のロールを編集"
       everyone: デフォルトの権限
       everyone_full_description_html: これは、割り当てられたロールを持っていないものであっても、 <strong>すべてのユーザー</strong> に影響を与える <strong>基本ロール</strong>です。 他のすべてのロールは、そこから権限を継承します。
+      errors:
+        invalid: ロールを保存できませんでした
+        everyone_cannot_be_deleted: デフォルトの権限ロールは削除できません
+        higher_role_cannot_be_deleted: 自分以上のロールは削除できません
+        own_role_cannot_be_deleted: 自分自身のロールは削除できません
       permissions_count:
         other: "%{count}件の権限"
       privileges:
@@ -714,6 +887,11 @@ ja:
       description_html: たいていの人が利用規約を読んで同意したと言いますが、普通は問題が発生するまで読みません。<strong>箇条書きにして、サーバーのルールが一目で分かるようにしましょう</strong>。個々のルールは短くシンプルなものにし、多くの項目に分割しないようにしましょう。
       edit: ルールを編集
       empty: サーバーのルールが定義されていません。
+      errors:
+        database_unavailable: DATABASE_URL が設定されていません
+        invalid: ルールが不正です
+        text_blank: ルールの本文を入力してください
+        text_too_long: ルールの本文が長すぎます
       title: サーバーのルール
     settings:
       about:
@@ -762,14 +940,40 @@ ja:
         authorized_fetch_hint: ほかの連合サーバーから受け付けるリクエストに署名を必須にすることで、ユーザーによるブロックおよびドメインブロック両方の効果をより強力にします。ただし連合の処理コストが増えてパフォーマンス面で不利になるほか、このサーバーから送られた反応が届く範囲が狭まったり、連合における互換性の問題を招く可能性もあります。また、この機能は公開投稿やプロフィールへのアクセスをブロックした相手から完全に遮断できるものではありません。
         authorized_fetch_overridden_hint: この設定は環境変数で指定されているため、ここでは変更できません。
         federation_authentication: 連合に署名を必須にする
+      errors:
+        backups_retention_period_integer: バックアップの保持期間は整数で入力してください
+        contact_email_blank: 連絡先メールアドレスを入力してください
+        contact_username_blank: 連絡先ユーザー名を入力してください
+        content_cache_retention_period_integer: コンテンツキャッシュの保持期間は整数で入力してください
+        custom_css_too_long: カスタムCSSが長すぎます
+        domain_block_rationale_visibility_invalid: ドメインブロック理由の公開範囲が不正です
+        domain_block_visibility_invalid: ドメインブロックの公開範囲が不正です
+        media_cache_retention_period_integer: メディアキャッシュの保持期間は整数で入力してください
+        registration_mode_invalid: アカウント作成モードが不正です
+        short_description_too_long: サーバーの説明文が長すぎます
+        site_title_blank: サーバー名を入力してください
+        site_upload_image: アップロードするファイルは画像である必要があります
+        site_upload_readable_image: アップロードする画像を読み取れません
+        status_page_url_invalid: ステータスページURLが不正です
+        theme_invalid: テーマが不正です
+      messages:
+        database_unavailable: DATABASE_URLが設定されていません
+        invalid: "%{section}設定が不正です"
+        saved: "%{section}設定を保存しました"
+      not_permitted: 設定を管理する権限がありません
       title: サーバー設定
     site_uploads:
       delete: ファイルを削除
       destroyed_msg: ファイルを削除しました！
+      not_found: アップロード済みファイルが見つかりません
+      not_permitted: アップロード済みファイルを管理する権限がありません
+      unsupported_action: このアップロード済みファイル操作はサポートされていません
     software_updates:
       critical_update: "※緊急 (速やかに適用してください)"
       description: Mastodonサーバーはいつでも最新の状態を保ち、新しい機能や修正を利用できるようにしておくことをおすすめします。またセキュリティの問題が発生した場合は、速やかにMastodonをアップデートすることが大切です。Mastodonは30分おきにアップデートを確認し、通知設定に応じて新しいアップデートをメールで通知します。
+      disabled: ソフトウェア更新チェックは無効です
       documentation_link: もっと見る
+      not_permitted: ソフトウェア更新を表示する権限がありません
       release_notes: リリースノート
       title: 利用可能なアップデート
       type: アップデートの種別
@@ -924,6 +1128,10 @@ ja:
       delete: 削除
       edit_preset: プリセット警告文を編集
       empty: まだプリセット警告文が作成されていません。
+      errors:
+        database_unavailable: DATABASE_URL が設定されていません
+        invalid: プリセット警告文が不正です
+        text_blank: 警告文を入力してください
       title: プリセット警告文を管理
     webhooks:
       add_new: エンドポイントを追加
@@ -937,14 +1145,27 @@ ja:
       enabled: アクティブ
       enabled_events:
         other: "%{count}件の有効なイベント"
+      errors:
+        database_unavailable: DATABASE_URL が設定されていません
+        event_permissions_invalid: Webhookイベントの権限が不正です
+        events_blank: Webhookイベントを選択してください
+        events_invalid: Webhookイベントが不正です
+        invalid: Webhookが不正です
+        template_invalid: Webhookテンプレートが不正です
+        url_blank: Webhook URLを入力してください
+        url_invalid: Webhook URLが不正です
       events: イベント
       new: 新しいwebhook
       rotate_secret: シークレットをローテートする
       secret: シークレットに署名
+      secret_rotated_msg: Webhookシークレットをローテートしました
       status: 投稿
       title: Webhooks
       webhook: Webhook
   admin_mailer:
+    auto_close_registrations:
+      body: 最近のモデレーターの活動がないため、%{instance} が悪意ある利用者の活動基盤として使われることを防ぐ目的で、%{instance} の登録は手動承認が必要な状態に自動的に切り替えられました。いつでも登録を再び開放できます。
+      subject: "%{instance} の登録は承認制に自動的に切り替えられました"
     new_appeal:
       actions:
         delete_statuses: 投稿を削除する
@@ -1019,10 +1240,14 @@ ja:
   auth:
     apply_for_account: アカウントのリクエスト
     captcha_confirmation:
+      continue: 続ける
       help_html: CAPTCHAの解決に問題がある場合は、 %{email} までお問い合わせください。お手伝いいたします。
       hint_html: もう一つだけ！あなたが人間であることを確認する必要があります(スパムを防ぐためです！)。 以下のCAPTCHAを解き、「続ける」をクリックします。
+      not_required: CAPTCHA認証は必要ありません。
       title: セキュリティチェック
     confirmations:
+      email_not_found: メールアドレスが見つからないか、すでに確認済みです
+      invalid_token: 確認トークンが正しくないか、すでに使用されています
       wrong_email_hint: メールアドレスが正しくない場合は、アカウント設定で変更できます。
     delete_account: アカウントの削除
     delete_account_html: アカウントを削除したい場合、<a href="%{path}">こちら</a>から手続きが行えます。削除する前に、確認画面があります。
@@ -1033,6 +1258,7 @@ ja:
     didnt_get_confirmation: 確認メールを受信できない場合は
     dont_have_your_security_key: セキュリティキーを持っていませんか？
     forgot_password: パスワードをお忘れですか？
+    invalid_password: 現在のパスワードが正しくありません
     invalid_reset_password_token: パスワードリセットトークンが正しくないか期限切れです。もう一度リクエストしてください。
     link_to_otp: 携帯電話から二要素認証コードを入力するか、リカバリーコードを入力してください
     link_to_webauth: セキュリティキーを使用する
@@ -1042,7 +1268,7 @@ ja:
     migrate_account: 別のアカウントに引っ越す
     migrate_account_html: 引っ越し先を明記したい場合は<a href="%{path}">こちら</a>で設定できます。
     or_log_in_with: または次のサービスでログイン
-    privacy_policy_agreement_html: <a href="%{privacy_policy_path}" target="_blank">プライバシーポリシー</a>を読み、同意します
+    privacy_policy_agreement_html: <a href="%{rules_path}" target="_blank">サーバーのルール</a>と<a href="%{privacy_policy_path}" target="_blank">プライバシーポリシー</a>を読み、同意します
     progress:
       confirm: メールアドレスの確認
       details: ユーザー情報
@@ -1075,6 +1301,20 @@ ja:
       preamble_html: "<strong>%{domain}</strong> の資格情報でサインインします。 あなたのアカウントが別のサーバーでホストされている場合は、ここでログインすることはできません。"
       title: "%{domain}にログイン"
     sign_up:
+      errors:
+        agreement_required: 利用規約への同意が必要です
+        email_invalid: メールアドレスが不正です
+        honeypot: フォームを送信できませんでした
+        invite_invalid: 招待が無効です
+        malformed_request: 送信されたリクエストが不正です
+        password_confirmation_mismatch: 確認用パスワードが一致しません
+        password_invalid: パスワードが不正です
+        reason_required: 意気込みを入力してください
+        reason_too_long: 意気込みが長すぎます
+        taken: ユーザー名またはメールアドレスはすでに使われています
+        turnstile_malformed: Cloudflare Turnstile の検証リクエストが不正です
+        username_invalid: ユーザー名が不正です
+        username_reserved: このユーザー名は予約されています
       manual_review: "%{domain} への登録にはモデレーターによる承認が必要です。審査の参考になるように、簡単な自己紹介や %{domain} に登録したい理由などを記入してください。"
       preamble: この Mastodon サーバーのアカウントがあれば、ネットワーク上の他の人のアカウントがどこでホストされているかに関係なく、その人をフォローすることができます。
       title: さあ %{domain} でセットアップしましょう.
@@ -1165,6 +1405,8 @@ ja:
     invalid_domain: は無効なドメイン名です
   edit_profile:
     basic_information: 基本情報
+    errors:
+      invalid: プロフィールの更新が不正です
     hint_html: "<strong>アカウントのトップページや投稿の隣に表示される公開情報です。</strong>プロフィールとアイコンを設定することで、ほかのユーザーは親しみやすく、またフォローしやすくなります。"
     other: その他
   errors:
@@ -1181,6 +1423,7 @@ ja:
       content: もうしわけありませんが、なにかが間違っています。
       title: このページは正しくありません
     '503': 一時的なサーバー障害のため利用することができません。
+    database_unavailable: DATABASE_URL が設定されていません
     noscript_html: Mastodonのウェブアプリケーションを利用する場合はJavaScriptを有効にしてください。またはあなたのプラットフォーム向けの<a href="%{apps_path}">Mastodonネイティブアプリ</a>を探すことができます。
   existing_username_validator:
     not_found: そのようなユーザー名はローカルに見つかりませんでした
@@ -1335,6 +1578,7 @@ ja:
     expires_in_prompt: 無期限
     generate: 招待リンクを作成
     invited_by: '次の人に招待されました:'
+    not_permitted: ユーザーを招待する権限がありません
     max_uses:
       other: "%{count}"
     max_uses_prompt: 無制限
@@ -1343,6 +1587,8 @@ ja:
       expires_at: 有効期限
       uses: 使用
     title: 新規ユーザーの招待
+  link_preview:
+    author: "%{name}"
   lists:
     errors:
       limit: リストの上限数に達しています
@@ -1496,6 +1742,8 @@ ja:
     posting_defaults: デフォルトの投稿設定
     public_timelines: 公開タイムライン
   privacy:
+    errors:
+      invalid: プライバシー設定の更新が不正です
     hint_html: "<strong>プロフィールの見えかたや、ほかのユーザーからの見つかりやすさを設定します。</strong>Mastodonには自分のアカウントのことをより多くの人に知ってもらうためのさまざまな機能があり、有効・無効をそれぞれ切り換えられます。使いかたや好みに合わせて調節しましょう。"
     privacy: プライバシー
     privacy_hint_html: 自分に関する情報をどの程度開示するかについての設定項目です。ユーザーはほかのアカウントのフォロー一覧を見て興味のあるアカウントを探したり、投稿元のアプリ名を見て自分が使いたいアプリの参考にすることがあります。希望に応じて、これらを見られないようにできます。
@@ -1596,6 +1844,7 @@ ja:
     aliases: アカウントエイリアス
     appearance: 外観
     authorized_apps: 認証済みアプリ
+    back_to_app: アプリに戻る
     back: Mastodonに戻る
     delete: アカウントの削除
     development: 開発
@@ -1607,10 +1856,12 @@ ja:
     migrate: アカウントの引っ越し
     notifications: 通知
     preferences: ユーザー設定
+    paon_go_served_by: は既存のMastodonデータベーステーブルとRails互換のフォームフィールド名を使ってPaonから提供されています。
     profile: プロフィール
     relationships: フォロー・フォロワー
     statuses_cleanup: 投稿の自動削除
     strikes: モデレーションストライク
+    title: 設定
     two_factor_authentication: 二要素認証
     webauthn_authentication: セキュリティキー
   statuses:
@@ -1632,6 +1883,7 @@ ja:
       in_reply_not_found: あなたが返信しようとしている投稿は存在しないようです。
     open_in_web: Webで開く
     over_character_limit: 上限は%{max}文字です
+    replies: 返信
     pin_errors:
       direct: 返信したユーザーのみに表示される投稿はピン留めできません
       limit: 固定できる投稿数の上限に達しました
@@ -1692,6 +1944,7 @@ ja:
     min_reblogs: ブーストの基準値
     min_reblogs_hint: この数以上、ブーストされた投稿を削除せずに残します。空白にしておくと、ブーストされた数に関わらず投稿を削除します。
   stream_entries:
+    click_to_show: クリックして表示
     sensitive_content: 閲覧注意
   strikes:
     errors:
@@ -1792,10 +2045,14 @@ ja:
       subject: Mastodonへようこそ
       title: ようこそ、%{name}さん！
   users:
+    email_taken: メールアドレスは既に使用されています
     follow_limit_reached: あなたは現在 %{limit}人以上フォローできません
     go_to_sso_account_settings: 外部サービスアカウントの設定はこちらで行ってください
+    invalid_email: メールアドレスが不正です
     invalid_otp_token: 二要素認証コードが間違っています
+    invalid_password: パスワードが不正です
     otp_lost_help_html: どちらも使用できない場合、%{email}に連絡を取ると解決できるかもしれません
+    password_confirmation_mismatch: 確認用パスワードが一致しません
     seamless_external_login: あなたは外部サービスを介してログインしているため、パスワードとメールアドレスの設定は利用できません。
     signed_in_as: '下記でログイン中:'
   verification:
@@ -1807,6 +2064,9 @@ ja:
     verified_links: 確認済みリンク
   webauthn_credentials:
     add: セキュリティキーを追加
+    already_exists: セキュリティキーは既に存在します
+    authentication_failed: セキュリティキーによる認証に失敗しました。
+    challenge_expired: WebAuthnチャレンジが存在しないか期限切れです
     create:
       error: セキュリティキーの追加中に問題が発生しました。もう一度お試しください。
       success: セキュリティキーを追加しました。
@@ -1817,8 +2077,10 @@ ja:
       error: セキュリティキーの削除中に問題が発生しました。もう一度お試しください。
       success: セキュリティキーを削除しました。
     invalid_credential: セキュリティキーが間違っています
+    nickname: 名前
     nickname_hint: セキュリティキーの名前を入力してください
     not_enabled: まだセキュリティキーを有効にしていません
     not_supported: このブラウザはセキュリティキーに対応していないようです
     otp_required: セキュリティキーを使用するには、まず二要素認証を有効にしてください。
+    created: 作成日時
     registered_on: "%{date}に登録"

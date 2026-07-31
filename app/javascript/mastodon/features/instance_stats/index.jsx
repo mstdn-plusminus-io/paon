@@ -18,6 +18,8 @@ import { fetchInstanceStats } from 'mastodon/actions/instance_stats';
 import Column from 'mastodon/components/column';
 import { Skeleton } from 'mastodon/components/skeleton';
 
+import { buildDeliveryStatDatasets, buildDeliveryStatsChartOptions } from './chart';
+
 ChartJS.register(...registerables);
 
 const messages = defineMessages({
@@ -29,70 +31,8 @@ const mapStateToProps = state => ({
   instance_stats: state.getIn(['instance_stats', 'instance_stats']),
 });
 
-const buildDeliveryStatDatasets = (stats) => {
-  const extractSeries = (seriesKey) => stats.map(stat => {
-    return { x: stat.time, y: stat[`${seriesKey}_count`] };
-  });
-  const series = [
-    {
-      key: 'success',
-      color: '#36A2EB',
-    },
-    {
-      key: 'failure',
-      color: '#FF6384',
-    },
-  ];
-  const datasets = series.map(series => {
-    return {
-      label: series.key,
-      data: extractSeries(series.key),
-      pointStyle: 'circle',
-      pointRadius: 0,
-      pointHoverRadius: 5,
-      tension: 0.1,
-      borderColor: series.color,
-    };
-  });
-  return { datasets };
-};
-
 const renderStats = (header, stats) => {
-  const chartOptions = {
-    interaction: {
-      intersect: false,
-      mode: 'index',
-    },
-    plugins: {
-      legend: {
-        position: 'bottom',
-        labels: {
-          usePointStyle: true,
-          pointStyle: 'rounded',
-        },
-      },
-      tooltip: {
-        position: 'nearest',
-      },
-    },
-    scales: {
-      x: {
-        type: 'time',
-        time: {
-          unit: 'day',
-          tooltipFormat: 'YYYY/MM/DD HH:00',
-          displayFormats: {
-            hour: 'DD HH:00',
-            day: 'MM/DD',
-          },
-        },
-      },
-      y: {
-        suggestedMin: 0,
-        suggestedMax: 20,
-      },
-    },
-  };
+  const chartOptions = buildDeliveryStatsChartOptions(stats.delivery_histories);
 
   const chart = <Line options={chartOptions} data={buildDeliveryStatDatasets(stats.delivery_histories)} />;
   ChartJS.defaults.color = '#bbb';

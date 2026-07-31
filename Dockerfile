@@ -1,96 +1,104 @@
-FROM ruby:3.4-slim-trixie
+FROM golang:1.25-trixie AS go-builder
 
-ARG MASTODON_VERSION_METADATA=""
+WORKDIR /src
 
-ENV DEBIAN_FRONTEND=noninteractive
+ARG PAON_IMAGE_PROCESSOR=auto
 
-# Install Node.js
-RUN <<EOF
-  set -xe
-  apt-get update
-  apt-get install -y --no-install-recommends curl
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-  apt-get install -y nodejs
-  rm -rf /share/doc
-  apt-get -y --auto-remove purge curl
-  apt-get clean
-  rm -rf /var/lib/apt-get/lists/*
-EOF
+RUN set -eux; \
+	mkdir -p /out/native /out/libvips; \
+	apt-get update; \
+	if [ "${PAON_IMAGE_PROCESSOR}" != "native" ] && apt-get install -y --no-install-recommends libvips-dev pkg-config; then \
+		echo libvips > /out/image-processor; \
+	else \
+		echo 'level=WARN event=image_processor_fallback processor=libvips fallback=go-native phase=docker_builder'; \
+		echo native > /out/image-processor; \
+	fi; \
+	rm -rf /var/lib/apt/lists/*
 
-# Enable jemalloc
-RUN <<EOF
-  set -xe
-  apt-get update
-  apt-get -y --no-install-recommends install libjemalloc2
-  ln -nfs /usr/lib/$(uname -m)-linux-gnu /usr/lib/linux-gnu
-  apt-get clean
-  rm -rf /var/lib/apt-get/lists/*
-EOF
+COPY go.mod go.sum ./
+RUN go mod download
 
-ENV LD_PRELOAD=${LD_PRELOAD}:/usr/lib/linux-gnu/libjemalloc.so.2
+COPY cmd ./cmd
+COPY internal ./internal
 
-# Create the mastodon user
+RUN go list -mod=mod ./cmd/paon ./cmd/paon-admin ./cmd/paon-cutover ./cmd/paon-meili-deploy ./cmd/paon-migrate >/dev/null
+RUN set -eux; \
+	for command in paon paon-admin paon-cutover paon-meili-deploy paon-migrate; do \
+		CGO_ENABLED=0 go build -mod=mod -trimpath -ldflags="-s -w" -o "/out/native/${command}" "./cmd/${command}"; \
+	done; \
+	if [ "$(cat /out/image-processor)" = libvips ]; then \
+		for command in paon paon-admin paon-cutover paon-meili-deploy paon-migrate; do \
+			CGO_ENABLED=1 go build -tags=libvips -mod=mod -trimpath -ldflags="-s -w" -o "/out/libvips/${command}" "./cmd/${command}"; \
+		done; \
+	else \
+		cp /out/native/* /out/libvips/; \
+	fi
+
+FROM node:22-bookworm-slim AS assets
+
+WORKDIR /src
+
+ENV RAILS_ENV=production
+ENV NODE_ENV=production
+ENV YARN_PRODUCTION=false
+
+COPY package.json yarn.lock ./
+RUN corepack enable && yarn install --pure-lockfile --production=false
+
+COPY . .
+RUN rm -rf public/packs public/packs-test && yarn build:production
+
+FROM debian:trixie-slim
+
+ENV RAILS_ENV=production
+ENV NODE_ENV=production
+ENV BIND=0.0.0.0
+ENV PORT=3000
+ENV PAON_PUBLIC_DIR=/opt/mastodon/public
+ENV DB_PORT=5432
+ENV DB_NAME=mastodon
+ENV DB_USER=postgres
+ENV DB_PASS=postgres
+ENV REDIS_PORT=6379
+
 ARG UID=991
 ARG GID=991
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN <<EOF
-  set -xe
-  apt-get update
-  echo "Etc/UTC" > /etc/localtime
-  apt-get -y --no-install-recommends install whois wget
-  addgroup --gid $GID mastodon
-  useradd -m -u $UID -g $GID -d /opt/mastodon mastodon
-  echo "mastodon:$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 24 | mkpasswd -s -m sha-256)" | chpasswd
-  apt-get clean
-  rm -rf /var/lib/apt-get/lists/*
-EOF
 
-COPY --chown=mastodon:mastodon . /opt/mastodon
+COPY --from=go-builder /out /tmp/paon-build
 
-# Run mastodon services in prod mode
-ENV RAILS_ENV="production"
-ENV NODE_ENV="production"
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates ffmpeg pamtester tzdata tini wget; \
+    image_processor=native; \
+    if [ "$(cat /tmp/paon-build/image-processor)" = libvips ] && apt-get install -y --no-install-recommends libvips42t64; then \
+        image_processor=libvips; \
+    else \
+        echo 'level=WARN event=image_processor_fallback processor=libvips fallback=go-native phase=docker_runtime'; \
+    fi; \
+    for command in paon paon-admin paon-cutover paon-meili-deploy paon-migrate; do \
+        install -m 0755 "/tmp/paon-build/${image_processor}/${command}" "/usr/local/bin/${command}"; \
+    done; \
+    rm -rf /tmp/paon-build; \
+    groupadd --gid "${GID}" mastodon; \
+    useradd --home-dir /opt/mastodon --create-home --uid "${UID}" --gid "${GID}" mastodon; \
+    mkdir -p /opt/mastodon/public/system /opt/mastodon/tmp; \
+    chown -R mastodon:mastodon /opt/mastodon; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
 
-# Tell rails to serve static files
-ENV RAILS_SERVE_STATIC_FILES="true"
-ENV BIND="0.0.0.0"
-ENV MASTODON_VERSION_METADATA="${MASTODON_VERSION_METADATA}"
+COPY --from=assets --chown=mastodon:mastodon /src/public /opt/mastodon/public
+COPY --from=assets --chown=mastodon:mastodon /src/config/locales /opt/mastodon/config/locales
 
-ENV NODE_OPTIONS="--openssl-legacy-provider"
+RUN set -eux; \
+    mkdir -p /opt/mastodon/public/system /opt/mastodon/tmp; \
+    chown -R mastodon:mastodon /opt/mastodon/public/system /opt/mastodon/tmp
 
-# Build mastodon, and set permissions
-RUN <<EOF
-  set -xe
-  apt-get update
-  apt-get -y --no-install-recommends install apt-utils build-essential git libicu-dev libidn-dev libpq-dev libprotobuf-dev protobuf-compiler shared-mime-info libssl-dev libssl3t64 libpq5 imagemagick ffmpeg libyaml-0-2 libyaml-dev file ca-certificates tzdata libreadline8 gcc tini
-  ln -s /opt/mastodon /mastodon
-  gem install bundler
-  npm install -g npm@latest
-  npm install -g yarn
-  yarn config set network-timeout 600000
-  npm install -g node-gyp
-  cd /opt/mastodon
-  bundle config set --local deployment 'true'
-  bundle config set --local without 'development test'
-  bundle config set silence_root_warning true
-  bundle install -j"$(nproc)"
-  yarn install --pure-lockfile
-  rm -rf /opt/mastodon/public/packs /opt/mastodon/public/packs-test
-  OTP_SECRET=precompile_placeholder SECRET_KEY_BASE=precompile_placeholder bundle exec rails assets:precompile
-  rm -rf /opt/mastodon/node_modules/.cache
-  chown -R mastodon:mastodon /opt/mastodon
-  npm cache clean --force
-  yarn cache clean
-  apt-get -y --auto-remove purge git libicu-dev libidn11-dev libpq-dev libprotobuf-dev protobuf-compiler libyaml-dev gcc build-essential
-  apt-get -y --no-install-recommends install libssl3t64 libpq5 imagemagick ffmpeg libjemalloc2 libicu76 libprotobuf32t64 libidn12 libyaml-0-2 ca-certificates tzdata libreadline8
-  apt-get clean
-  rm -rf /var/lib/apt-get/lists/*
-EOF
-
-# Set the run user
 USER mastodon
-
-# Set the work dir and the container entry point
 WORKDIR /opt/mastodon
+
 ENTRYPOINT ["/usr/bin/tini", "--"]
-EXPOSE 3000 4000
+CMD ["paon"]
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 CMD if [ "${PAON_PROCESS_ROLE:-all}" = "worker" ]; then exit 0; fi; wget -q --spider --proxy=off "http://127.0.0.1:${PORT:-3000}/health/ready" || exit 1

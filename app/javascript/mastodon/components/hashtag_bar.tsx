@@ -8,7 +8,7 @@ import type { List, Record } from 'immutable';
 
 import { groupBy, minBy } from 'lodash';
 
-import { getStatusContent } from './status_content';
+import { getStatusContent } from './status_content_helper';
 
 // Fit on a single line on desktop
 const VISIBLE_HASHTAGS = 3;

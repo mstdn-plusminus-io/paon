@@ -1,0 +1,32 @@
+{
+  "cases": [
+    {
+      "id": "HTTP-HEALTH-001",
+      "contract": "RUNTIME-HEALTH",
+      "method": "GET",
+      "path": "/health",
+      "compare_headers": ["Content-Type", "Cache-Control"]
+    },
+    {
+      "id": "HTTP-NODEINFO-001",
+      "contract": "ACTIVITYPUB",
+      "method": "GET",
+      "path": "/.well-known/nodeinfo",
+      "compare_headers": ["Content-Type", "Cache-Control"]
+    },
+    {
+      "id": "REST-INSTANCE-001",
+      "contract": "REST-API",
+      "method": "GET",
+      "path": "/api/v1/instance",
+      "compare_headers": ["Content-Type", "Cache-Control"]
+    },
+    {
+      "id": "AUTH-SIGNIN-001",
+      "contract": "AUTH-WEB",
+      "method": "GET",
+      "path": "/auth/sign_in",
+      "compare_headers": ["Content-Type", "Cache-Control"]
+    }
+  ]
+}

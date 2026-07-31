@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_PASSWORD: paon
+      POSTGRES_DB: paon_integration
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d paon_integration"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.13
+    profiles: [external]
+    environment:
+      MEILI_ENV: development
+      MEILI_MASTER_KEY: paon-integration-master-key
+    ports:
+      - "127.0.0.1:57700:7700"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7700/health"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    profiles: [external]
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: paon-access
+      MINIO_ROOT_PASSWORD: paon-secret-key
+    ports:
+      - "127.0.0.1:59000:9000"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+  minio-setup:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    profiles: [external]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mc alias set local http://minio:9000 paon-access paon-secret-key && mc mb --ignore-existing local/paon-integration
+
+  mailpit:
+    image: axllent/mailpit:v1.24
+    profiles: [external]
+    ports:
+      - "127.0.0.1:51025:1025"
+      - "127.0.0.1:58025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
