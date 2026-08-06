@@ -1480,13 +1480,12 @@ func (s *Server) requireAdminReadWithPermissions(c *echo.Context, scopes []strin
 func (s *Server) requireAdminBrowserReadWithPermissions(c *echo.Context, permissions ...int64) (*models.User, error) {
 	// Rails admin React components use the signed browser session and CSRF header, not an admin OAuth scope.
 	// Bearer-token clients still follow the normal admin scope checks above.
-	user, _, err := s.currentUser(c)
+	user, token, err := s.currentUser(c)
 	if err != nil {
 		return nil, apiError(c, http.StatusUnauthorized, "The access token is invalid")
 	}
 	if c.Request().Method != http.MethodGet && c.Request().Method != http.MethodHead && c.Request().Method != http.MethodOptions {
-		state, err := s.browserSession(c, false)
-		if err != nil || !browserCSRFTokenValid(c, state.CSRFToken) {
+		if !s.browserCSRFTokenValidForAuthentication(c, token) {
 			return nil, apiError(c, http.StatusUnprocessableEntity, railsCSRFErrorMessage)
 		}
 	}

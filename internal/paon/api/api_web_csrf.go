@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v5"
-	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
 )
 
 const railsCSRFErrorMessage = "Can't verify CSRF token authenticity."
@@ -24,8 +23,5 @@ func (s *Server) apiWebCSRF(next func(*echo.Context) error) func(*echo.Context) 
 }
 
 func (s *Server) apiWebCSRFTokenValid(c *echo.Context, token string) bool {
-	if state, err := s.browserSession(c, false); err == nil && browserCSRFTokenValid(c, state.CSRFToken) {
-		return true
-	}
-	return browserCSRFTokenValid(c, web.CSRFTokenForSession(token))
+	return s.browserCSRFTokenValidForAuthentication(c, token)
 }

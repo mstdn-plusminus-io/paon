@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"encoding/base64"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
 )
 
 func newBrowserSecurityTestServer() *Server {
@@ -189,6 +192,97 @@ func TestBrowserSecurityMiddlewareInjectsAndValidatesCSRF(t *testing.T) {
 	e.ServeHTTP(validRecorder, validRequest)
 	if validRecorder.Code != http.StatusOK || validRecorder.Body.String() != "signed in" {
 		t.Fatalf("valid CSRF status = %d body=%s", validRecorder.Code, validRecorder.Body.String())
+	}
+}
+
+func TestBrowserSecurityMiddlewareValidatesMultipartFormCSRF(t *testing.T) {
+	server := newBrowserSecurityTestServer()
+	e := echo.New()
+	e.Use(server.browserSecurityMiddleware)
+	e.GET("/admin/custom_emojis/new", func(c *echo.Context) error {
+		return c.HTML(http.StatusOK, `<!doctype html><html><head></head><body><form method="post" action="/admin/custom_emojis" enctype="multipart/form-data"><input type="file" name="custom_emoji[image]"></form></body></html>`)
+	})
+	e.POST("/admin/custom_emojis", func(c *echo.Context) error {
+		return c.String(http.StatusOK, "uploaded")
+	})
+
+	authCookie := &http.Cookie{Name: sessionCookieName, Value: "authenticated"}
+	getRequest := httptest.NewRequest(http.MethodGet, "/admin/custom_emojis/new", nil)
+	getRequest.AddCookie(authCookie)
+	getRecorder := httptest.NewRecorder()
+	e.ServeHTTP(getRecorder, getRequest)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("GET status = %d body=%s", getRecorder.Code, getRecorder.Body.String())
+	}
+	browserSessionCookieFromRecorder(t, getRecorder)
+	expectedCSRF := web.CSRFTokenForSession(authCookie.Value)
+	if !strings.Contains(getRecorder.Body.String(), `name="authenticity_token" value="`+expectedCSRF+`"`) {
+		t.Fatalf("multipart form is missing CSRF hidden input: %s", getRecorder.Body.String())
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("authenticity_token", expectedCSRF); err != nil {
+		t.Fatal(err)
+	}
+	file, err := writer.CreateFormFile("custom_emoji[image]", "party.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("image")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	postRequest := httptest.NewRequest(http.MethodPost, "/admin/custom_emojis", &body)
+	postRequest.Header.Set("Content-Type", writer.FormDataContentType())
+	postRequest.AddCookie(authCookie)
+	postRecorder := httptest.NewRecorder()
+	e.ServeHTTP(postRecorder, postRequest)
+	if postRecorder.Code != http.StatusOK || postRecorder.Body.String() != "uploaded" {
+		t.Fatalf("multipart POST status = %d body=%s", postRecorder.Code, postRecorder.Body.String())
+	}
+
+	var mismatchedBody bytes.Buffer
+	mismatchedWriter := multipart.NewWriter(&mismatchedBody)
+	if err := mismatchedWriter.WriteField("authenticity_token", expectedCSRF); err != nil {
+		t.Fatal(err)
+	}
+	if err := mismatchedWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mismatchedRequest := httptest.NewRequest(http.MethodPost, "/admin/custom_emojis", &mismatchedBody)
+	mismatchedRequest.Header.Set("Content-Type", mismatchedWriter.FormDataContentType())
+	mismatchedRequest.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "different-authentication"})
+	mismatchedRecorder := httptest.NewRecorder()
+	e.ServeHTTP(mismatchedRecorder, mismatchedRequest)
+	if mismatchedRecorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("mismatched authentication status = %d body=%s", mismatchedRecorder.Code, mismatchedRecorder.Body.String())
+	}
+}
+
+func TestBrowserSecurityMiddlewareUsesAuthenticationCookieWrittenInResponse(t *testing.T) {
+	server := newBrowserSecurityTestServer()
+	e := echo.New()
+	e.Use(server.browserSecurityMiddleware)
+	e.GET("/admin/example", func(c *echo.Context) error {
+		server.writeSessionCookie(c, "migrated-authentication")
+		return c.HTML(http.StatusOK, `<!doctype html><html><head></head><body><form method="post" action="/admin/example"><button>Save</button></form></body></html>`)
+	})
+
+	recorder := httptest.NewRecorder()
+	e.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/example", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	expectedCSRF := web.CSRFTokenForSession("migrated-authentication")
+	if !strings.Contains(recorder.Body.String(), `name="authenticity_token" value="`+expectedCSRF+`"`) {
+		t.Fatalf("form is missing CSRF token for the authentication cookie written in the response: %s", recorder.Body.String())
+	}
+	if cookie := cookiesByName(recorder.Result().Cookies())[sessionCookieName]; cookie == nil || cookie.Value != "migrated-authentication" {
+		t.Fatalf("authentication cookie = %#v", cookie)
 	}
 }
 

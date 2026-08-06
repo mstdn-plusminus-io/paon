@@ -20,15 +20,17 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
 	nethtml "golang.org/x/net/html"
 )
 
 const (
-	browserSessionCookieName = "paon_browser_session"
-	browserSessionLifetime   = 365 * 24 * time.Hour
-	browserTransientLifetime = 5 * time.Minute
-	browserSessionVersion    = 1
-	browserSessionContextKey = "paon.browser_session"
+	browserSessionCookieName   = "paon_browser_session"
+	browserSessionLifetime     = 365 * 24 * time.Hour
+	browserTransientLifetime   = 5 * time.Minute
+	browserSessionVersion      = 1
+	browserSessionContextKey   = "paon.browser_session"
+	browserAuthTokenContextKey = "paon.browser_auth_token"
 )
 
 type browserSessionState struct {
@@ -433,8 +435,7 @@ func (s *Server) clearBrowserOIDCState(c *echo.Context) error {
 func (s *Server) browserSecurityMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		if browserCSRFProtectedRequest(c.Request()) {
-			state, err := s.browserSession(c, false)
-			if err != nil || !browserCSRFTokenValid(c, state.CSRFToken) {
+			if !s.browserCSRFTokenValidForAuthentication(c, sessionToken(c)) {
 				return echo.NewHTTPError(http.StatusUnprocessableEntity, railsCSRFErrorMessage)
 			}
 		}
@@ -524,6 +525,13 @@ func browserCSRFTokenValid(c *echo.Context, expected string) bool {
 	return false
 }
 
+func (s *Server) browserCSRFTokenValidForAuthentication(c *echo.Context, token string) bool {
+	if state, err := s.browserSession(c, false); err == nil && browserCSRFTokenValid(c, state.CSRFToken) {
+		return true
+	}
+	return strings.TrimSpace(token) != "" && browserCSRFTokenValid(c, web.CSRFTokenForSession(token))
+}
+
 func browserHTMLResponseCandidate(req *http.Request) bool {
 	if req == nil || req.URL == nil {
 		return false
@@ -603,11 +611,25 @@ func (s *Server) finishBrowserHTMLResponse(c *echo.Context, writer *browserHTMLR
 	if err := s.persistBrowserSession(c, state); err != nil {
 		return err
 	}
-	body = injectBrowserCSRF(body, state.CSRFToken)
+	csrfToken := state.CSRFToken
+	if token := browserAuthenticationToken(c); token != "" {
+		csrfToken = web.CSRFTokenForSession(token)
+	}
+	body = injectBrowserCSRF(body, csrfToken)
 	writer.Header().Set("Content-Length", stringLength(len(body)))
 	writer.ResponseWriter.WriteHeader(writer.status)
 	_, err = io.WriteString(writer.ResponseWriter, body)
 	return err
+}
+
+func browserAuthenticationToken(c *echo.Context) string {
+	if token := strings.TrimSpace(sessionToken(c)); token != "" {
+		return token
+	}
+	if token, ok := c.Get(browserAuthTokenContextKey).(string); ok {
+		return strings.TrimSpace(token)
+	}
+	return ""
 }
 
 func (s *Server) ensureAdminPageShell(c *echo.Context, body string) (string, error) {
