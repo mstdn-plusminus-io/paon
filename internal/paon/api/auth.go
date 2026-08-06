@@ -3847,6 +3847,7 @@ func (s *Server) setSessionCookie(c *echo.Context, token string) error {
 }
 
 func (s *Server) writeSessionCookie(c *echo.Context, token string) {
+	c.Set(browserAuthTokenContextKey, token)
 	http.SetCookie(c.Response(), &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
