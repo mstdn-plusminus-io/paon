@@ -1000,7 +1000,7 @@ func TestValidateRuntimeRejectsInvalidDatabasePoolSettings(t *testing.T) {
 	}
 
 	cfg = FromEnv()
-	cfg.MaxSessionActivations = -1
+	cfg.MaxSessionActivations = -2
 	if err := cfg.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "MAX_SESSION_ACTIVATIONS") {
 		t.Fatalf("ValidateRuntime max session activations error = %v", err)
 	}
@@ -1009,6 +1009,17 @@ func TestValidateRuntimeRejectsInvalidDatabasePoolSettings(t *testing.T) {
 	cfg.MaxRequestPoolSize = -1
 	if err := cfg.ValidateRuntime(); err == nil || !strings.Contains(err.Error(), "MAX_REQUEST_POOL_SIZE") {
 		t.Fatalf("ValidateRuntime max request pool size error = %v", err)
+	}
+}
+
+func TestValidateRuntimeAcceptsUnlimitedSessionActivations(t *testing.T) {
+	t.Setenv("MAX_SESSION_ACTIVATIONS", "-1")
+	cfg := FromEnv()
+	if cfg.MaxSessionActivations != -1 {
+		t.Fatalf("MaxSessionActivations = %d, want -1", cfg.MaxSessionActivations)
+	}
+	if err := cfg.ValidateRuntime(); err != nil {
+		t.Fatalf("ValidateRuntime rejected unlimited session activations: %v", err)
 	}
 }
 

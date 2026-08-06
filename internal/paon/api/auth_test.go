@@ -51,6 +51,14 @@ func TestValidBCryptPasswordAcceptsDevise2yPrefix(t *testing.T) {
 	}
 }
 
+func TestPurgeOldSessionActivationsNegativeOneDisablesLimit(t *testing.T) {
+	// A zero-value DB would be unusable if purgeOldSessionActivations attempted
+	// a query, so this also verifies that the unlimited setting returns early.
+	if err := purgeOldSessionActivations(&gorm.DB{}, 1, -1); err != nil {
+		t.Fatalf("purgeOldSessionActivations with unlimited setting: %v", err)
+	}
+}
+
 func TestUserCanUseAuthenticatedAPIRequiresFunctionalConfirmedUser(t *testing.T) {
 	confirmed := models.User{Approved: true, ConfirmedAt: sql.NullTime{Time: time.Now(), Valid: true}}
 	if !userCanUseAuthenticatedAPI(confirmed) {

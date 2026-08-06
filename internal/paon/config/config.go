@@ -1270,8 +1270,8 @@ func (c Config) ValidateRuntime() error {
 	if !railsLogLevelValid(c.RailsLogLevel) {
 		problems = append(problems, fmt.Errorf("RAILS_LOG_LEVEL must be one of debug, info, warn, error, fatal, or unknown, got %q", c.RailsLogLevel))
 	}
-	if c.MaxSessionActivations < 0 {
-		problems = append(problems, errors.New("MAX_SESSION_ACTIVATIONS must be greater than or equal to 0"))
+	if c.MaxSessionActivations < -1 {
+		problems = append(problems, errors.New("MAX_SESSION_ACTIVATIONS must be -1 (unlimited) or greater than or equal to 0"))
 	}
 	if !c.MaxRequestPoolSizeSet && c.MaxRequestPoolSize <= 0 {
 		problems = append(problems, errors.New("MAX_REQUEST_POOL_SIZE must be greater than 0"))
