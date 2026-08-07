@@ -120,7 +120,7 @@ export const handlePush = (event) => {
         denyList,
         notification,
       };
-    }).then(({ denyList, notification }) => {
+    }).then(async ({ denyList, notification }) => {
       if (denyList.includes(`@${notification.account.acct}`)) {
         return;
       }
@@ -156,7 +156,7 @@ export const handlePush = (event) => {
         options.actions = [actionReblog(preferred_locale), actionFavourite(preferred_locale)];
       }
 
-      return notify(options);
+      await notify(options);
     }).catch(() => {
       return notify({
         title,

@@ -1,7 +1,7 @@
 import PropTypes from 'prop-types';
 import { PureComponent } from 'react';
 
-import { FormattedMessage, defineMessages, injectIntl } from 'react-intl';
+import { FormattedMessage, injectIntl } from 'react-intl';
 
 import { Link, withRouter } from 'react-router-dom';
 
@@ -21,10 +21,6 @@ const Account = connect(state => ({
     <Avatar account={account} size={35} />
   </Link>
 ));
-
-const messages = defineMessages({
-  search: { id: 'navigation_bar.search', defaultMessage: 'Search' },
-});
 
 const mapStateToProps = (state) => ({
   signupUrl: state.getIn(['server', 'server', 'registrations', 'url'], null) || '/auth/sign_up',
@@ -73,7 +69,7 @@ class Header extends PureComponent {
 
   render () {
     const { signedIn } = this.context.identity;
-    const { location, openClosedRegistrationsModal, signupUrl, intl } = this.props;
+    const { location, openClosedRegistrationsModal, signupUrl } = this.props;
 
     let content;
 
@@ -89,6 +85,7 @@ class Header extends PureComponent {
       content = (
         <>
           {useHalfModal ? (
+            // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- half modal toggle requires a clickable area
             <div className={`button ${isBottomRightButton ? 'bottom_right' : ''}`} onClick={this.openComposeHalfModal} onKeyUp={this.openComposeHalfModal}>
               {buttonInner}
             </div>

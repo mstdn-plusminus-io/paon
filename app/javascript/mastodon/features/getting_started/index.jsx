@@ -90,6 +90,11 @@ class GettingStarted extends ImmutablePureComponent {
     fetchFollowRequests();
   }
 
+  openPaonSettings = (e) => {
+    e.preventDefault();
+    window.__PLUS_MINUS_EVENTS__.dispatchEvent(new Event('openConfig'));
+  };
+
   render () {
     const { intl, myAccount, multiColumn, unreadFollowRequests } = this.props;
     const { signedIn } = this.context.identity;
@@ -128,10 +133,7 @@ class GettingStarted extends ImmutablePureComponent {
       navItems.push(
         <ColumnSubheading key='header-settings' text={intl.formatMessage(messages.settings_subheading)} />,
         <ColumnLink key='preferences' icon='gears' text={intl.formatMessage(messages.preferences)} href='/settings/preferences' />,
-        <ColumnLink to='#' icon='puzzle-piece' text={'Paon設定'} onClick={(e) => {
-          e.preventDefault();
-          window.__PLUS_MINUS_EVENTS__.dispatchEvent(new Event('openConfig'));
-        }} />
+        <ColumnLink to='#' icon='puzzle-piece' text={'Paon設定'} onClick={this.openPaonSettings} />
       );
     }
 

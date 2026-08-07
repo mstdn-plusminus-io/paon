@@ -4,10 +4,10 @@ const { readFileSync } = require('fs');
 const { basename, dirname, join, relative, resolve } = require('path');
 const { env } = require('process');
 
-const { sync } = require('glob');
 const rspack = require('@rspack/core');
-const extname = require('path-complete-extname');
+const { sync } = require('glob');
 const { load } = require('js-yaml');
+const extname = require('path-complete-extname');
 const { RspackManifestPlugin } = require('rspack-manifest-plugin');
 
 // Load Shakapacker configuration
@@ -162,7 +162,6 @@ if (env.NODE_ENV === 'development') {
     },
   };
 } else if (env.NODE_ENV === 'production') {
-  // eslint-disable-next-line import/no-extraneous-dependencies
   const { InjectManifest } = require('@aaroon/workbox-rspack-plugin');
   const { createHash } = require('crypto');
 
