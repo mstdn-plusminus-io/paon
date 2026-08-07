@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +110,25 @@ func TestSerializerTrendingTagIncludesHistory(t *testing.T) {
 	history := out.History[0].(map[string]string)
 	if history["day"] != "1781827200" || history["uses"] != "12" || history["accounts"] != "3" {
 		t.Fatalf("history = %#v", history)
+	}
+}
+
+func TestTagHistoryForUnsavedTagReturnsSevenZeroDays(t *testing.T) {
+	s := &Server{}
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	history := s.tagHistory(context.Background(), 0, now)
+	if len(history) != 7 {
+		t.Fatalf("history length = %d, want 7", len(history))
+	}
+	for i, item := range history {
+		day, ok := item.(map[string]string)
+		if !ok {
+			t.Fatalf("history[%d] = %#v", i, item)
+		}
+		wantDay := dayStart(now.AddDate(0, 0, -i)).Unix()
+		if day["day"] != strconv.FormatInt(wantDay, 10) || day["uses"] != "0" || day["accounts"] != "0" {
+			t.Fatalf("history[%d] = %#v", i, day)
+		}
 	}
 }
 
@@ -317,12 +338,16 @@ func TestTagRESTEndpointsMatchRailsRequestSpecSemantics(t *testing.T) {
 	}{
 		{"showTag", `tag, err := s.findOrBuildTag(c.Param("name"))`},
 		{"showTag", `return apiError(c, http.StatusNotFound, "Record not found")`},
+		{"showTag", `s.tagDetailWithHistory(c.Request().Context(), *tag, following)`},
 		{"followTag", `s.requireAccountScope(c, "follow", "write", "write:follows")`},
 		{"followTag", `tag, err := s.findOrCreateTag(c.Param("name"))`},
 		{"followTag", `s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&follow)`},
+		{"followTag", `s.tagDetailWithHistory(c.Request().Context(), *tag, &following)`},
 		{"unfollowTag", `s.requireAccountScope(c, "follow", "write", "write:follows")`},
 		{"unfollowTag", `tag, err := s.findOrBuildTag(c.Param("name"))`},
 		{"unfollowTag", `s.db.Where("account_id = ? AND tag_id = ?", account.ID, tag.ID).Delete(&models.TagFollow{})`},
+		{"unfollowTag", `s.tagDetailWithHistory(c.Request().Context(), *tag, &following)`},
+		{"tagDetailWithHistory", `serializer.TagDetailFromModelWithHistory(s.cfg, tag, following, s.tagHistory(ctx, tag.ID, time.Now().UTC()))`},
 	} {
 		if !functionBodyContains(t, src, check.fn, check.want) {
 			t.Fatalf("tags.go:%s does not contain Rails-compatible behavior %q", check.fn, check.want)
