@@ -1,9 +1,10 @@
+import { Map as ImmutableMap, fromJS } from 'immutable';
+
 import {
   INSTANCE_STATS_FETCH_REQUEST,
   INSTNACE_STATS_FETCH_SUCCESS,
   INSTNACE_STATS_FETCH_FAIL,
 } from 'mastodon/actions/instance_stats';
-import { Map as ImmutableMap, fromJS } from 'immutable';
 
 const initialState = ImmutableMap({
   instance_stats: ImmutableMap({

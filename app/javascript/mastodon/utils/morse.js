@@ -205,7 +205,6 @@ export const encodeMorse = (text) => {
 
   let shouldPrependSpace = false;
   return [...normalized].map((char) => {
-    console.log(char);
     let code;
     if (fullMessage2morse[char]) {
       if (shouldPrependSpace) {

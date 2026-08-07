@@ -27,7 +27,36 @@ import (
 
 var validTagName = regexp.MustCompile(`^[\pL\pN_·・‌]+$`)
 
+const railsASCIIFoldingSource = "ÀÁÂÃÄÅàáâãäåĀāĂăĄąÇçĆćĈĉĊċČčÐðĎďĐđÈÉÊËèéêëĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħÌÍÎÏìíîïĨĩĪīĬĭĮįİıĴĵĶķĸĹĺĻļĽľĿŀŁłÑñŃńŅņŇňŉŊŋÒÓÔÕÖØòóôõöøŌōŎŏŐőŔŕŖŗŘřŚśŜŝŞşŠšſŢţŤťŦŧÙÚÛÜùúûüŨũŪūŬŭŮůŰűŲųŴŵÝýÿŶŷŸŹźŻżŽž"
+const railsASCIIFoldingTarget = "AAAAAAaaaaaaAaAaAaCcCcCcCcCcDdDdDdEEEEeeeeEeEeEeEeEeGgGgGgGgHhHhIIIIiiiiIiIiIiIiIiJjKkkLlLlLlLlLlNnNnNnNnnNnOOOOOOooooooOoOoOoRrRrRrSsSsSsSssTtTtTtUUUUuuuuUuUuUuUuUuUuWwYyyYyYZzZzZz"
+
+var railsASCIIFolding = func() map[rune]rune {
+	source := []rune(railsASCIIFoldingSource)
+	target := []rune(railsASCIIFoldingTarget)
+	if len(source) != len(target) {
+		panic("Rails ASCII folding table lengths differ")
+	}
+	out := make(map[rune]rune, len(source))
+	for i, r := range source {
+		out[r] = target[i]
+	}
+	return out
+}()
+
 const rssTimeFormat = time.RFC1123Z
+
+const tagHistoryRedisScript = `
+local history = {}
+for i = 1, #KEYS, 2 do
+  local uses = redis.call('GET', KEYS[i])
+  if not uses then
+    uses = '0'
+  end
+  history[#history + 1] = uses
+  history[#history + 1] = redis.call('PFCOUNT', KEYS[i + 1])
+end
+return history
+`
 
 type trendTagRow struct {
 	ID          int64
@@ -49,7 +78,7 @@ func (s *Server) showTag(c *echo.Context) error {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	following := s.tagFollowing(c, tag.ID)
-	return c.JSON(http.StatusOK, serializer.TagDetailFromModel(s.cfg, *tag, following))
+	return c.JSON(http.StatusOK, s.tagDetailWithHistory(c.Request().Context(), *tag, following))
 }
 
 func (s *Server) publicTag(c *echo.Context) error {
@@ -614,7 +643,7 @@ func (s *Server) followTag(c *echo.Context) error {
 		setFollowsFamilyRateLimitHeaders(c, railsFollowsFamilyLimit)
 	}
 	following := true
-	return c.JSON(http.StatusOK, serializer.TagDetailFromModel(s.cfg, *tag, &following))
+	return c.JSON(http.StatusOK, s.tagDetailWithHistory(c.Request().Context(), *tag, &following))
 }
 
 func (s *Server) unfollowTag(c *echo.Context) error {
@@ -633,7 +662,7 @@ func (s *Server) unfollowTag(c *echo.Context) error {
 		s.unmergeTagFromHomeBestEffort(c.Request().Context(), tag.ID, account.ID)
 	}
 	following := false
-	return c.JSON(http.StatusOK, serializer.TagDetailFromModel(s.cfg, *tag, &following))
+	return c.JSON(http.StatusOK, s.tagDetailWithHistory(c.Request().Context(), *tag, &following))
 }
 
 func (s *Server) unmergeTagFromHomeBestEffort(ctx context.Context, tagID int64, accountID int64) {
@@ -879,36 +908,46 @@ func (s *Server) adminTagFromModel(c *echo.Context, tag models.Tag) serializer.A
 	return serializer.AdminTagFromModelWithHistoryAndTrendableDefault(s.cfg, tag, s.tagHistory(c.Request().Context(), tag.ID, time.Now().UTC()), s.settingBoolValue("trendable_by_default", false))
 }
 
-func (s *Server) tagHistory(ctx context.Context, tagID int64, now time.Time) []any {
-	out := make([]any, 0, 7)
-	for i := 0; i < 7; i++ {
-		day := dayStart(now.AddDate(0, 0, -i))
-		uses, accounts := s.tagHistoryDay(ctx, tagID, day)
-		out = append(out, map[string]string{
-			"day":      strconv.FormatInt(day.Unix(), 10),
-			"uses":     strconv.FormatInt(uses, 10),
-			"accounts": strconv.FormatInt(accounts, 10),
-		})
-	}
-	return out
+func (s *Server) tagDetailWithHistory(ctx context.Context, tag models.Tag, following *bool) serializer.TagDetail {
+	return serializer.TagDetailFromModelWithHistory(s.cfg, tag, following, s.tagHistory(ctx, tag.ID, time.Now().UTC()))
 }
 
-func (s *Server) tagHistoryDay(ctx context.Context, tagID int64, day time.Time) (int64, int64) {
-	usesCtx, cancelUses := context.WithTimeout(ctx, 150*time.Millisecond)
-	usesValue, usesErr := s.redisCommand(usesCtx, "GET", tagHistoryRedisKey(s.cfg.RedisNamespace, tagID, day, false))
-	cancelUses()
-	accountsCtx, cancelAccounts := context.WithTimeout(ctx, 150*time.Millisecond)
-	accountsValue, accountsErr := s.redisCommand(accountsCtx, "PFCOUNT", tagHistoryRedisKey(s.cfg.RedisNamespace, tagID, day, true))
-	cancelAccounts()
-	var uses int64
-	if usesErr == nil {
-		uses = redisInt(usesValue)
+func (s *Server) tagHistory(ctx context.Context, tagID int64, now time.Time) []any {
+	out := make([]any, 0, 7)
+	days := make([]time.Time, 0, 7)
+	for i := 0; i < 7; i++ {
+		day := dayStart(now.AddDate(0, 0, -i))
+		days = append(days, day)
+		out = append(out, map[string]string{
+			"day":      strconv.FormatInt(day.Unix(), 10),
+			"uses":     "0",
+			"accounts": "0",
+		})
 	}
-	var accounts int64
-	if accountsErr == nil {
-		accounts = redisInt(accountsValue)
+	if tagID <= 0 {
+		return out
 	}
-	return uses, accounts
+
+	args := []string{"EVAL", tagHistoryRedisScript, strconv.Itoa(len(days) * 2)}
+	for _, day := range days {
+		args = append(args,
+			tagHistoryRedisKey(s.cfg.RedisNamespace, tagID, day, false),
+			tagHistoryRedisKey(s.cfg.RedisNamespace, tagID, day, true),
+		)
+	}
+	redisCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	values, err := s.redisCommand(redisCtx, args...)
+	cancel()
+	items, ok := values.([]any)
+	if err != nil || !ok || len(items) != len(days)*2 {
+		return out
+	}
+	for i := range days {
+		history := out[i].(map[string]string)
+		history["uses"] = strconv.FormatInt(redisInt(items[i*2]), 10)
+		history["accounts"] = strconv.FormatInt(redisInt(items[i*2+1]), 10)
+	}
+	return out
 }
 
 func (s *Server) findOrBuildTag(name string) (*models.Tag, error) {
@@ -981,7 +1020,7 @@ func (s *Server) tagFollowing(c *echo.Context, tagID int64) *bool {
 
 func normalizeTagName(raw string) (string, string, bool) {
 	decoded := strings.TrimPrefix(strings.TrimSpace(raw), "#")
-	decoded = strings.TrimSpace(decoded)
+	decoded = norm.NFC.String(strings.TrimSpace(decoded))
 	if !railsValidTagName(decoded) {
 		return "", "", false
 	}
@@ -1039,11 +1078,11 @@ func railsTagSeparator(r rune) bool {
 }
 
 func railsNormalizeHashtagName(value string) string {
-	folded := norm.NFKD.String(norm.NFKC.String(strings.ToLower(value)))
+	folded := strings.ToLower(norm.NFKC.String(value))
 	var out strings.Builder
 	for _, r := range folded {
-		if unicode.Is(unicode.Mn, r) {
-			continue
+		if replacement, ok := railsASCIIFolding[r]; ok {
+			r = replacement
 		}
 		out.WriteRune(r)
 	}

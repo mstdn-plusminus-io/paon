@@ -204,12 +204,9 @@ func TestAdminTagsIncludeRailsTagHistory(t *testing.T) {
 		},
 		"tagHistory": {
 			`out := make([]any, 0, 7)`,
-			`uses, accounts := s.tagHistoryDay(ctx, tagID, day)`,
+			`args := []string{"EVAL", tagHistoryRedisScript, strconv.Itoa(len(days) * 2)}`,
+			`s.redisCommand(redisCtx, args...)`,
 			`"day":      strconv.FormatInt(day.Unix(), 10)`,
-		},
-		"tagHistoryDay": {
-			`s.redisCommand(usesCtx, "GET", tagHistoryRedisKey(s.cfg.RedisNamespace, tagID, day, false))`,
-			`s.redisCommand(accountsCtx, "PFCOUNT", tagHistoryRedisKey(s.cfg.RedisNamespace, tagID, day, true))`,
 		},
 	} {
 		for _, want := range checks {

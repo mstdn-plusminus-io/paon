@@ -37,6 +37,7 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
 	"github.com/rivo/uniseg"
+	"golang.org/x/text/unicode/norm"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -8916,6 +8917,7 @@ type statusHashtagRef struct {
 }
 
 func statusHashtagRefs(text string) []statusHashtagRef {
+	text = norm.NFC.String(text)
 	matches := statusHashtagPattern.FindAllStringSubmatch(text, -1)
 	refs := make([]statusHashtagRef, 0, len(matches))
 	seen := map[string]struct{}{}

@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"golang.org/x/text/unicode/norm"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -4041,7 +4042,7 @@ func normalizeActivityHashtag(raw string) (string, string, bool) {
 }
 
 func activityHashtagDisplayName(raw string) string {
-	raw = strings.TrimSpace(raw)
+	raw = norm.NFC.String(strings.TrimSpace(raw))
 	var out strings.Builder
 	for _, r := range raw {
 		if activityHashtagDisplayRuneAllowed(r) {

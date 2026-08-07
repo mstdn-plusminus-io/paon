@@ -72,7 +72,7 @@ export default class MediaAttachments extends ImmutablePureComponent {
               lang={language}
               width={width}
               height={height}
-              poster={audio.get('preview_url') || attachment.get('preview_remote_url') || status.getIn(['account', 'avatar_static'])}
+              poster={audio.get('preview_url') || audio.get('preview_remote_url') || status.getIn(['account', 'avatar_static'])}
               backgroundColor={audio.getIn(['meta', 'colors', 'background'])}
               foregroundColor={audio.getIn(['meta', 'colors', 'foreground'])}
               accentColor={audio.getIn(['meta', 'colors', 'accent'])}

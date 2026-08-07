@@ -10,8 +10,6 @@ import alerts from './alerts';
 import announcements from './announcements';
 import blocks from './blocks';
 import boosts from './boosts';
-
-import instance_stats from './instance_stats';
 import compose from './compose';
 import contexts from './contexts';
 import conversations from './conversations';
@@ -22,6 +20,7 @@ import filters from './filters';
 import followed_tags from './followed_tags';
 import height_cache from './height_cache';
 import history from './history';
+import instance_stats from './instance_stats';
 import listAdder from './list_adder';
 import listEditor from './list_editor';
 import lists from './lists';

@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +43,41 @@ func TestNormalizeTagNameUsesRailsHashtagNormalizer(t *testing.T) {
 	}
 }
 
+func TestNormalizeTagNamePreservesJapaneseDakuten(t *testing.T) {
+	tests := []string{
+		"えあいさんちの今日のごはん",
+		"しばふさんちの今日のごはん",
+	}
+	for _, want := range tests {
+		normalized, display, ok := normalizeTagName("#" + want)
+		if !ok {
+			t.Fatalf("normalizeTagName(%q) rejected a valid Japanese hashtag", want)
+		}
+		if normalized != want || display != want {
+			t.Fatalf("normalizeTagName(%q) = %q, %q; want both %q", want, normalized, display, want)
+		}
+	}
+}
+
+func TestNormalizeTagNameComposesJapaneseDakuten(t *testing.T) {
+	const decomposed = "えあいさんちの今日のこ\u3099はん"
+	const composed = "えあいさんちの今日のごはん"
+	normalized, display, ok := normalizeTagName("#" + decomposed)
+	if !ok {
+		t.Fatal("expected decomposed Japanese hashtag to be valid after normalization")
+	}
+	if normalized != composed || display != composed {
+		t.Fatalf("normalizeTagName(decomposed) = %q, %q; want both %q", normalized, display, composed)
+	}
+}
+
+func TestNormalizeTagNameComposesHalfWidthKatakanaDakuten(t *testing.T) {
+	normalized, display, ok := normalizeTagName("#ﾊﾞﾅﾅ")
+	if !ok || normalized != "バナナ" || display != "ﾊﾞﾅﾅ" {
+		t.Fatalf("normalizeTagName = %q, %q, %t; want バナナ, ﾊﾞﾅﾅ, true", normalized, display, ok)
+	}
+}
+
 func TestNormalizeTagNameRejectsInvalidCharacters(t *testing.T) {
 	if _, _, ok := normalizeTagName("bad/tag"); ok {
 		t.Fatal("expected slash to be rejected")
@@ -73,6 +110,25 @@ func TestSerializerTrendingTagIncludesHistory(t *testing.T) {
 	history := out.History[0].(map[string]string)
 	if history["day"] != "1781827200" || history["uses"] != "12" || history["accounts"] != "3" {
 		t.Fatalf("history = %#v", history)
+	}
+}
+
+func TestTagHistoryForUnsavedTagReturnsSevenZeroDays(t *testing.T) {
+	s := &Server{}
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	history := s.tagHistory(context.Background(), 0, now)
+	if len(history) != 7 {
+		t.Fatalf("history length = %d, want 7", len(history))
+	}
+	for i, item := range history {
+		day, ok := item.(map[string]string)
+		if !ok {
+			t.Fatalf("history[%d] = %#v", i, item)
+		}
+		wantDay := dayStart(now.AddDate(0, 0, -i)).Unix()
+		if day["day"] != strconv.FormatInt(wantDay, 10) || day["uses"] != "0" || day["accounts"] != "0" {
+			t.Fatalf("history[%d] = %#v", i, day)
+		}
 	}
 }
 
@@ -282,12 +338,16 @@ func TestTagRESTEndpointsMatchRailsRequestSpecSemantics(t *testing.T) {
 	}{
 		{"showTag", `tag, err := s.findOrBuildTag(c.Param("name"))`},
 		{"showTag", `return apiError(c, http.StatusNotFound, "Record not found")`},
+		{"showTag", `s.tagDetailWithHistory(c.Request().Context(), *tag, following)`},
 		{"followTag", `s.requireAccountScope(c, "follow", "write", "write:follows")`},
 		{"followTag", `tag, err := s.findOrCreateTag(c.Param("name"))`},
 		{"followTag", `s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&follow)`},
+		{"followTag", `s.tagDetailWithHistory(c.Request().Context(), *tag, &following)`},
 		{"unfollowTag", `s.requireAccountScope(c, "follow", "write", "write:follows")`},
 		{"unfollowTag", `tag, err := s.findOrBuildTag(c.Param("name"))`},
 		{"unfollowTag", `s.db.Where("account_id = ? AND tag_id = ?", account.ID, tag.ID).Delete(&models.TagFollow{})`},
+		{"unfollowTag", `s.tagDetailWithHistory(c.Request().Context(), *tag, &following)`},
+		{"tagDetailWithHistory", `serializer.TagDetailFromModelWithHistory(s.cfg, tag, following, s.tagHistory(ctx, tag.ID, time.Now().UTC()))`},
 	} {
 		if !functionBodyContains(t, src, check.fn, check.want) {
 			t.Fatalf("tags.go:%s does not contain Rails-compatible behavior %q", check.fn, check.want)

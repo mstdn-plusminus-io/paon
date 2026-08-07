@@ -1,5 +1,5 @@
-import { ExpirationPlugin } from 'workbox-expiration';
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
+import { ExpirationPlugin } from 'workbox-expiration';
 import { precacheAndRoute } from 'workbox-precaching';
 import { registerRoute } from 'workbox-routing';
 import { CacheFirst } from 'workbox-strategies';
@@ -94,12 +94,10 @@ self.addEventListener('push', handlePush);
 self.addEventListener('notificationclick', handleNotificationClick);
 
 self.addEventListener('message', function (messageEvent) {
-  console.debug('MESSAGE RECEIVED:', messageEvent.data);
-
   const { type, payload } = messageEvent.data;
   switch (type) {
   case 'DISABLE_MEDIA_CACHE':
-    cacheImage = payload !== 'true';
+    self.cacheImage = payload !== 'true';
     break;
   }
 });

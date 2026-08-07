@@ -2,11 +2,10 @@
 
 const { basename, dirname, join, relative, resolve } = require('path');
 
+const rspack = require('@rspack/core');
 const CircularDependencyPlugin = require('circular-dependency-plugin');
 const { sync } = require('glob');
-const rspack = require('@rspack/core');
 const extname = require('path-complete-extname');
-const webpack = require('webpack');
 const { RspackManifestPlugin } = require('rspack-manifest-plugin');
 
 const { env, settings, themes, output } = require('./configuration');

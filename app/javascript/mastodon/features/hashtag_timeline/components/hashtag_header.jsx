@@ -50,7 +50,9 @@ export const HashtagHeader = injectIntl(({ tag, intl, disabled, onClick }) => {
     return null;
   }
 
-  const [uses, people] = tag.get('history').reduce((arr, day) => [arr[0] + day.get('uses') * 1, arr[1] + day.get('accounts') * 1], [0, 0]);
+  const history = tag.get('history') || [];
+  const [uses, people] = history.reduce((arr, day) => [arr[0] + (Number(day.get('uses')) || 0), arr[1] + (Number(day.get('accounts')) || 0)], [0, 0]);
+  const usesToday = Number(tag.getIn(['history', 0, 'uses'])) || 0;
   const dividingCircle = <span aria-hidden>{' · '}</span>;
 
   return (
@@ -65,7 +67,7 @@ export const HashtagHeader = injectIntl(({ tag, intl, disabled, onClick }) => {
         {dividingCircle}
         <ShortNumber value={people} renderer={peopleRenderer} />
         {dividingCircle}
-        <ShortNumber value={tag.getIn(['history', 0, 'uses']) * 1} renderer={usesTodayRenderer} />
+        <ShortNumber value={usesToday} renderer={usesTodayRenderer} />
       </div>
     </div>
   );

@@ -49,6 +49,11 @@ class NavigationPanel extends Component {
     return match || location.pathname.startsWith('/public');
   };
 
+  openPaonSettings = (e) => {
+    e.preventDefault();
+    window.__PLUS_MINUS_EVENTS__.dispatchEvent(new Event('openConfig'));
+  };
+
   render () {
     const { intl } = this.props;
     const { signedIn, disabledAccountId } = this.context.identity;
@@ -121,10 +126,7 @@ class NavigationPanel extends Component {
             <hr />
 
             <ColumnLink transparent href='/settings/preferences' icon='cog' text={intl.formatMessage(messages.preferences)} />
-            <ColumnLink transparent to='#' icon='puzzle-piece' text={'Paon設定'} onClick={(e) => {
-              e.preventDefault();
-              window.__PLUS_MINUS_EVENTS__.dispatchEvent(new Event('openConfig'));
-            }} />
+            <ColumnLink transparent to='#' icon='puzzle-piece' text={'Paon設定'} onClick={this.openPaonSettings} />
           </>
         )}
 

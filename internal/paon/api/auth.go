@@ -3527,6 +3527,9 @@ func purgeOldSessionActivations(tx *gorm.DB, userID int64, keep int) error {
 	if tx == nil || userID == 0 {
 		return nil
 	}
+	if keep == -1 {
+		return nil
+	}
 	if keep < 0 {
 		keep = 0
 	}
@@ -3847,6 +3850,7 @@ func (s *Server) setSessionCookie(c *echo.Context, token string) error {
 }
 
 func (s *Server) writeSessionCookie(c *echo.Context, token string) {
+	c.Set(browserAuthTokenContextKey, token)
 	http.SetCookie(c.Response(), &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,

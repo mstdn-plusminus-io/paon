@@ -142,7 +142,7 @@ export default class ImageLoader extends PureComponent {
   }
 
   render () {
-    const { alt, lang, src, width, height, onClick } = this.props;
+    const { alt, src, onClick } = this.props;
     const { loading } = this.state;
 
     const className = classNames('image-loader', {
@@ -174,7 +174,7 @@ export default class ImageLoader extends PureComponent {
           onZoom={this.onZoom}
           onZoomStop={this.onZoom}
         >
-          {({ state, zoomToElement, centerView, ...transformProps }) => {
+          {({ state, zoomToElement, centerView }) => {
             this.transformState = state;
             this.centerView = centerView;
             this.zoomToElement = zoomToElement;
@@ -191,6 +191,7 @@ export default class ImageLoader extends PureComponent {
                   transformOrigin: 'left top',
                 }}
               >
+                {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- image click is intentional */}
                 <img src={src} alt={alt} onLoad={this.onLoadImage} style={{ visibility: this.state.visibility }} onClick={this.onClickImage(onClick)} />
               </TransformComponent>
             );

@@ -1,18 +1,20 @@
 import PropTypes from 'prop-types';
 import React from 'react';
+
 import classNames from 'classnames';
 
-const PlusMinusSettingsSidebar = ({ sections, activeSection, onSectionChange, isMobile, isOpen, onClose }) => {
-  const handleItemClick = (sectionId) => {
-    onSectionChange(sectionId);
-    if (isMobile && onClose) {
-      onClose();
-    }
-  };
+const handleItemClick = (onSectionChange, isMobile, onClose) => (e) => {
+  onSectionChange(e.currentTarget.dataset.sectionId);
+  if (isMobile && onClose) {
+    onClose();
+  }
+};
 
+const PlusMinusSettingsSidebar = ({ sections, activeSection, onSectionChange, isMobile, isOpen, onClose }) => {
   return (
     <>
       {isMobile && isOpen && (
+        // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- overlay click closes the sidebar
         <div className='plusminus-settings__sidebar-overlay' onClick={onClose} />
       )}
       <div className={classNames('plusminus-settings__sidebar', { 'plusminus-settings__sidebar--open': isOpen, 'plusminus-settings__sidebar--mobile': isMobile })}>
@@ -23,7 +25,8 @@ const PlusMinusSettingsSidebar = ({ sections, activeSection, onSectionChange, is
               className={classNames('plusminus-settings__sidebar-item', {
                 'plusminus-settings__sidebar-item--active': activeSection === section.id,
               })}
-              onClick={() => handleItemClick(section.id)}
+              onClick={handleItemClick(onSectionChange, isMobile, onClose)}
+              data-section-id={section.id}
               type='button'
             >
               {section.icon && <i className={`fa fa-fw fa-${section.icon}`} />}

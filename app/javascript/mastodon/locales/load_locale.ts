@@ -24,7 +24,7 @@ export async function loadLocale() {
       `mastodon/locales/${locale}.json`
     )) as LocaleData['messages'];
 
-    const ld = localeData.default as any as Record<string, string>;
+    const ld = localeData.default as unknown as Record<string, string>;
     Object.keys(localeData.default).forEach((key: string) => {
       if (ld[key]) {
         ld[key] = ld[key].replaceAll('Mastodon', 'Paon');

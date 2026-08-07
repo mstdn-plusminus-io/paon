@@ -245,8 +245,6 @@ export default class EmotionalDropdown extends React.PureComponent {
     const { value, container } = this.props;
     const { open, placement } = this.state;
 
-    console.log("open:", open);
-
     return (
       <div className={classNames('privacy-dropdown', placement, { active: open })} onKeyDown={this.handleKeyDown}>
         <div className={classNames('privacy-dropdown__value')} ref={this.setTargetRef}>
