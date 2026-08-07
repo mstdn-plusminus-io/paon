@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"regexp"
@@ -26,6 +27,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
 )
 
 var (
@@ -1204,6 +1206,51 @@ func TestStatusHashtagRefs(t *testing.T) {
 	}
 	if refs[2] != (statusHashtagRef{Normalized: "bad", Display: "bad"}) {
 		t.Fatalf("refs[2] = %#v", refs[2])
+	}
+}
+
+func TestStatusHashtagRefsComposesJapaneseDakuten(t *testing.T) {
+	refs := statusHashtagRefs("#えあいさんちの今日のこ\u3099はん")
+	want := []statusHashtagRef{{Normalized: "えあいさんちの今日のごはん", Display: "えあいさんちの今日のごはん"}}
+	if !reflect.DeepEqual(refs, want) {
+		t.Fatalf("refs = %#v, want %#v", refs, want)
+	}
+}
+
+func TestNormalizeActivityHashtagPreservesJapaneseDakuten(t *testing.T) {
+	const want = "しばふさんちの今日のごはん"
+	normalized, display, ok := normalizeActivityHashtag("#" + want)
+	if !ok || normalized != want || display != want {
+		t.Fatalf("normalizeActivityHashtag = %q, %q, %t; want %q, %q, true", normalized, display, ok, want, want)
+	}
+
+	const decomposed = "#しは\u3099ふさんちの今日のこ\u3099はん"
+	normalized, display, ok = normalizeActivityHashtag(decomposed)
+	if !ok || normalized != want || display != want {
+		t.Fatalf("normalizeActivityHashtag(decomposed) = %q, %q, %t; want %q, %q, true", normalized, display, ok, want, want)
+	}
+}
+
+func TestJapaneseDakutenHashtagRESTAndActivityPubOutput(t *testing.T) {
+	const want = "えあいさんちの今日のごはん"
+	normalized, _, ok := normalizeTagName("#" + want)
+	if !ok {
+		t.Fatal("expected Japanese hashtag to normalize")
+	}
+	cfg := config.Config{Scheme: "https", WebDomain: "example.test", LocalDomain: "example.test"}
+	tag := models.Tag{Name: normalized}
+	restTags := serializer.StatusFromModel(cfg, models.Status{Tags: []models.Tag{tag}}, nil).Tags
+	if len(restTags) != 1 || restTags[0].Name != want || !strings.Contains(restTags[0].URL, url.PathEscape(want)) {
+		t.Fatalf("REST tags = %#v", restTags)
+	}
+	apTags := activityPubTags(&Server{cfg: cfg}, models.Status{Tags: []models.Tag{tag}})
+	if len(apTags) != 1 {
+		t.Fatalf("ActivityPub tags = %#v", apTags)
+	}
+	hashtag, ok := apTags[0].(map[string]any)
+	href, hrefOK := hashtag["href"].(string)
+	if !ok || hashtag["name"] != "#"+want || !hrefOK || !strings.Contains(href, url.PathEscape(want)) {
+		t.Fatalf("ActivityPub hashtag = %#v", apTags[0])
 	}
 }
 

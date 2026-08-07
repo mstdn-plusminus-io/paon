@@ -41,6 +41,41 @@ func TestNormalizeTagNameUsesRailsHashtagNormalizer(t *testing.T) {
 	}
 }
 
+func TestNormalizeTagNamePreservesJapaneseDakuten(t *testing.T) {
+	tests := []string{
+		"えあいさんちの今日のごはん",
+		"しばふさんちの今日のごはん",
+	}
+	for _, want := range tests {
+		normalized, display, ok := normalizeTagName("#" + want)
+		if !ok {
+			t.Fatalf("normalizeTagName(%q) rejected a valid Japanese hashtag", want)
+		}
+		if normalized != want || display != want {
+			t.Fatalf("normalizeTagName(%q) = %q, %q; want both %q", want, normalized, display, want)
+		}
+	}
+}
+
+func TestNormalizeTagNameComposesJapaneseDakuten(t *testing.T) {
+	const decomposed = "えあいさんちの今日のこ\u3099はん"
+	const composed = "えあいさんちの今日のごはん"
+	normalized, display, ok := normalizeTagName("#" + decomposed)
+	if !ok {
+		t.Fatal("expected decomposed Japanese hashtag to be valid after normalization")
+	}
+	if normalized != composed || display != composed {
+		t.Fatalf("normalizeTagName(decomposed) = %q, %q; want both %q", normalized, display, composed)
+	}
+}
+
+func TestNormalizeTagNameComposesHalfWidthKatakanaDakuten(t *testing.T) {
+	normalized, display, ok := normalizeTagName("#ﾊﾞﾅﾅ")
+	if !ok || normalized != "バナナ" || display != "ﾊﾞﾅﾅ" {
+		t.Fatalf("normalizeTagName = %q, %q, %t; want バナナ, ﾊﾞﾅﾅ, true", normalized, display, ok)
+	}
+}
+
 func TestNormalizeTagNameRejectsInvalidCharacters(t *testing.T) {
 	if _, _, ok := normalizeTagName("bad/tag"); ok {
 		t.Fatal("expected slash to be rejected")

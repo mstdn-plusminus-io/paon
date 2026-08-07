@@ -27,6 +27,22 @@ import (
 
 var validTagName = regexp.MustCompile(`^[\pL\pN_·・‌]+$`)
 
+const railsASCIIFoldingSource = "ÀÁÂÃÄÅàáâãäåĀāĂăĄąÇçĆćĈĉĊċČčÐðĎďĐđÈÉÊËèéêëĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħÌÍÎÏìíîïĨĩĪīĬĭĮįİıĴĵĶķĸĹĺĻļĽľĿŀŁłÑñŃńŅņŇňŉŊŋÒÓÔÕÖØòóôõöøŌōŎŏŐőŔŕŖŗŘřŚśŜŝŞşŠšſŢţŤťŦŧÙÚÛÜùúûüŨũŪūŬŭŮůŰűŲųŴŵÝýÿŶŷŸŹźŻżŽž"
+const railsASCIIFoldingTarget = "AAAAAAaaaaaaAaAaAaCcCcCcCcCcDdDdDdEEEEeeeeEeEeEeEeEeGgGgGgGgHhHhIIIIiiiiIiIiIiIiIiJjKkkLlLlLlLlLlNnNnNnNnnNnOOOOOOooooooOoOoOoRrRrRrSsSsSsSssTtTtTtUUUUuuuuUuUuUuUuUuUuWwYyyYyYZzZzZz"
+
+var railsASCIIFolding = func() map[rune]rune {
+	source := []rune(railsASCIIFoldingSource)
+	target := []rune(railsASCIIFoldingTarget)
+	if len(source) != len(target) {
+		panic("Rails ASCII folding table lengths differ")
+	}
+	out := make(map[rune]rune, len(source))
+	for i, r := range source {
+		out[r] = target[i]
+	}
+	return out
+}()
+
 const rssTimeFormat = time.RFC1123Z
 
 type trendTagRow struct {
@@ -981,7 +997,7 @@ func (s *Server) tagFollowing(c *echo.Context, tagID int64) *bool {
 
 func normalizeTagName(raw string) (string, string, bool) {
 	decoded := strings.TrimPrefix(strings.TrimSpace(raw), "#")
-	decoded = strings.TrimSpace(decoded)
+	decoded = norm.NFC.String(strings.TrimSpace(decoded))
 	if !railsValidTagName(decoded) {
 		return "", "", false
 	}
@@ -1039,11 +1055,11 @@ func railsTagSeparator(r rune) bool {
 }
 
 func railsNormalizeHashtagName(value string) string {
-	folded := norm.NFKD.String(norm.NFKC.String(strings.ToLower(value)))
+	folded := strings.ToLower(norm.NFKC.String(value))
 	var out strings.Builder
 	for _, r := range folded {
-		if unicode.Is(unicode.Mn, r) {
-			continue
+		if replacement, ok := railsASCIIFolding[r]; ok {
+			r = replacement
 		}
 		out.WriteRune(r)
 	}
