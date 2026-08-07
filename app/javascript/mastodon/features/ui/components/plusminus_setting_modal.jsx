@@ -1,4 +1,4 @@
-/* eslint-disable react/jsx-no-bind */
+/* eslint-disable react/jsx-no-bind, jsx-a11y/no-onchange */
 
 import PropTypes from 'prop-types';
 import React from 'react';
@@ -6,9 +6,10 @@ import React from 'react';
 import { injectIntl, FormattedMessage } from 'react-intl';
 
 import Button from 'mastodon/components/button';
-import PlusMinusSettingsSidebar from './plusminus_settings_sidebar';
 
 import { open, download } from '../util/file';
+
+import PlusMinusSettingsSidebar from './plusminus_settings_sidebar';
 
 const localStorageKeyPrefix = 'plusminus_config_';
 
@@ -119,7 +120,7 @@ class PlusMinusSettingModalLoader extends React.Component {
         <PlusMinusSettingModal onCancel={this.onClickCancel} />
       );
     }
-    return <></>;
+    return null;
   }
 
 }
@@ -149,7 +150,6 @@ class PlusMinusSettingModal extends React.Component {
         try {
           obj[key.replace(localStorageKeyPrefix, '')] = JSON.parse(baseObj[key]);
         } catch (e) {
-          // eslint-disable-next-line eqeqeq
           if (baseObj[key] != null) {
             obj[key.replace(localStorageKeyPrefix, '')] = baseObj[key];
           }
@@ -500,10 +500,10 @@ class PlusMinusSettingModal extends React.Component {
               checked={this.state.config.filter_media_only_toots === 'enabled'}
               onChange={(e) => this.updateConfig('filter_media_only_toots', e.target.checked ? 'enabled' : 'disabled')}
             />
-            <code>🖼️</code> から始まる名前のリストのトゥートをメディアでフィルタする
+            <code><span role='img' aria-label='画像'>🖼️</span></code> から始まる名前のリストのトゥートをメディアでフィルタする
           </label>
           <p className='plusminus-settings__description'>
-            名前が <code>🖼️</code> から始まるリストTLの表示対象を、メディアが添付されているものだけに絞り込みます
+             名前が <code><span role='img' aria-label='画像'>🖼️</span></code> から始まるリストTLの表示対象を、メディアが添付されているものだけに絞り込みます
           </p>
         </div>
         <div className='plusminus-settings__config'>
@@ -528,11 +528,10 @@ class PlusMinusSettingModal extends React.Component {
 
   renderNotifications = () => {
     return (
-      <>
-        <div className='plusminus-settings__config'>
-          <label>
-            通知を表示しないアカウント
-          </label>
+      <div className='plusminus-settings__config'>
+        <label>
+          通知を表示しないアカウント
+        </label>
           <p className='plusminus-settings__description'>
             指定したアカウントからのブラウザ通知を表示しません。<br />
             通知タイムラインには表示されます。<br />
@@ -577,7 +576,6 @@ class PlusMinusSettingModal extends React.Component {
             </button>
           </div>
         </div>
-      </>
     );
   };
 
@@ -603,8 +601,9 @@ class PlusMinusSettingModal extends React.Component {
                   type='text'
                   value={buttonText}
                   onChange={(e) => {
-                    this.state.config.custom_spoiler_buttons[index] = e.target.value;
-                    this.updateConfig('custom_spoiler_buttons', this.state.config.custom_spoiler_buttons);
+                    const newButtons = [...this.state.config.custom_spoiler_buttons];
+                    newButtons[index] = e.target.value;
+                    this.updateConfig('custom_spoiler_buttons', newButtons);
                   }}
                 />
                 <button
@@ -667,16 +666,18 @@ class PlusMinusSettingModal extends React.Component {
                       placeholder={'キーワード'}
                       value={keyword}
                       onChange={(e) => {
-                        this.state.config.keyword_based_visibilities[index].keyword = e.target.value;
-                        this.updateConfig('keyword_based_visibilities', this.state.config.keyword_based_visibilities);
+                        const newVisibilities = [...this.state.config.keyword_based_visibilities];
+                        newVisibilities[index] = { ...newVisibilities[index], keyword: e.target.value };
+                        this.updateConfig('keyword_based_visibilities', newVisibilities);
                       }}
                     />
                     <select
                       className='plusminus-settings__input-select'
                       value={visibility}
                       onChange={(e) => {
-                        this.state.config.keyword_based_visibilities[index].visibility = e.target.value;
-                        this.updateConfig('keyword_based_visibilities', this.state.config.keyword_based_visibilities);
+                        const newVisibilities = [...this.state.config.keyword_based_visibilities];
+                        newVisibilities[index] = { ...newVisibilities[index], visibility: e.target.value };
+                        this.updateConfig('keyword_based_visibilities', newVisibilities);
                       }}
                     >
                       <option value='public'>Public</option>
