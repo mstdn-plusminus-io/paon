@@ -11,6 +11,7 @@ import { throttle } from 'lodash';
 
 import { Blurhash } from 'mastodon/components/blurhash';
 import { Icon }  from 'mastodon/components/icon';
+import { playerSettings } from 'mastodon/settings';
 
 import { displayMedia, useBlurhash } from '../../initial_state';
 import { isFullscreen, requestFullscreen, exitFullscreen } from '../ui/util/fullscreen';
@@ -219,8 +220,8 @@ class Video extends PureComponent {
 
     if(!isNaN(x)) {
       this.setState((state) => ({ volume: x, muted: state.muted && x === 0 }), () => {
-        this.video.volume = x;
-        this.video.muted = this.state.muted;
+        this._syncVideoToVolumeState(x);
+        this._saveVolumeState(x);
       });
     }
   }, 15);
@@ -358,6 +359,8 @@ class Video extends PureComponent {
     document.addEventListener('MSFullscreenChange', this.handleFullscreenChange, true);
 
     window.addEventListener('scroll', this.handleScroll);
+
+    this._syncVideoFromLocalStorage();
   }
 
   componentWillUnmount () {
@@ -432,8 +435,28 @@ class Video extends PureComponent {
     const muted = !(this.video.muted || this.state.volume === 0);
 
     this.setState((state) => ({ muted, volume: Math.max(state.volume || 0.5, 0.05) }), () => {
-      this.video.volume = this.state.volume;
-      this.video.muted = this.state.muted;
+      this._syncVideoToVolumeState();
+      this._saveVolumeState();
+    });
+  };
+
+  _syncVideoToVolumeState = (volume = null, muted = null) => {
+    if (!this.video) {
+      return;
+    }
+
+    this.video.volume = volume ?? this.state.volume;
+    this.video.muted = muted ?? this.state.muted;
+  };
+
+  _saveVolumeState = (volume = null, muted = null) => {
+    playerSettings.set('volume', volume ?? this.state.volume);
+    playerSettings.set('muted', muted ?? this.state.muted);
+  };
+
+  _syncVideoFromLocalStorage = () => {
+    this.setState({ volume: playerSettings.get('volume') ?? 0.5, muted: playerSettings.get('muted') ?? false }, () => {
+      this._syncVideoToVolumeState();
     });
   };
 
@@ -475,6 +498,7 @@ class Video extends PureComponent {
 
   handleVolumeChange = () => {
     this.setState({ volume: this.video.volume, muted: this.video.muted });
+    this._saveVolumeState(this.video.volume, this.video.muted);
   };
 
   handleOpenVideo = () => {

@@ -7,8 +7,8 @@ import ImmutablePropTypes from 'react-immutable-proptypes';
 import { connect } from 'react-redux';
 
 import { fetchSuggestions } from 'mastodon/actions/suggestions';
+import { FollowSuggestionCard } from 'mastodon/components/follow_suggestion_card';
 import { LoadingIndicator } from 'mastodon/components/loading_indicator';
-import AccountCard from 'mastodon/features/directory/components/account_card';
 
 const mapStateToProps = state => ({
   suggestions: state.getIn(['suggestions', 'items']),
@@ -44,7 +44,7 @@ class Suggestions extends PureComponent {
     return (
       <div className='explore__suggestions scrollable' data-nosnippet>
         {isLoading ? <LoadingIndicator /> : suggestions.map(suggestion => (
-          <AccountCard key={suggestion.get('account')} id={suggestion.get('account')} />
+          <FollowSuggestionCard key={suggestion.get('account')} id={suggestion.get('account')} sources={suggestion.get('sources')} />
         ))}
       </div>
     );

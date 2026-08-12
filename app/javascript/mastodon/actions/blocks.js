@@ -15,10 +15,10 @@ export const BLOCKS_EXPAND_FAIL    = 'BLOCKS_EXPAND_FAIL';
 export const BLOCKS_INIT_MODAL = 'BLOCKS_INIT_MODAL';
 
 export function fetchBlocks() {
-  return (dispatch, getState) => {
+  return (dispatch) => {
     dispatch(fetchBlocksRequest());
 
-    api(getState).get('/api/v1/blocks').then(response => {
+    api().get('/api/v1/blocks').then(response => {
       const next = getLinks(response).refs.find(link => link.rel === 'next');
       dispatch(importFetchedAccounts(response.data));
       dispatch(fetchBlocksSuccess(response.data, next ? next.uri : null));
@@ -58,7 +58,7 @@ export function expandBlocks() {
 
     dispatch(expandBlocksRequest());
 
-    api(getState).get(url).then(response => {
+    api().get(url).then(response => {
       const next = getLinks(response).refs.find(link => link.rel === 'next');
       dispatch(importFetchedAccounts(response.data));
       dispatch(expandBlocksSuccess(response.data, next ? next.uri : null));
@@ -90,11 +90,12 @@ export function expandBlocksFail(error) {
 
 export function initBlockModal(account) {
   return dispatch => {
-    dispatch({
-      type: BLOCKS_INIT_MODAL,
-      account,
-    });
-
-    dispatch(openModal({ modalType: 'BLOCK' }));
+    dispatch(openModal({
+      modalType: 'BLOCK',
+      modalProps: {
+        accountId: account.get('id'),
+        acct: account.get('acct'),
+      },
+    }));
   };
 }

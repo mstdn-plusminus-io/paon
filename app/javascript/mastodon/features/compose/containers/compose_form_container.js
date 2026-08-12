@@ -10,8 +10,7 @@ import {
   insertEmojiCompose,
   uploadCompose,
   changeComposeVisibility,
-  setMaxMediaAttachments,
-  setImageMatrixLimit,
+  setComposeInstanceLimits,
 } from '../../../actions/compose';
 import ComposeForm from '../components/compose_form';
 
@@ -31,14 +30,17 @@ const mapStateToProps = state => ({
   anyMedia: state.getIn(['compose', 'media_attachments']).size > 0,
   isInReply: state.getIn(['compose', 'in_reply_to']) !== null,
   lang: state.getIn(['compose', 'language']),
+  maxChars: state.getIn(['compose', 'max_characters']),
+  pollOptions: state.getIn(['compose', 'poll', 'options']),
+  maxPollOptions: state.getIn(['compose', 'max_poll_options']),
+  maxPollOptionCharacters: state.getIn(['compose', 'max_poll_option_characters']),
 });
 
 let cachedKeywordVisibilities = null;
 
 const mapDispatchToProps = (dispatch) => ({
   onInitialize(instance) {
-    dispatch(setMaxMediaAttachments(instance.configuration.statuses.max_media_attachments));
-    dispatch(setImageMatrixLimit(instance.configuration.media_attachments.image_matrix_limit));
+    dispatch(setComposeInstanceLimits(instance.configuration));
   },
 
   onChange (text) {

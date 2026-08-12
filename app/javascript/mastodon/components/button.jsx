@@ -12,6 +12,9 @@ export default class Button extends PureComponent {
     disabled: PropTypes.bool,
     block: PropTypes.bool,
     secondary: PropTypes.bool,
+    dangerous: PropTypes.bool,
+    autoFocus: PropTypes.bool,
+    ariaBusy: PropTypes.bool,
     className: PropTypes.string,
     title: PropTypes.string,
     children: PropTypes.node,
@@ -39,12 +42,15 @@ export default class Button extends PureComponent {
     const className = classNames('button', this.props.className, {
       'button-secondary': this.props.secondary,
       'button--block': this.props.block,
+      'button--dangerous': this.props.dangerous,
     });
 
     return (
       <button
         className={className}
         disabled={this.props.disabled}
+        autoFocus={this.props.autoFocus}
+        aria-busy={this.props.ariaBusy}
         onClick={this.handleClick}
         ref={this.setRef}
         title={this.props.title}

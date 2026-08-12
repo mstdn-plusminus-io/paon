@@ -4,6 +4,10 @@ const { settings } = require('../configuration');
 
 module.exports = {
   test: new RegExp(`(${settings.static_assets_extensions.join('|')})$`, 'i'),
+  // Repository-owned icons are component-only `?react` imports. Keep the
+  // package icons on the legacy file-loader + SVGR path so their existing
+  // named `ReactComponent` export remains available.
+  exclude: [/material-icons/, /svg-icons/],
   use: [
     {
       loader: 'file-loader',

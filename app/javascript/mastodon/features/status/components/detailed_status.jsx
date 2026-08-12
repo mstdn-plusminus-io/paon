@@ -1,6 +1,6 @@
 import PropTypes from 'prop-types';
 
-import { injectIntl, defineMessages, FormattedDate, FormattedMessage } from 'react-intl';
+import { FormattedDate, FormattedMessage } from 'react-intl';
 
 import classNames from 'classnames';
 import { Link } from 'react-router-dom';
@@ -8,11 +8,15 @@ import { Link } from 'react-router-dom';
 import ImmutablePropTypes from 'react-immutable-proptypes';
 import ImmutablePureComponent from 'react-immutable-pure-component';
 
+import AlternateEmailIcon from '@/material-icons/400-24px/alternate_email.svg?react';
 import { AnimatedNumber } from 'mastodon/components/animated_number';
+import { ContentWarning } from 'mastodon/components/content_warning';
 import EditedTimestamp from 'mastodon/components/edited_timestamp';
+import { FilterWarning } from 'mastodon/components/filter_warning';
 import { getHashtagBarForStatus } from 'mastodon/components/hashtag_bar';
 import { Icon }  from 'mastodon/components/icon';
 import PictureInPicturePlaceholder from 'mastodon/components/picture_in_picture_placeholder';
+import { VisibilityIcon } from 'mastodon/components/visibility_icon';
 
 import { Avatar } from '../../../components/avatar';
 import { DisplayName } from '../../../components/display_name';
@@ -24,13 +28,6 @@ import scheduleIdleTask from '../../ui/util/schedule_idle_task';
 import Video from '../../video';
 
 import Card from './card';
-
-const messages = defineMessages({
-  public_short: { id: 'privacy.public.short', defaultMessage: 'Public' },
-  unlisted_short: { id: 'privacy.unlisted.short', defaultMessage: 'Unlisted' },
-  private_short: { id: 'privacy.private.short', defaultMessage: 'Followers only' },
-  direct_short: { id: 'privacy.direct.short', defaultMessage: 'Mentioned people only' },
-});
 
 class DetailedStatus extends ImmutablePureComponent {
 
@@ -58,6 +55,7 @@ class DetailedStatus extends ImmutablePureComponent {
 
   state = {
     height: null,
+    showDespiteFilter: false,
   };
 
   handleAccountClick = (e) => {
@@ -77,6 +75,10 @@ class DetailedStatus extends ImmutablePureComponent {
     this.props.onToggleHidden(this.props.status);
   };
 
+  handleFilterToggle = () => {
+    this.setState(state => ({ showDespiteFilter: !state.showDespiteFilter }));
+  };
+
   _measureHeight (heightJustChanged) {
     if (this.props.measureHeight && this.node) {
       scheduleIdleTask(() => this.node && this.setState({ height: Math.ceil(this.node.scrollHeight) + 1 }));
@@ -94,6 +96,10 @@ class DetailedStatus extends ImmutablePureComponent {
 
   componentDidUpdate (prevProps, prevState) {
     this._measureHeight(prevState.height !== this.state.height);
+
+    if (prevProps.status?.get('id') !== this.props.status?.get('id') && this.state.showDespiteFilter) {
+      this.setState({ showDespiteFilter: false });
+    }
   }
 
   handleModalLink = e => {
@@ -116,9 +122,10 @@ class DetailedStatus extends ImmutablePureComponent {
   };
 
   render () {
-    const status = (this.props.status && this.props.status.get('reblog')) ? this.props.status.get('reblog') : this.props.status;
+    const selectedStatus = this.props.status;
+    const status = (selectedStatus && selectedStatus.get('reblog')) ? selectedStatus.get('reblog') : selectedStatus;
     const outerStyle = { boxSizing: 'border-box' };
-    const { intl, compact, pictureInPicture } = this.props;
+    const { compact, pictureInPicture } = this.props;
 
     if (!status) {
       return null;
@@ -140,7 +147,20 @@ class DetailedStatus extends ImmutablePureComponent {
     if (pictureInPicture.get('inUse')) {
       media = <PictureInPicturePlaceholder />;
     } else if (status.get('media_attachments').size > 0) {
-      if (status.getIn(['media_attachments', 0, 'type']) === 'audio') {
+      if (['image', 'gifv', 'unknown'].includes(status.getIn(['media_attachments', 0, 'type'])) || status.get('media_attachments').size > 1) {
+        media = (
+          <MediaGallery
+            standalone
+            sensitive={status.get('sensitive')}
+            media={status.get('media_attachments')}
+            lang={language}
+            height={300}
+            onOpenMedia={this.props.onOpenMedia}
+            visible={this.props.showMedia}
+            onToggleVisibility={this.props.onToggleMediaVisibility}
+          />
+        );
+      } else if (status.getIn(['media_attachments', 0, 'type']) === 'audio') {
         const attachment = status.getIn(['media_attachments', 0]);
         const description = attachment.getIn(['translation', 'description']) || attachment.get('description');
 
@@ -182,21 +202,8 @@ class DetailedStatus extends ImmutablePureComponent {
             onToggleVisibility={this.props.onToggleMediaVisibility}
           />
         );
-      } else {
-        media = (
-          <MediaGallery
-            standalone
-            sensitive={status.get('sensitive')}
-            media={status.get('media_attachments')}
-            lang={language}
-            height={300}
-            onOpenMedia={this.props.onOpenMedia}
-            visible={this.props.showMedia}
-            onToggleVisibility={this.props.onToggleMediaVisibility}
-          />
-        );
       }
-    } else if (status.get('spoiler_text').length === 0 && status.getIn(['card', 'url']) !== status.get('quote_original_url')) {
+    } else if (status.get('card') && status.getIn(['card', 'url']) !== status.get('quote_original_url')) {
       media = <Card sensitive={status.get('sensitive')} onOpenMedia={this.props.onOpenMedia} card={status.get('card', null)} />;
     }
 
@@ -204,15 +211,7 @@ class DetailedStatus extends ImmutablePureComponent {
       applicationLink = <> · <a className='detailed-status__application' href={status.getIn(['application', 'website'])} target='_blank' rel='noopener noreferrer'>{status.getIn(['application', 'name'])}</a></>;
     }
 
-    const visibilityIconInfo = {
-      'public': { icon: 'globe', text: intl.formatMessage(messages.public_short) },
-      'unlisted': { icon: 'unlock', text: intl.formatMessage(messages.unlisted_short) },
-      'private': { icon: 'lock', text: intl.formatMessage(messages.private_short) },
-      'direct': { icon: 'at', text: intl.formatMessage(messages.direct_short) },
-    };
-
-    const visibilityIcon = visibilityIconInfo[status.get('visibility')];
-    const visibilityLink = <> · <Icon id={visibilityIcon.icon} title={visibilityIcon.text} /></>;
+    const visibilityLink = <> · <VisibilityIcon visibility={status.get('visibility')} /></>;
 
     if (['private', 'direct'].includes(status.get('visibility'))) {
       reblogLink = '';
@@ -272,35 +271,37 @@ class DetailedStatus extends ImmutablePureComponent {
     }
 
     const {statusContentProps, hashtagBar} = getHashtagBarForStatus(status);
-    const expanded = !status.get('hidden') || status.get('spoiler_text').length === 0;
+    const matchedFilters = selectedStatus.get('matched_filters');
+    const expanded = (!matchedFilters || this.state.showDespiteFilter) && (!status.get('hidden') || status.get('spoiler_text').length === 0);
 
     return (
       <div style={outerStyle}>
         <div ref={this.setRef} className={classNames('detailed-status', { compact })}>
           {status.get('visibility') === 'direct' && (
             <div className='status__prepend'>
-              <div className='status__prepend-icon-wrapper'><Icon id='at' className='status__prepend-icon' fixedWidth /></div>
+              <div className='status__prepend-icon-wrapper'><Icon id='at' icon={AlternateEmailIcon} className='status__prepend-icon' fixedWidth /></div>
               <FormattedMessage id='status.direct_indicator' defaultMessage='Private mention' />
             </div>
           )}
-          <a href={`/@${status.getIn(['account', 'acct'])}`} onClick={this.handleAccountClick} className='detailed-status__display-name'>
+          <a href={`/@${status.getIn(['account', 'acct'])}`} onClick={this.handleAccountClick} className='detailed-status__display-name' data-hover-card-account={status.getIn(['account', 'id'])}>
             <div className='detailed-status__display-avatar'><Avatar account={status.get('account')} size={46} /></div>
             <DisplayName account={status.get('account')} localDomain={this.props.domain} />
           </a>
 
-          <StatusContent
-            status={status}
-            expanded={!status.get('hidden')}
-            onExpandedToggle={this.handleExpandedToggle}
-            onTranslate={this.handleTranslate}
-            {...statusContentProps}
-          />
+          {matchedFilters && <FilterWarning title={matchedFilters.join(', ')} expanded={this.state.showDespiteFilter} onClick={this.handleFilterToggle} />}
 
-          <QuoteContainer id={status.get("quote_id")} />
+          {status.get('spoiler_text').length > 0 && (!matchedFilters || this.state.showDespiteFilter) && (
+            <ContentWarning text={status.getIn(['translation', 'spoilerHtml']) || status.get('spoilerHtml')} expanded={expanded} onClick={this.handleExpandedToggle} />
+          )}
 
-          {media}
-
-          {expanded && hashtagBar}
+          {expanded && (
+            <>
+              <StatusContent status={status} onTranslate={this.handleTranslate} {...statusContentProps} />
+              <QuoteContainer id={status.get('quote_id')} />
+              {media}
+              {hashtagBar}
+            </>
+          )}
 
           <div className='detailed-status__meta'>
             <a className='detailed-status__datetime' href={`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`} target='_blank' rel='noopener noreferrer'>
@@ -314,4 +315,4 @@ class DetailedStatus extends ImmutablePureComponent {
 
 }
 
-export default injectIntl(DetailedStatus);
+export default DetailedStatus;

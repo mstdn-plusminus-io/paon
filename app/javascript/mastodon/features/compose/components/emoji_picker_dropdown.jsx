@@ -10,6 +10,8 @@ import ImmutablePropTypes from 'react-immutable-proptypes';
 import { supportsPassiveEvents } from 'detect-passive-events';
 import Overlay from 'react-overlays/Overlay';
 
+import MoodIcon from '@/material-icons/400-20px/mood.svg?react';
+import { IconButton } from 'mastodon/components/icon_button';
 import { assetHost } from 'mastodon/utils/config';
 
 import { buildCustomEmojis, categoriesFromEmojis } from '../../emoji/emoji';
@@ -386,12 +388,23 @@ class EmojiPickerDropdown extends PureComponent {
 
     return (
       <div className='emoji-picker-dropdown' onKeyDown={this.handleKeyDown}>
-        <div ref={this.setTargetRef} className='emoji-button' title={title} aria-label={title} aria-expanded={active} role='button' onClick={this.onToggle} onKeyDown={this.onToggle} tabIndex={0}>
-          {button || <img
-            className={classNames('emojione', { 'pulse-loading': active && loading })}
-            alt='🙂'
-            src={`${assetHost}/emoji/1f642.svg`}
-          />}
+        <div ref={this.setTargetRef} className='emoji-button'>
+          {button ? (
+            <button type='button' className='icon-button' title={title} aria-label={title} aria-expanded={active} onClick={this.onToggle}>
+              {button}
+            </button>
+          ) : (
+            <IconButton
+              className={classNames({ 'pulse-loading': active && loading })}
+              title={title}
+              aria-expanded={active}
+              active={active}
+              icon='smile'
+              iconComponent={MoodIcon}
+              onClick={this.onToggle}
+              inverted
+            />
+          )}
         </div>
 
         <Overlay show={active} placement={this.props.placement || 'bottom'} target={this.findTarget} popperConfig={{ strategy: 'fixed' }}>

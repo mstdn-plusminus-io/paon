@@ -4,7 +4,7 @@ import { createSelector } from 'reselect';
 
 import { debounce } from 'lodash';
 
-import { scrollTopTimeline, loadPending } from '../../../actions/timelines';
+import { scrollTopTimeline, loadPending, TIMELINE_SUGGESTIONS } from '../../../actions/timelines';
 import StatusList from '../../../components/status_list';
 import { me } from '../../../initial_state';
 
@@ -15,7 +15,7 @@ const makeGetStatusIds = (pending = false) => createSelector([
   (_, props) => props,
 ], (columnSettings, statusIds, statuses, props) => {
   return statusIds.filter(id => {
-    if (id === null) return true;
+    if (id === null || id === TIMELINE_SUGGESTIONS) return true;
 
     const statusForId = statuses.get(id);
     let showStatus    = true;

@@ -11,6 +11,7 @@ import { connect } from 'react-redux';
 import Column from 'mastodon/components/column';
 import ColumnHeader from 'mastodon/components/column_header';
 import Search from 'mastodon/features/compose/containers/search_container';
+import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { trendsEnabled } from 'mastodon/initial_state';
 
 import Links from './links';
@@ -33,10 +34,10 @@ class Explore extends PureComponent {
 
   static contextTypes = {
     router: PropTypes.object,
-    identity: PropTypes.object,
   };
 
   static propTypes = {
+    identity: identityContextPropShape,
     intl: PropTypes.object.isRequired,
     multiColumn: PropTypes.bool,
     isSearching: PropTypes.bool,
@@ -52,7 +53,7 @@ class Explore extends PureComponent {
 
   render() {
     const { intl, multiColumn, isSearching } = this.props;
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     return (
       <Column bindToDocument={!multiColumn} ref={this.setRef} label={intl.formatMessage(messages.title)}>
@@ -112,4 +113,4 @@ class Explore extends PureComponent {
 
 }
 
-export default connect(mapStateToProps)(injectIntl(Explore));
+export default withIdentity(connect(mapStateToProps)(injectIntl(Explore)));

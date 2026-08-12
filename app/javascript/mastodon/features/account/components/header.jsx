@@ -17,6 +17,7 @@ import { Icon }  from 'mastodon/components/icon';
 import { IconButton } from 'mastodon/components/icon_button';
 import { ShortNumber } from 'mastodon/components/short_number';
 import DropdownMenuContainer from 'mastodon/containers/dropdown_menu_container';
+import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { autoPlayGif, me, domain } from 'mastodon/initial_state';
 import { PERMISSION_MANAGE_USERS, PERMISSION_MANAGE_FEDERATION } from 'mastodon/permissions';
 
@@ -26,6 +27,7 @@ import FollowRequestNoteContainer from '../containers/follow_request_note_contai
 const messages = defineMessages({
   unfollow: { id: 'account.unfollow', defaultMessage: 'Unfollow' },
   follow: { id: 'account.follow', defaultMessage: 'Follow' },
+  followBack: { id: 'account.follow_back', defaultMessage: 'Follow back' },
   cancel_follow_request: { id: 'account.cancel_follow_request', defaultMessage: 'Withdraw follow request' },
   requested: { id: 'account.requested', defaultMessage: 'Awaiting approval. Click to cancel follow request' },
   unblock: { id: 'account.unblock', defaultMessage: 'Unblock @{name}' },
@@ -39,6 +41,9 @@ const messages = defineMessages({
   mute: { id: 'account.mute', defaultMessage: 'Mute @{name}' },
   report: { id: 'account.report', defaultMessage: 'Report @{name}' },
   share: { id: 'account.share', defaultMessage: 'Share @{name}\'s profile' },
+  copyProfile: { id: 'account.copy', defaultMessage: 'Copy link to profile' },
+  copiedProfile: { id: 'copypaste.copied', defaultMessage: 'Copied' },
+  remoteDomain: { id: 'account.remote_domain', defaultMessage: 'This profile is hosted on {domain}' },
   media: { id: 'account.media', defaultMessage: 'Media' },
   blockDomain: { id: 'account.block_domain', defaultMessage: 'Block domain {domain}' },
   unblockDomain: { id: 'account.unblock_domain', defaultMessage: 'Unblock domain {domain}' },
@@ -84,11 +89,11 @@ const dateFormatOptions = {
 class Header extends ImmutablePureComponent {
 
   static contextTypes = {
-    identity: PropTypes.object,
     router: PropTypes.object,
   };
 
   static propTypes = {
+    identity: identityContextPropShape,
     account: ImmutablePropTypes.map,
     identity_props: ImmutablePropTypes.list,
     onFollow: PropTypes.func.isRequired,
@@ -111,6 +116,10 @@ class Header extends ImmutablePureComponent {
     intl: PropTypes.object.isRequired,
     domain: PropTypes.string.isRequired,
     hidden: PropTypes.bool,
+  };
+
+  state = {
+    copied: false,
   };
 
   setRef = c => {
@@ -172,6 +181,34 @@ class Header extends ImmutablePureComponent {
     });
   };
 
+  handleCopy = () => {
+    const url = this.props.account.get('url');
+    const finish = () => {
+      this.setState({ copied: true });
+      window.clearTimeout(this.copyTimeout);
+      this.copyTimeout = window.setTimeout(() => this.setState({ copied: false }), 1500);
+    };
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(finish).catch(() => this.copyWithExecCommand(url, finish));
+    } else {
+      this.copyWithExecCommand(url, finish);
+    }
+  };
+
+  copyWithExecCommand = (value, callback) => {
+    const input = document.createElement('textarea');
+    input.value = value;
+    input.setAttribute('readonly', '');
+    input.style.position = 'fixed';
+    input.style.opacity = '0';
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand('copy');
+    input.remove();
+    callback();
+  };
+
   handleHashtagClick = e => {
     const { router } = this.context;
     const value = e.currentTarget.textContent.replace(/^#/, '');
@@ -227,9 +264,13 @@ class Header extends ImmutablePureComponent {
     this._attachLinkEvents();
   }
 
+  componentWillUnmount () {
+    window.clearTimeout(this.copyTimeout);
+  }
+
   render () {
     const { account, hidden, intl, domain } = this.props;
-    const { signedIn, permissions } = this.context.identity;
+    const { signedIn, permissions } = this.props.identity;
 
     if (!account) {
       return null;
@@ -246,7 +287,9 @@ class Header extends ImmutablePureComponent {
     let menu        = [];
 
     if (me !== account.get('id') && account.getIn(['relationship', 'followed_by'])) {
-      info.push(<span key='followed_by' className='relationship-tag'><FormattedMessage id='account.follows_you' defaultMessage='Follows you' /></span>);
+      info.push(account.getIn(['relationship', 'following']) ?
+        <span key='mutual' className='relationship-tag'><FormattedMessage id='account.mutual' defaultMessage='Mutual follow' /></span> :
+        <span key='followed_by' className='relationship-tag'><FormattedMessage id='account.follows_you' defaultMessage='Follows you' /></span>);
     } else if (me !== account.get('id') && account.getIn(['relationship', 'blocking'])) {
       info.push(<span key='blocked' className='relationship-tag'><FormattedMessage id='account.blocked' defaultMessage='Blocked' /></span>);
     }
@@ -267,7 +310,8 @@ class Header extends ImmutablePureComponent {
       } else if (account.getIn(['relationship', 'requested'])) {
         actionBtn = <Button text={intl.formatMessage(messages.cancel_follow_request)} title={intl.formatMessage(messages.requested)} onClick={this.props.onFollow} />;
       } else if (!account.getIn(['relationship', 'blocking'])) {
-        actionBtn = <Button disabled={account.getIn(['relationship', 'blocked_by'])} className={classNames({ 'button--destructive': account.getIn(['relationship', 'following']) })} text={intl.formatMessage(account.getIn(['relationship', 'following']) ? messages.unfollow : messages.follow)} onClick={signedIn ? this.props.onFollow : this.props.onInteractionModal} />;
+        const actionMessage = account.getIn(['relationship', 'following']) ? messages.unfollow : (account.getIn(['relationship', 'followed_by']) ? messages.followBack : messages.follow);
+        actionBtn = <Button disabled={account.getIn(['relationship', 'blocked_by'])} className={classNames({ 'button--destructive': account.getIn(['relationship', 'following']) })} text={intl.formatMessage(actionMessage)} onClick={signedIn ? this.props.onFollow : this.props.onInteractionModal} />;
       } else if (account.getIn(['relationship', 'blocking'])) {
         actionBtn = <Button text={intl.formatMessage(messages.unblock, { name: account.get('username') })} onClick={this.props.onBlock} />;
       }
@@ -295,8 +339,9 @@ class Header extends ImmutablePureComponent {
 
     if ('share' in navigator) {
       menu.push({ text: intl.formatMessage(messages.share, { name: account.get('username') }), action: this.handleShare });
-      menu.push(null);
     }
+    menu.push({ text: intl.formatMessage(this.state.copied ? messages.copiedProfile : messages.copyProfile), action: this.handleCopy });
+    menu.push(null);
 
     if (account.get('id') === me) {
       menu.push({ text: intl.formatMessage(messages.edit_profile), href: '/settings/profile' });
@@ -368,7 +413,6 @@ class Header extends ImmutablePureComponent {
     const displayNameHtml = { __html: account.get('display_name_html') };
     const fields          = account.get('fields');
     const isLocal         = account.get('acct').indexOf('@') === -1;
-    const acct            = isLocal && domain ? `${account.get('acct')}@${domain}` : account.get('acct');
     const isIndexable     = !account.get('noindex');
 
     const badges = [];
@@ -419,7 +463,7 @@ class Header extends ImmutablePureComponent {
             <h1>
               <span dangerouslySetInnerHTML={displayNameHtml} />
               <small>
-                <span>@{acct}</span> {lockedIcon}
+                <span>@{account.get('username')}</span>{'@'}<span className='account__header__domain' title={intl.formatMessage(messages.remoteDomain, { domain: isRemote ? remoteDomain : domain })}>{isRemote ? remoteDomain : domain}</span> {lockedIcon}
               </small>
             </h1>
           </div>
@@ -455,7 +499,7 @@ class Header extends ImmutablePureComponent {
                 </div>
               </div>
 
-              <div className='account__header__extra__links'>
+              <div className='account__header__extra__links account__header__extra__links--responsive'>
                 <NavLink isActive={this.isStatusesPageActive} activeClassName='active' to={`/@${account.get('acct')}`} title={intl.formatNumber(account.get('statuses_count'))}>
                   <ShortNumber
                     value={account.get('statuses_count')}
@@ -492,4 +536,4 @@ class Header extends ImmutablePureComponent {
 
 }
 
-export default injectIntl(Header);
+export default withIdentity(injectIntl(Header));

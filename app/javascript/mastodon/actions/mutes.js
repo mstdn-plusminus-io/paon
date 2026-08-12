@@ -17,10 +17,10 @@ export const MUTES_TOGGLE_HIDE_NOTIFICATIONS = 'MUTES_TOGGLE_HIDE_NOTIFICATIONS'
 export const MUTES_CHANGE_DURATION = 'MUTES_CHANGE_DURATION';
 
 export function fetchMutes() {
-  return (dispatch, getState) => {
+  return (dispatch) => {
     dispatch(fetchMutesRequest());
 
-    api(getState).get('/api/v1/mutes').then(response => {
+    api().get('/api/v1/mutes').then(response => {
       const next = getLinks(response).refs.find(link => link.rel === 'next');
       dispatch(importFetchedAccounts(response.data));
       dispatch(fetchMutesSuccess(response.data, next ? next.uri : null));
@@ -60,7 +60,7 @@ export function expandMutes() {
 
     dispatch(expandMutesRequest());
 
-    api(getState).get(url).then(response => {
+    api().get(url).then(response => {
       const next = getLinks(response).refs.find(link => link.rel === 'next');
       dispatch(importFetchedAccounts(response.data));
       dispatch(expandMutesSuccess(response.data, next ? next.uri : null));
@@ -92,12 +92,13 @@ export function expandMutesFail(error) {
 
 export function initMuteModal(account) {
   return dispatch => {
-    dispatch({
-      type: MUTES_INIT_MODAL,
-      account,
-    });
-
-    dispatch(openModal({ modalType: 'MUTE' }));
+    dispatch(openModal({
+      modalType: 'MUTE',
+      modalProps: {
+        accountId: account.get('id'),
+        acct: account.get('acct'),
+      },
+    }));
   };
 }
 

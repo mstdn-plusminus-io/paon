@@ -8,6 +8,7 @@ import { Helmet } from 'react-helmet';
 import { connect } from 'react-redux';
 
 import { DismissableBanner } from 'mastodon/components/dismissable_banner';
+import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { domain } from 'mastodon/initial_state';
 
 import { addColumn, removeColumn, moveColumn } from '../../actions/columns';
@@ -40,7 +41,6 @@ class CommunityTimeline extends PureComponent {
 
   static contextTypes = {
     router: PropTypes.object,
-    identity: PropTypes.object,
   };
 
   static defaultProps = {
@@ -48,6 +48,7 @@ class CommunityTimeline extends PureComponent {
   };
 
   static propTypes = {
+    identity: identityContextPropShape,
     dispatch: PropTypes.func.isRequired,
     columnId: PropTypes.string,
     intl: PropTypes.object.isRequired,
@@ -77,7 +78,7 @@ class CommunityTimeline extends PureComponent {
 
   componentDidMount () {
     const { dispatch, onlyMedia } = this.props;
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     dispatch(expandCommunityTimeline({ onlyMedia }));
 
@@ -87,7 +88,7 @@ class CommunityTimeline extends PureComponent {
   }
 
   componentDidUpdate (prevProps) {
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (prevProps.onlyMedia !== this.props.onlyMedia) {
       const { dispatch, onlyMedia } = this.props;
@@ -160,4 +161,4 @@ class CommunityTimeline extends PureComponent {
 
 }
 
-export default connect(mapStateToProps)(injectIntl(CommunityTimeline));
+export default withIdentity(connect(mapStateToProps)(injectIntl(CommunityTimeline)));

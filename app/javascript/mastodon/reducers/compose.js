@@ -17,6 +17,7 @@ import {
   COMPOSE_UPLOAD_SUCCESS,
   COMPOSE_UPLOAD_FAIL,
   COMPOSE_UPLOAD_UNDO,
+  COMPOSE_CHANGE_MEDIA_ORDER,
   COMPOSE_UPLOAD_PROGRESS,
   COMPOSE_UPLOAD_PROCESSING,
   THUMBNAIL_UPLOAD_REQUEST,
@@ -53,6 +54,7 @@ import {
   COMPOSE_FOCUS,
   COMPOSE_MAX_MEDIA_ATTACHMENTS,
   COMPOSE_IMAGE_MATRIX_LIMIT,
+  COMPOSE_INSTANCE_LIMITS,
 } from '../actions/compose';
 import { REDRAFT } from '../actions/statuses';
 import { STORE_HYDRATE } from '../actions/store';
@@ -84,6 +86,9 @@ const initialState = ImmutableMap({
   pending_media_attachments: 0,
   max_media_attachments: 0,
   image_matrix_limit: 0,
+  max_characters: 5000,
+  max_poll_options: 4,
+  max_poll_option_characters: 50,
   poll: null,
   suggestion_token: null,
   suggestions: ImmutableList(),
@@ -159,17 +164,18 @@ function setImageMatrixLimit(state, pixels) {
 
 function appendMedia(state, media, file) {
   const prevSize = state.get('media_attachments').size;
+  const pending = Math.max(0, state.get('pending_media_attachments') - 1);
 
   return state.withMutations(map => {
     if (media.get('type') === 'image') {
       media = media.set('file', file);
     }
     map.update('media_attachments', list => list.push(media.set('unattached', true)));
-    map.set('is_uploading', false);
-    map.set('is_processing', false);
+    map.set('is_uploading', pending > 0);
+    map.set('is_processing', pending > 0 && state.get('is_processing'));
     map.set('resetFileKey', Math.floor((Math.random() * 0x10000)));
     map.set('idempotencyKey', uuid());
-    map.update('pending_media_attachments', n => n - 1);
+    map.set('pending_media_attachments', pending);
 
     if (prevSize === 0 && (state.get('default_sensitive') || state.get('spoiler'))) {
       map.set('sensitive', true);
@@ -278,6 +284,23 @@ const expiresInFromExpiresAt = expires_at => {
   const delta = (new Date(expires_at).getTime() - Date.now()) / 1000;
   return [300, 1800, 3600, 21600, 86400, 259200, 604800].find(expires_in => expires_in >= delta) || 24 * 3600;
 };
+
+const normalizePollOptions = (options, maxOptions = 4) => {
+  const limit = Math.max(2, maxOptions || 4);
+  let normalized = options.filterNot(option => option.trim().length === 0).take(limit);
+
+  if (normalized.size === 0) {
+    return ImmutableList(['', '']);
+  }
+
+  if (normalized.size < limit) {
+    normalized = normalized.push('');
+  }
+
+  return normalized;
+};
+
+const updatePoll = (state, index, value, maxOptions) => state.updateIn(['poll', 'options'], options => normalizePollOptions(options.set(index, value), maxOptions));
 
 const mergeLocalHashtagResults = (suggestions, prefix, tagHistory) => {
   prefix = prefix.toLowerCase();
@@ -443,15 +466,35 @@ export default function compose(state = initialState, action) {
   case COMPOSE_UPLOAD_CHANGE_FAIL:
     return state.set('is_changing_upload', false);
   case COMPOSE_UPLOAD_REQUEST:
-    return state.set('is_uploading', true).update('pending_media_attachments', n => n + 1);
+    return state
+      .set('is_uploading', true)
+      .set('is_processing', false)
+      .set('progress', 0)
+      .update('pending_media_attachments', n => n + Math.max(1, action.count || 1));
   case COMPOSE_UPLOAD_PROCESSING:
     return state.set('is_processing', true);
   case COMPOSE_UPLOAD_SUCCESS:
     return appendMedia(state, fromJS(action.media), action.file);
   case COMPOSE_UPLOAD_FAIL:
-    return state.set('is_uploading', false).set('is_processing', false).update('pending_media_attachments', n => n - 1);
+    return state.withMutations(map => {
+      const pending = Math.max(0, state.get('pending_media_attachments') - 1);
+      map.set('pending_media_attachments', pending);
+      map.set('is_uploading', pending > 0);
+      map.set('is_processing', pending > 0 && state.get('is_processing'));
+    });
   case COMPOSE_UPLOAD_UNDO:
     return removeMedia(state, action.media_id);
+  case COMPOSE_CHANGE_MEDIA_ORDER: {
+    const media = state.get('media_attachments');
+    const fromIndex = media.findIndex(item => item.get('id') === action.fromId);
+    const toIndex = media.findIndex(item => item.get('id') === action.toId);
+
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
+      return state;
+    }
+
+    return state.set('media_attachments', media.delete(fromIndex).insert(toIndex, media.get(fromIndex)));
+  }
   case COMPOSE_UPLOAD_PROGRESS:
     return state.set('progress', Math.round((action.loaded / action.total) * 100));
   case THUMBNAIL_UPLOAD_REQUEST:
@@ -487,6 +530,14 @@ export default function compose(state = initialState, action) {
     return setMaxMediaAttachments(state, action.count);
   case COMPOSE_IMAGE_MATRIX_LIMIT:
     return setImageMatrixLimit(state, action.pixels);
+  case COMPOSE_INSTANCE_LIMITS:
+    return state.withMutations(map => {
+      if (Number.isFinite(action.maxCharacters)) map.set('max_characters', action.maxCharacters);
+      if (Number.isFinite(action.maxMediaAttachments)) map.set('max_media_attachments', action.maxMediaAttachments);
+      if (Number.isFinite(action.maxPollOptions)) map.set('max_poll_options', action.maxPollOptions);
+      if (Number.isFinite(action.maxPollOptionCharacters)) map.set('max_poll_option_characters', action.maxPollOptionCharacters);
+      if (Number.isFinite(action.imageMatrixLimit)) map.set('image_matrix_limit', action.imageMatrixLimit);
+    });
   case COMPOSE_MENTION:
     return state.withMutations(map => {
       map.update('text', text => [text.trim(), `@${action.account.get('acct')} `].filter((str) => str.length !== 0).join(' '));
@@ -557,10 +608,7 @@ export default function compose(state = initialState, action) {
       }
 
       if (action.status.get('poll')) {
-        let options = ImmutableList(action.status.get('poll').options.map(x => x.title));
-        if (options.size < action.maxOptions) {
-          options = options.push('');
-        }
+        const options = normalizePollOptions(action.status.getIn(['poll', 'options']).map(x => x.get('title')), action.maxOptions);
 
         map.set('poll', ImmutableMap({
           options: options,
@@ -591,10 +639,7 @@ export default function compose(state = initialState, action) {
       }
 
       if (action.status.get('poll')) {
-        let options = ImmutableList(action.status.get('poll').options.map(x => x.title));
-        if (options.size < action.maxOptions) {
-          options = options.push('');
-        }
+        const options = normalizePollOptions(action.status.getIn(['poll', 'options']).map(x => x.get('title')), action.maxOptions);
 
         map.set('poll', ImmutableMap({
           options: options,
@@ -610,9 +655,9 @@ export default function compose(state = initialState, action) {
   case COMPOSE_POLL_OPTION_ADD:
     return state.updateIn(['poll', 'options'], options => options.push(action.title));
   case COMPOSE_POLL_OPTION_CHANGE:
-    return state.setIn(['poll', 'options', action.index], action.title);
+    return updatePoll(state, action.index, action.title, action.maxOptions || state.get('max_poll_options'));
   case COMPOSE_POLL_OPTION_REMOVE:
-    return state.updateIn(['poll', 'options'], options => options.delete(action.index));
+    return state.updateIn(['poll', 'options'], options => normalizePollOptions(options.delete(action.index), state.get('max_poll_options')));
   case COMPOSE_POLL_SETTINGS_CHANGE:
     return state.update('poll', poll => poll.set('expires_in', action.expiresIn).set('multiple', action.isMultiple));
   case COMPOSE_LANGUAGE_CHANGE:

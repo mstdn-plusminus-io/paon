@@ -41,6 +41,8 @@ const initialState = ImmutableMap({
       update: false,
       'admin.sign_up': false,
       'admin.report': false,
+      moderation_warning: false,
+      severed_relationships: false,
     }),
 
     quickFilter: ImmutableMap({
@@ -50,6 +52,8 @@ const initialState = ImmutableMap({
     }),
 
     dismissPermissionBanner: false,
+    groupFollows: true,
+    minimizeFilteredBanner: false,
     showUnread: true,
 
     shows: ImmutableMap({
@@ -63,6 +67,8 @@ const initialState = ImmutableMap({
       update: true,
       'admin.sign_up': true,
       'admin.report': true,
+      moderation_warning: true,
+      severed_relationships: true,
     }),
 
     sounds: ImmutableMap({
@@ -76,6 +82,8 @@ const initialState = ImmutableMap({
       update: true,
       'admin.sign_up': true,
       'admin.report': true,
+      moderation_warning: true,
+      severed_relationships: true,
     }),
   }),
 

@@ -1,7 +1,6 @@
 import { connect } from 'react-redux';
 
 import {
-  addPollOption,
   removePollOption,
   changePollOption,
   changePollSettings,
@@ -17,19 +16,17 @@ const mapStateToProps = state => ({
   lang: state.getIn(['compose', 'language']),
   expiresIn: state.getIn(['compose', 'poll', 'expires_in']),
   isMultiple: state.getIn(['compose', 'poll', 'multiple']),
+  maxOptions: state.getIn(['compose', 'max_poll_options']),
+  maxCharacters: state.getIn(['compose', 'max_poll_option_characters']),
 });
 
 const mapDispatchToProps = dispatch => ({
-  onAddOption(title) {
-    dispatch(addPollOption(title));
-  },
-
   onRemoveOption(index) {
     dispatch(removePollOption(index));
   },
 
-  onChangeOption(index, title) {
-    dispatch(changePollOption(index, title));
+  onChangeOption(index, title, maxOptions) {
+    dispatch(changePollOption(index, title, maxOptions));
   },
 
   onChangeSettings(expiresIn, isMultiple) {

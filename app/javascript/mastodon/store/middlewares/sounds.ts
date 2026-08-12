@@ -1,4 +1,5 @@
-import type { Middleware, AnyAction } from 'redux';
+import { isAction } from '@reduxjs/toolkit';
+import type { Middleware } from '@reduxjs/toolkit';
 
 import ready from 'mastodon/ready';
 import { assetHost } from 'mastodon/utils/config';
@@ -50,15 +51,22 @@ export const soundsMiddleware = (): Middleware<unknown, RootState> => {
     ]);
   });
 
-  return () =>
-    (next) =>
-    (action: AnyAction & { meta?: { sound?: string } }) => {
-      const sound = action.meta?.sound;
+  return () => (next) => (action) => {
+    const sound =
+      isAction(action) &&
+      'meta' in action &&
+      action.meta &&
+      typeof action.meta === 'object' &&
+      'sound' in action.meta &&
+      typeof action.meta.sound === 'string'
+        ? action.meta.sound
+        : undefined;
 
-      if (sound && Object.hasOwn(soundCache, sound)) {
-        play(soundCache[sound]);
-      }
+    const audio = sound ? soundCache[sound] : undefined;
+    if (audio) {
+      play(audio);
+    }
 
-      return next(action);
-    };
+    return next(action);
+  };
 };

@@ -51,23 +51,25 @@ function uniqueHashtagsWithCaseHandling(hashtags: string[]) {
     tag.normalize('NFKD').toLowerCase(),
   );
 
-  return Object.values(groups).map((tags) => {
-    if (tags.length === 1) return tags[0];
+  return Object.values(groups)
+    .map((tags) => {
+      if (tags.length === 1) return tags[0];
 
-    // The best match is the one where we have the less difference between upper and lower case letter count
-    const best = minBy(tags, (tag) => {
-      const upperCase = Array.from(tag).reduce(
-        (acc, char) => (acc += char.toUpperCase() === char ? 1 : 0),
-        0,
-      );
+      // The best match is the one where we have the less difference between upper and lower case letter count
+      const best = minBy(tags, (tag) => {
+        const upperCase = Array.from(tag).reduce(
+          (acc, char) => (acc += char.toUpperCase() === char ? 1 : 0),
+          0,
+        );
 
-      const lowerCase = tag.length - upperCase;
+        const lowerCase = tag.length - upperCase;
 
-      return Math.abs(lowerCase - upperCase);
-    });
+        return Math.abs(lowerCase - upperCase);
+      });
 
-    return best ?? tags[0];
-  });
+      return best ?? tags[0];
+    })
+    .filter((tag): tag is string => tag !== undefined);
 }
 
 // Create the collator once, this is much more efficient

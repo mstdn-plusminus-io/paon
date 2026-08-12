@@ -1,5 +1,6 @@
 import { Record as ImmutableRecord } from 'immutable';
 
+import type { Reducer } from '@reduxjs/toolkit';
 import { loadingBarReducer } from 'react-redux-loading-bar';
 import { combineReducers } from 'redux-immutable';
 
@@ -29,6 +30,9 @@ import media_attachments from './media_attachments';
 import meta from './meta';
 import { modalReducer } from './modal';
 import mutes from './mutes';
+import notificationGroups from './notification_groups';
+import notificationPolicy from './notification_policy';
+import notificationRequests from './notification_requests';
 import notifications from './notifications';
 import picture_in_picture from './picture_in_picture';
 import polls from './polls';
@@ -73,6 +77,9 @@ const reducers = {
   search,
   media_attachments,
   notifications,
+  notificationGroups,
+  notificationPolicy,
+  notificationRequests,
   height_cache,
   custom_emojis,
   lists,
@@ -106,6 +113,11 @@ const initialRootState = Object.fromEntries(
 
 const RootStateRecord = ImmutableRecord(initialRootState, 'RootState');
 
-const rootReducer = combineReducers(reducers, RootStateRecord);
+type RootState = ReturnType<typeof RootStateRecord>;
+const combineImmutableReducers = combineReducers as unknown as (
+  reducerMap: typeof reducers,
+  stateFactory: typeof RootStateRecord,
+) => Reducer<RootState>;
+const rootReducer = combineImmutableReducers(reducers, RootStateRecord);
 
 export { rootReducer };
