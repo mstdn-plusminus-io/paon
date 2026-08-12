@@ -10,6 +10,7 @@ vars:
       fi
 
 env:
+  TMPDIR: '{{.ROOT_DIR}}/.go-tmp'
   GOTMPDIR: '{{.ROOT_DIR}}/.go-tmp'
   GOCACHE: '{{.ROOT_DIR}}/.go-buildcache'
   GOMODCACHE: '{{.ROOT_DIR}}/.go-modcache'
@@ -79,6 +80,7 @@ tasks:
       PAON_TEST_DATABASE_URL: postgres://postgres:paon@127.0.0.1:55432/paon_integration?sslmode=disable
       PAON_TEST_REDIS_URL: redis://127.0.0.1:56379/15
     cmds:
+      - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./cmd/paon-migrate
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/db
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/migrate
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/cutover
@@ -91,14 +93,14 @@ tasks:
       - go run -mod=mod ./cmd/paon-routes > tmp/go-routes.json
 
   routes:audit:
-    desc: Compare Go routes with a Mastodon 4.3.23 Rails route manifest
+    desc: Compare Go routes with a Mastodon 4.4.22 Rails route manifest
     deps:
       - routes:go
     vars:
-      RAILS_ROUTES: '{{default "tmp/rails-routes-4.3.23.json" .PAON_RAILS_ROUTE_MANIFEST}}'
+      RAILS_ROUTES: '{{default "tmp/rails-routes-4.4.22.json" .PAON_RAILS_ROUTE_MANIFEST}}'
     preconditions:
       - sh: test -f "{{.RAILS_ROUTES}}"
-        msg: Set PAON_RAILS_ROUTE_MANIFEST to a generated Mastodon 4.3.23 Rails route manifest
+        msg: Set PAON_RAILS_ROUTE_MANIFEST to a generated Mastodon 4.4.22 Rails route manifest
     cmds:
       - go run -mod=mod ./cmd/paon-route-audit --rails "{{.RAILS_ROUTES}}" --go tmp/go-routes.json
 
@@ -113,7 +115,7 @@ tasks:
       - go run -mod=mod ./cmd/paon-differential --cases testdata/differential/core.json
 
   test:differential:
-    desc: Compare the complete public and seeded authenticated Mastodon 4.3.23 contract matrix
+    desc: Compare the complete public and seeded authenticated Mastodon 4.4.22 contract matrix
     deps:
       - test:differential:core
     preconditions:

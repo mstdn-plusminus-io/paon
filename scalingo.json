@@ -12,10 +12,6 @@
       "description": "The secret key base",
       "generator": "secret"
     },
-    "OTP_SECRET": {
-      "description": "One-time password secret",
-      "generator": "secret"
-    },
     "ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY": {
       "description": "Active Record deterministic encryption key",
       "generator": "secret"

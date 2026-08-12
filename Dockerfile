@@ -1,4 +1,6 @@
-FROM golang:1.25.12-trixie AS go-builder
+ARG BASE_REGISTRY=docker.io
+
+FROM ${BASE_REGISTRY}/golang:1.25.12-trixie AS go-builder
 
 WORKDIR /src
 
@@ -34,7 +36,7 @@ RUN set -eux; \
 		cp /out/native/* /out/libvips/; \
 	fi
 
-FROM node:22-bookworm-slim AS assets
+FROM ${BASE_REGISTRY}/node:22-bookworm-slim AS assets
 
 WORKDIR /src
 
@@ -48,10 +50,13 @@ RUN corepack enable && yarn install --pure-lockfile --production=false
 COPY . .
 RUN rm -rf public/packs public/packs-test && yarn build:production
 
-FROM debian:trixie-slim
+FROM ${BASE_REGISTRY}/debian:trixie-slim
+
+ARG SOURCE_COMMIT=""
 
 ENV RAILS_ENV=production
 ENV NODE_ENV=production
+ENV SOURCE_COMMIT=${SOURCE_COMMIT}
 ENV BIND=0.0.0.0
 ENV PORT=3000
 ENV PAON_PUBLIC_DIR=/opt/mastodon/public

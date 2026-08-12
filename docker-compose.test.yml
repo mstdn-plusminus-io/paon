@@ -12,7 +12,11 @@ services:
       PAON_PROCESS_ROLE: web
       PAON_PUBLIC_DIR: /opt/mastodon/public
     healthcheck:
-      test: ['CMD-SHELL', 'wget -q --spider --proxy=off localhost:3000/health/ready || exit 1']
+      test:
+        [
+          'CMD-SHELL',
+          'wget -q --spider --proxy=off localhost:3000/health/ready || exit 1',
+        ]
     ports:
       - '3000:3000'
     volumes:

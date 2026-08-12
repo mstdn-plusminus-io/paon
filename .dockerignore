@@ -27,9 +27,16 @@ public/system
 coverage
 build
 .go-buildcache
+.go-buildcache-test
+.go-cache
 .go-modcache
 .go-path
 .go-tmp
+.tmp
+.tmp-go-cache
+.codex-tmp
+.release-cache
+*.tsbuildinfo
 bin/paon
 bin/paon-admin
 bin/paon-cutover

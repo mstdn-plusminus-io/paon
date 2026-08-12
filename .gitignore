@@ -21,12 +21,15 @@
 /node_modules/
 /build/
 /.go-buildcache/
+/.go-cache/
 /.go-modcache/
 /.go-tmp/
 /.go-path/
 /.agent-cache-*/
 /.codex-tmp/
 /.tmp-go-cache/
+/.tmp/
+/.release-cache/
 *.tsbuildinfo
 
 # Ignore IDE files
