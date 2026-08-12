@@ -56,14 +56,18 @@ func (s *Server) processActivityPubInboxForDeliveredTo(body []byte, actor *model
 }
 
 func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Context, body []byte, actor *models.Account, target *models.Account, deliveredToAccountID int64) error {
-	body = activityPubProcessCollectionBody(body)
-	if !json.Valid(body) {
+	originalBody := body
+	// Keep the compacted signature intact until a relayed activity has been
+	// bound to its original actor. Forwarding compatibility is handled only
+	// after authentication, on a separate serialized document.
+	verificationBody := activityPubCompactCollectionBody(body)
+	if !json.Valid(verificationBody) {
 		return activityPubEventNotAppliedf("invalid JSON document")
 	}
-	if !activityPayloadSupportedContext(body) {
+	if !activityPayloadSupportedContext(verificationBody) {
 		return activityPubEventNotAppliedf("unsupported JSON-LD context")
 	}
-	payload, err := parseActivityPayload(body)
+	payload, err := parseActivityPayload(verificationBody)
 	if err != nil {
 		return activityPubEventNotAppliedf("parse payload: %v", err)
 	}
@@ -82,9 +86,12 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 	}
 	var relayedThrough *models.Account
 	if activityPayloadDifferentActor(payload, actor) {
-		verifiedActor := s.activityPubLinkedDataSignatureActor(body, payload)
+		verifiedActor := s.activityPubLinkedDataSignatureActor(verificationBody, payload)
 		if verifiedActor == nil {
 			return activityPubEventNotAppliedf("activity actor does not match verified HTTP signature actor")
+		}
+		if activityPayloadDifferentActor(payload, verifiedActor) {
+			return activityPubEventNotAppliedf("linked-data signature actor does not match activity actor")
 		}
 		relayedThrough = actor
 		actor = verifiedActor
@@ -94,6 +101,14 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 	}
 	if actor.SuspendedAt.Valid && !activityPubActivityAllowedWhileSuspended(payload.Type) {
 		return nil
+	}
+	forwardingBody := activityPubFinalizeCollectionBodyForForwarding(originalBody, verificationBody)
+	payload, err = parseActivityPayload(forwardingBody)
+	if err != nil {
+		return activityPubEventNotAppliedf("parse forwarding-safe payload: %v", err)
+	}
+	if activityPayloadDifferentActor(payload, actor) {
+		return activityPubEventNotAppliedf("forwarding-safe activity actor does not match processing actor")
 	}
 	options := activityPubProcessingOptions{
 		OverrideTimestamps:   true,
@@ -131,7 +146,7 @@ func (s *Server) activityPubDeliveredToAccount(target *models.Account, delivered
 	return &deliveredTo, nil
 }
 
-func activityPubProcessCollectionBody(body []byte) []byte {
+func activityPubCompactCollectionBody(body []byte) []byte {
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return body
@@ -152,14 +167,35 @@ func activityPubProcessCollectionBody(body []byte) []byte {
 		}
 		return body
 	}
-	activityPubPatchForForwarding(raw, compacted)
-	if !activityPubSafeForForwarding(raw, compacted) {
-		delete(compacted, "signature")
-	}
 	if compactedBody, err := json.Marshal(compacted); err == nil {
 		return compactedBody
 	}
 	return body
+}
+
+func activityPubFinalizeCollectionBodyForForwarding(originalBody []byte, compactedBody []byte) []byte {
+	var original map[string]any
+	if err := json.Unmarshal(originalBody, &original); err != nil {
+		return compactedBody
+	}
+	if signature, ok := original["signature"].(map[string]any); !ok || signature == nil {
+		return compactedBody
+	}
+	var compacted map[string]any
+	if err := json.Unmarshal(compactedBody, &compacted); err != nil {
+		return compactedBody
+	}
+	if signature, ok := compacted["signature"].(map[string]any); !ok || signature == nil {
+		return compactedBody
+	}
+	activityPubPatchForForwarding(original, compacted)
+	if !activityPubSafeForForwarding(original, compacted) {
+		delete(compacted, "signature")
+	}
+	if body, err := json.Marshal(compacted); err == nil {
+		return body
+	}
+	return compactedBody
 }
 
 func activityPubPatchForForwarding(original map[string]any, compacted map[string]any) {

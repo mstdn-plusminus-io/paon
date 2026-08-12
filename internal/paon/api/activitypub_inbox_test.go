@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -51,6 +52,99 @@ func TestActivityPubProcessingFailuresReturnForAsynqRetry(t *testing.T) {
 				t.Fatalf("processing error = %v, want errActivityPubEventNotApplied", err)
 			}
 		})
+	}
+}
+
+func TestActivityPubRelayLinkedDataSignatureSurvivesUntilForwardingFinalization(t *testing.T) {
+	privateKey, publicKeyPEM, err := generateAccountKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{cfg: config.Config{
+		Scheme:      "https",
+		WebDomain:   "origin.example",
+		LocalDomain: "origin.example",
+	}}
+	signer := models.Account{
+		Username:   "alice",
+		PrivateKey: sql.NullString{String: privateKey, Valid: true},
+		PublicKey:  publicKeyPEM,
+	}
+	actorURI := "https://origin.example/users/alice"
+	activity := map[string]any{
+		"@context": []any{
+			"https://www.w3.org/ns/activitystreams",
+			map[string]any{
+				"misskey":          "https://misskey-hub.net/ns#",
+				"_misskey_summary": "misskey:_misskey_summary",
+			},
+		},
+		"id":    actorURI + "#updates/1",
+		"type":  "Update",
+		"actor": actorURI,
+		"to":    []any{activityPubPublicIRI},
+		"object": map[string]any{
+			"id":               actorURI,
+			"type":             "Person",
+			"name":             "Alice",
+			"_misskey_summary": "Misskey profile source",
+		},
+	}
+	signed, err := server.signActivityPubLinkedDataSignaturePayload(signer, activity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalBody, err := json.Marshal(signed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, err := activityPublicKey(publicKeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	verificationBody := activityPubCompactCollectionBody(originalBody)
+	verificationPayload, err := parseActivityPayload(verificationBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verificationPayload.Signature.Present {
+		t.Fatal("linked-data signature was removed before actor verification")
+	}
+	if !verifyActivityPubLinkedDataSignature(verificationBody, publicKey) {
+		t.Fatal("compacted Misskey activity did not retain a valid linked-data signature")
+	}
+
+	forwardingBody := activityPubFinalizeCollectionBodyForForwarding(originalBody, verificationBody)
+	forwardingPayload, err := parseActivityPayload(forwardingBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forwardingPayload.Signature.Present {
+		t.Fatal("forwarding-unsafe Misskey activity retained its linked-data signature")
+	}
+	if !strings.EqualFold(forwardingPayload.Actor, actorURI) || string(forwardingPayload.RawBody) != string(forwardingBody) {
+		t.Fatalf("forwarding payload did not retain its authenticated actor/body: actor=%q", forwardingPayload.Actor)
+	}
+	if strings.Contains(string(forwardingPayload.RawBody), `"signature"`) {
+		t.Fatal("forwarding payload RawBody retained a linked-data signature")
+	}
+	if !verificationPayload.Signature.Present || !verifyActivityPubLinkedDataSignature(verificationBody, publicKey) {
+		t.Fatal("forwarding finalization mutated the document reserved for actor verification")
+	}
+
+	var tampered map[string]any
+	if err := json.Unmarshal(verificationBody, &tampered); err != nil {
+		t.Fatal(err)
+	}
+	object, _ := tampered["object"].(map[string]any)
+	object["name"] = "Mallory"
+	tamperedBody, err := json.Marshal(tampered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifyActivityPubLinkedDataSignature(tamperedBody, publicKey) {
+		t.Fatal("tampered relayed activity retained a valid linked-data signature")
 	}
 }
 
