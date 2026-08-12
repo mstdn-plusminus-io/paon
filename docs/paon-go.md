@@ -16,8 +16,9 @@ The web process serves HTML, REST, ActivityPub, SSE, and WebSocket traffic on th
 
 Worker processes subscribe to all Asynq queues by default. Set `ASYNQ_QUEUES`
 to a comma-separated subset of `default`, `push`, `ingress`, `mailers`, and
-`pull` to dedicate a process to specific queues. `REDIS_NAMESPACE` is applied
-automatically, so queue names remain logical:
+`pull` to dedicate a process to specific queues. Mastodon 4.4 removed
+`REDIS_NAMESPACE`, so Paon rejects it at runtime; use the documented namespace
+cutover command before upgrading installations that previously configured it:
 
 ```bash
 PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=push ASYNQ_CONCURRENCY=20 paon
@@ -112,9 +113,10 @@ The standard `docker-compose.yml` defines PostgreSQL, Redis, Meilisearch, Go web
 
 GORM AutoMigrate is disabled. `internal/paon/migrate/schema.sql` is embedded into `paon-migrate`.
 
-- Empty database: the complete compatible schema and seed rows are created atomically.
-- Mastodon 4.3.23 version `20241007071624`: the full schema guard runs without modifying data.
-- Mastodon 4.2.19 version `20230907150100`: `paon-migrate --phase=expand` applies the additive phase without a process fence. After all 4.2 writers are stopped, run `--phase=backfill`, then `--phase=validate`, then `--phase=contract --acknowledge-contract`. A bare `paon-migrate` always defaults to expand; acknowledgment is only a gate and never selects the destructive phase by itself.
+- Empty database: the complete Mastodon 4.4.22-compatible schema and seed rows are created atomically.
+- Mastodon 4.4.22 version `20250627132728`: the full schema guard runs without modifying data.
+- Mastodon 4.3.23 version `20241007071624`: run `paon-migrate --phase=expand`; after all 4.3 writers are stopped run `--phase=backfill`, `--phase=validate`, and `--phase=contract --acknowledge-contract`. Backfill moves the legacy Redis tag-trend source into PostgreSQL; `MIGRATION_SKIP_TAG_TREND_BACKFILL=true` is accepted only after proving those Redis sets are empty or intentionally disposable.
+- Mastodon 4.2.19 version `20230907150100`: the same phase sequence first completes the reviewed 4.3 inventory and then the 4.4 inventory. The acknowledged contract invocation can finish both contracts in one maintenance window. A bare `paon-migrate` always defaults to expand; acknowledgment is only a gate and never selects a destructive phase by itself.
 - Partial or unsupported version: startup and migration are refused.
 
 See `docs/paon-go-schema-compatibility.md` for schema change requirements.
@@ -126,7 +128,7 @@ task check-config:bin
 task meili-deploy:check-config:bin
 ```
 
-`--check-config` validates environment values, PostgreSQL, schema shape/version, Redis, enabled Meilisearch, UI pack assets, locale dictionaries, media tools, and optional integrations before opening the HTTP listener.
+`--check-config` validates environment values, PostgreSQL 13+ and the schema shape/version, Redis 6.2+ for every configured role topology, enabled Meilisearch, UI pack assets, locale dictionaries, media tools, and optional integrations before opening the HTTP listener. The same dependency floors are enforced by readiness and the database administration, migration, and Meilisearch deployment commands.
 
 `/health` is a lightweight liveness endpoint. `/health/ready` checks the deployable runtime and is used by Docker and Compose. Worker-only containers do not require an HTTP health probe.
 

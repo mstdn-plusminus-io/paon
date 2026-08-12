@@ -17,7 +17,9 @@ The former Ruby application, RSpec suite, Sidekiq workers, Rails migrations, and
 ### Toot
 
 - Toot length limit is increase to 5000 characters
-- Support quote (compatible; Mastodon 4.4.x, Misskey, maybe Fedibird)
+- Verify and display remote quotes through Mastodon 4.4's official FEP-044f
+  contract (including the Misskey fallback). Mastodon 4.4 does not expose a
+  quote composer or outgoing quote API.
 
 ### User interfaces
 
@@ -49,6 +51,8 @@ Before developing, you need to install the following software.
 - Go 1.25.x
 - Node.js 22.x
 - Yarn 1.22.x
+- PostgreSQL 13.x or newer
+- Redis 6.2.x or newer
 - libvips 8.16.1 or newer and pkg-config (recommended for fast image processing)
 - FFmpeg and ffprobe
 
@@ -69,7 +73,7 @@ task dev
 
 ## Go runtime
 
-`paon` uses the existing Mastodon PostgreSQL schema and serves the existing built UI assets. The same web listener on port 3000 serves HTML, REST, ActivityPub, SSE, and WebSocket traffic; the worker role runs Asynq jobs.
+`paon` uses the existing Mastodon PostgreSQL schema and serves the existing built UI assets. Mastodon 4.4 compatibility requires PostgreSQL 13 or newer and Redis 6.2 or newer; startup and readiness checks reject older servers. The same web listener on port 3000 serves HTML, REST, ActivityPub, SSE, and WebSocket traffic; the worker role runs Asynq jobs.
 
 Build and validate the local binaries:
 
