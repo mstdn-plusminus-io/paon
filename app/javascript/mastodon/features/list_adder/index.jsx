@@ -1,6 +1,6 @@
 import PropTypes from 'prop-types';
 
-import { injectIntl } from 'react-intl';
+import { FormattedMessage, injectIntl } from 'react-intl';
 
 import ImmutablePropTypes from 'react-immutable-proptypes';
 import ImmutablePureComponent from 'react-immutable-pure-component';
@@ -8,6 +8,7 @@ import { connect } from 'react-redux';
 import { createSelector } from 'reselect';
 
 import { setupListAdder, resetListAdder } from '../../actions/lists';
+import { LoadingIndicator } from '../../components/loading_indicator';
 import NewListForm from '../lists/components/new_list_form';
 
 import Account from './components/account';
@@ -24,6 +25,9 @@ const getOrderedLists = createSelector([state => state.get('lists')], lists => {
 
 const mapStateToProps = state => ({
   listIds: getOrderedLists(state).map(list=>list.get('id')),
+  isLoading: state.getIn(['listAdder', 'lists', 'isLoading']),
+  loaded: state.getIn(['listAdder', 'lists', 'loaded']),
+  error: state.getIn(['listAdder', 'lists', 'error']),
 });
 
 const mapDispatchToProps = dispatch => ({
@@ -40,6 +44,9 @@ class ListAdder extends ImmutablePureComponent {
     onInitialize: PropTypes.func.isRequired,
     onReset: PropTypes.func.isRequired,
     listIds: ImmutablePropTypes.list.isRequired,
+    isLoading: PropTypes.bool.isRequired,
+    loaded: PropTypes.bool.isRequired,
+    error: PropTypes.bool.isRequired,
   };
 
   componentDidMount () {
@@ -53,7 +60,7 @@ class ListAdder extends ImmutablePureComponent {
   }
 
   render () {
-    const { accountId, listIds } = this.props;
+    const { accountId, error, isLoading, listIds, loaded } = this.props;
 
     return (
       <div className='modal-root__modal list-adder'>
@@ -64,7 +71,14 @@ class ListAdder extends ImmutablePureComponent {
         <NewListForm />
 
 
-        <div className='list-adder__lists'>
+        <div className='list-adder__lists' aria-live='polite' aria-busy={isLoading}>
+          {isLoading && listIds.isEmpty() && <LoadingIndicator />}
+          {!isLoading && loaded && listIds.isEmpty() && !error && (
+            <div className='list-adder__empty'><FormattedMessage id='empty_column.lists' defaultMessage="You don't have any lists yet. When you create one, it will show up here." /></div>
+          )}
+          {error && (
+            <div className='list-adder__empty'><FormattedMessage id='lists.load_error' defaultMessage='The list could not be loaded. Please try again.' /></div>
+          )}
           {listIds.map(ListId => <List key={ListId} listId={ListId} />)}
         </div>
       </div>

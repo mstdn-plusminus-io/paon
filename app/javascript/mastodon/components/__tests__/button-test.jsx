@@ -1,3 +1,5 @@
+import { IntlProvider } from 'react-intl';
+
 import { render, fireEvent, screen } from '@testing-library/react';
 import renderer from 'react-test-renderer';
 
@@ -33,6 +35,24 @@ describe('<Button />', () => {
     fireEvent.click(screen.getByText('button'));
 
     expect(handler.mock.calls.length).toEqual(0);
+  });
+
+  it('keeps focus but does not handle click events while loading', () => {
+    const handler = jest.fn();
+    render(
+      <IntlProvider locale='en'>
+        <Button onClick={handler} loading>Publish</Button>
+      </IntlProvider>,
+    );
+    const button = screen.getByRole('button');
+
+    button.focus();
+    fireEvent.click(button);
+
+    expect(button).toHaveFocus();
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it('renders a disabled attribute if props.disabled given', () => {

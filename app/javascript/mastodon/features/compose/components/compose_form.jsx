@@ -11,6 +11,7 @@ import { length } from 'stringz';
 
 import LockIcon from '@/material-icons/400-24px/lock.svg?react';
 import { Icon }  from 'mastodon/components/icon';
+import { missingAltTextModal } from 'mastodon/initial_state';
 import { encodeAme } from 'mastodon/utils/kaiwai';
 
 import api from '../../../api';
@@ -27,13 +28,13 @@ import LanguageDropdown from '../containers/language_dropdown_container';
 import PollButtonContainer from '../containers/poll_button_container';
 import PollFormContainer from '../containers/poll_form_container';
 import PrivacyDropdownContainer from '../containers/privacy_dropdown_container';
-import QuoteIndicatorContainer from '../containers/quote_indicator_container';
 import ReplyIndicatorContainer from '../containers/reply_indicator_container';
 import SpoilerButtonContainer from '../containers/spoiler_button_container';
 import UploadButtonContainer from '../containers/upload_button_container';
 import UploadFormContainer from '../containers/upload_form_container';
 import WarningContainer from '../containers/warning_container';
 import { countableText } from '../util/counter';
+import { shouldFocusSpoilerOnToggle } from '../util/focus';
 
 import CharacterCounter from './character_counter';
 
@@ -77,6 +78,7 @@ class ComposeForm extends ImmutablePureComponent {
     onPickEmoji: PropTypes.func.isRequired,
     autoFocus: PropTypes.bool,
     anyMedia: PropTypes.bool,
+    missingAltTextMediaId: PropTypes.string,
     isInReply: PropTypes.bool,
     singleColumn: PropTypes.bool,
     lang: PropTypes.string,
@@ -86,6 +88,7 @@ class ComposeForm extends ImmutablePureComponent {
     maxPollOptionCharacters: PropTypes.number,
     showClose: PropTypes.bool,
     onClose: PropTypes.func,
+    redirectOnSuccess: PropTypes.bool,
   };
 
   static defaultProps = {
@@ -139,7 +142,8 @@ class ComposeForm extends ImmutablePureComponent {
       return;
     }
 
-    this.props.onSubmit(this.context.router ? this.context.router.history : null);
+    const missingAltTextMediaId = missingAltTextModal && this.props.privacy !== 'direct' ? this.props.missingAltTextMediaId : null;
+    this.props.onSubmit(this.context.router ? this.context.router.history : null, missingAltTextMediaId);
 
     if (e) {
       e.preventDefault();
@@ -225,7 +229,9 @@ class ComposeForm extends ImmutablePureComponent {
       this.autosuggestTextarea.textarea.focus();
       this.autosuggestTextarea.textarea.setSelectionRange(0, 0);
     } else if (this.props.spoiler !== prevProps.spoiler) {
-      if (this.props.spoiler && (localStorage.plusminus_config_custom_spoiler_button === 'visible' && !JSON.parse(localStorage.plusminus_config_custom_spoiler_buttons).includes(this.props.spoilerText))) {
+      const mediaJustAdded = this.props.anyMedia && !prevProps.anyMedia;
+
+      if (shouldFocusSpoilerOnToggle(this.props.spoiler, mediaJustAdded) && (localStorage.plusminus_config_custom_spoiler_button === 'visible' && !JSON.parse(localStorage.plusminus_config_custom_spoiler_buttons).includes(this.props.spoilerText))) {
         this.spoilerText.input.focus();
       } else if (prevProps.spoiler) {
         this.autosuggestTextarea.textarea.focus();
@@ -300,6 +306,7 @@ class ComposeForm extends ImmutablePureComponent {
             type='submit'
             text={publishText}
             disabled={!this.canSubmit()}
+            loading={this.props.isSubmitting}
             block
           />
         </div>
@@ -330,7 +337,6 @@ class ComposeForm extends ImmutablePureComponent {
         <WarningContainer />
 
         <ReplyIndicatorContainer />
-        <QuoteIndicatorContainer />
 
         <div className='compose-form__container'>
           <div className='compose-form__input-wrapper'>

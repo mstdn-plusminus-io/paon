@@ -63,6 +63,7 @@ import { textForScreenReader, defaultMediaVisibility } from '../../components/st
 import StatusContainer from '../../containers/status_container';
 import { boostModal, deleteModal } from '../../initial_state';
 import { makeGetStatus, makeGetPictureInPicture } from '../../selectors';
+import { discardDraftModalProps, hasComposeDraft } from '../../utils/discard_draft';
 import Column from '../ui/components/column';
 import { attachFullscreenListener, detachFullscreenListener, isFullscreen } from '../ui/util/fullscreen';
 
@@ -78,8 +79,6 @@ const messages = defineMessages({
   hideAll: { id: 'status.show_less_all', defaultMessage: 'Show less for all' },
   statusTitleWithAttachments: { id: 'status.title.with_attachments', defaultMessage: '{user} posted {attachmentCount, plural, one {an attachment} other {# attachments}}' },
   detailedStatus: { id: 'status.detailed_status', defaultMessage: 'Detailed conversation view' },
-  replyConfirm: { id: 'confirmations.reply.confirm', defaultMessage: 'Reply' },
-  replyMessage: { id: 'confirmations.reply.message', defaultMessage: 'Replying now will overwrite the message you are currently composing. Are you sure you want to proceed?' },
 });
 
 const makeMapStateToProps = () => {
@@ -156,7 +155,8 @@ const makeMapStateToProps = () => {
       status,
       ancestorsIds,
       descendantsIds,
-      askReplyConfirmation: state.getIn(['compose', 'text']).trim().length !== 0,
+      askReplyConfirmation: hasComposeDraft(state),
+      isEditing: Boolean(state.getIn(['compose', 'id'])),
       domain: state.getIn(['meta', 'domain']),
       pictureInPicture: getPictureInPicture(state, { id: props.params.statusId }),
     };
@@ -200,6 +200,7 @@ class Status extends ImmutablePureComponent {
     descendantsIds: ImmutablePropTypes.list.isRequired,
     intl: PropTypes.object.isRequired,
     askReplyConfirmation: PropTypes.bool,
+    isEditing: PropTypes.bool,
     multiColumn: PropTypes.bool,
     domain: PropTypes.string.isRequired,
     pictureInPicture: ImmutablePropTypes.contains({
@@ -269,7 +270,7 @@ class Status extends ImmutablePureComponent {
   };
 
   handleReplyClick = (status) => {
-    const { askReplyConfirmation, dispatch, intl } = this.props;
+    const { askReplyConfirmation, dispatch, intl, isEditing } = this.props;
     const { signedIn } = this.props.identity;
 
     if (signedIn) {
@@ -277,37 +278,7 @@ class Status extends ImmutablePureComponent {
         dispatch(openModal({
           modalType: 'CONFIRM',
           modalProps: {
-            message: intl.formatMessage(messages.replyMessage),
-            confirm: intl.formatMessage(messages.replyConfirm),
-            onConfirm: () => dispatch(replyCompose(status, this.context.router.history)),
-          },
-        }));
-      } else {
-        dispatch(replyCompose(status, this.context.router.history));
-      }
-    } else {
-      dispatch(openModal({
-        modalType: 'INTERACTION',
-        modalProps: {
-          type: 'reply',
-          accountId: status.getIn(['account', 'id']),
-          url: status.get('uri'),
-        },
-      }));
-    }
-  };
-
-  handleQuoteClick = (status) => {
-    const { askReplyConfirmation, dispatch, intl } = this.props;
-    const { signedIn } = this.props.identity;
-
-    if (signedIn) {
-      if (askReplyConfirmation) {
-        dispatch(openModal({
-          modalType: 'CONFIRM',
-          modalProps: {
-            message: intl.formatMessage(messages.replyMessage),
-            confirm: intl.formatMessage(messages.replyConfirm),
+            ...discardDraftModalProps(intl, isEditing),
             onConfirm: () => dispatch(replyCompose(status, this.context.router.history)),
           },
         }));
@@ -382,7 +353,19 @@ class Status extends ImmutablePureComponent {
   };
 
   handleEditClick = (status, history) => {
-    this.props.dispatch(editStatus(status.get('id'), history));
+    const { askReplyConfirmation, dispatch, intl, isEditing } = this.props;
+
+    if (askReplyConfirmation) {
+      dispatch(openModal({
+        modalType: 'CONFIRM',
+        modalProps: {
+          ...discardDraftModalProps(intl, isEditing),
+          onConfirm: () => dispatch(editStatus(status.get('id'), history)),
+        },
+      }));
+    } else {
+      dispatch(editStatus(status.get('id'), history));
+    }
   };
 
   handleDirectClick = (account, router) => {
@@ -532,6 +515,10 @@ class Status extends ImmutablePureComponent {
 
   handleHotkeyToggleSensitive = () => {
     this.handleToggleMediaVisibility();
+  };
+
+  handleHotkeyTranslate = () => {
+    this.handleTranslate(this.props.status);
   };
 
   handleMoveUp = id => {
@@ -696,6 +683,7 @@ class Status extends ImmutablePureComponent {
       toggleHidden: this.handleHotkeyToggleHidden,
       toggleSensitive: this.handleHotkeyToggleSensitive,
       openMedia: this.handleHotkeyOpenMedia,
+      onTranslate: this.handleHotkeyTranslate,
     };
 
     return (
@@ -731,7 +719,6 @@ class Status extends ImmutablePureComponent {
                   key={`action-bar-${status.get('id')}`}
                   status={status}
                   onReply={this.handleReplyClick}
-                  onQuote={this.handleQuoteClick}
                   onFavourite={this.handleFavouriteClick}
                   onReblog={this.handleReblogClick}
                   onBookmark={this.handleBookmarkClick}

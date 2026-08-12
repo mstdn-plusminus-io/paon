@@ -18,6 +18,10 @@ export const ACCOUNT_UNFOLLOW_REQUEST = 'ACCOUNT_UNFOLLOW_REQUEST';
 export const ACCOUNT_UNFOLLOW_SUCCESS = 'ACCOUNT_UNFOLLOW_SUCCESS';
 export const ACCOUNT_UNFOLLOW_FAIL    = 'ACCOUNT_UNFOLLOW_FAIL';
 
+export const ACCOUNT_REMOVE_FROM_FOLLOWERS_REQUEST = 'ACCOUNT_REMOVE_FROM_FOLLOWERS_REQUEST';
+export const ACCOUNT_REMOVE_FROM_FOLLOWERS_SUCCESS = 'ACCOUNT_REMOVE_FROM_FOLLOWERS_SUCCESS';
+export const ACCOUNT_REMOVE_FROM_FOLLOWERS_FAIL    = 'ACCOUNT_REMOVE_FROM_FOLLOWERS_FAIL';
+
 export const ACCOUNT_BLOCK_REQUEST = 'ACCOUNT_BLOCK_REQUEST';
 export const ACCOUNT_BLOCK_SUCCESS = 'ACCOUNT_BLOCK_SUCCESS';
 export const ACCOUNT_BLOCK_FAIL    = 'ACCOUNT_BLOCK_FAIL';
@@ -220,6 +224,31 @@ export function unfollowAccountFail(error) {
     type: ACCOUNT_UNFOLLOW_FAIL,
     error,
     skipLoading: true,
+  };
+}
+
+export function removeAccountFromFollowers(id) {
+  return dispatch => {
+    dispatch({
+      type: ACCOUNT_REMOVE_FROM_FOLLOWERS_REQUEST,
+      id,
+      skipLoading: true,
+    });
+
+    api().post(`/api/v1/accounts/${id}/remove_from_followers`).then(response => {
+      dispatch({
+        type: ACCOUNT_REMOVE_FROM_FOLLOWERS_SUCCESS,
+        relationship: response.data,
+        skipLoading: true,
+      });
+    }).catch(error => {
+      dispatch({
+        type: ACCOUNT_REMOVE_FROM_FOLLOWERS_FAIL,
+        id,
+        error,
+        skipLoading: true,
+      });
+    });
   };
 }
 

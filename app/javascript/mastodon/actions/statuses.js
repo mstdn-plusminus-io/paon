@@ -47,7 +47,7 @@ export function fetchStatusRequest(id, skipLoading) {
   };
 }
 
-export function fetchStatus(id, forceFetch = false, skipContext = false) {
+export function fetchStatus(id, forceFetch = false, skipContext = false, parentQuotePostId = null) {
   return (dispatch, getState) => {
     const skipLoading = !forceFetch && getState().getIn(['statuses', id], null) !== null;
 
@@ -65,7 +65,11 @@ export function fetchStatus(id, forceFetch = false, skipContext = false) {
       dispatch(importFetchedStatus(response.data));
       dispatch(fetchStatusSuccess(skipLoading));
     }).catch(error => {
-      dispatch(fetchStatusFail(id, error, skipLoading));
+      dispatch(fetchStatusFail(id, error, skipLoading, parentQuotePostId));
+
+      if ((error?.response?.status ?? error?.status) === 404) {
+        dispatch(deleteFromTimelines(id));
+      }
     });
   };
 }
@@ -77,11 +81,13 @@ export function fetchStatusSuccess(skipLoading) {
   };
 }
 
-export function fetchStatusFail(id, error, skipLoading) {
+export function fetchStatusFail(id, error, skipLoading, parentQuotePostId = null) {
   return {
     type: STATUS_FETCH_FAIL,
     id,
     error,
+    parentQuotePostId,
+    status: error?.response?.status ?? error?.status,
     skipLoading,
     skipAlert: true,
   };

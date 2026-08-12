@@ -35,9 +35,9 @@ export function clearSearch() {
   };
 }
 
-export function submitSearch(type) {
+export function submitSearch(type, query) {
   return (dispatch, getState) => {
-    const value    = getState().getIn(['search', 'value']);
+    const value    = (query ?? getState().getIn(['search', 'value'])).trim();
     const signedIn = !!getState().getIn(['meta', 'me']);
 
     if (value.length === 0) {
@@ -94,16 +94,25 @@ export function fetchSearchFail(error) {
   };
 }
 
-function setLibraryIfNeeded(value) {
-  if (searchEnabled && !value.trim().startsWith("@") && !value.trim().startsWith("#") && !value.includes("in:")) {
-    value += " in:library";
+export function setLibraryIfNeeded(value) {
+  const trimmedValue = value.trim();
+  const hasScopeOperator = /(?:^|\s)in:(?:all|library|public|bookmark)\b/i.test(trimmedValue);
+
+  if (searchEnabled && !trimmedValue.startsWith('@') && !trimmedValue.startsWith('#') && !hasScopeOperator) {
+    return `${trimmedValue} in:library`;
   }
-  return value;
+
+  return trimmedValue;
 }
+
+export const searchExpansionOffset = size => Math.max(0, size - 1);
+
+export const searchResultsHaveMore = size =>
+  size > 10 && size % 10 === 1;
 
 export const expandSearch = type => (dispatch, getState) => {
   const value  = getState().getIn(['search', 'value']);
-  const offset = getState().getIn(['search', 'results', type]).size - 1;
+  const offset = searchExpansionOffset(getState().getIn(['search', 'results', type]).size);
 
   dispatch(expandSearchRequest(type));
 
@@ -194,10 +203,10 @@ export const clickSearchResult = (q, type) => (dispatch, getState) => {
   dispatch(updateSearchHistory(current));
 };
 
-export const forgetSearchResult = q => (dispatch, getState) => {
+export const forgetSearchResult = ({ q, type }) => (dispatch, getState) => {
   const previous = getState().getIn(['search', 'recent']);
   const me = getState().getIn(['meta', 'me']);
-  const current = previous.filterNot(result => result.get('q') === q);
+  const current = previous.filterNot(result => result.get('q') === q && result.get('type') === type);
 
   searchHistory.set(me, current.toJS());
   dispatch(updateSearchHistory(current));

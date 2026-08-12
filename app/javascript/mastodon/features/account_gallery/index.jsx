@@ -21,6 +21,7 @@ import HeaderContainer from '../account_timeline/containers/header_container';
 import Column from '../ui/components/column';
 
 import MediaItem from './components/media_item';
+import { shouldLoadMoreMedia } from './utils';
 
 const mapStateToProps = (state, { params: { acct, id } }) => {
   const accountId = id || state.getIn(['accounts_map', normalizeForLookup(acct)]);
@@ -97,6 +98,10 @@ class AccountGallery extends ImmutablePureComponent {
     } else {
       dispatch(lookupAccount(acct));
     }
+
+    if (!this.props.multiColumn) {
+      document.addEventListener('scroll', this.handleDocumentScroll, { passive: true });
+    }
   }
 
   componentDidUpdate (prevProps) {
@@ -107,6 +112,18 @@ class AccountGallery extends ImmutablePureComponent {
     } else if (prevProps.params.acct !== acct) {
       dispatch(lookupAccount(acct));
     }
+
+    if (prevProps.multiColumn !== this.props.multiColumn) {
+      if (this.props.multiColumn) {
+        document.removeEventListener('scroll', this.handleDocumentScroll);
+      } else {
+        document.addEventListener('scroll', this.handleDocumentScroll, { passive: true });
+      }
+    }
+  }
+
+  componentWillUnmount () {
+    document.removeEventListener('scroll', this.handleDocumentScroll);
   }
 
   handleScrollToBottom = () => {
@@ -117,10 +134,17 @@ class AccountGallery extends ImmutablePureComponent {
 
   handleScroll = e => {
     const { scrollTop, scrollHeight, clientHeight } = e.target;
-    const offset = scrollHeight - scrollTop - clientHeight;
 
-    if (150 > offset && !this.props.isLoading) {
+    if (shouldLoadMoreMedia({ scrollTop, scrollHeight, clientHeight, isLoading: this.props.isLoading })) {
       this.handleScrollToBottom();
+    }
+  };
+
+  handleDocumentScroll = () => {
+    const scrollingElement = document.scrollingElement || document.documentElement;
+
+    if (scrollingElement) {
+      this.handleScroll({ target: scrollingElement });
     }
   };
 
@@ -191,11 +215,11 @@ class AccountGallery extends ImmutablePureComponent {
     }
 
     return (
-      <Column>
+      <Column bindToDocument={!multiColumn}>
         <ColumnBackButton multiColumn={multiColumn} />
 
         <ScrollContainer scrollKey='account_gallery'>
-          <div className='scrollable scrollable--flex' onScroll={this.handleScroll}>
+          <div className='scrollable scrollable--flex' onScroll={multiColumn ? this.handleScroll : undefined}>
             <HeaderContainer accountId={this.props.accountId} />
 
             {(suspended || blockedBy) ? (

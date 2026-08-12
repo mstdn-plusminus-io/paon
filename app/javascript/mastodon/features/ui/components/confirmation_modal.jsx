@@ -9,10 +9,12 @@ class ConfirmationModal extends PureComponent {
 
   static propTypes = {
     message: PropTypes.node.isRequired,
+    title: PropTypes.node,
     confirm: PropTypes.string.isRequired,
     onClose: PropTypes.func.isRequired,
     onConfirm: PropTypes.func.isRequired,
     secondary: PropTypes.string,
+    cancel: PropTypes.string,
     onSecondary: PropTypes.func,
     closeWhenConfirm: PropTypes.bool,
     intl: PropTypes.object.isRequired,
@@ -47,17 +49,18 @@ class ConfirmationModal extends PureComponent {
   };
 
   render () {
-    const { message, confirm, secondary } = this.props;
+    const { message, title, confirm, secondary, cancel } = this.props;
 
     return (
       <div className='modal-root__modal confirmation-modal'>
         <div className='confirmation-modal__container'>
-          {message}
+          {title && <h1>{title}</h1>}
+          <p>{message}</p>
         </div>
 
         <div className='confirmation-modal__action-bar'>
           <Button onClick={this.handleCancel} className='confirmation-modal__cancel-button'>
-            <FormattedMessage id='confirmation_modal.cancel' defaultMessage='Cancel' />
+            {cancel || <FormattedMessage id='confirmation_modal.cancel' defaultMessage='Cancel' />}
           </Button>
           {secondary !== undefined && (
             <Button text={secondary} onClick={this.handleSecondary} className='confirmation-modal__secondary-button' />

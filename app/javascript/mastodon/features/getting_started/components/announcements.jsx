@@ -1,7 +1,7 @@
 import PropTypes from 'prop-types';
 import { PureComponent } from 'react';
 
-import { defineMessages, injectIntl, FormattedMessage, FormattedDate } from 'react-intl';
+import { defineMessages, injectIntl, FormattedMessage } from 'react-intl';
 
 import classNames from 'classnames';
 
@@ -20,6 +20,8 @@ import EmojiPickerDropdown from 'mastodon/features/compose/containers/emoji_pick
 import { unicodeMapping } from 'mastodon/features/emoji/emoji_unicode_mapping_light';
 import { autoPlayGif, reduceMotion, disableSwiping, mascot } from 'mastodon/initial_state';
 import { assetHost } from 'mastodon/utils/config';
+
+import { AnnouncementTimestamp } from './announcement_timestamp';
 
 const messages = defineMessages({
   close: { id: 'lightbox.close', defaultMessage: 'Close' },
@@ -328,19 +330,12 @@ class Announcement extends ImmutablePureComponent {
   render () {
     const { announcement } = this.props;
     const { unread } = this.state;
-    const startsAt = announcement.get('starts_at') && new Date(announcement.get('starts_at'));
-    const endsAt = announcement.get('ends_at') && new Date(announcement.get('ends_at'));
-    const now = new Date();
-    const hasTimeRange = startsAt && endsAt;
-    const skipYear = hasTimeRange && startsAt.getFullYear() === endsAt.getFullYear() && endsAt.getFullYear() === now.getFullYear();
-    const skipEndDate = hasTimeRange && startsAt.getDate() === endsAt.getDate() && startsAt.getMonth() === endsAt.getMonth() && startsAt.getFullYear() === endsAt.getFullYear();
-    const skipTime = announcement.get('all_day');
 
     return (
       <div className='announcements__item'>
         <strong className='announcements__item__range'>
           <FormattedMessage id='announcement.announcement' defaultMessage='Announcement' />
-          {hasTimeRange && <span> · <FormattedDate value={startsAt} hour12={false} year={(skipYear || startsAt.getFullYear() === now.getFullYear()) ? undefined : 'numeric'} month='short' day='2-digit' hour={skipTime ? undefined : '2-digit'} minute={skipTime ? undefined : '2-digit'} /> - <FormattedDate value={endsAt} hour12={false} year={(skipYear || endsAt.getFullYear() === now.getFullYear()) ? undefined : 'numeric'} month={skipEndDate ? undefined : 'short'} day={skipEndDate ? undefined : '2-digit'} hour={skipTime ? undefined : '2-digit'} minute={skipTime ? undefined : '2-digit'} /></span>}
+          <span> · <AnnouncementTimestamp announcement={announcement} /></span>
         </strong>
 
         <Content announcement={announcement} />

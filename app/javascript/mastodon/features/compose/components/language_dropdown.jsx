@@ -15,6 +15,8 @@ import TranslateIcon from '@/material-icons/400-24px/translate.svg?react';
 import { Icon } from 'mastodon/components/icon';
 import { languages as preloadedLanguages } from 'mastodon/initial_state';
 
+import { debouncedGuess, displayLanguageName } from '../util/language_detection';
+
 const messages = defineMessages({
   changeLanguage: { id: 'compose.language.change', defaultMessage: 'Change language' },
   search: { id: 'compose.language.search', defaultMessage: 'Search languages...' },
@@ -27,6 +29,7 @@ class LanguageDropdownMenu extends PureComponent {
 
   static propTypes = {
     value: PropTypes.string.isRequired,
+    guess: PropTypes.string,
     frequentlyUsedLanguages: PropTypes.arrayOf(PropTypes.string).isRequired,
     onClose: PropTypes.func.isRequired,
     onChange: PropTypes.func.isRequired,
@@ -81,14 +84,16 @@ class LanguageDropdownMenu extends PureComponent {
   };
 
   search () {
-    const { languages, value, frequentlyUsedLanguages } = this.props;
+    const { languages, value, frequentlyUsedLanguages, guess } = this.props;
     const { searchValue } = this.state;
 
     if (searchValue === '') {
       return [...languages].sort((a, b) => {
-        // Push current selection to the top of the list
-
-        if (a[0] === value) {
+        if (guess && a[0] === guess) {
+          return -1;
+        } else if (guess && b[0] === guess) {
+          return 1;
+        } else if (a[0] === value) {
           return -1;
         } else if (b[0] === value) {
           return 1;
@@ -213,11 +218,12 @@ class LanguageDropdownMenu extends PureComponent {
   };
 
   renderItem = lang => {
-    const { value } = this.props;
+    const { value, intl } = this.props;
+    const commonName = displayLanguageName(intl.locale, lang[0], lang[1]);
 
     return (
       <div key={lang[0]} role='option' tabIndex={0} data-index={lang[0]} className={classNames('language-dropdown__dropdown__results__item', { active: lang[0] === value })} aria-selected={lang[0] === value} onClick={this.handleClick} onKeyDown={this.handleKeyDown}>
-        <span className='language-dropdown__dropdown__results__item__native-name' lang={lang[0]}>{lang[2]}</span> <span className='language-dropdown__dropdown__results__item__common-name'>({lang[1]})</span>
+        <span className='language-dropdown__dropdown__results__item__native-name' lang={lang[0]}>{lang[2]}</span> <span className='language-dropdown__dropdown__results__item__common-name'>({commonName})</span>
       </div>
     );
   };
@@ -248,6 +254,7 @@ class LanguageDropdown extends PureComponent {
 
   static propTypes = {
     value: PropTypes.string,
+    text: PropTypes.string,
     frequentlyUsedLanguages: PropTypes.arrayOf(PropTypes.string),
     intl: PropTypes.object.isRequired,
     onChange: PropTypes.func,
@@ -257,6 +264,34 @@ class LanguageDropdown extends PureComponent {
   state = {
     open: false,
     placement: 'bottom',
+    guess: '',
+  };
+
+  componentDidMount () {
+    this.updateLanguageGuess(this.props.text);
+  }
+
+  componentDidUpdate (prevProps) {
+    if (prevProps.text !== this.props.text) {
+      this.updateLanguageGuess(this.props.text);
+    }
+  }
+
+  componentWillUnmount () {
+    debouncedGuess.cancel();
+  }
+
+  setGuess = guess => {
+    this.setState({ guess });
+  };
+
+  updateLanguageGuess = text => {
+    if (text?.length > 20) {
+      debouncedGuess(text, this.setGuess);
+    } else {
+      debouncedGuess.cancel();
+      this.setState({ guess: '' });
+    }
   };
 
   handleToggle = () => {
@@ -315,14 +350,15 @@ class LanguageDropdown extends PureComponent {
 
   render () {
     const { value, intl, frequentlyUsedLanguages } = this.props;
-    const { open, placement } = this.state;
+    const { open, placement, guess } = this.state;
     const current = preloadedLanguages.find(lang => lang[0] === value) || [];
+    const currentName = displayLanguageName(intl.locale, value, current[1] || current[2] || value?.toUpperCase());
 
     return (
       <div className={classNames('privacy-dropdown', placement, { active: open })} ref={this.setTargetRef} onKeyDown={this.handleKeyDown}>
         <button
           type='button'
-          className={classNames('dropdown-button', { active: open })}
+          className={classNames('dropdown-button', { active: open, warning: guess !== '' && guess !== value })}
           title={intl.formatMessage(messages.changeLanguage)}
           aria-expanded={open}
           onClick={this.handleToggle}
@@ -330,7 +366,7 @@ class LanguageDropdown extends PureComponent {
           onKeyDown={this.handleButtonKeyDown}
         >
           <Icon icon={TranslateIcon} />
-          <span className='dropdown-button__label'>{current[2] || value?.toUpperCase()}</span>
+          <span className='dropdown-button__label'>{currentName}</span>
         </button>
 
         <Overlay show={open} placement={'bottom'} flip target={this.findTarget} popperConfig={{ strategy: 'fixed', onFirstUpdate: this.handleOverlayEnter }}>
@@ -339,6 +375,7 @@ class LanguageDropdown extends PureComponent {
               <div className={`dropdown-animation language-dropdown__dropdown ${placement}`} >
                 <LanguageDropdownMenu
                   value={value}
+                  guess={guess}
                   frequentlyUsedLanguages={frequentlyUsedLanguages}
                   onClose={this.handleClose}
                   onChange={this.handleChange}

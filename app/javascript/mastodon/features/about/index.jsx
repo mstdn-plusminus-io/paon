@@ -21,6 +21,8 @@ import LinkFooter from 'mastodon/features/ui/components/link_footer';
 const messages = defineMessages({
   title: { id: 'column.about', defaultMessage: 'About' },
   rules: { id: 'about.rules', defaultMessage: 'Server rules' },
+  defaultLocale: { id: 'about.default_locale', defaultMessage: 'Default' },
+  languageLabel: { id: 'about.language_label', defaultMessage: 'Language' },
   blocks: { id: 'about.blocks', defaultMessage: 'Moderated servers' },
   silenced: { id: 'about.domain_blocks.silenced.title', defaultMessage: 'Limited' },
   silencedExplanation: { id: 'about.domain_blocks.silenced.explanation', defaultMessage: 'You will generally not see profiles and content from this server, unless you explicitly look it up or opt into it by following.' },
@@ -42,6 +44,7 @@ const severityMessages = {
 
 const mapStateToProps = state => ({
   server: state.getIn(['server', 'server']),
+  locale: state.getIn(['meta', 'locale']),
   extendedDescription: state.getIn(['server', 'extendedDescription']),
   domainBlocks: state.getIn(['server', 'domainBlocks']),
 });
@@ -89,6 +92,7 @@ class About extends PureComponent {
 
   static propTypes = {
     server: ImmutablePropTypes.map,
+    locale: PropTypes.string,
     extendedDescription: ImmutablePropTypes.map,
     domainBlocks: ImmutablePropTypes.contains({
       isLoading: PropTypes.bool,
@@ -100,10 +104,23 @@ class About extends PureComponent {
     multiColumn: PropTypes.bool,
   };
 
+  state = {
+    ruleLocale: this.props.locale,
+  };
+
   componentDidMount () {
     const { dispatch } = this.props;
     dispatch(fetchServer());
     dispatch(fetchExtendedDescription());
+  }
+
+  componentDidUpdate (prevProps) {
+    const { locale } = this.props;
+    const { ruleLocale } = this.state;
+
+    if (locale !== prevProps.locale && (!ruleLocale || ruleLocale === prevProps.locale)) {
+      this.setState({ ruleLocale: locale });
+    }
   }
 
   handleDomainBlocksOpen = () => {
@@ -111,9 +128,29 @@ class About extends PureComponent {
     dispatch(fetchDomainBlocks());
   };
 
+  handleRuleLocaleChange = ({ currentTarget }) => {
+    this.setState({ ruleLocale: currentTarget.value });
+  };
+
   render () {
-    const { multiColumn, intl, server, extendedDescription, domainBlocks } = this.props;
+    const { multiColumn, intl, server, locale, extendedDescription, domainBlocks } = this.props;
+    const { ruleLocale } = this.state;
     const isLoading = server.get('isLoading');
+    const rules = server.get('rules', ImmutableList());
+    const availableRuleLocales = new Set();
+    rules.forEach(rule => rule.get('translations')?.keySeq().forEach(value => availableRuleLocales.add(value)));
+    const requestedRuleLocale = ruleLocale || locale || 'default';
+    const genericRuleLocale = requestedRuleLocale.split('-')[0];
+    const selectedRuleLocale = requestedRuleLocale === 'default' ? 'default' : (
+      availableRuleLocales.has(requestedRuleLocale) ? requestedRuleLocale : (
+        availableRuleLocales.has(genericRuleLocale) ? genericRuleLocale : 'default'
+      )
+    );
+    const sortedRuleLocales = [...availableRuleLocales].sort((left, right) => left.localeCompare(right, intl.locale));
+    let languageNames;
+    if (typeof Intl.DisplayNames === 'function') {
+      languageNames = new Intl.DisplayNames(intl.locale, { type: 'language' });
+    }
 
     return (
       <Column bindToDocument={!multiColumn} label={intl.formatMessage(messages.title)}>
@@ -162,16 +199,34 @@ class About extends PureComponent {
           </Section>
 
           <Section title={intl.formatMessage(messages.rules)}>
-            {!isLoading && (server.get('rules', ImmutableList()).isEmpty() ? (
+            {!isLoading && (rules.isEmpty() ? (
               <p><FormattedMessage id='about.not_available' defaultMessage='This information has not been made available on this server.' /></p>
             ) : (
-              <ol className='rules-list'>
-                {server.get('rules').map(rule => (
-                  <li key={rule.get('id')}>
-                    <span className='rules-list__text'>{rule.get('text')}</span>
-                  </li>
-                ))}
-              </ol>
+              <>
+                <ol className='rules-list'>
+                  {rules.map(rule => {
+                    const text = selectedRuleLocale === 'default' ? rule.get('text') : rule.getIn(['translations', selectedRuleLocale, 'text'], rule.get('text'));
+                    const hint = selectedRuleLocale === 'default' ? rule.get('hint') : rule.getIn(['translations', selectedRuleLocale, 'hint'], rule.get('hint'));
+
+                    return (
+                      <li key={rule.get('id')}>
+                        <span className='rules-list__text'>{text}</span>
+                        {hint?.length > 0 && <span className='rules-list__hint'>{hint}</span>}
+                      </li>
+                    );
+                  })}
+                </ol>
+
+                <div className='rules-languages'>
+                  <label htmlFor='about-rules-language'>{intl.formatMessage(messages.languageLabel)}</label>
+                  <select id='about-rules-language' value={selectedRuleLocale} onBlur={this.handleRuleLocaleChange} onChange={this.handleRuleLocaleChange}>
+                    <option value='default'>{intl.formatMessage(messages.defaultLocale)}</option>
+                    {sortedRuleLocales.map(value => (
+                      <option key={value} value={value}>{languageNames?.of(value) || value}</option>
+                    ))}
+                  </select>
+                </div>
+              </>
             ))}
           </Section>
 

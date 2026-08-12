@@ -135,7 +135,7 @@ class BoostModal extends ImmutablePureComponent {
               onChange={this.props.onChangeBoostPrivacy}
             />
           )}
-          <Button text={intl.formatMessage(buttonText)} onClick={this.handleReblog} ref={this.setRef} />
+          <Button text={intl.formatMessage(buttonText)} onClick={this.handleReblog} ref={this.setRef} autoFocus />
         </div>
       </div>
     );

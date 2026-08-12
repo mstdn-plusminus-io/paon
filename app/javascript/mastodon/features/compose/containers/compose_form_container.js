@@ -12,7 +12,10 @@ import {
   changeComposeVisibility,
   setComposeInstanceLimits,
 } from '../../../actions/compose';
+import { openModal } from '../../../actions/modal';
 import ComposeForm from '../components/compose_form';
+import { getComposeSuccessRedirect } from '../util/compose_redirect';
+import { findMissingAltTextMediaId } from '../util/missing_alt_text';
 
 const mapStateToProps = state => ({
   text: state.getIn(['compose', 'text']),
@@ -28,6 +31,7 @@ const mapStateToProps = state => ({
   isChangingUpload: state.getIn(['compose', 'is_changing_upload']),
   isUploading: state.getIn(['compose', 'is_uploading']),
   anyMedia: state.getIn(['compose', 'media_attachments']).size > 0,
+  missingAltTextMediaId: findMissingAltTextMediaId(state.getIn(['compose', 'media_attachments'])),
   isInReply: state.getIn(['compose', 'in_reply_to']) !== null,
   lang: state.getIn(['compose', 'language']),
   maxChars: state.getIn(['compose', 'max_characters']),
@@ -38,7 +42,7 @@ const mapStateToProps = state => ({
 
 let cachedKeywordVisibilities = null;
 
-const mapDispatchToProps = (dispatch) => ({
+const mapDispatchToProps = (dispatch, props) => ({
   onInitialize(instance) {
     dispatch(setComposeInstanceLimits(instance.configuration));
   },
@@ -57,8 +61,21 @@ const mapDispatchToProps = (dispatch) => ({
     }
   },
 
-  onSubmit (router) {
-    dispatch(submitCompose(router));
+  onSubmit (router, missingAltTextMediaId) {
+    if (missingAltTextMediaId) {
+      dispatch(openModal({
+        modalType: 'CONFIRM_MISSING_ALT_TEXT',
+        modalProps: { id: missingAltTextMediaId, router },
+      }));
+    } else {
+      dispatch(submitCompose(router, status => {
+        const redirectURL = getComposeSuccessRedirect(props.redirectOnSuccess, status);
+
+        if (redirectURL) {
+          window.location.assign(redirectURL);
+        }
+      }));
+    }
   },
 
   onClearSuggestions () {

@@ -13,7 +13,6 @@ import {
   replyCompose,
   mentionCompose,
   directCompose,
-  quoteCompose,
 } from '../actions/compose';
 import {
   initDomainBlockModal,
@@ -50,19 +49,13 @@ import {
 import Status from '../components/status';
 import { boostModal, deleteModal } from '../initial_state';
 import { makeGetStatus, makeGetPictureInPicture } from '../selectors';
+import { discardDraftModalProps, hasComposeDraft } from '../utils/discard_draft';
 
 const messages = defineMessages({
   deleteConfirm: { id: 'confirmations.delete.confirm', defaultMessage: 'Delete' },
   deleteMessage: { id: 'confirmations.delete.message', defaultMessage: 'Are you sure you want to delete this status?' },
   redraftConfirm: { id: 'confirmations.redraft.confirm', defaultMessage: 'Delete & redraft' },
   redraftMessage: { id: 'confirmations.redraft.message', defaultMessage: 'Are you sure you want to delete this status and re-draft it? Favorites and boosts will be lost, and replies to the original post will be orphaned.' },
-  replyConfirm: { id: 'confirmations.reply.confirm', defaultMessage: 'Reply' },
-  replyMessage: { id: 'confirmations.reply.message', defaultMessage: 'Replying now will overwrite the message you are currently composing. Are you sure you want to proceed?' },
-  editConfirm: { id: 'confirmations.edit.confirm', defaultMessage: 'Edit' },
-  editMessage: { id: 'confirmations.edit.message', defaultMessage: 'Editing now will overwrite the message you are currently composing. Are you sure you want to proceed?' },
-  quoteConfirm: { id: 'confirmations.quote.confirm', defaultMessage: 'Quote' },
-  quoteMessage: { id: 'confirmations.quote.message', defaultMessage: 'Quoting now will overwrite the message you are currently composing. Are you sure you want to proceed?' },
-
 });
 
 const makeMapStateToProps = () => {
@@ -82,36 +75,17 @@ const mapDispatchToProps = (dispatch, { intl, contextType }) => ({
 
   onReply (status, router) {
     dispatch((_, getState) => {
-      let state = getState();
+      const state = getState();
 
-      if (state.getIn(['compose', 'text']).trim().length !== 0) {
+      if (hasComposeDraft(state)) {
         dispatch(openModal({
           modalType: 'CONFIRM',
           modalProps: {
-            message: intl.formatMessage(messages.replyMessage),
-            confirm: intl.formatMessage(messages.replyConfirm),
+            ...discardDraftModalProps(intl, Boolean(state.getIn(['compose', 'id']))),
             onConfirm: () => dispatch(replyCompose(status, router)) },
         }));
       } else {
         dispatch(replyCompose(status, router));
-      }
-    });
-  },
-
-  onQuote (status, router) {
-    dispatch((_, getState) => {
-      let state = getState();
-
-      if (state.getIn(['compose', 'text']).trim().length !== 0) {
-        dispatch(openModal({
-          modalType: 'CONFIRM',
-          modalProps: {
-            message: intl.formatMessage(messages.quoteMessage),
-            confirm: intl.formatMessage(messages.quoteConfirm),
-            onConfirm: () => dispatch(quoteCompose(status, router)) },
-        }));
-      } else {
-        dispatch(quoteCompose(status, router));
       }
     });
   },
@@ -183,13 +157,12 @@ const mapDispatchToProps = (dispatch, { intl, contextType }) => ({
 
   onEdit (status, history) {
     dispatch((_, getState) => {
-      let state = getState();
-      if (state.getIn(['compose', 'text']).trim().length !== 0) {
+      const state = getState();
+      if (hasComposeDraft(state)) {
         dispatch(openModal({
           modalType: 'CONFIRM',
           modalProps: {
-            message: intl.formatMessage(messages.editMessage),
-            confirm: intl.formatMessage(messages.editConfirm),
+            ...discardDraftModalProps(intl, Boolean(state.getIn(['compose', 'id']))),
             onConfirm: () => dispatch(editStatus(status.get('id'), history)),
           },
         }));

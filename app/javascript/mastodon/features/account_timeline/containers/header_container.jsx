@@ -11,6 +11,7 @@ import {
   unmuteAccount,
   pinAccount,
   unpinAccount,
+  removeAccountFromFollowers,
 } from '../../../actions/accounts';
 import { initBlockModal } from '../../../actions/blocks';
 import {
@@ -27,6 +28,8 @@ import Header from '../components/header';
 const messages = defineMessages({
   cancelFollowRequestConfirm: { id: 'confirmations.cancel_follow_request.confirm', defaultMessage: 'Withdraw request' },
   unfollowConfirm: { id: 'confirmations.unfollow.confirm', defaultMessage: 'Unfollow' },
+  removeFromFollowersTitle: { id: 'confirmations.remove_from_followers.title', defaultMessage: 'Remove follower?' },
+  removeFromFollowersConfirm: { id: 'confirmations.remove_from_followers.confirm', defaultMessage: 'Remove follower' },
 });
 
 const makeMapStateToProps = () => {
@@ -74,6 +77,18 @@ const mapDispatchToProps = (dispatch, { intl }) => ({
         type: 'follow',
         accountId: account.get('id'),
         url: account.get('uri'),
+      },
+    }));
+  },
+
+  onRemoveFromFollowers (account) {
+    dispatch(openModal({
+      modalType: 'CONFIRM',
+      modalProps: {
+        title: intl.formatMessage(messages.removeFromFollowersTitle),
+        message: <FormattedMessage id='confirmations.remove_from_followers.message' defaultMessage='{name} will stop following you. Are you sure you want to proceed?' values={{ name: <strong>@{account.get('acct')}</strong> }} />,
+        confirm: intl.formatMessage(messages.removeFromFollowersConfirm),
+        onConfirm: () => dispatch(removeAccountFromFollowers(account.get('id'))),
       },
     }));
   },

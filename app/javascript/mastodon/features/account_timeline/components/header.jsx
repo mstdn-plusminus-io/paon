@@ -21,6 +21,7 @@ export default class Header extends ImmutablePureComponent {
     onMention: PropTypes.func.isRequired,
     onDirect: PropTypes.func.isRequired,
     onReblogToggle: PropTypes.func.isRequired,
+    onRemoveFromFollowers: PropTypes.func.isRequired,
     onReport: PropTypes.func.isRequired,
     onMute: PropTypes.func.isRequired,
     onBlockDomain: PropTypes.func.isRequired,
@@ -66,6 +67,10 @@ export default class Header extends ImmutablePureComponent {
 
   handleNotifyToggle = () => {
     this.props.onNotifyToggle(this.props.account);
+  };
+
+  handleRemoveFromFollowers = () => {
+    this.props.onRemoveFromFollowers(this.props.account);
   };
 
   handleMute = () => {
@@ -131,6 +136,7 @@ export default class Header extends ImmutablePureComponent {
           onMention={this.handleMention}
           onDirect={this.handleDirect}
           onReblogToggle={this.handleReblogToggle}
+          onRemoveFromFollowers={this.handleRemoveFromFollowers}
           onNotifyToggle={this.handleNotifyToggle}
           onReport={this.handleReport}
           onMute={this.handleMute}
@@ -149,6 +155,7 @@ export default class Header extends ImmutablePureComponent {
 
         {!(hideTabs || hidden) && (
           <div className='account__section-headline'>
+            <NavLink exact to={`/@${account.get('acct')}/featured`}><FormattedMessage id='account.featured' defaultMessage='Featured' /></NavLink>
             <NavLink exact to={`/@${account.get('acct')}`}><FormattedMessage id='account.posts' defaultMessage='Posts' /></NavLink>
             <NavLink exact to={`/@${account.get('acct')}/with_replies`}><FormattedMessage id='account.posts_with_replies' defaultMessage='Posts and replies' /></NavLink>
             <NavLink exact to={`/@${account.get('acct')}/media`}><FormattedMessage id='account.media' defaultMessage='Media' /></NavLink>

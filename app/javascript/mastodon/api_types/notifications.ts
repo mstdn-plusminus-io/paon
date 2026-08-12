@@ -11,6 +11,7 @@ export const allNotificationTypes = [
   'admin.report',
   'moderation_warning',
   'severed_relationships',
+  'annual_report',
 ] as const;
 
 export type NotificationType = (typeof allNotificationTypes)[number];
@@ -28,6 +29,21 @@ export interface ApiAccountJSON {
   [key: string]: unknown;
 }
 
+export type ApiQuoteState =
+  | 'accepted'
+  | 'deleted'
+  | 'soft_deleted'
+  | 'pending'
+  | 'rejected'
+  | 'revoked'
+  | 'unauthorized';
+
+export interface ApiQuoteJSON {
+  state: ApiQuoteState;
+  quoted_status?: ApiStatusJSON | null;
+  quoted_status_id?: string | null;
+}
+
 export interface ApiStatusJSON {
   id: string;
   account: ApiAccountJSON;
@@ -37,6 +53,7 @@ export interface ApiStatusJSON {
       filter_action: string;
     };
   }[];
+  quote?: ApiQuoteJSON | null;
   [key: string]: unknown;
 }
 
@@ -66,6 +83,10 @@ export interface ApiAccountRelationshipSeveranceEventJSON {
   created_at: string;
 }
 
+export interface ApiAnnualReportEventJSON {
+  year: string;
+}
+
 export interface ApiNotificationJSON {
   id: string;
   type: string;
@@ -77,6 +98,7 @@ export interface ApiNotificationJSON {
   report?: ApiReportJSON | null;
   event?: ApiAccountRelationshipSeveranceEventJSON | null;
   moderation_warning?: ApiAccountWarningJSON | null;
+  annual_report?: ApiAnnualReportEventJSON | null;
 }
 
 export interface ApiNotificationGroupJSON {
@@ -92,6 +114,7 @@ export interface ApiNotificationGroupJSON {
   report?: ApiReportJSON | null;
   event?: ApiAccountRelationshipSeveranceEventJSON | null;
   moderation_warning?: ApiAccountWarningJSON | null;
+  annual_report?: ApiAnnualReportEventJSON | null;
 }
 
 export interface ApiNotificationGroupsResultJSON {

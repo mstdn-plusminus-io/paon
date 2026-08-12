@@ -20,11 +20,12 @@ import StarBorderIcon from '@/material-icons/400-24px/star.svg?react';
 import VisibilityIcon from '@/material-icons/400-24px/visibility.svg?react';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { PERMISSION_MANAGE_USERS, PERMISSION_MANAGE_FEDERATION } from 'mastodon/permissions';
+import { appendMenuItemWithSeparator } from 'mastodon/utils/menu';
+import { bookmarkActionTitle, favouriteActionTitle } from 'mastodon/utils/status_action_titles';
 import { canEmbedStatus } from 'mastodon/utils/status_embed';
-import { isStatusQuoteable } from 'mastodon/utils/status_quote';
 
 import DropdownMenuContainer from '../containers/dropdown_menu_container';
-import { me, feature_quote } from '../initial_state';
+import { me } from '../initial_state';
 
 import { IconButton } from './icon_button';
 
@@ -44,7 +45,6 @@ const messages = defineMessages({
   reblog_private: { id: 'status.reblog_private', defaultMessage: 'Boost with original visibility' },
   cancel_reblog_private: { id: 'status.cancel_reblog_private', defaultMessage: 'Unboost' },
   cannot_reblog: { id: 'status.cannot_reblog', defaultMessage: 'This post cannot be boosted' },
-  favourite: { id: 'status.favourite', defaultMessage: 'Favorite' },
   bookmark: { id: 'status.bookmark', defaultMessage: 'Bookmark' },
   removeBookmark: { id: 'status.remove_bookmark', defaultMessage: 'Remove bookmark' },
   open: { id: 'status.open', defaultMessage: 'Expand this status' },
@@ -65,7 +65,6 @@ const messages = defineMessages({
   unblock: { id: 'account.unblock', defaultMessage: 'Unblock @{name}' },
   filter: { id: 'status.filter', defaultMessage: 'Filter this post' },
   openOriginalPage: { id: 'account.open_original_page', defaultMessage: 'Open original page' },
-  quote: { id: 'status.quote', defaultMessage: 'Quote' },
 });
 
 const mapStateToProps = (state, { status }) => ({
@@ -83,7 +82,6 @@ class StatusActionBar extends ImmutablePureComponent {
     status: ImmutablePropTypes.map.isRequired,
     relationship: ImmutablePropTypes.map,
     onReply: PropTypes.func,
-    onQuote: PropTypes.func,
     onFavourite: PropTypes.func,
     onReblog: PropTypes.func,
     onDelete: PropTypes.func,
@@ -124,17 +122,6 @@ class StatusActionBar extends ImmutablePureComponent {
       this.props.onReply(this.props.status, this.context.router.history);
     } else {
       this.props.onInteractionModal('reply', this.props.status);
-    }
-  };
-
-  handleQuoteClick = () => {
-    const { signedIn } = this.props.identity;
-
-    if (signedIn) {
-      this.props.onQuote(this.props.status, this.context.router.history);
-    } else {
-      // TODO
-      // this.props.onInteractionModal('reply', this.props.status);
     }
   };
 
@@ -269,7 +256,6 @@ class StatusActionBar extends ImmutablePureComponent {
     const account            = status.get('account');
     const writtenByMe        = status.getIn(['account', 'id']) === me;
     const isRemote           = status.getIn(['account', 'username']) !== status.getIn(['account', 'acct']);
-    const quoteableStatus    = feature_quote && isStatusQuoteable(status, relationship, signedIn);
 
     let menu = [];
 
@@ -294,11 +280,7 @@ class StatusActionBar extends ImmutablePureComponent {
 
       menu.push({ text: intl.formatMessage(status.get('bookmarked') ? messages.removeBookmark : messages.bookmark), action: this.handleBookmarkClick });
 
-      if (writtenByMe && pinnableStatus) {
-        menu.push({ text: intl.formatMessage(status.get('pinned') ? messages.unpin : messages.pin), action: this.handlePinClick });
-      }
-
-      menu.push(null);
+      menu = appendMenuItemWithSeparator(menu, { text: intl.formatMessage(status.get('pinned') ? messages.unpin : messages.pin), action: this.handlePinClick }, writtenByMe && pinnableStatus);
 
       if (writtenByMe || withDismiss) {
         menu.push({ text: intl.formatMessage(mutingConversation ? messages.unmuteConversation : messages.muteConversation), action: this.handleConversationMuteClick });
@@ -389,14 +371,15 @@ class StatusActionBar extends ImmutablePureComponent {
     const filterButton = this.props.onFilter && (
       <IconButton className='status__action-bar__button' title={intl.formatMessage(messages.hide)} icon='eye' iconComponent={VisibilityIcon} onClick={this.handleHideClick} />
     );
+    const bookmarkTitle = bookmarkActionTitle(intl, status.get('bookmarked'));
+    const favouriteTitle = favouriteActionTitle(intl, status.get('favourited'));
 
     return (
       <div className='status__action-bar'>
         <IconButton className='status__action-bar__button' title={replyTitle} icon={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? 'reply' : replyIcon} iconComponent={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? ReplyIcon : replyIconComponent} onClick={this.handleReplyClick} counter={status.get('replies_count')} />
         <IconButton className={classNames('status__action-bar__button', { reblogPrivate })} disabled={!publicStatus && !reblogPrivate} active={status.get('reblogged')} title={reblogTitle} icon='retweet' iconComponent={RepeatIcon} onClick={this.handleReblogClick} counter={withCounters ? status.get('reblogs_count') : undefined} />
-        {quoteableStatus && <IconButton className='status__action-bar__button' title={intl.formatMessage(messages.quote)} icon='quote-right' onClick={this.handleQuoteClick} /> }
-        <IconButton className='status__action-bar__button star-icon' animate active={status.get('favourited')} title={intl.formatMessage(messages.favourite)} icon='star' iconComponent={status.get('favourited') ? StarIcon : StarBorderIcon} onClick={this.handleFavouriteClick} counter={withCounters ? status.get('favourites_count') : undefined} />
-        <IconButton className='status__action-bar__button bookmark-icon' disabled={!signedIn} active={status.get('bookmarked')} title={intl.formatMessage(messages.bookmark)} icon='bookmark' iconComponent={status.get('bookmarked') ? BookmarkIcon : BookmarkBorderIcon} onClick={this.handleBookmarkClick} />
+        <IconButton className='status__action-bar__button star-icon' animate active={status.get('favourited')} title={favouriteTitle} icon='star' iconComponent={status.get('favourited') ? StarIcon : StarBorderIcon} onClick={this.handleFavouriteClick} counter={withCounters ? status.get('favourites_count') : undefined} />
+        <IconButton className='status__action-bar__button bookmark-icon' disabled={!signedIn} active={status.get('bookmarked')} title={bookmarkTitle} icon='bookmark' iconComponent={status.get('bookmarked') ? BookmarkIcon : BookmarkBorderIcon} onClick={this.handleBookmarkClick} />
 
         {filterButton}
 

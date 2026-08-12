@@ -14,6 +14,7 @@ import { Icon }  from 'mastodon/components/icon';
 import AccountContainer from 'mastodon/containers/account_container';
 import StatusContainer from 'mastodon/containers/status_container';
 import { me } from 'mastodon/initial_state';
+import { isPrivateMentionStatus } from 'mastodon/utils/notification_labels';
 
 import { NotificationModerationWarning } from '../../notifications_v2/components/notification_moderation_warning';
 import { NotificationSeveredRelationships } from '../../notifications_v2/components/notification_severed_relationships';
@@ -23,6 +24,7 @@ import Report from './report';
 
 const messages = defineMessages({
   favourite: { id: 'notification.favourite', defaultMessage: '{name} favorited your status' },
+  favouritePrivateMention: { id: 'notification.favourite_pm', defaultMessage: '{name} favorited your private mention' },
   follow: { id: 'notification.follow', defaultMessage: '{name} followed you' },
   ownPoll: { id: 'notification.own_poll', defaultMessage: 'Your poll has ended' },
   poll: { id: 'notification.poll', defaultMessage: 'A poll you have voted in has ended' },
@@ -190,18 +192,24 @@ class Notification extends ImmutablePureComponent {
   }
 
   renderFavourite (notification, link) {
-    const { intl, unread } = this.props;
+    const { intl, status, unread } = this.props;
+    const privateMention = isPrivateMentionStatus(status);
+    const message = privateMention ? messages.favouritePrivateMention : messages.favourite;
 
     return (
       <HotKeys handlers={this.getHandlers()}>
-        <div className={classNames('notification notification-favourite focusable', { unread })} tabIndex={0} aria-label={notificationForScreenReader(intl, intl.formatMessage(messages.favourite, { name: notification.getIn(['account', 'acct']) }), notification.get('created_at'))}>
+        <div className={classNames('notification notification-favourite focusable', { unread })} tabIndex={0} aria-label={notificationForScreenReader(intl, intl.formatMessage(message, { name: notification.getIn(['account', 'acct']) }), notification.get('created_at'))}>
           <div className='notification__message'>
             <div className='notification__favourite-icon-wrapper'>
               <Icon id='star' className='star-icon' fixedWidth />
             </div>
 
             <span title={notification.get('created_at')}>
-              <FormattedMessage id='notification.favourite' defaultMessage='{name} favorited your status' values={{ name: link }} />
+              {privateMention ? (
+                <FormattedMessage id='notification.favourite_pm' defaultMessage='{name} favorited your private mention' values={{ name: link }} />
+              ) : (
+                <FormattedMessage id='notification.favourite' defaultMessage='{name} favorited your status' values={{ name: link }} />
+              )}
             </span>
           </div>
 

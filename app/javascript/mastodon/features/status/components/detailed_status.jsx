@@ -1,6 +1,6 @@
 import PropTypes from 'prop-types';
 
-import { FormattedDate, FormattedMessage } from 'react-intl';
+import { FormattedMessage } from 'react-intl';
 
 import classNames from 'classnames';
 import { Link } from 'react-router-dom';
@@ -13,6 +13,7 @@ import { AnimatedNumber } from 'mastodon/components/animated_number';
 import { ContentWarning } from 'mastodon/components/content_warning';
 import EditedTimestamp from 'mastodon/components/edited_timestamp';
 import { FilterWarning } from 'mastodon/components/filter_warning';
+import { FormattedDateWrapper } from 'mastodon/components/formatted_date';
 import { getHashtagBarForStatus } from 'mastodon/components/hashtag_bar';
 import { Icon }  from 'mastodon/components/icon';
 import PictureInPicturePlaceholder from 'mastodon/components/picture_in_picture_placeholder';
@@ -158,6 +159,7 @@ class DetailedStatus extends ImmutablePureComponent {
             onOpenMedia={this.props.onOpenMedia}
             visible={this.props.showMedia}
             onToggleVisibility={this.props.onToggleMediaVisibility}
+            matchedFilters={status.get('matched_media_filters')}
           />
         );
       } else if (status.getIn(['media_attachments', 0, 'type']) === 'audio') {
@@ -179,6 +181,7 @@ class DetailedStatus extends ImmutablePureComponent {
             blurhash={attachment.get('blurhash')}
             height={150}
             onToggleVisibility={this.props.onToggleMediaVisibility}
+            matchedFilters={status.get('matched_media_filters')}
           />
         );
       } else if (status.getIn(['media_attachments', 0, 'type']) === 'video') {
@@ -200,10 +203,11 @@ class DetailedStatus extends ImmutablePureComponent {
             sensitive={status.get('sensitive')}
             visible={this.props.showMedia}
             onToggleVisibility={this.props.onToggleMediaVisibility}
+            matchedFilters={status.get('matched_media_filters')}
           />
         );
       }
-    } else if (status.get('card') && status.getIn(['card', 'url']) !== status.get('quote_original_url')) {
+    } else if (status.get('card') && !status.get('quote')) {
       media = <Card sensitive={status.get('sensitive')} onOpenMedia={this.props.onOpenMedia} card={status.get('card', null)} />;
     }
 
@@ -297,7 +301,13 @@ class DetailedStatus extends ImmutablePureComponent {
           {expanded && (
             <>
               <StatusContent status={status} onTranslate={this.handleTranslate} {...statusContentProps} />
-              <QuoteContainer id={status.get('quote_id')} />
+              {status.get('quote') && (
+                <QuoteContainer
+                  contextType='thread'
+                  parentQuotePostId={status.get('id')}
+                  quote={status.get('quote')}
+                />
+              )}
               {media}
               {hashtagBar}
             </>
@@ -305,7 +315,7 @@ class DetailedStatus extends ImmutablePureComponent {
 
           <div className='detailed-status__meta'>
             <a className='detailed-status__datetime' href={`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`} target='_blank' rel='noopener noreferrer'>
-              <FormattedDate value={new Date(status.get('created_at'))} hour12={false} year='numeric' month='short' day='2-digit' hour='2-digit' minute='2-digit' />
+              <FormattedDateWrapper value={new Date(status.get('created_at'))} hour12={false} year='numeric' month='short' day='2-digit' hour='2-digit' minute='2-digit' />
             </a>{edited}{visibilityLink}{applicationLink}{reblogLink} · {favouriteLink}
           </div>
         </div>

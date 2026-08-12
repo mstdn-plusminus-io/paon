@@ -1,6 +1,7 @@
 import type {
   ApiAccountRelationshipSeveranceEventJSON,
   ApiAccountWarningJSON,
+  ApiAnnualReportEventJSON,
   ApiNotificationGroupJSON,
   ApiNotificationJSON,
   ApiReportJSON,
@@ -22,6 +23,7 @@ export interface NotificationGroup {
   report?: ApiReportJSON | null;
   event?: ApiAccountRelationshipSeveranceEventJSON | null;
   moderationWarning?: ApiAccountWarningJSON | null;
+  annualReport?: ApiAnnualReportEventJSON | null;
   partial: boolean;
 }
 
@@ -42,6 +44,7 @@ export function createNotificationGroupFromJSON(
     report: json.report,
     event: json.event,
     moderationWarning: json.moderation_warning,
+    annualReport: json.annual_report,
     partial: false,
   };
 }
@@ -67,6 +70,7 @@ export function createNotificationGroupFromNotificationJSON(
     report: notification.report,
     event: notification.event,
     moderationWarning: notification.moderation_warning,
+    annualReport: notification.annual_report,
     partial: true,
   };
 }

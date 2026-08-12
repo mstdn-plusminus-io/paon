@@ -8,11 +8,13 @@ import { NavLink, Switch, Route } from 'react-router-dom';
 
 import { connect } from 'react-redux';
 
+import { changeSearch, clearSearch, submitSearch } from 'mastodon/actions/search';
 import Column from 'mastodon/components/column';
 import ColumnHeader from 'mastodon/components/column_header';
 import Search from 'mastodon/features/compose/containers/search_container';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { trendsEnabled } from 'mastodon/initial_state';
+import { parseSearchQuery } from 'mastodon/utils/search_query';
 
 import Links from './links';
 import SearchResults from './results';
@@ -21,13 +23,13 @@ import Suggestions from './suggestions';
 import Tags from './tags';
 
 const messages = defineMessages({
-  title: { id: 'explore.title', defaultMessage: 'Explore' },
+  title: { id: 'explore.title', defaultMessage: 'Trending' },
   searchResults: { id: 'explore.search_results', defaultMessage: 'Search results' },
 });
 
-const mapStateToProps = state => ({
+const mapStateToProps = (state, ownProps) => ({
   layout: state.getIn(['meta', 'layout']),
-  isSearching: state.getIn(['search', 'submitted']) || !trendsEnabled,
+  isSearching: ownProps.location?.pathname === '/search' || state.getIn(['search', 'submitted']) || !trendsEnabled,
 });
 
 class Explore extends PureComponent {
@@ -41,6 +43,38 @@ class Explore extends PureComponent {
     intl: PropTypes.object.isRequired,
     multiColumn: PropTypes.bool,
     isSearching: PropTypes.bool,
+    dispatch: PropTypes.func.isRequired,
+    location: PropTypes.object.isRequired,
+  };
+
+  componentDidMount () {
+    this.syncSearchFromLocation();
+  }
+
+  componentDidUpdate (previousProps) {
+    const { location } = this.props;
+
+    if (location.pathname !== previousProps.location.pathname || location.search !== previousProps.location.search) {
+      this.syncSearchFromLocation();
+    }
+  }
+
+  syncSearchFromLocation = () => {
+    const { dispatch, location } = this.props;
+
+    if (location.pathname !== '/search') {
+      return;
+    }
+
+    const { q, type } = parseSearchQuery(location.search);
+
+    if (q.length === 0) {
+      dispatch(clearSearch());
+      return;
+    }
+
+    dispatch(changeSearch(q));
+    dispatch(submitSearch(type, q));
   };
 
   handleHeaderClick = () => {
@@ -65,7 +99,7 @@ class Explore extends PureComponent {
         />
 
         <div className='explore__search-header'>
-          <Search />
+          <Search openInRoute />
         </div>
 
         {isSearching ? (

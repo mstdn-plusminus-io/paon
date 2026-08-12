@@ -5,8 +5,8 @@ interface Props {
   key: string;
   alt?: string;
   lang?: string;
-  width: number;
-  height: number;
+  width?: number;
+  height?: number;
   onClick?: () => void;
 }
 
@@ -36,11 +36,9 @@ export const GIFV: React.FC<Props> = ({
   );
 
   return (
-    <div className='gifv' style={{ position: 'relative' }}>
+    <div className='gifv'>
       {loading && (
         <canvas
-          width={width}
-          height={height}
           role='button'
           tabIndex={0}
           aria-label={alt}
@@ -57,13 +55,14 @@ export const GIFV: React.FC<Props> = ({
         aria-label={alt}
         title={alt}
         lang={lang}
+        width={width}
+        height={height}
         muted
         loop
         autoPlay
         playsInline
         onClick={handleClick}
         onLoadedData={handleLoadedData}
-        style={{ position: loading ? 'absolute' : 'static', top: 0, left: 0 }}
       />
     </div>
   );

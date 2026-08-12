@@ -126,6 +126,29 @@ describe('notification groups reducer', () => {
     });
   });
 
+  it('preserves annual report data on a notification without an account', () => {
+    const state = reducer(undefined, {
+      type: 'NOTIFICATION_GROUPS_PROCESS_NEW',
+      usePendingItems: false,
+      groupedTypes: ['favourite'],
+      notification: {
+        id: '13',
+        type: 'annual_report',
+        group_key: 'annual_report:2025',
+        created_at: '2026-01-01T00:00:00Z',
+        account: null,
+        annual_report: { year: '2025' },
+      },
+    });
+
+    expect(state.groups[0]).toMatchObject({
+      kind: 'notification',
+      type: 'annual_report',
+      sampleAccountIds: [],
+      annualReport: { year: '2025' },
+    });
+  });
+
   it('does not auto-read across an unloaded pagination gap', () => {
     let state = reducer(undefined, {
       type: 'MARKERS_FETCH_SUCCESS',

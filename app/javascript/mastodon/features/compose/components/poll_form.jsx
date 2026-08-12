@@ -17,7 +17,7 @@ const messages = defineMessages({
   remove_option: { id: 'compose_form.poll.remove_option', defaultMessage: 'Remove this choice' },
   poll_duration: { id: 'compose_form.poll.duration', defaultMessage: 'Poll length' },
   type: { id: 'compose_form.poll.type', defaultMessage: 'Style' },
-  singleChoice: { id: 'compose_form.poll.single', defaultMessage: 'Pick one' },
+  singleChoice: { id: 'compose_form.poll.single', defaultMessage: 'Single choice' },
   multipleChoice: { id: 'compose_form.poll.multiple', defaultMessage: 'Multiple choice' },
   switchToMultiple: { id: 'compose_form.poll.switch_to_multiple', defaultMessage: 'Change poll to allow multiple choices' },
   switchToSingle: { id: 'compose_form.poll.switch_to_single', defaultMessage: 'Change poll to allow for a single choice' },

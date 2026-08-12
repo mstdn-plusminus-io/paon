@@ -2,7 +2,7 @@
   "name": "@mstdn-plusminus-io/paon",
   "license": "AGPL-3.0-or-later",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "build:development": "cross-env RAILS_ENV=development NODE_ENV=development ./bin/rspack",
@@ -92,6 +92,7 @@
     "intl-messageformat": "^10.3.5",
     "js-yaml": "^4.1.0",
     "jsdom": "^22.1.0",
+    "lande": "^1.0.10",
     "lodash": "^4.17.21",
     "mark-loader": "^0.1.6",
     "marky": "^1.2.5",

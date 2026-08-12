@@ -1,35 +1,48 @@
 import { fromJS } from 'immutable';
 
-import { isStatusQuoteable } from '../status_quote';
+import {
+  getQuotedStatusId,
+  getQuoteState,
+  isAcceptedQuote,
+  normalizeStatusQuote,
+  stripQuoteFallback,
+} from '../status_quote';
 
-const status = overrides => fromJS({
-  visibility: 'public',
-  reblog: null,
-  account: {
-    id: '1',
-    suspended: false,
-    moved: null,
-  },
-  ...overrides,
-});
-
-describe('isStatusQuoteable', () => {
-  it.each(['public', 'unlisted'])('allows an available %s original post', visibility => {
-    expect(isStatusQuoteable(status({ visibility }), fromJS({}), true)).toBe(true);
+describe('Mastodon 4.4 quote adapter', () => {
+  it('normalizes a full quote entity with an embedded status', () => {
+    expect(normalizeStatusQuote({
+      state: 'accepted',
+      quoted_status: { id: '42', content: 'quoted' },
+    })).toEqual({
+      state: 'accepted',
+      quoted_status: '42',
+    });
   });
 
-  it.each(['private', 'direct'])('rejects %s visibility', visibility => {
-    expect(isStatusQuoteable(status({ visibility }), fromJS({}), true)).toBe(false);
+  it('normalizes a shallow quote entity with quoted_status_id', () => {
+    expect(normalizeStatusQuote({
+      state: 'accepted',
+      quoted_status_id: '43',
+    })).toEqual({
+      state: 'accepted',
+      quoted_status: '43',
+    });
   });
 
-  it('rejects reblogs, signed-out viewers, and unavailable accounts', () => {
-    expect(isStatusQuoteable(status({ reblog: { id: '2' } }), fromJS({}), true)).toBe(false);
-    expect(isStatusQuoteable(status({}), fromJS({}), false)).toBe(false);
-    expect(isStatusQuoteable(status({ account: { suspended: true } }), fromJS({}), true)).toBe(false);
-    expect(isStatusQuoteable(status({ account: { moved: { id: '2' } } }), fromJS({}), true)).toBe(false);
+  it.each(['accepted', 'pending', 'rejected', 'revoked', 'deleted', 'soft_deleted', 'unauthorized'])('preserves the supported %s state', quoteState => {
+    const quote = fromJS({ state: quoteState, quoted_status: '42' });
+
+    expect(getQuoteState(quote)).toBe(quoteState);
+    expect(getQuotedStatusId(quote)).toBe('42');
+    expect(isAcceptedQuote(quote)).toBe(quoteState === 'accepted');
   });
 
-  it.each(['blocking', 'blocked_by', 'muting', 'domain_blocking'])('rejects a %s relationship', relationship => {
-    expect(isStatusQuoteable(status({}), fromJS({ [relationship]: true }), true)).toBe(false);
+  it('fails closed for malformed quote state', () => {
+    expect(getQuoteState(fromJS({ state: 'anything', quoted_status: '42' }))).toBe('not_found');
+  });
+
+  it('removes only the structured quote fallback link', () => {
+    expect(stripQuoteFallback('<p>Hello</p><p class="quote-inline"><a href="https://example.com/@a/42">RE: https://example.com/@a/42</a></p><p>World</p>'))
+      .toBe('<p>Hello</p><p>World</p>');
   });
 });

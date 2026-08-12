@@ -13,6 +13,7 @@ import { Avatar } from 'mastodon/components/avatar';
 import { Badge, AutomatedBadge, GroupBadge } from 'mastodon/components/badge';
 import Button from 'mastodon/components/button';
 import { FollowersCounter, FollowingCounter, StatusesCounter } from 'mastodon/components/counters';
+import { FormattedDateWrapper } from 'mastodon/components/formatted_date';
 import { Icon }  from 'mastodon/components/icon';
 import { IconButton } from 'mastodon/components/icon_button';
 import { ShortNumber } from 'mastodon/components/short_number';
@@ -20,9 +21,12 @@ import DropdownMenuContainer from 'mastodon/containers/dropdown_menu_container';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { autoPlayGif, me, domain } from 'mastodon/initial_state';
 import { PERMISSION_MANAGE_USERS, PERMISSION_MANAGE_FEDERATION } from 'mastodon/permissions';
+import { accountRelationshipTagKeys, PROFILE_AVATAR_SIZE, shouldShowFamiliarFollowers } from 'mastodon/utils/account_profile';
 
 import AccountNoteContainer from '../containers/account_note_container';
 import FollowRequestNoteContainer from '../containers/follow_request_note_container';
+
+import FamiliarFollowers from './familiar_followers';
 
 const messages = defineMessages({
   unfollow: { id: 'account.unfollow', defaultMessage: 'Unfollow' },
@@ -67,6 +71,7 @@ const messages = defineMessages({
   admin_domain: { id: 'status.admin_domain', defaultMessage: 'Open moderation interface for {domain}' },
   languages: { id: 'account.languages', defaultMessage: 'Change subscribed languages' },
   openOriginalPage: { id: 'account.open_original_page', defaultMessage: 'Open original page' },
+  removeFromFollowers: { id: 'account.remove_from_followers', defaultMessage: 'Remove {name} from followers' },
 });
 
 const titleFromAccount = account => {
@@ -101,6 +106,7 @@ class Header extends ImmutablePureComponent {
     onMention: PropTypes.func.isRequired,
     onDirect: PropTypes.func.isRequired,
     onReblogToggle: PropTypes.func.isRequired,
+    onRemoveFromFollowers: PropTypes.func.isRequired,
     onNotifyToggle: PropTypes.func.isRequired,
     onReport: PropTypes.func.isRequired,
     onMute: PropTypes.func.isRequired,
@@ -286,19 +292,28 @@ class Header extends ImmutablePureComponent {
     let lockedIcon  = '';
     let menu        = [];
 
-    if (me !== account.get('id') && account.getIn(['relationship', 'followed_by'])) {
-      info.push(account.getIn(['relationship', 'following']) ?
-        <span key='mutual' className='relationship-tag'><FormattedMessage id='account.mutual' defaultMessage='Mutual follow' /></span> :
-        <span key='followed_by' className='relationship-tag'><FormattedMessage id='account.follows_you' defaultMessage='Follows you' /></span>);
-    } else if (me !== account.get('id') && account.getIn(['relationship', 'blocking'])) {
-      info.push(<span key='blocked' className='relationship-tag'><FormattedMessage id='account.blocked' defaultMessage='Blocked' /></span>);
-    }
-
-    if (me !== account.get('id') && account.getIn(['relationship', 'muting'])) {
-      info.push(<span key='muted' className='relationship-tag'><FormattedMessage id='account.muted' defaultMessage='Muted' /></span>);
-    } else if (me !== account.get('id') && account.getIn(['relationship', 'domain_blocking'])) {
-      info.push(<span key='domain_blocked' className='relationship-tag'><FormattedMessage id='account.domain_blocked' defaultMessage='Domain blocked' /></span>);
-    }
+    accountRelationshipTagKeys(account.get('relationship'), me === account.get('id')).forEach(tag => {
+      switch (tag) {
+      case 'mutual':
+        info.push(<span key={tag} className='relationship-tag'><FormattedMessage id='account.mutual' defaultMessage='You follow each other' /></span>);
+        break;
+      case 'followed_by':
+        info.push(<span key={tag} className='relationship-tag'><FormattedMessage id='account.follows_you' defaultMessage='Follows you' /></span>);
+        break;
+      case 'requested_by':
+        info.push(<span key={tag} className='relationship-tag'><FormattedMessage id='account.requests_to_follow_you' defaultMessage='Requests to follow you' /></span>);
+        break;
+      case 'blocking':
+        info.push(<span key={tag} className='relationship-tag'><FormattedMessage id='account.blocking' defaultMessage='Blocking' /></span>);
+        break;
+      case 'muting':
+        info.push(<span key={tag} className='relationship-tag'><FormattedMessage id='account.muting' defaultMessage='Muting' /></span>);
+        break;
+      case 'domain_blocking':
+        info.push(<span key={tag} className='relationship-tag'><FormattedMessage id='account.domain_blocking' defaultMessage='Blocking domain' /></span>);
+        break;
+      }
+    });
 
     if (account.getIn(['relationship', 'requested']) || account.getIn(['relationship', 'following'])) {
       bellBtn = <IconButton icon={account.getIn(['relationship', 'notifying']) ? 'bell' : 'bell-o'} size={24} active={account.getIn(['relationship', 'notifying'])} title={intl.formatMessage(account.getIn(['relationship', 'notifying']) ? messages.disableNotifications : messages.enableNotifications, { name: account.get('username') })} onClick={this.props.onNotifyToggle} />;
@@ -374,6 +389,10 @@ class Header extends ImmutablePureComponent {
         menu.push(null);
       }
 
+      if (account.getIn(['relationship', 'followed_by'])) {
+        menu.push({ text: intl.formatMessage(messages.removeFromFollowers, { name: account.get('username') }), action: this.props.onRemoveFromFollowers, dangerous: true });
+      }
+
       if (account.getIn(['relationship', 'muting'])) {
         menu.push({ text: intl.formatMessage(messages.unmute, { name: account.get('username') }), action: this.props.onMute });
       } else {
@@ -442,7 +461,7 @@ class Header extends ImmutablePureComponent {
         <div className='account__header__bar'>
           <div className='account__header__tabs'>
             <a className='avatar' href={account.get('avatar')} rel='noopener noreferrer' target='_blank' onClick={this.handleAvatarClick}>
-              <Avatar account={suspended || hidden ? undefined : account} size={90} />
+              <Avatar account={suspended || hidden ? undefined : account} size={PROFILE_AVATAR_SIZE} />
             </a>
 
             {!suspended && (
@@ -474,6 +493,14 @@ class Header extends ImmutablePureComponent {
             </div>
           )}
 
+          {shouldShowFamiliarFollowers({
+            accountId: account.get('id'),
+            currentAccountId: me,
+            signedIn,
+            suspended,
+            hidden,
+          }) && <FamiliarFollowers accountId={account.get('id')} />}
+
           {!(suspended || hidden) && (
             <div className='account__header__extra'>
               <div className='account__header__bio' ref={this.setRef}>
@@ -484,7 +511,7 @@ class Header extends ImmutablePureComponent {
                 <div className='account__header__fields'>
                   <dl>
                     <dt><FormattedMessage id='account.joined_short' defaultMessage='Joined' /></dt>
-                    <dd>{intl.formatDate(account.get('created_at'), { year: 'numeric', month: 'short', day: '2-digit' })}</dd>
+                    <dd><FormattedDateWrapper value={account.get('created_at')} year='numeric' month='short' day='2-digit' /></dd>
                   </dl>
 
                   {fields.map((pair, i) => (

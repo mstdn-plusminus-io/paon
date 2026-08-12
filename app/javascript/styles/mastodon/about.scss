@@ -54,3 +54,37 @@ $fluid-breakpoint: $maximum-width + 20px;
     }
   }
 }
+
+.rules-languages {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid lighten($ui-base-color, 8%);
+
+  label {
+    flex: 0 0 auto;
+    color: $secondary-text-color;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  select {
+    min-width: 0;
+    flex: 1 1 auto;
+    height: 36px;
+    padding: 0 10px;
+    color: $primary-text-color;
+    background: $ui-base-color;
+    border: 1px solid lighten($ui-base-color, 12%);
+    border-radius: 4px;
+    font: inherit;
+
+    &:focus-visible {
+      border-color: $highlight-text-color;
+      outline: 2px solid rgba($highlight-text-color, 0.35);
+      outline-offset: 1px;
+    }
+  }
+}

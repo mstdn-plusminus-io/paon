@@ -63,14 +63,40 @@ const statusTranslateUndo = (state, id) => {
   });
 };
 
+const removeStatusStub = (state, id) => {
+  return state.getIn([id, 'id']) ? state.deleteIn([id, 'isLoading']) : state.delete(id);
+};
+
 const initialState = ImmutableMap();
 
 export default function statuses(state = initialState, action) {
   switch(action.type) {
   case STATUS_FETCH_REQUEST:
     return state.setIn([action.id, 'isLoading'], true);
-  case STATUS_FETCH_FAIL:
-    return state.delete(action.id);
+  case STATUS_FETCH_FAIL: {
+    const statusWasKnown = Boolean(state.getIn([action.id, 'id']));
+    let nextState = removeStatusStub(state, action.id);
+
+    if (action.parentQuotePostId) {
+      if (statusWasKnown && action.status !== 404) {
+        return nextState;
+      }
+
+      const quoteState = action.status === 404
+        ? 'deleted'
+        : [401, 403].includes(action.status)
+          ? 'unauthorized'
+          : 'not_found';
+
+      if (!statusWasKnown) {
+        nextState = nextState.setIn([action.id, 'quoteFetchFailed'], true);
+      }
+
+      return nextState.setIn([action.parentQuotePostId, 'quote', 'state'], quoteState);
+    }
+
+    return nextState;
+  }
   case STATUS_IMPORT:
     return importStatus(state, action.status);
   case STATUSES_IMPORT:

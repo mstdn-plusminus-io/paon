@@ -7,6 +7,8 @@
 }
 
 body {
+  --text-x-direction: 1;
+
   font-family: $font-sans-serif, sans-serif;
   background: darken($ui-base-color, 7%);
   font-size: 13px;
@@ -14,7 +16,12 @@ body {
   font-weight: 400;
   color: $primary-text-color;
   text-rendering: optimizelegibility;
-  font-feature-settings: 'kern';
+
+  // Disable kerning for Japanese text to preserve monospaced alignment for readability
+  &:not(:lang(ja)) {
+    font-feature-settings: 'kern';
+  }
+
   text-size-adjust: none;
   -webkit-tap-highlight-color: rgba(0, 0, 0, 0%);
   -webkit-tap-highlight-color: transparent;
@@ -47,6 +54,7 @@ body {
   }
 
   &.app-body {
+    box-sizing: border-box;
     padding: 0;
 
     &.layout-single-column {
@@ -59,6 +67,7 @@ body {
       position: absolute;
       width: 100%;
       height: 100%;
+      padding-bottom: env(safe-area-inset-bottom);
     }
 
     &.with-modals--active {
@@ -114,6 +123,7 @@ body {
 
   &.embed {
     background: lighten($ui-base-color, 4%);
+    overflow: hidden;
     margin: 0;
     padding-bottom: 0;
 
@@ -310,7 +320,7 @@ article {
 
 .plusminus-searchbox__container {
   width: 100%;
-  margin: 1em 0 0.5em 0;
+  margin: 1em 0 0.5em;
   padding: 0;
   border: 0;
   color: $inverted-text-color;
@@ -358,8 +368,8 @@ article {
     list-style-type: disc !important;
   }
 
-  img[src^="/emoji"],
-  img[src*="/custom_emojis/images/"] {
+  img[src^='/emoji'],
+  img[src*='/custom_emojis/images/'] {
     height: 20px !important;
     background-color: transparent !important;
   }
@@ -386,16 +396,16 @@ article {
   }
 }
 
-img[src^="/emoji"],
-img[src*="/custom_emojis/images/"] {
+img[src^='/emoji'],
+img[src*='/custom_emojis/images/'] {
   width: auto !important;
 }
 
 .jumbomoji {
-  img[src^="/emoji"],
-  img[src*="/custom_emojis/images/"] {
+  img[src^='/emoji'],
+  img[src*='/custom_emojis/images/'] {
     height: 36px !important;
-    margin: 4px 0 0 0 !important;
+    margin: 4px 0 0 !important;
   }
 }
 
@@ -411,6 +421,18 @@ img[src*="/custom_emojis/images/"] {
 
 .status__quote__container {
   text-decoration: none;
+}
+
+.status__quote--error {
+  color: $lighter-text-color;
+
+  .status__quote__inner {
+    line-height: 1.5;
+  }
+
+  .link-button {
+    margin-inline-start: 0.25em;
+  }
 }
 
 .status__quote__icon {
@@ -430,6 +452,8 @@ img[src*="/custom_emojis/images/"] {
 .status__quote__inner__header {
   display: flex;
   align-items: center;
+  color: $primary-text-color;
+  text-decoration: none;
 }
 
 .status__quote__inner__header .display-name {
@@ -448,4 +472,32 @@ img[src*="/custom_emojis/images/"] {
 .status__quote__inner__footer {
   margin-top: 0.5em;
   word-break: break-word;
+}
+
+.status__quote__inner__footer a {
+  color: inherit;
+}
+
+.status__quote__nested-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  margin-top: 0.75em;
+  color: $lighter-text-color;
+  text-decoration: none;
+
+  &:hover,
+  &:focus {
+    color: $highlight-text-color;
+    text-decoration: underline;
+  }
+}
+
+.status__quote {
+  .status-banner,
+  .media-gallery,
+  .audio-player,
+  .video-player {
+    margin-top: 0.75em;
+  }
 }

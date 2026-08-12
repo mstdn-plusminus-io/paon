@@ -8,6 +8,10 @@ import { HoverCardAccount } from './hover_card_account';
 
 const ENTER_DELAY = 750;
 const LEAVE_DELAY = 150;
+export const ACTIVE_MOUSE_MOVEMENT_THRESHOLD = 150;
+
+export const shouldScheduleHoverCardFromPointer = ({ usingTouch, activeMouseMovement, insideHoverCard }) =>
+  !usingTouch && activeMouseMovement && !insideHoverCard;
 
 const accountAnchor = target => {
   if (!(target instanceof Element)) {
@@ -27,6 +31,8 @@ export const HoverCardController = () => {
   const enterTimer = useRef();
   const leaveTimer = useRef();
   const usingTouch = useRef(false);
+  const activeMouseMovement = useRef(false);
+  const movementTimer = useRef();
   const savedTitle = useRef(null);
   const location = useLocation();
 
@@ -91,14 +97,28 @@ export const HoverCardController = () => {
   useEffect(() => {
     const handleTouchStart = () => {
       usingTouch.current = true;
+      activeMouseMovement.current = false;
+      window.clearTimeout(movementTimer.current);
       close();
     };
     const handleMouseMove = () => {
       usingTouch.current = false;
+      activeMouseMovement.current = true;
+      window.clearTimeout(movementTimer.current);
+      movementTimer.current = window.setTimeout(() => {
+        activeMouseMovement.current = false;
+      }, ACTIVE_MOUSE_MOVEMENT_THRESHOLD);
     };
     const handleMouseOver = event => {
-      if (usingTouch.current || event.target instanceof Element && event.target.closest('.hover-card')) {
-        window.clearTimeout(leaveTimer.current);
+      const insideHoverCard = event.target instanceof Element && Boolean(event.target.closest('.hover-card'));
+      if (!shouldScheduleHoverCardFromPointer({
+        usingTouch: usingTouch.current,
+        activeMouseMovement: activeMouseMovement.current,
+        insideHoverCard,
+      })) {
+        if (insideHoverCard) {
+          window.clearTimeout(leaveTimer.current);
+        }
         return;
       }
       const target = accountAnchor(event.target);
@@ -157,6 +177,7 @@ export const HoverCardController = () => {
 
     return () => {
       cancelTimers();
+      window.clearTimeout(movementTimer.current);
       document.body.removeEventListener('touchstart', handleTouchStart);
       document.body.removeEventListener('mousemove', handleMouseMove);
       document.body.removeEventListener('mouseover', handleMouseOver);

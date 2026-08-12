@@ -24,10 +24,15 @@ export default class MediaItem extends ImmutablePureComponent {
   state = {
     visible: displayMedia !== 'hide_all' && !this.props.attachment.getIn(['status', 'sensitive']) || displayMedia === 'show_all',
     loaded: false,
+    error: false,
   };
 
   handleImageLoad = () => {
     this.setState({ loaded: true });
+  };
+
+  handleImageError = () => {
+    this.setState({ error: true });
   };
 
   handleMouseEnter = e => {
@@ -90,6 +95,7 @@ export default class MediaItem extends ImmutablePureComponent {
             title={description}
             lang={status.get('language')}
             onLoad={this.handleImageLoad}
+            onError={this.handleImageError}
           />
 
           <div className='media-gallery__item__overlay media-gallery__item__overlay--corner'>
@@ -111,6 +117,7 @@ export default class MediaItem extends ImmutablePureComponent {
           lang={status.get('language')}
           style={{ objectPosition: `${x}% ${y}%` }}
           onLoad={this.handleImageLoad}
+          onError={this.handleImageError}
         />
       );
     } else if (['video', 'gifv'].includes(type)) {
@@ -149,7 +156,7 @@ export default class MediaItem extends ImmutablePureComponent {
     }
 
     return (
-      <div className='media-gallery__item media-gallery__item--square'>
+      <div className={classNames('media-gallery__item media-gallery__item--square', { 'media-gallery__item--error': this.state.error })}>
         <Blurhash
           hash={attachment.get('blurhash')}
           className={classNames('media-gallery__preview', { 'media-gallery__preview--hidden': visible && loaded })}

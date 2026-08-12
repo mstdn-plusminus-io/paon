@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { injectIntl, defineMessages, FormattedMessage } from 'react-intl';
 
 import classNames from 'classnames';
+import { Link } from 'react-router-dom';
 
 import ImmutablePropTypes from 'react-immutable-proptypes';
 import ImmutablePureComponent from 'react-immutable-pure-component';
@@ -24,6 +25,7 @@ import Card from '../features/status/components/card';
 import Bundle from '../features/ui/components/bundle';
 import { MediaGallery, Video, Audio } from '../features/ui/util/async-components';
 import { displayMedia } from '../initial_state';
+import { statusClickDisposition } from '../utils/status_navigation';
 
 import { AbsoluteTimestamp } from './absolute_timestamp';
 import AttachmentList from './attachment_list';
@@ -69,7 +71,7 @@ export const defaultMediaVisibility = (status) => {
     status = status.get('reblog');
   }
 
-  return (displayMedia !== 'hide_all' && !status.get('sensitive') || displayMedia === 'show_all');
+  return !status.get('matched_media_filters') && (displayMedia !== 'hide_all' && !status.get('sensitive') || displayMedia === 'show_all');
 };
 
 const messages = defineMessages({
@@ -116,6 +118,7 @@ class Status extends ImmutablePureComponent {
     updateScrollBottom: PropTypes.func,
     cacheMediaWidth: PropTypes.func,
     cachedMediaWidth: PropTypes.number,
+    contextType: PropTypes.string,
     scrollKey: PropTypes.string,
     deployPictureInPicture: PropTypes.func,
     pictureInPicture: ImmutablePropTypes.contains({
@@ -158,32 +161,24 @@ class Status extends ImmutablePureComponent {
   };
 
   handleClick = e => {
-    if (e && (e.button !== 0 || e.ctrlKey || e.metaKey)) {
+    e?.preventDefault();
+
+    const disposition = statusClickDisposition(e);
+
+    if (disposition === 'current') {
+      this._openStatus();
+    } else if (disposition === 'new') {
+      this._openStatus(true);
+    }
+  };
+
+  handleHeaderClick = e => {
+    // Keep links in the header native, but make its empty space open the post.
+    if (e.target !== e.currentTarget && e.detail >= 1) {
       return;
     }
 
-    if (e) {
-      e.preventDefault();
-    }
-
-    this.handleHotkeyOpen();
-  };
-
-  handlePrependAccountClick = e => {
-    this.handleAccountClick(e, false);
-  };
-
-  handleAccountClick = (e, proper = true) => {
-    if (e && (e.button !== 0 || e.ctrlKey || e.metaKey)) {
-      return;
-    }
-
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-
-    this._openProfile(proper);
+    this.handleClick(e);
   };
 
   handleExpandedToggle = () => {
@@ -264,6 +259,10 @@ class Status extends ImmutablePureComponent {
   };
 
   handleHotkeyOpen = () => {
+    this._openStatus();
+  };
+
+  _openStatus = (newTab = false) => {
     if (this.props.onClick) {
       this.props.onClick();
       return;
@@ -276,7 +275,15 @@ class Status extends ImmutablePureComponent {
       return;
     }
 
-    router.history.push(`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`);
+    const path = `/@${status.getIn(['account', 'acct'])}/${status.get('id')}`;
+
+    if (newTab) {
+      window.open(path, '_blank', 'noopener');
+    } else if (router.history.location.pathname.replace('/deck/', '/') === path) {
+      router.history.replace(path);
+    } else {
+      router.history.push(path);
+    }
   };
 
   handleHotkeyOpenProfile = () => {
@@ -372,6 +379,7 @@ class Status extends ImmutablePureComponent {
       toggleHidden: this.handleHotkeyToggleHidden,
       toggleSensitive: this.handleHotkeyToggleSensitive,
       openMedia: this.handleHotkeyOpenMedia,
+      onTranslate: this.handleTranslate,
     };
 
     let media, statusAvatar, prepend, rebloggedByText;
@@ -405,7 +413,7 @@ class Status extends ImmutablePureComponent {
       prepend = (
         <div className='status__prepend'>
           <div className='status__prepend-icon-wrapper'><Icon id='retweet' icon={RepeatIcon} className='status__prepend-icon' fixedWidth /></div>
-          <FormattedMessage id='status.reblogged_by' defaultMessage='{name} boosted' values={{ name: <a onClick={this.handlePrependAccountClick} data-id={status.getIn(['account', 'id'])} data-hover-card-account={status.getIn(['account', 'id'])} href={`/@${status.getIn(['account', 'acct'])}`} className='status__display-name muted'><bdi><strong dangerouslySetInnerHTML={display_name_html} /></bdi></a> }} />
+          <FormattedMessage id='status.reblogged_by' defaultMessage='{name} boosted' values={{ name: <Link data-id={status.getIn(['account', 'id'])} data-hover-card-account={status.getIn(['account', 'id'])} to={`/@${status.getIn(['account', 'acct'])}`} className='status__display-name muted'><bdi><strong dangerouslySetInnerHTML={display_name_html} /></bdi></Link> }} />
         </div>
       );
 
@@ -450,6 +458,7 @@ class Status extends ImmutablePureComponent {
                 defaultWidth={this.props.cachedMediaWidth}
                 visible={this.state.showMedia}
                 onToggleVisibility={this.handleToggleMediaVisibility}
+                matchedFilters={status.get('matched_media_filters')}
               />
             )}
           </Bundle>
@@ -479,6 +488,7 @@ class Status extends ImmutablePureComponent {
                 visible={this.state.showMedia}
                 onToggleVisibility={this.handleToggleMediaVisibility}
                 attachmentId={attachment.get('id')}
+                matchedFilters={status.get('matched_media_filters')}
               />
             )}
           </Bundle>
@@ -504,12 +514,13 @@ class Status extends ImmutablePureComponent {
                 visible={this.state.showMedia}
                 onToggleVisibility={this.handleToggleMediaVisibility}
                 attachmentId={attachment.get('id')}
+                matchedFilters={status.get('matched_media_filters')}
               />
             )}
           </Bundle>
         );
       }
-    } else if (status.get('card') && status.getIn(['card', 'url']) !== status.get('quote_original_url') && !this.props.muted) {
+    } else if (status.get('card') && !status.get('quote') && !this.props.muted) {
       media = (
         <Card
           onOpenMedia={this.handleOpenMedia}
@@ -543,21 +554,22 @@ class Status extends ImmutablePureComponent {
           <div className={classNames('status', `status-${status.get('visibility')}`, { 'status-reply': !!status.get('in_reply_to_id'), 'status--in-thread': !!rootId, 'status--first-in-thread': previousId && (!connectUp || connectToRoot), muted: this.props.muted })} data-id={status.get('id')}>
             {(connectReply || connectUp || connectToRoot) && <div className={classNames('status__line', { 'status__line--full': connectReply, 'status__line--first': !status.get('in_reply_to_id') && !connectToRoot })} />}
 
+            {/* The focusable status wrapper provides the keyboard action. */}
             {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
-            <div onClick={this.handleClick} className='status__info'>
-              <a onClick={this.handleAccountClick} href={`/@${status.getIn(['account', 'acct'])}`} title={status.getIn(['account', 'acct'])} className='status__display-name' target='_blank' rel='noopener noreferrer' data-hover-card-account={status.getIn(['account', 'id'])}>
+            <div onClick={this.handleHeaderClick} onAuxClick={this.handleHeaderClick} className='status__info'>
+              <Link to={`/@${status.getIn(['account', 'acct'])}`} title={status.getIn(['account', 'acct'])} className='status__display-name' data-hover-card-account={status.getIn(['account', 'id'])}>
                 <div className='status__avatar'>
                   {statusAvatar}
                 </div>
 
                 <DisplayName account={status.get('account')} />
-              </a>
+              </Link>
 
               <div className='status__time'>
-                <a onClick={this.handleClick} href={`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`} className='status__relative-time' target='_blank' rel='noopener noreferrer'>
+                <Link to={`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`} className='status__relative-time'>
                   <span className='status__visibility-icon'><VisibilityIcon visibility={status.get('visibility')} /></span>
                   {timestamp}{status.get('edited_at') && <abbr title={intl.formatMessage(messages.edited, { date: intl.formatDate(status.get('edited_at'), { hour12: false, year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' }) })}> *</abbr>}
-                </a>
+                </Link>
                 {localStorage.plusminus_config_post_page_link === 'visible' && (
                   <a href={status.get('url')} onClick={this.openExternalLink(status.get('url'))} className='status__link_icon' target='_blank' rel='noopener noreferrer'>
                     <span><Icon id='external-link' title='external-link' /></span>
@@ -583,7 +595,13 @@ class Status extends ImmutablePureComponent {
                   {...statusContentProps}
                 />
 
-                <QuoteContainer id={status.get('quote_id')} />
+                {status.get('quote') && (
+                  <QuoteContainer
+                    contextType={this.props.contextType}
+                    parentQuotePostId={status.get('id')}
+                    quote={status.get('quote')}
+                  />
+                )}
                 {media}
                 {hashtagBar}
               </>

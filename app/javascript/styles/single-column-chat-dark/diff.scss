@@ -14,38 +14,40 @@
 }
 
 @media screen and (min-width: (600px + (285px * 1) + (10px * 1))) {
-  ::-webkit-scrollbar-thumb {
+  .custom-scrollbars ::-webkit-scrollbar-thumb {
     border-right: 2px solid transparent !important;
     border-left: 2px solid transparent !important;
     background-clip: padding-box !important;
   }
 
-  ::-webkit-scrollbar-track {
+  .custom-scrollbars ::-webkit-scrollbar-track {
     background: rgba($base-overlay-background, 0.1) !important;
   }
 
-  ::-webkit-scrollbar-track:hover {
+  .custom-scrollbars ::-webkit-scrollbar-track:hover {
     background: rgba($base-overlay-background, 0.1) !important;
   }
 
-  ::-webkit-scrollbar-track:active {
+  .custom-scrollbars ::-webkit-scrollbar-track:active {
     background: rgba($base-overlay-background, 0.1) !important;
   }
 
-  ::-webkit-scrollbar-corner {
+  .custom-scrollbars ::-webkit-scrollbar-corner {
     background: transparent;
   }
-
 
   /* 4.0 サイドバーのロゴを消す */
   .navigation-panel__logo {
     display: none;
   }
+
   /* 2019/07/28 master追従の仕様変更 */
   .layout-single-column {
     overflow-x: hidden !important;
 
-    .columns-area__panels__main .react-swipeable-view-container > *[aria-hidden="true"] {
+    .columns-area__panels__main
+      .react-swipeable-view-container
+      > *[aria-hidden='true'] {
       display: none !important;
     }
 
@@ -94,14 +96,17 @@
       width: 220px !important;
       min-width: 220px !important;
       max-width: 220px !important;
+
       /* from slack sidebar width */
       flex-shrink: 0;
       min-height: 100dvh;
     }
 
     /* サイドバーがスクロールできるようにする */
-    .columns-area__panels__pane--navigational .columns-area__panels__pane__inner {
+    .columns-area__panels__pane--navigational
+      .columns-area__panels__pane__inner {
       position: static !important;
+
       // height: calc(100% - 68px);
       overflow: auto;
       box-sizing: border-box;
@@ -128,6 +133,7 @@
     .columns-area__panels__main {
       width: calc(100% - 220px) !important;
       max-width: calc(100% - 220px) !important;
+
       // height: calc(100vh - 50px);
     }
 
@@ -164,18 +170,30 @@
 
     /* 投稿欄レイヤーのマウスイベントを透過させる */
     .ui > .columns-area__panels > .columns-area__panels__pane--compositional,
-    .ui > .columns-area__panels > .columns-area__panels__pane--compositional > .columns-area__panels__pane__inner,
-    .ui > .columns-area__panels > .columns-area__panels__pane--compositional > .columns-area__panels__pane__inner > .compose-panel {
+    .ui
+      > .columns-area__panels
+      > .columns-area__panels__pane--compositional
+      > .columns-area__panels__pane__inner,
+    .ui
+      > .columns-area__panels
+      > .columns-area__panels__pane--compositional
+      > .columns-area__panels__pane__inner
+      > .compose-panel {
       pointer-events: none;
     }
 
     .columns-area__panels__main .tabs-bar__wrapper,
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel * {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      * {
       pointer-events: all;
     }
 
     /* メインカラムの表示部分を確保する */
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel {
       display: flex;
       flex-direction: row;
       align-items: flex-end;
@@ -185,20 +203,32 @@
     }
 
     /* 投稿欄を横いっぱいに広げる */
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel {
       position: relative;
       width: 100%;
     }
 
     /* 投稿欄の不要な要素を非表示 */
-    /* .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .search,*/
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .flex-spacer,
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .getting-started__footer {
+
+    /* .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .search, */
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .flex-spacer,
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .getting-started__footer {
       display: none;
     }
 
     /* フッター削除 */
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .link-footer {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .link-footer {
       display: none !important;
     }
 
@@ -207,38 +237,61 @@
       z-index: 10;
     }
 
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .search {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .search {
       position: fixed;
       top: 10px;
       right: 55px !important;
       z-index: 1;
     }
 
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .search__input {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .search__input {
       background: transparent !important;
     }
 
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .search:hover,
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .search__input:hover,
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .search__input:active {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .search:hover,
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .search__input:hover,
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .search__input:active {
       background: #282c37 !important;
     }
 
     /* アイコンとか名前の部分の調整 */
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .navigation-bar {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .navigation-bar {
       width: 220px !important;
       min-width: 220px !important;
       max-width: 220px !important;
       box-sizing: border-box !important;
-      padding: 10px 10px 0 10px !important;
+      padding: 10px 10px 0 !important;
       flex-shrink: 0 !important;
     }
 
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .navigation-bar .navigation-bar__actions {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .navigation-bar
+      .navigation-bar__actions {
       transform: rotate(180deg);
     }
 
     /* 下部投稿欄の横方向配置 */
+
     /* 投稿欄が微妙に上にずれるのを修正 */
     .compose-panel {
       height: 100vh !important;
@@ -256,7 +309,7 @@
       background: #17191f !important;
       min-height: 40px !important;
       box-sizing: content-box !important;
-      padding: 10px 0px !important;
+      padding: 10px 0 !important;
       margin: 0 !important;
       overflow-y: visible !important;
       position: relative !important;
@@ -265,7 +318,8 @@
         flex: 1;
       }
 
-      .spoiler-input.spoiler-input--visible + .compose-form__autosuggest-wrapper {
+      .spoiler-input.spoiler-input--visible
+        + .compose-form__autosuggest-wrapper {
         border-top-left-radius: 0 !important;
         border-top-right-radius: 0 !important;
       }
@@ -318,7 +372,7 @@
     /* CW入力部分がふわって出て来るのをやめる */
     .spoiler-input {
       opacity: 1 !important;
-      width: 0px !important;
+      width: 0 !important;
       display: none;
     }
 
@@ -368,24 +422,38 @@
       box-sizing: border-box !important;
     }
 
-    .autosuggest-textarea__suggestions-wrapper .autosuggest-textarea__suggestions {
+    .autosuggest-textarea__suggestions-wrapper
+      .autosuggest-textarea__suggestions {
       position: absolute !important;
       top: auto !important;
       bottom: 0 !important;
     }
 
-    .compose-form__autosuggest-wrapper .autosuggest-textarea .autosuggest-textarea__suggestions {
+    .compose-form__autosuggest-wrapper
+      .autosuggest-textarea
+      .autosuggest-textarea__suggestions {
       position: relative !important;
     }
 
-    .compose-form__autosuggest-wrapper .autosuggest-textarea .autosuggest-textarea__suggestions .autosuggest-textarea__suggestions__item,
-    .compose-form__autosuggest-wrapper .autosuggest-textarea .autosuggest-textarea__suggestions .autosuggest-textarea__suggestions__item * {
+    .compose-form__autosuggest-wrapper
+      .autosuggest-textarea
+      .autosuggest-textarea__suggestions
+      .autosuggest-textarea__suggestions__item,
+    .compose-form__autosuggest-wrapper
+      .autosuggest-textarea
+      .autosuggest-textarea__suggestions
+      .autosuggest-textarea__suggestions__item
+      * {
       max-height: 1em !important;
       min-height: 1em !important;
     }
 
     /* 絵文字サジェストが謎の表示バランスになるから左寄せにする */
-    .compose-form__autosuggest-wrapper .autosuggest-textarea .autosuggest-textarea__suggestions .autosuggest-textarea__suggestions__item .autosuggest-emoji {
+    .compose-form__autosuggest-wrapper
+      .autosuggest-textarea
+      .autosuggest-textarea__suggestions
+      .autosuggest-textarea__suggestions__item
+      .autosuggest-emoji {
       display: inline-flex !important;
     }
 
@@ -432,6 +500,7 @@
     .compose-form__publish {
       display: none;
     }
+
     /* 文字数カウンター右側のを復帰させる */
     .compose-form__buttons + .right-side .compose-form__publish {
       display: block;
@@ -443,8 +512,9 @@
       padding: 0 !important;
     }
 
-    .compose-form__publish-button-wrapper:after {
-      content: "\f1d8" !important;
+    .compose-form__publish-button-wrapper::after {
+      content: '\f1d8' !important;
+      /* stylelint-disable-next-line font-family-no-missing-generic-family-keyword -- FontAwesome supplies the icon glyph. */
       font-family: FontAwesome !important;
       position: absolute !important;
       top: calc(50% - (18px / 2)) !important;
@@ -473,9 +543,11 @@
       margin-top: 16px;
       width: calc(100% - 56px) !important;
     }
+
     .media-gallery {
       margin-top: 0 !important;
     }
+
     .media-gallery,
     .status-card {
       display: flex !important;
@@ -524,16 +596,24 @@
     }
 
     /* 自分の情報を移動 */
-    .columns-area__panels__pane--navigational .columns-area__panels__pane__inner {
+    .columns-area__panels__pane--navigational
+      .columns-area__panels__pane__inner {
       transform: translate3d(0, 68px, 0);
     }
 
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .navigation-bar {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .navigation-bar {
       position: fixed;
       top: 0;
     }
 
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .navigation-bar .navigation-bar__actions {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .navigation-bar
+      .navigation-bar__actions {
       transform: none;
     }
 
@@ -542,23 +622,34 @@
     }
 
     /* 自分のアイコンを消す */
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .navigation-bar .account__avatar {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .navigation-bar
+      .account__avatar {
       display: none;
     }
 
-    .columns-area__panels__pane--navigational .columns-area__panels__pane__inner {
+    .columns-area__panels__pane--navigational
+      .columns-area__panels__pane__inner {
       transform: translate3d(0, 59px, 0);
       height: calc(100% - 59px);
     }
 
     /* サイドバーの余白を狭くする */
-    .columns-area__panels__pane--navigational .columns-area__panels__pane__inner .navigation-panel .column-link {
+    .columns-area__panels__pane--navigational
+      .columns-area__panels__pane__inner
+      .navigation-panel
+      .column-link {
       padding-top: 6px;
       padding-bottom: 6px;
     }
 
     /* サイドバーのアクティブな項目の背景色を変える */
-    .columns-area__panels__pane--navigational .columns-area__panels__pane__inner .navigation-panel .column-link.active {
+    .columns-area__panels__pane--navigational
+      .columns-area__panels__pane__inner
+      .navigation-panel
+      .column-link.active {
       background: $ui-highlight-color;
       color: $secondary-text-color;
     }
@@ -612,7 +703,10 @@
       border-radius: 0 !important;
     }
 
-    .column-header__wrapper .column-header .column-header__buttons .column-header__back-button {
+    .column-header__wrapper
+      .column-header
+      .column-header__buttons
+      .column-header__back-button {
       padding-left: 8px !important;
       padding-right: 8px !important;
     }
@@ -625,7 +719,10 @@
       padding-left: 15px !important;
     }
 
-    .columns-area__panels__pane--compositional .columns-area__panels__pane__inner .compose-panel .search {
+    .columns-area__panels__pane--compositional
+      .columns-area__panels__pane__inner
+      .compose-panel
+      .search {
       position: fixed;
       top: 0 !important;
       right: 0 !important;

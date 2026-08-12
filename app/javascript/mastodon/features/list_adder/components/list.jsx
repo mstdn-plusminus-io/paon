@@ -19,6 +19,7 @@ const messages = defineMessages({
 const MapStateToProps = (state, { listId, added }) => ({
   list: state.get('lists').get(listId),
   added: typeof added === 'undefined' ? state.getIn(['listAdder', 'lists', 'items']).includes(listId) : added,
+  pending: state.getIn(['listAdder', 'lists', 'pending']).has(listId),
 });
 
 const mapDispatchToProps = (dispatch, { listId }) => ({
@@ -34,6 +35,7 @@ class List extends ImmutablePureComponent {
     onRemove: PropTypes.func.isRequired,
     onAdd: PropTypes.func.isRequired,
     added: PropTypes.bool,
+    pending: PropTypes.bool.isRequired,
   };
 
   static defaultProps = {
@@ -41,14 +43,14 @@ class List extends ImmutablePureComponent {
   };
 
   render () {
-    const { list, intl, onRemove, onAdd, added } = this.props;
+    const { list, intl, onRemove, onAdd, added, pending } = this.props;
 
     let button;
 
     if (added) {
-      button = <IconButton icon='times' title={intl.formatMessage(messages.remove)} onClick={onRemove} />;
+      button = <IconButton disabled={pending} icon='times' title={intl.formatMessage(messages.remove)} onClick={onRemove} />;
     } else {
-      button = <IconButton icon='plus' title={intl.formatMessage(messages.add)} onClick={onAdd} />;
+      button = <IconButton disabled={pending} icon='plus' title={intl.formatMessage(messages.add)} onClick={onAdd} />;
     }
 
     return (

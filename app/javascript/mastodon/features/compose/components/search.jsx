@@ -11,8 +11,10 @@ import { Icon }  from 'mastodon/components/icon';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { domain, searchEnabled } from 'mastodon/initial_state';
 import { HASHTAG_REGEX } from 'mastodon/utils/hashtags';
+import { buildSearchQuery } from 'mastodon/utils/search_query';
 
 const messages = defineMessages({
+  clear: { id: 'search.clear', defaultMessage: 'Clear search' },
   placeholder: { id: 'search.placeholder', defaultMessage: 'Search' },
   placeholderSignedIn: { id: 'search.search_or_paste', defaultMessage: 'Search or paste URL' },
 });
@@ -26,6 +28,20 @@ const labelForRecentSearch = search => {
   default:
     return search.get('q');
   }
+};
+
+export const RecentSearchOption = ({ label, action, forget, selected }) => (
+  <div tabIndex={0} role='button' onMouseDown={action} className={classNames('search__popout__menu__item search__popout__menu__item--flex', { selected })}>
+    <span>{label}</span>
+    <button type='button' className='icon-button' onMouseDown={forget}><Icon id='times' /></button>
+  </div>
+);
+
+RecentSearchOption.propTypes = {
+  label: PropTypes.node.isRequired,
+  action: PropTypes.func.isRequired,
+  forget: PropTypes.func.isRequired,
+  selected: PropTypes.bool,
 };
 
 class Search extends PureComponent {
@@ -59,14 +75,14 @@ class Search extends PureComponent {
   };
 
   defaultOptions = [
-    { label: <><mark>has:</mark> <FormattedList type='disjunction' value={['media', 'poll', 'embed']} /></>, action: e => { e.preventDefault(); this._insertText('has:') } },
-    { label: <><mark>is:</mark> <FormattedList type='disjunction' value={['reply', 'sensitive']} /></>, action: e => { e.preventDefault(); this._insertText('is:') } },
-    { label: <><mark>language:</mark> <FormattedMessage id='search_popout.language_code' defaultMessage='ISO language code' /></>, action: e => { e.preventDefault(); this._insertText('language:') } },
-    { label: <><mark>from:</mark> <FormattedMessage id='search_popout.user' defaultMessage='user' /></>, action: e => { e.preventDefault(); this._insertText('from:') } },
-    { label: <><mark>before:</mark> <FormattedMessage id='search_popout.specific_date' defaultMessage='specific date' /></>, action: e => { e.preventDefault(); this._insertText('before:') } },
-    { label: <><mark>during:</mark> <FormattedMessage id='search_popout.specific_date' defaultMessage='specific date' /></>, action: e => { e.preventDefault(); this._insertText('during:') } },
-    { label: <><mark>after:</mark> <FormattedMessage id='search_popout.specific_date' defaultMessage='specific date' /></>, action: e => { e.preventDefault(); this._insertText('after:') } },
-    { label: <><mark>in:</mark> <FormattedList type='disjunction' value={['all', 'library', 'bookmark']} /></>, action: e => { e.preventDefault(); this._insertText('in:') } }
+    { key: 'has', label: <><mark>has:</mark> <FormattedList type='disjunction' value={['media', 'poll', 'embed', 'quote']} /></>, action: e => { e.preventDefault(); this._insertText('has:') } },
+    { key: 'is', label: <><mark>is:</mark> <FormattedList type='disjunction' value={['reply', 'sensitive']} /></>, action: e => { e.preventDefault(); this._insertText('is:') } },
+    { key: 'language', label: <><mark>language:</mark> <FormattedMessage id='search_popout.language_code' defaultMessage='ISO language code' /></>, action: e => { e.preventDefault(); this._insertText('language:') } },
+    { key: 'from', label: <><mark>from:</mark> <FormattedMessage id='search_popout.user' defaultMessage='user' /></>, action: e => { e.preventDefault(); this._insertText('from:') } },
+    { key: 'before', label: <><mark>before:</mark> <FormattedMessage id='search_popout.specific_date' defaultMessage='specific date' /></>, action: e => { e.preventDefault(); this._insertText('before:') } },
+    { key: 'during', label: <><mark>during:</mark> <FormattedMessage id='search_popout.specific_date' defaultMessage='specific date' /></>, action: e => { e.preventDefault(); this._insertText('during:') } },
+    { key: 'after', label: <><mark>after:</mark> <FormattedMessage id='search_popout.specific_date' defaultMessage='specific date' /></>, action: e => { e.preventDefault(); this._insertText('after:') } },
+    { key: 'in', label: <><mark>in:</mark> <FormattedList type='disjunction' value={['all', 'library', 'bookmark']} /></>, action: e => { e.preventDefault(); this._insertText('in:') } }
   ];
 
   setRef = c => {
@@ -82,13 +98,18 @@ class Search extends PureComponent {
   };
 
   handleClear = e => {
-    const { value, submitted, onClear } = this.props;
+    const { router } = this.context;
+    const { value, submitted, onClear, openInRoute } = this.props;
 
     e.preventDefault();
 
     if (value.length > 0 || submitted) {
       onClear();
       this.setState({ options: [], selectedOption: -1 });
+
+      if (openInRoute && router.history.location.pathname === '/search') {
+        router.history.push('/search');
+      }
     }
   };
 
@@ -212,7 +233,7 @@ class Search extends PureComponent {
   };
 
   handleRecentSearchClick = search => {
-    const { onChange } = this.props;
+    const { onChange, openInRoute } = this.props;
     const { router } = this.context;
 
     if (search.get('type') === 'account') {
@@ -220,8 +241,15 @@ class Search extends PureComponent {
     } else if (search.get('type') === 'hashtag') {
       router.history.push(`/tags/${search.get('q')}`);
     } else {
-      onChange(search.get('q'));
-      this._submit(search.get('type'));
+      if (openInRoute) {
+        router.history.push({
+          pathname: '/search',
+          search: buildSearchQuery(search.get('q'), search.get('type')),
+        });
+      } else {
+        onChange(search.get('q'));
+        this._submit(search.get('type'), search.get('q'));
+      }
     }
 
     this._unfocus();
@@ -230,11 +258,11 @@ class Search extends PureComponent {
   handleForgetRecentSearchClick = search => {
     const { onForgetSearchResult } = this.props;
 
-    onForgetSearchResult(search.get('q'));
+    onForgetSearchResult(search.toJS());
   };
 
   _unfocus () {
-    document.querySelector('.ui').parentElement.focus();
+    document.querySelector('.ui')?.parentElement?.focus();
   }
 
   _insertText (text) {
@@ -249,18 +277,22 @@ class Search extends PureComponent {
     }
   }
 
-  _submit (type) {
+  _submit (type, submittedValue) {
     const { onSubmit, openInRoute, value, onClickSearchResult } = this.props;
     const { router } = this.context;
-
-    onSubmit(type);
-
-    if (value) {
-      onClickSearchResult(value, type);
-    }
+    const query = (submittedValue ?? value).trim();
 
     if (openInRoute) {
-      router.history.push('/search');
+      router.history.push({
+        pathname: '/search',
+        search: buildSearchQuery(query, type),
+      });
+    } else {
+      onSubmit(type, query);
+    }
+
+    if (query) {
+      onClickSearchResult(query, type);
     }
 
     this._unfocus();
@@ -351,10 +383,17 @@ class Search extends PureComponent {
           onBlur={this.handleBlur}
         />
 
-        <div role='button' tabIndex={0} className='search__icon' onClick={this.handleClear}>
+        <button
+          type='button'
+          className='search__icon'
+          onClick={this.handleClear}
+          aria-label={intl.formatMessage(messages.clear)}
+          aria-hidden={!hasValue}
+          tabIndex={hasValue ? 0 : -1}
+        >
           <Icon id='search' className={hasValue ? '' : 'active'} />
-          <Icon id='times-circle' className={hasValue ? 'active' : ''} aria-label={intl.formatMessage(messages.placeholder)} />
-        </div>
+          <Icon id='times-circle' className={hasValue ? 'active' : ''} />
+        </button>
 
         <div className='search__popout'>
           {options.length === 0 && (
@@ -363,10 +402,7 @@ class Search extends PureComponent {
 
               <div className='search__popout__menu'>
                 {recent.size > 0 ? this._getOptions().map(({ label, action, forget }, i) => (
-                  <button key={label} onMouseDown={action} className={classNames('search__popout__menu__item search__popout__menu__item--flex', { selected: selectedOption === i })}>
-                    <span>{label}</span>
-                    <button className='icon-button' onMouseDown={forget}><Icon id='times' /></button>
-                  </button>
+                  <RecentSearchOption key={label} label={label} action={action} forget={forget} selected={selectedOption === i} />
                 )) : (
                   <div className='search__popout__menu__message'>
                     <FormattedMessage id='search.no_recent_searches' defaultMessage='No recent searches' />

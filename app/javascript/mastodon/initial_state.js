@@ -61,6 +61,7 @@
  * @property {boolean} limited_federation_mode
  * @property {string} locale
  * @property {string | null} mascot
+ * @property {boolean=} missing_alt_text_modal
  * @property {string=} me
  * @property {string=} moved_to_account_id
  * @property {string=} owner
@@ -74,6 +75,7 @@
  * @property {string} source_url
  * @property {string} streaming_api_base_url
  * @property {boolean} timeline_preview
+ * @property {boolean} terms_of_service_enabled
  * @property {string} title
  * @property {boolean} show_trends
  * @property {boolean} trends_as_landing_page
@@ -83,7 +85,6 @@
  * @property {string} version
  * @property {string} actual_version
  * @property {string} sso_redirect
- * @property {boolean} feature_quote
  */
 
 /**
@@ -135,6 +136,7 @@ export const expandSpoilers = getMeta('expand_spoilers');
 export const forceSingleColumn = !getMeta('advanced_layout');
 export const limitedFederationMode = getMeta('limited_federation_mode');
 export const mascot = getMeta('mascot');
+export const missingAltTextModal = getMeta('missing_alt_text_modal') ?? true;
 export const me = getMeta('me');
 export const movedToAccountId = getMeta('moved_to_account_id');
 export const owner = getMeta('owner');
@@ -148,6 +150,7 @@ export const showTrends = getMeta('show_trends');
 export const singleUserMode = getMeta('single_user_mode');
 export const source_url = getMeta('source_url');
 export const timelinePreview = getMeta('timeline_preview');
+export const termsOfServiceEnabled = getMeta('terms_of_service_enabled');
 export const title = getMeta('title');
 export const trendsAsLanding = getMeta('trends_as_landing_page');
 export const disableHoverCards = getMeta('disable_hover_cards');
@@ -159,7 +162,6 @@ export const criticalUpdatesPending = initialState?.critical_updates_pending;
 // @ts-expect-error
 export const statusPageUrl = getMeta('status_page_url');
 export const sso_redirect = getMeta('sso_redirect');
-export const feature_quote = getMeta('feature_quote');
 
 /**
  * Return the access token directly from the immutable boot payload instead of

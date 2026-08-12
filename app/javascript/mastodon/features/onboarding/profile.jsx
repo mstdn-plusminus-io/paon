@@ -7,7 +7,6 @@ import { useDispatch, useSelector } from 'react-redux';
 
 import { updateAccount } from 'mastodon/actions/accounts';
 import Button from 'mastodon/components/button';
-import ColumnBackButton from 'mastodon/components/column_back_button';
 import { Icon } from 'mastodon/components/icon';
 import { LoadingIndicator } from 'mastodon/components/loading_indicator';
 import { me } from 'mastodon/initial_state';
@@ -34,7 +33,7 @@ const useImagePreview = (file, fallback) => {
   return preview;
 };
 
-export const Profile = ({ onBack, onSaved, multiColumn }) => {
+export const Profile = ({ onSaved }) => {
   const account = useSelector(state => state.getIn(['accounts', me]));
   const dispatch = useDispatch();
   const intl = useIntl();
@@ -76,9 +75,7 @@ export const Profile = ({ onBack, onSaved, multiColumn }) => {
   }, [avatar, discoverable, dispatch, displayName, header, note, onSaved]);
 
   return (
-    <>
-      <ColumnBackButton multiColumn={multiColumn} onClick={onBack} />
-      <div className='scrollable privacy-policy'>
+    <div className='scrollable privacy-policy'>
         <div className='column-title'>
           <h3><FormattedMessage id='onboarding.profile.title' defaultMessage='Profile setup' /></h3>
           <p><FormattedMessage id='onboarding.profile.lead' defaultMessage='You can always complete this later in the settings, where even more customization options are available.' /></p>
@@ -114,13 +111,10 @@ export const Profile = ({ onBack, onSaved, multiColumn }) => {
           {error ? <p className='onboarding__profile-error' role='alert'><FormattedMessage id='onboarding.profile.save_error' defaultMessage='Your profile could not be saved. Check the selected images and try again.' /></p> : null}
           <Button block onClick={handleSubmit} disabled={isSaving}>{isSaving ? <LoadingIndicator /> : <FormattedMessage id='onboarding.profile.save_and_continue' defaultMessage='Save and continue' />}</Button>
         </div>
-      </div>
-    </>
+    </div>
   );
 };
 
 Profile.propTypes = {
-  onBack: PropTypes.func.isRequired,
   onSaved: PropTypes.func.isRequired,
-  multiColumn: PropTypes.bool,
 };

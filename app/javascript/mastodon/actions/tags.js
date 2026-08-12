@@ -20,6 +20,14 @@ export const HASHTAG_UNFOLLOW_REQUEST = 'HASHTAG_UNFOLLOW_REQUEST';
 export const HASHTAG_UNFOLLOW_SUCCESS = 'HASHTAG_UNFOLLOW_SUCCESS';
 export const HASHTAG_UNFOLLOW_FAIL    = 'HASHTAG_UNFOLLOW_FAIL';
 
+export const HASHTAG_FEATURE_REQUEST = 'HASHTAG_FEATURE_REQUEST';
+export const HASHTAG_FEATURE_SUCCESS = 'HASHTAG_FEATURE_SUCCESS';
+export const HASHTAG_FEATURE_FAIL    = 'HASHTAG_FEATURE_FAIL';
+
+export const HASHTAG_UNFEATURE_REQUEST = 'HASHTAG_UNFEATURE_REQUEST';
+export const HASHTAG_UNFEATURE_SUCCESS = 'HASHTAG_UNFEATURE_SUCCESS';
+export const HASHTAG_UNFEATURE_FAIL    = 'HASHTAG_UNFEATURE_FAIL';
+
 export const fetchHashtag = name => (dispatch) => {
   dispatch(fetchHashtagRequest());
 
@@ -167,6 +175,60 @@ export const unfollowHashtagSuccess = (name, tag) => ({
 
 export const unfollowHashtagFail = (name, error) => ({
   type: HASHTAG_UNFOLLOW_FAIL,
+  name,
+  error,
+});
+
+export const featureHashtag = name => (dispatch) => {
+  dispatch(featureHashtagRequest(name));
+
+  return api().post(`/api/v1/tags/${name}/feature`).then(({ data }) => {
+    dispatch(featureHashtagSuccess(name, data));
+  }).catch(error => {
+    dispatch(featureHashtagFail(name, error));
+  });
+};
+
+export const featureHashtagRequest = name => ({
+  type: HASHTAG_FEATURE_REQUEST,
+  name,
+});
+
+export const featureHashtagSuccess = (name, tag) => ({
+  type: HASHTAG_FEATURE_SUCCESS,
+  name,
+  tag,
+});
+
+export const featureHashtagFail = (name, error) => ({
+  type: HASHTAG_FEATURE_FAIL,
+  name,
+  error,
+});
+
+export const unfeatureHashtag = name => (dispatch) => {
+  dispatch(unfeatureHashtagRequest(name));
+
+  return api().post(`/api/v1/tags/${name}/unfeature`).then(({ data }) => {
+    dispatch(unfeatureHashtagSuccess(name, data));
+  }).catch(error => {
+    dispatch(unfeatureHashtagFail(name, error));
+  });
+};
+
+export const unfeatureHashtagRequest = name => ({
+  type: HASHTAG_UNFEATURE_REQUEST,
+  name,
+});
+
+export const unfeatureHashtagSuccess = (name, tag) => ({
+  type: HASHTAG_UNFEATURE_SUCCESS,
+  name,
+  tag,
+});
+
+export const unfeatureHashtagFail = (name, error) => ({
+  type: HASHTAG_UNFEATURE_FAIL,
   name,
   error,
 });

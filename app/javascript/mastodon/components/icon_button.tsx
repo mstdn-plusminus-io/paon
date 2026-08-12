@@ -28,6 +28,7 @@ interface Props {
   counter?: number;
   href?: string;
   ariaHidden: boolean;
+  ariaControls?: string;
 }
 interface States {
   activate: boolean;
@@ -109,6 +110,7 @@ export class IconButton extends PureComponent<Props, States> {
       counter,
       href,
       ariaHidden,
+      ariaControls,
     } = this.props;
 
     const { activate, deactivate } = this.state;
@@ -151,6 +153,7 @@ export class IconButton extends PureComponent<Props, States> {
         type='button'
         aria-label={title}
         aria-expanded={expanded}
+        aria-controls={ariaControls}
         aria-hidden={ariaHidden}
         title={title}
         className={classes}

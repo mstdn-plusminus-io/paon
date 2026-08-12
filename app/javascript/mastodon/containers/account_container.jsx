@@ -66,6 +66,13 @@ const mapDispatchToProps = (dispatch, { intl }) => ({
   onMuteNotifications (account, notifications) {
     dispatch(muteAccount(account.get('id'), notifications));
   },
+
+  onAddToList (account) {
+    dispatch(openModal({
+      modalType: 'LIST_ADDER',
+      modalProps: { accountId: account.get('id') },
+    }));
+  },
 });
 
 export default injectIntl(connect(makeMapStateToProps, mapDispatchToProps)(Account));

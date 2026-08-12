@@ -1,4 +1,4 @@
-import { defineMessages, injectIntl } from 'react-intl';
+import { injectIntl } from 'react-intl';
 
 import { connect } from 'react-redux';
 
@@ -7,13 +7,9 @@ import { markConversationRead, deleteConversation } from 'mastodon/actions/conve
 import { openModal } from 'mastodon/actions/modal';
 import { muteStatus, unmuteStatus, hideStatus, revealStatus } from 'mastodon/actions/statuses';
 import { makeGetStatus } from 'mastodon/selectors';
+import { discardDraftModalProps, hasComposeDraft } from 'mastodon/utils/discard_draft';
 
 import Conversation from '../components/conversation';
-
-const messages = defineMessages({
-  replyConfirm: { id: 'confirmations.reply.confirm', defaultMessage: 'Reply' },
-  replyMessage: { id: 'confirmations.reply.message', defaultMessage: 'Replying now will overwrite the message you are currently composing. Are you sure you want to proceed?' },
-});
 
 const mapStateToProps = () => {
   const getStatus = makeGetStatus();
@@ -38,14 +34,13 @@ const mapDispatchToProps = (dispatch, { intl, conversationId }) => ({
 
   reply (status, router) {
     dispatch((_, getState) => {
-      let state = getState();
+      const state = getState();
 
-      if (state.getIn(['compose', 'text']).trim().length !== 0) {
+      if (hasComposeDraft(state)) {
         dispatch(openModal({
           modalType: 'CONFIRM',
           modalProps: {
-            message: intl.formatMessage(messages.replyMessage),
-            confirm: intl.formatMessage(messages.replyConfirm),
+            ...discardDraftModalProps(intl, Boolean(state.getIn(['compose', 'id']))),
             onConfirm: () => dispatch(replyCompose(status, router)),
           },
         }));

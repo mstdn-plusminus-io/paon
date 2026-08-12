@@ -105,16 +105,15 @@ $content-width: 840px;
       }
 
       a {
-        display: block;
+        display: flex;
+        align-items: center;
+        gap: 6px;
         padding: 15px;
         color: $darker-text-color;
         text-decoration: none;
         transition: all 200ms linear;
         transition-property: color, background-color;
         border-radius: 4px 0 0 4px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
 
         i.fa {
           margin-inline-end: 5px;

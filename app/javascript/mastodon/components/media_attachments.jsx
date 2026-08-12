@@ -15,6 +15,8 @@ export default class MediaAttachments extends ImmutablePureComponent {
     lang: PropTypes.string,
     height: PropTypes.number,
     width: PropTypes.number,
+    onOpenMedia: PropTypes.func,
+    onOpenVideo: PropTypes.func,
   };
 
   static defaultProps = {
@@ -51,7 +53,7 @@ export default class MediaAttachments extends ImmutablePureComponent {
   };
 
   render () {
-    const { status, width, height } = this.props;
+    const { status, width, height, onOpenMedia = noop, onOpenVideo = noop } = this.props;
     const mediaAttachments = status.get('media_attachments');
     const language = status.getIn(['language', 'translation']) || status.get('language') || this.props.lang;
 
@@ -77,6 +79,8 @@ export default class MediaAttachments extends ImmutablePureComponent {
               foregroundColor={audio.getIn(['meta', 'colors', 'foreground'])}
               accentColor={audio.getIn(['meta', 'colors', 'accent'])}
               duration={audio.getIn(['meta', 'original', 'duration'], 0)}
+              sensitive={status.get('sensitive')}
+              matchedFilters={status.get('matched_media_filters')}
             />
           )}
         </Bundle>
@@ -99,7 +103,8 @@ export default class MediaAttachments extends ImmutablePureComponent {
               height={height}
               inline
               sensitive={status.get('sensitive')}
-              onOpenVideo={noop}
+              onOpenVideo={onOpenVideo}
+              matchedFilters={status.get('matched_media_filters')}
             />
           )}
         </Bundle>
@@ -114,7 +119,8 @@ export default class MediaAttachments extends ImmutablePureComponent {
               sensitive={status.get('sensitive')}
               defaultWidth={width}
               height={height}
-              onOpenMedia={noop}
+              onOpenMedia={onOpenMedia}
+              matchedFilters={status.get('matched_media_filters')}
             />
           )}
         </Bundle>

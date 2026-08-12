@@ -10,7 +10,7 @@ export default class Compose extends PureComponent {
   render () {
     return (
       <div>
-        <ComposeFormContainer autoFocus />
+        <ComposeFormContainer autoFocus redirectOnSuccess />
         <NotificationsContainer />
         <ModalContainer />
         <LoadingBarContainer className='loading-bar' />

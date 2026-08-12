@@ -12,7 +12,7 @@ import { isEqual } from 'lodash';
 
 import { addColumn, removeColumn, moveColumn } from 'mastodon/actions/columns';
 import { connectHashtagStream } from 'mastodon/actions/streaming';
-import { fetchHashtag, followHashtag, unfollowHashtag } from 'mastodon/actions/tags';
+import { featureHashtag, fetchHashtag, followHashtag, unfeatureHashtag, unfollowHashtag } from 'mastodon/actions/tags';
 import { expandHashtagTimeline, clearTimeline } from 'mastodon/actions/timelines';
 import Column from 'mastodon/components/column';
 import ColumnHeader from 'mastodon/components/column_header';
@@ -181,6 +181,22 @@ class HashtagTimeline extends PureComponent {
     }
   };
 
+  handleFeature = () => {
+    const { dispatch, params, tag } = this.props;
+    const { id } = params;
+    const { signedIn } = this.props.identity;
+
+    if (!signedIn || !tag) {
+      return;
+    }
+
+    if (tag.get('featuring')) {
+      dispatch(unfeatureHashtag(id));
+    } else {
+      dispatch(featureHashtag(id));
+    }
+  };
+
   render () {
     const { hasUnread, columnId, multiColumn, tag } = this.props;
     const { id, local } = this.props.params;
@@ -204,7 +220,7 @@ class HashtagTimeline extends PureComponent {
         </ColumnHeader>
 
         <StatusListContainer
-          prepend={pinned ? null : <HashtagHeader tag={tag} disabled={!signedIn} onClick={this.handleFollow} />}
+          prepend={pinned ? null : <HashtagHeader tag={tag} identity={this.props.identity} disabled={!signedIn} onClick={this.handleFollow} onFeature={this.handleFeature} />}
           alwaysPrepend
           trackScroll={!pinned}
           scrollKey={`hashtag_timeline-${columnId}`}

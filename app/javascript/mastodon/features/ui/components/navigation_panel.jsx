@@ -21,7 +21,7 @@ import SignInBanner from './sign_in_banner';
 const messages = defineMessages({
   home: { id: 'tabs_bar.home', defaultMessage: 'Home' },
   notifications: { id: 'tabs_bar.notifications', defaultMessage: 'Notifications' },
-  explore: { id: 'explore.title', defaultMessage: 'Explore' },
+  explore: { id: 'explore.title', defaultMessage: 'Trending' },
   firehose: { id: 'column.firehose', defaultMessage: 'Live feeds' },
   direct: { id: 'navigation_bar.direct', defaultMessage: 'Direct messages' },
   favourites: { id: 'navigation_bar.favourites', defaultMessage: 'Favorites' },

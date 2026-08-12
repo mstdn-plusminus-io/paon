@@ -3,6 +3,7 @@ import escapeTextContentForBrowser from 'escape-html';
 import emojify from '../../features/emoji/emoji';
 import { expandSpoilers } from '../../initial_state';
 import { unescapeHTML } from '../../utils/html';
+import { normalizeStatusQuote, stripQuoteFallback } from '../../utils/status_quote';
 
 const domParser = new DOMParser();
 
@@ -63,6 +64,10 @@ export function normalizeStatus(status, normalOldStatus) {
     normalStatus.reblog = status.reblog.id;
   }
 
+  if (status.quote) {
+    normalStatus.quote = normalizeStatusQuote(status.quote);
+  }
+
   if (status.poll && status.poll.id) {
     normalStatus.poll = status.poll.id;
   }
@@ -85,7 +90,11 @@ export function normalizeStatus(status, normalOldStatus) {
   // Only calculate these values when status first encountered and
   // when the underlying values change. Otherwise keep the ones
   // already in the reducer
-  if (normalOldStatus && normalOldStatus.get('content') === normalStatus.content && normalOldStatus.get('spoiler_text') === normalStatus.spoiler_text) {
+  const oldQuoteState = normalOldStatus?.getIn(['quote', 'state']);
+  const oldQuotedStatusId = normalOldStatus?.getIn(['quote', 'quoted_status']);
+  const quoteIsUnchanged = oldQuoteState === normalStatus.quote?.state && oldQuotedStatusId === normalStatus.quote?.quoted_status;
+
+  if (normalOldStatus && normalOldStatus.get('content') === normalStatus.content && normalOldStatus.get('spoiler_text') === normalStatus.spoiler_text && quoteIsUnchanged) {
     normalStatus.search_index = normalOldStatus.get('search_index');
     normalStatus.contentHtml = normalOldStatus.get('contentHtml');
     normalStatus.spoilerHtml = normalOldStatus.get('spoilerHtml');
@@ -98,7 +107,7 @@ export function normalizeStatus(status, normalOldStatus) {
   } else {
     // If the status has a CW but no contents, treat the CW as if it were the
     // status' contents, to avoid having a CW toggle with seemingly no effect.
-    if (normalStatus.spoiler_text && !normalStatus.content) {
+    if (normalStatus.spoiler_text && !normalStatus.content && !normalStatus.quote) {
       normalStatus.content = normalStatus.spoiler_text;
       normalStatus.spoiler_text = '';
     }
@@ -111,6 +120,10 @@ export function normalizeStatus(status, normalOldStatus) {
     normalStatus.contentHtml  = emojify(normalStatus.content, emojiMap);
     normalStatus.spoilerHtml  = emojify(escapeTextContentForBrowser(spoilerText), emojiMap);
     normalStatus.hidden       = expandSpoilers ? false : spoilerText.length > 0 || normalStatus.sensitive;
+
+    if (normalStatus.quote) {
+      normalStatus.contentHtml = stripQuoteFallback(normalStatus.contentHtml);
+    }
 
     if (normalStatus.url && !(normalStatus.url.startsWith('http://') || normalStatus.url.startsWith('https://'))) {
       normalStatus.url = null;
@@ -150,6 +163,10 @@ export function normalizeStatusTranslation(translation, status) {
     spoilerHtml: emojify(escapeTextContentForBrowser(translation.spoiler_text), emojiMap),
     spoiler_text: translation.spoiler_text,
   };
+
+  if (status.get('quote')) {
+    normalTranslation.contentHtml = stripQuoteFallback(normalTranslation.contentHtml);
+  }
 
   return normalTranslation;
 }

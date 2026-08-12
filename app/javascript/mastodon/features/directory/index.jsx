@@ -19,6 +19,7 @@ import { RadioButton } from 'mastodon/components/radio_button';
 import ScrollContainer from 'mastodon/containers/scroll_container';
 
 import AccountCard from './components/account_card';
+import { directoryInitialLoad } from './utils';
 
 const messages = defineMessages({
   title: { id: 'column.directory', defaultMessage: 'Browse profiles' },
@@ -131,6 +132,7 @@ class Directory extends PureComponent {
     const { isLoading, accountIds, intl, columnId, multiColumn, domain } = this.props;
     const { order, local } = this.getParams(this.props, this.state);
     const pinned = !!columnId;
+    const initialLoad = directoryInitialLoad(isLoading, accountIds.size);
 
     const scrollableArea = (
       <div className='scrollable'>
@@ -147,12 +149,12 @@ class Directory extends PureComponent {
         </div>
 
         <div className='directory__list'>
-          {isLoading ? <LoadingIndicator /> : accountIds.map(accountId => (
+          {initialLoad ? <LoadingIndicator /> : accountIds.map(accountId => (
             <AccountCard id={accountId} key={accountId} />
           ))}
         </div>
 
-        <LoadMore onClick={this.handleLoadMore} visible={!isLoading} />
+        <LoadMore onClick={this.handleLoadMore} visible={!initialLoad} loading={isLoading} />
       </div>
     );
 

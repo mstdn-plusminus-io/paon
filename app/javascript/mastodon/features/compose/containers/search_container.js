@@ -28,8 +28,8 @@ const mapDispatchToProps = dispatch => ({
     dispatch(clearSearch());
   },
 
-  onSubmit (type) {
-    dispatch(submitSearch(type));
+  onSubmit (type, value) {
+    dispatch(submitSearch(type, value));
   },
 
   onShow () {
@@ -44,8 +44,8 @@ const mapDispatchToProps = dispatch => ({
     dispatch(clickSearchResult(q, type));
   },
 
-  onForgetSearchResult (q) {
-    dispatch(forgetSearchResult(q));
+  onForgetSearchResult (search) {
+    dispatch(forgetSearchResult(search));
   },
 
 });

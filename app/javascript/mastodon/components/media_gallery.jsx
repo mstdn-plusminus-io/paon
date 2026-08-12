@@ -12,11 +12,12 @@ import { debounce } from 'lodash';
 
 import { AltTextBadge } from 'mastodon/components/alt_text_badge';
 import { Blurhash } from 'mastodon/components/blurhash';
+import { SpoilerButton } from 'mastodon/components/spoiler_button';
 import { formatTime } from 'mastodon/features/video';
 
 import { autoPlayGif, cropImages, displayMedia, useBlurhash } from '../initial_state';
 
-class Item extends PureComponent {
+export class MediaGalleryItem extends PureComponent {
 
   static propTypes = {
     attachment: ImmutablePropTypes.map.isRequired,
@@ -38,6 +39,7 @@ class Item extends PureComponent {
 
   state = {
     loaded: false,
+    error: false,
   };
 
   handleMouseEnter = (e) => {
@@ -79,6 +81,10 @@ class Item extends PureComponent {
 
   handleImageLoad = () => {
     this.setState({ loaded: true });
+  };
+
+  handleImageError = () => {
+    this.setState({ error: true });
   };
 
   render () {
@@ -149,6 +155,7 @@ class Item extends PureComponent {
             lang={lang}
             style={{ objectPosition: `${x}% ${y}%` }}
             onLoad={this.handleImageLoad}
+            onError={this.handleImageError}
           />
         </a>
       );
@@ -185,7 +192,7 @@ class Item extends PureComponent {
     }
 
     return (
-      <div className={classNames('media-gallery__item', { standalone, 'media-gallery__item--tall': height === 100, 'media-gallery__item--wide': width === 100 })} key={attachment.get('id')}>
+      <div className={classNames('media-gallery__item', { standalone, 'media-gallery__item--error': this.state.error, 'media-gallery__item--tall': height === 100, 'media-gallery__item--wide': width === 100 })} key={attachment.get('id')}>
         <Blurhash
           hash={attachment.get('blurhash')}
           dummy={!useBlurhash}
@@ -222,6 +229,10 @@ class MediaGallery extends PureComponent {
     visible: PropTypes.bool,
     autoplay: PropTypes.bool,
     onToggleVisibility: PropTypes.func,
+    matchedFilters: PropTypes.oneOfType([
+      PropTypes.arrayOf(PropTypes.string),
+      ImmutablePropTypes.list,
+    ]),
   };
 
   static defaultProps = {
@@ -296,11 +307,11 @@ class MediaGallery extends PureComponent {
   }
 
   render () {
-    const { media, lang, sensitive, defaultWidth, standalone, autoplay } = this.props;
+    const { media, lang, sensitive, defaultWidth, standalone, autoplay, matchedFilters } = this.props;
     const { visible } = this.state;
     const width = this.state.width || defaultWidth;
 
-    let children, spoilerButton;
+    let children;
 
     const style = {};
 
@@ -314,31 +325,11 @@ class MediaGallery extends PureComponent {
     const uncached = media.every(attachment => attachment.get('type') === 'unknown');
 
     if (standalone && this.isFullSizeEligible()) {
-      children = <Item standalone autoplay={autoplay} onClick={this.handleClick} attachment={media.get(0)} lang={lang} displayWidth={width} visible={visible} />;
+      children = <MediaGalleryItem standalone autoplay={autoplay} onClick={this.handleClick} attachment={media.get(0)} lang={lang} displayWidth={width} visible={visible} />;
     } else {
       children = media.map((attachment, index) => (
-        <Item key={attachment.get('id')} autoplay={autoplay} onClick={this.handleClick} attachment={attachment} index={index} lang={lang} size={size} displayWidth={width} visible={visible || uncached} />
+        <MediaGalleryItem key={attachment.get('id')} autoplay={autoplay} onClick={this.handleClick} attachment={attachment} index={index} lang={lang} size={size} displayWidth={width} visible={visible || uncached} />
       ));
-    }
-
-    if (uncached) {
-      spoilerButton = (
-        <button type='button' disabled className='spoiler-button__overlay'>
-          <span className='spoiler-button__overlay__label'>
-            <FormattedMessage id='status.uncached_media_warning' defaultMessage='Preview not available' />
-            <span className='spoiler-button__overlay__action'><FormattedMessage id='status.media.open' defaultMessage='Click to open' /></span>
-          </span>
-        </button>
-      );
-    } else if (!visible) {
-      spoilerButton = (
-        <button type='button' onClick={this.handleOpen} className='spoiler-button__overlay'>
-          <span className='spoiler-button__overlay__label'>
-            {sensitive ? <FormattedMessage id='status.sensitive_warning' defaultMessage='Sensitive content' /> : <FormattedMessage id='status.media_hidden' defaultMessage='Media hidden' />}
-            <span className='spoiler-button__overlay__action'><FormattedMessage id='status.media.show' defaultMessage='Click to show' /></span>
-          </span>
-        </button>
-      );
     }
 
     return (
@@ -346,11 +337,7 @@ class MediaGallery extends PureComponent {
         <div className={`media-gallery media-gallery--layout-${size}`} style={style} ref={this.handleRef}>
           {children}
 
-          {(!visible || uncached) && (
-            <div className={classNames('spoiler-button', { 'spoiler-button--click-thru': uncached })}>
-              {spoilerButton}
-            </div>
-          )}
+          {(!visible || uncached) && <SpoilerButton uncached={uncached} sensitive={sensitive} onClick={this.handleOpen} matchedFilters={matchedFilters} />}
 
           {visible && !uncached && (
             <div className='media-gallery__actions'>

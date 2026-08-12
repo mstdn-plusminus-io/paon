@@ -11,9 +11,11 @@ import ImmutablePureComponent from 'react-immutable-pure-component';
 import { EmptyAccount } from 'mastodon/components/empty_account';
 import { ShortNumber } from 'mastodon/components/short_number';
 import { VerifiedBadge } from 'mastodon/components/verified_badge';
+import DropdownMenuContainer from 'mastodon/containers/dropdown_menu_container';
 
 import { me } from '../initial_state';
 
+import { buildAccountQuickMenu } from './account_quick_menu';
 import { Avatar } from './avatar';
 import Button from './button';
 import { FollowersCounter } from './counters';
@@ -31,9 +33,12 @@ const messages = defineMessages({
   unmute_notifications: { id: 'account.unmute_notifications_short', defaultMessage: 'Unmute notifications' },
   mute: { id: 'account.mute_short', defaultMessage: 'Mute' },
   block: { id: 'account.block_short', defaultMessage: 'Block' },
+  more: { id: 'status.more', defaultMessage: 'More' },
+  addToLists: { id: 'account.add_or_remove_from_list', defaultMessage: 'Add or Remove from lists' },
+  openOriginalPage: { id: 'account.open_original_page', defaultMessage: 'Open original page' },
 });
 
-class Account extends ImmutablePureComponent {
+export class Account extends ImmutablePureComponent {
 
   static propTypes = {
     size: PropTypes.number,
@@ -42,6 +47,7 @@ class Account extends ImmutablePureComponent {
     onBlock: PropTypes.func.isRequired,
     onMute: PropTypes.func.isRequired,
     onMuteNotifications: PropTypes.func.isRequired,
+    onAddToList: PropTypes.func,
     intl: PropTypes.object.isRequired,
     hidden: PropTypes.bool,
     minimal: PropTypes.bool,
@@ -80,6 +86,10 @@ class Account extends ImmutablePureComponent {
     this.props.onActionClick(this.props.account);
   };
 
+  handleAddToList = () => {
+    this.props.onAddToList?.(this.props.account);
+  };
+
   render () {
     const { account, intl, hidden, withBio, onActionClick, actionIcon, actionTitle, defaultAction, size, minimal } = this.props;
 
@@ -97,6 +107,28 @@ class Account extends ImmutablePureComponent {
     }
 
     let buttons;
+    let dropdown;
+
+    const quickMenu = buildAccountQuickMenu({
+      defaultAction,
+      accountUrl: account.get('url'),
+      mutingNotifications: account.getIn(['relationship', 'muting_notifications']),
+      labels: {
+        addToLists: intl.formatMessage(messages.addToLists),
+        openOriginalPage: intl.formatMessage(messages.openOriginalPage),
+        muteNotifications: intl.formatMessage(messages.mute_notifications),
+        unmuteNotifications: intl.formatMessage(messages.unmute_notifications),
+      },
+      actions: {
+        addToLists: this.handleAddToList,
+        muteNotifications: this.handleMuteNotifications,
+        unmuteNotifications: this.handleUnmuteNotifications,
+      },
+    });
+
+    if (quickMenu.length > 0) {
+      dropdown = <DropdownMenuContainer items={quickMenu} icon='ellipsis-h' size={24} title={intl.formatMessage(messages.more)} />;
+    }
 
     if (actionIcon && onActionClick) {
       buttons = <IconButton icon={actionIcon} title={actionTitle} onClick={this.handleAction} />;
@@ -111,20 +143,7 @@ class Account extends ImmutablePureComponent {
       } else if (blocking) {
         buttons = <Button text={intl.formatMessage(messages.unblock)} onClick={this.handleBlock} />;
       } else if (muting) {
-        let hidingNotificationsButton;
-
-        if (account.getIn(['relationship', 'muting_notifications'])) {
-          hidingNotificationsButton = <Button text={intl.formatMessage(messages.unmute_notifications)} onClick={this.handleUnmuteNotifications} />;
-        } else {
-          hidingNotificationsButton = <Button text={intl.formatMessage(messages.mute_notifications)} onClick={this.handleMuteNotifications} />;
-        }
-
-        buttons = (
-          <>
-            <Button text={intl.formatMessage(messages.unmute)} onClick={this.handleMute} />
-            {hidingNotificationsButton}
-          </>
-        );
+        buttons = <Button text={intl.formatMessage(messages.unmute)} onClick={this.handleMute} />;
       } else if (defaultAction === 'mute') {
         buttons = <Button title={intl.formatMessage(messages.mute)} onClick={this.handleMute} />;
       } else if (defaultAction === 'block') {
@@ -168,6 +187,7 @@ class Account extends ImmutablePureComponent {
 
           {!minimal && (
             <div className='account__relationship'>
+              {dropdown}
               {buttons}
             </div>
           )}

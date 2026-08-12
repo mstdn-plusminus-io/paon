@@ -70,6 +70,10 @@ export function AccountTimeline () {
   return import(/* webpackChunkName: "features/account_timeline" */'../../account_timeline');
 }
 
+export function AccountFeatured () {
+  return import(/* webpackChunkName: "features/account_featured" */'../../account_featured');
+}
+
 export function AccountGallery () {
   return import(/* webpackChunkName: "features/account_gallery" */'../../account_gallery');
 }
@@ -198,6 +202,10 @@ export function ClosedRegistrationsModal () {
   return import(/*webpackChunkName: "modals/closed_registrations_modal" */'../../closed_registrations_modal');
 }
 
+export function AnnualReportModal () {
+  return import(/* webpackChunkName: "modals/annual_report_modal" */'../components/annual_report_modal');
+}
+
 export function InstanceStats () {
   return import(/*webpackChunkName: "features/instance_stats" */'../../instance_stats');
 }
@@ -208,4 +216,8 @@ export function About () {
 
 export function PrivacyPolicy () {
   return import(/*webpackChunkName: "features/privacy_policy" */'../../privacy_policy');
+}
+
+export function TermsOfService () {
+  return import(/*webpackChunkName: "features/terms_of_service" */'../../terms_of_service');
 }

@@ -27,6 +27,7 @@ import { expandHomeTimeline } from '../../actions/timelines';
 import initialState, { disableHoverCards, me, owner, singleUserMode, trendsEnabled, trendsAsLanding } from '../../initial_state';
 
 import BundleColumnError from './components/bundle_column_error';
+import { HashtagMenuController } from './components/hashtag_menu_controller';
 import Header from './components/header';
 import PlusMinusSettingModal from './components/plusminus_setting_modal';
 import UploadArea from './components/upload_area';
@@ -41,6 +42,7 @@ import {
   KeyboardShortcuts,
   Firehose,
   AccountTimeline,
+  AccountFeatured,
   AccountGallery,
   HomeTimeline,
   Followers,
@@ -69,7 +71,9 @@ import {
   InstanceStats,
   About,
   PrivacyPolicy,
+  TermsOfService,
 } from './util/async-components';
+import { navigateBack } from './util/back_navigation';
 import { WrappedSwitch, WrappedRoute } from './util/react_router_helpers';
 
 // Dummy import, to make sure that <Status /> ends up in the application bundle.
@@ -83,15 +87,14 @@ const messages = defineMessages({
 const mapStateToProps = state => ({
   layout: state.getIn(['meta', 'layout']),
   isComposing: state.getIn(['compose', 'is_composing']),
-  hasComposingText: state.getIn(['compose', 'text']).trim().length !== 0,
-  hasMediaAttachments: state.getIn(['compose', 'media_attachments']).size > 0,
+  hasComposingContents: state.getIn(['compose', 'text']).trim().length !== 0 || state.getIn(['compose', 'media_attachments']).size > 0 || state.getIn(['compose', 'poll']) !== null,
   canUploadMore: !state.getIn(['compose', 'media_attachments']).some(x => ['audio', 'video'].includes(x.get('type'))) && state.getIn(['compose', 'media_attachments']).size < state.getIn(['compose', 'max_media_attachments']),
   dropdownMenuIsOpen: state.getIn(['dropdown_menu', 'openId']) !== null,
   firstLaunch: state.getIn(['settings', 'introductionVersion'], 0) < INTRODUCTION_VERSION,
   username: state.getIn(['accounts', me, 'username']),
 });
 
-const keyMap = {
+export const keyMap = {
   help: '?',
   new: 'n',
   search: 's',
@@ -122,6 +125,7 @@ const keyMap = {
   toggleHidden: 'x',
   toggleSensitive: 'h',
   openMedia: 'e',
+  onTranslate: 't',
 };
 
 class SwitchingColumnsArea extends PureComponent {
@@ -197,6 +201,7 @@ class SwitchingColumnsArea extends PureComponent {
           <WrappedRoute path='/keyboard-shortcuts' component={KeyboardShortcuts} content={children} />
           <WrappedRoute path='/about' component={About} content={children} />
           <WrappedRoute path='/privacy-policy' component={PrivacyPolicy} content={children} />
+          <WrappedRoute path='/terms-of-service/:date?' component={TermsOfService} content={children} />
           <WrappedRoute path='/instance-stats/:domain' component={InstanceStats} content={children} />
 
           <WrappedRoute path={['/home', '/timelines/home']} component={HomeTimeline} content={children} />
@@ -216,13 +221,15 @@ class SwitchingColumnsArea extends PureComponent {
           <WrappedRoute path='/bookmarks' component={BookmarkedStatuses} content={children} />
           <WrappedRoute path='/pinned' component={PinnedStatuses} content={children} />
 
-          <WrappedRoute path='/start' component={Onboarding} content={children} />
+          <WrappedRoute path={['/start', '/start/profile', '/start/follows']} exact component={Onboarding} content={children} />
+          <Redirect from='/start/:legacyStep' to='/start' />
           <WrappedRoute path='/directory' component={Directory} content={children} />
           <WrappedRoute path={['/explore', '/search']} component={Explore} content={children} />
           <WrappedRoute path='/links/:url' component={LinkTimeline} content={children} />
           <WrappedRoute path={['/publish', '/statuses/new']} component={Compose} content={children} />
 
           <WrappedRoute path={['/@:acct', '/accounts/:id']} exact component={AccountTimeline} content={children} />
+          <WrappedRoute path={['/@:acct/featured', '/accounts/:id/featured']} exact component={AccountFeatured} content={children} />
           <WrappedRoute path='/@:acct/tagged/:tagged?' exact component={AccountTimeline} content={children} />
           <WrappedRoute path={['/@:acct/with_replies', '/accounts/:id/with_replies']} component={AccountTimeline} content={children} componentParams={{ withReplies: true }} />
           <WrappedRoute path={['/accounts/:id/followers', '/users/:acct/followers', '/@:acct/followers']} component={Followers} content={children} />
@@ -265,8 +272,7 @@ class UI extends PureComponent {
     dispatch: PropTypes.func.isRequired,
     children: PropTypes.node,
     isComposing: PropTypes.bool,
-    hasComposingText: PropTypes.bool,
-    hasMediaAttachments: PropTypes.bool,
+    hasComposingContents: PropTypes.bool,
     canUploadMore: PropTypes.bool,
     location: PropTypes.object,
     intl: PropTypes.object.isRequired,
@@ -281,11 +287,11 @@ class UI extends PureComponent {
   };
 
   handleBeforeUnload = e => {
-    const { intl, dispatch, isComposing, hasComposingText, hasMediaAttachments } = this.props;
+    const { intl, dispatch, isComposing, hasComposingContents } = this.props;
 
     dispatch(synchronouslySubmitMarkers());
 
-    if (isComposing && (hasComposingText || hasMediaAttachments)) {
+    if (isComposing && hasComposingContents) {
       e.preventDefault();
       // Setting returnValue to any string causes confirmation dialog.
       // Many browsers no longer display this text to users,
@@ -490,14 +496,9 @@ class UI extends PureComponent {
     }
   };
 
-  handleHotkeyBack = () => {
+  handleHotkeyBack = e => {
     const { router } = this.context;
-
-    if (router.history.location?.state?.fromMastodon) {
-      router.history.goBack();
-    } else {
-      router.history.push('/');
-    }
+    navigateBack(e, router.history);
   };
 
   setHotkeysRef = c => {
@@ -603,6 +604,7 @@ class UI extends PureComponent {
 
           <PlusMinusSettingModal />
           {!disableHoverCards && <HoverCardController />}
+          <HashtagMenuController />
         </div>
       </HotKeys>
     );

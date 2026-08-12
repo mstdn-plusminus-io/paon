@@ -9,6 +9,8 @@ import ImmutablePureComponent from 'react-immutable-pure-component';
 
 import Textarea from 'react-textarea-autosize';
 
+import { LoadingIndicator } from 'mastodon/components/loading_indicator';
+
 const messages = defineMessages({
   placeholder: { id: 'account_note.placeholder', defaultMessage: 'Click to add a note' },
 });
@@ -46,7 +48,7 @@ class InlineAlert extends PureComponent {
 
 }
 
-class AccountNote extends ImmutablePureComponent {
+export class AccountNote extends ImmutablePureComponent {
 
   static propTypes = {
     account: ImmutablePropTypes.map.isRequired,
@@ -102,10 +104,10 @@ class AccountNote extends ImmutablePureComponent {
     if (e.keyCode === 13 && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
 
-      this._save();
-
       if (this.textarea) {
         this.textarea.blur();
+      } else {
+        this._save();
       }
     } else if (e.keyCode === 27) {
       e.preventDefault();
@@ -154,17 +156,23 @@ class AccountNote extends ImmutablePureComponent {
           <FormattedMessage id='account.account_note_header' defaultMessage='Personal note' /> <InlineAlert show={saved} />
         </label>
 
-        <Textarea
-          id={`account-note-${account.get('id')}`}
-          className='account__header__account-note__content'
-          disabled={this.props.value === null || value === null}
-          placeholder={intl.formatMessage(messages.placeholder)}
-          value={value || ''}
-          onChange={this.handleChange}
-          onKeyDown={this.handleKeyDown}
-          onBlur={this.handleBlur}
-          ref={this.setTextareaRef}
-        />
+        {this.props.value === undefined ? (
+          <div className='account__header__account-note__loading-indicator-wrapper'>
+            <LoadingIndicator />
+          </div>
+        ) : (
+          <Textarea
+            id={`account-note-${account.get('id')}`}
+            className='account__header__account-note__content'
+            disabled={value === null}
+            placeholder={intl.formatMessage(messages.placeholder)}
+            value={value || ''}
+            onChange={this.handleChange}
+            onKeyDown={this.handleKeyDown}
+            onBlur={this.handleBlur}
+            ref={this.setTextareaRef}
+          />
+        )}
       </div>
     );
   }

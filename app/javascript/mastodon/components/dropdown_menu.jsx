@@ -14,7 +14,7 @@ import { IconButton } from './icon_button';
 const listenerOptions = supportsPassiveEvents ? { passive: true, capture: true } : true;
 let id = 0;
 
-class DropdownMenu extends PureComponent {
+export class DropdownMenu extends PureComponent {
 
   static contextTypes = {
     router: PropTypes.object,
@@ -195,46 +195,17 @@ export default class Dropdown extends PureComponent {
     id: id++,
   };
 
-  handleClick = ({ type }) => {
+  handleClick = e => {
     if (this.state.id === this.props.openDropdownId) {
       this.handleClose();
     } else {
-      this.props.onOpen(this.state.id, this.handleItemClick, type !== 'click');
+      this.props.onOpen(this.state.id, this.handleItemClick, e.detail === 0);
     }
   };
 
   handleClose = () => {
-    if (this.activeElement) {
-      this.activeElement.focus({ preventScroll: true });
-      this.activeElement = null;
-    }
+    this.target?.querySelector('button')?.focus({ preventScroll: true });
     this.props.onClose(this.state.id);
-  };
-
-  handleMouseDown = () => {
-    if (!this.state.open) {
-      this.activeElement = document.activeElement;
-    }
-  };
-
-  handleButtonKeyDown = (e) => {
-    switch(e.key) {
-    case ' ':
-    case 'Enter':
-      this.handleMouseDown();
-      break;
-    }
-  };
-
-  handleKeyPress = (e) => {
-    switch(e.key) {
-    case ' ':
-    case 'Enter':
-      this.handleClick(e);
-      e.stopPropagation();
-      e.preventDefault();
-      break;
-    }
   };
 
   handleItemClick = e => {
@@ -292,12 +263,12 @@ export default class Dropdown extends PureComponent {
     } = this.props;
 
     const open = this.state.id === openDropdownId;
+    const menuId = `dropdown-menu-${this.state.id}`;
 
     const button = children ? cloneElement(Children.only(children), {
       onClick: this.handleClick,
-      onMouseDown: this.handleMouseDown,
-      onKeyDown: this.handleButtonKeyDown,
-      onKeyPress: this.handleKeyPress,
+      'aria-expanded': open,
+      'aria-controls': menuId,
     }) : (
       <IconButton
         icon={!open ? icon : 'close'}
@@ -307,9 +278,8 @@ export default class Dropdown extends PureComponent {
         disabled={disabled}
         size={size}
         onClick={this.handleClick}
-        onMouseDown={this.handleMouseDown}
-        onKeyDown={this.handleButtonKeyDown}
-        onKeyPress={this.handleKeyPress}
+        expanded={open}
+        ariaControls={menuId}
       />
     );
 
@@ -320,7 +290,7 @@ export default class Dropdown extends PureComponent {
         </span>
         <Overlay show={open} offset={[5, 5]} placement={'bottom'} flip target={this.findTarget} popperConfig={{ strategy: 'fixed' }}>
           {({ props, arrowProps, placement }) => (
-            <div {...props}>
+            <div {...props} id={menuId}>
               <div className={`dropdown-animation dropdown-menu ${placement}`}>
                 <div className={`dropdown-menu__arrow ${placement}`} {...arrowProps} />
                 <DropdownMenu

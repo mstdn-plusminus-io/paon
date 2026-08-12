@@ -4,6 +4,8 @@ import { FormattedMessage } from 'react-intl';
 
 import Overlay from 'react-overlays/Overlay';
 
+import { useSelectableClick } from '../../hooks/useSelectableClick';
+
 export const AltTextBadge: React.FC<{ description: string }> = ({
   description,
 }) => {
@@ -16,6 +18,7 @@ export const AltTextBadge: React.FC<{ description: string }> = ({
   const handleClose = useCallback(() => {
     setOpen(false);
   }, []);
+  const [handleMouseDown, handleMouseUp] = useSelectableClick(handleClose);
 
   return (
     <>
@@ -24,7 +27,7 @@ export const AltTextBadge: React.FC<{ description: string }> = ({
         ref={anchorRef}
         className='media-gallery__alt__label'
         aria-expanded={open}
-        aria-describedby={open ? tooltipId : undefined}
+        aria-controls={tooltipId}
         onClick={handleClick}
       >
         ALT
@@ -42,10 +45,14 @@ export const AltTextBadge: React.FC<{ description: string }> = ({
       >
         {({ props }) => (
           <div {...props} className='hover-card-controller'>
+            {/* Clicking empty popover space dismisses it without interfering with text selection. */}
+            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
             <div
               id={tooltipId}
               className='media-gallery__alt__popover dropdown-animation'
-              role='tooltip'
+              role='region'
+              onMouseDown={handleMouseDown}
+              onMouseUp={handleMouseUp}
             >
               <h4>
                 <FormattedMessage

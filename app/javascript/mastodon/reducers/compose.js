@@ -6,8 +6,6 @@ import {
   COMPOSE_CHANGE,
   COMPOSE_REPLY,
   COMPOSE_REPLY_CANCEL,
-  COMPOSE_QUOTE,
-  COMPOSE_QUOTE_CANCEL,
   COMPOSE_DIRECT,
   COMPOSE_MENTION,
   COMPOSE_SUBMIT_REQUEST,
@@ -144,11 +142,11 @@ function clearAll(state) {
     map.set('is_submitting', false);
     map.set('is_changing_upload', false);
     map.set('in_reply_to', null);
-    map.set('quote_id', null);
     map.set('privacy', state.get('default_privacy'));
     map.set('sensitive', state.get('default_sensitive'));
     map.set('language', state.get('default_language'));
     map.update('media_attachments', list => list.clear());
+    map.set('progress', 0);
     map.set('poll', null);
     map.set('idempotencyKey', uuid());
   });
@@ -173,12 +171,17 @@ function appendMedia(state, media, file) {
     map.update('media_attachments', list => list.push(media.set('unattached', true)));
     map.set('is_uploading', pending > 0);
     map.set('is_processing', pending > 0 && state.get('is_processing'));
+    map.set('progress', 0);
     map.set('resetFileKey', Math.floor((Math.random() * 0x10000)));
     map.set('idempotencyKey', uuid());
     map.set('pending_media_attachments', pending);
 
     if (prevSize === 0 && (state.get('default_sensitive') || state.get('spoiler'))) {
       map.set('sensitive', true);
+
+      if (state.get('default_sensitive')) {
+        map.set('spoiler', true);
+      }
     }
   });
 }
@@ -195,6 +198,8 @@ function removeMedia(state, mediaId) {
     }
   });
 }
+
+const calculateProgress = (loaded, total) => Math.min(Math.round((loaded / total) * 100), 100);
 
 const insertSuggestion = (state, position, token, completion, path) => {
   return state.withMutations(map => {
@@ -369,8 +374,8 @@ export default function compose(state = initialState, action) {
       map.set('spoiler', !state.get('spoiler'));
       map.set('idempotencyKey', uuid());
 
-      if (!state.get('sensitive') && state.get('media_attachments').size >= 1) {
-        map.set('sensitive', true);
+      if (state.get('media_attachments').size >= 1) {
+        map.set('sensitive', !state.get('spoiler'));
       }
     });
   case COMPOSE_SPOILER_TEXT_CHANGE:
@@ -392,7 +397,6 @@ export default function compose(state = initialState, action) {
     return state.withMutations(map => {
       map.set('id', null);
       map.set('in_reply_to', action.status.get('id'));
-      map.set('quote_id', null)
       map.set('text', statusToTextMentions(state, action.status));
       map.set('privacy', privacyPreference(action.status.get('visibility'), state.get('default_privacy')));
       map.set('focusDate', new Date());
@@ -420,44 +424,11 @@ export default function compose(state = initialState, action) {
         map.set('spoiler_text', '');
       }
     });
-    case COMPOSE_QUOTE:
-      return state.withMutations(map => {
-        map.set('id', null);
-        map.set('in_reply_to', null);
-        map.set('quote_id', action.status.get('id'));
-        map.set('text', '');
-        map.set('privacy', privacyPreference(action.status.get('visibility'), state.get('default_privacy')));
-        map.set('focusDate', new Date());
-        map.set('caretPosition', null);
-        map.set('preselectDate', new Date());
-        map.set('idempotencyKey', uuid());
-
-        map.update('media_attachments', list => list.filter(media => media.get('unattached')));
-
-        if (action.status.get('language') && !action.status.has('translation')) {
-          map.set('language', action.status.get('language'));
-        } else {
-          map.set('language', state.get('default_language'));
-        }
-
-        if (action.status.get('spoiler_text').length > 0) {
-          map.set('spoiler', true);
-          map.set('spoiler_text', action.status.get('spoiler_text'));
-
-          if (map.get('media_attachments').size >= 1) {
-            map.set('sensitive', true);
-          }
-        } else {
-          map.set('spoiler', false);
-          map.set('spoiler_text', '');
-        }
-      });
   case COMPOSE_SUBMIT_REQUEST:
     return state.set('is_submitting', true);
   case COMPOSE_UPLOAD_CHANGE_REQUEST:
     return state.set('is_changing_upload', true);
   case COMPOSE_REPLY_CANCEL:
-  case COMPOSE_QUOTE_CANCEL:
   case COMPOSE_RESET:
   case COMPOSE_SUBMIT_SUCCESS:
     return clearAll(state);
@@ -481,6 +452,7 @@ export default function compose(state = initialState, action) {
       map.set('pending_media_attachments', pending);
       map.set('is_uploading', pending > 0);
       map.set('is_processing', pending > 0 && state.get('is_processing'));
+      map.set('progress', 0);
     });
   case COMPOSE_UPLOAD_UNDO:
     return removeMedia(state, action.media_id);
@@ -496,11 +468,11 @@ export default function compose(state = initialState, action) {
     return state.set('media_attachments', media.delete(fromIndex).insert(toIndex, media.get(fromIndex)));
   }
   case COMPOSE_UPLOAD_PROGRESS:
-    return state.set('progress', Math.round((action.loaded / action.total) * 100));
+    return state.set('progress', calculateProgress(action.loaded, action.total));
   case THUMBNAIL_UPLOAD_REQUEST:
     return state.set('isUploadingThumbnail', true);
   case THUMBNAIL_UPLOAD_PROGRESS:
-    return state.set('thumbnailProgress', Math.round((action.loaded / action.total) * 100));
+    return state.set('thumbnailProgress', calculateProgress(action.loaded, action.total));
   case THUMBNAIL_UPLOAD_FAIL:
     return state.set('isUploadingThumbnail', false);
   case THUMBNAIL_UPLOAD_SUCCESS:
@@ -603,7 +575,7 @@ export default function compose(state = initialState, action) {
         map.set('spoiler', true);
         map.set('spoiler_text', action.status.get('spoiler_text'));
       } else {
-        map.set('spoiler', false);
+        map.set('spoiler', action.status.get('sensitive') && action.status.get('media_attachments').size > 0);
         map.set('spoiler_text', '');
       }
 
@@ -634,7 +606,7 @@ export default function compose(state = initialState, action) {
         map.set('spoiler', true);
         map.set('spoiler_text', action.spoiler_text);
       } else {
-        map.set('spoiler', false);
+        map.set('spoiler', action.status.get('sensitive') && action.status.get('media_attachments').size > 0);
         map.set('spoiler_text', '');
       }
 

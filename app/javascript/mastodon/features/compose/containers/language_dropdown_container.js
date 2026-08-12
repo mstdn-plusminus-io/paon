@@ -19,6 +19,7 @@ const getFrequentlyUsedLanguages = createSelector([
 const mapStateToProps = state => ({
   frequentlyUsedLanguages: getFrequentlyUsedLanguages(state),
   value: state.getIn(['compose', 'language']),
+  text: state.getIn(['compose', 'text']),
 });
 
 const mapDispatchToProps = dispatch => ({

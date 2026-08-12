@@ -12,6 +12,9 @@ import {
   FEATURED_TAGS_FETCH_REQUEST,
   FEATURED_TAGS_FETCH_SUCCESS,
   FEATURED_TAGS_FETCH_FAIL,
+  FEATURED_ACCOUNTS_FETCH_REQUEST,
+  FEATURED_ACCOUNTS_FETCH_SUCCESS,
+  FEATURED_ACCOUNTS_FETCH_FAIL,
 } from 'mastodon/actions/featured_tags';
 
 import {
@@ -87,6 +90,7 @@ const initialState = ImmutableMap({
   blocks: initialListState,
   mutes: initialListState,
   featured_tags: initialListState,
+  featured_accounts: initialListState,
 });
 
 const normalizeList = (state, path, accounts, next) => {
@@ -214,6 +218,12 @@ export default function userLists(state = initialState, action) {
     return state.setIn(['featured_tags', action.id, 'isLoading'], true);
   case FEATURED_TAGS_FETCH_FAIL:
     return state.setIn(['featured_tags', action.id, 'isLoading'], false);
+  case FEATURED_ACCOUNTS_FETCH_SUCCESS:
+    return normalizeList(state, ['featured_accounts', action.id], action.accounts);
+  case FEATURED_ACCOUNTS_FETCH_REQUEST:
+    return state.setIn(['featured_accounts', action.id, 'isLoading'], true);
+  case FEATURED_ACCOUNTS_FETCH_FAIL:
+    return state.setIn(['featured_accounts', action.id, 'isLoading'], false);
   default:
     return state;
   }

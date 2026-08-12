@@ -1,8 +1,9 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 
 import { useIntl, defineMessages } from 'react-intl';
 
 import { Icon } from 'mastodon/components/icon';
+import { LoadingIndicator } from 'mastodon/components/loading_indicator';
 
 const messages = defineMessages({
   load_more: { id: 'status.load_more', defaultMessage: 'Load more' },
@@ -16,8 +17,10 @@ interface Props {
 
 export const LoadGap: React.FC<Props> = ({ disabled, maxId, onClick }) => {
   const intl = useIntl();
+  const [loading, setLoading] = useState(false);
 
   const handleClick = useCallback(() => {
+    setLoading(true);
     onClick(maxId);
   }, [maxId, onClick]);
 
@@ -27,8 +30,9 @@ export const LoadGap: React.FC<Props> = ({ disabled, maxId, onClick }) => {
       disabled={disabled}
       onClick={handleClick}
       aria-label={intl.formatMessage(messages.load_more)}
+      aria-busy={loading}
     >
-      <Icon id='ellipsis-h' />
+      {loading ? <LoadingIndicator /> : <Icon id='ellipsis-h' />}
     </button>
   );
 };

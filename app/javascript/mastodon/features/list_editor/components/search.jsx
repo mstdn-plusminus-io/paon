@@ -12,11 +12,13 @@ import { Icon }  from 'mastodon/components/icon';
 import { fetchListSuggestions, clearListSuggestions, changeListSuggestions } from '../../../actions/lists';
 
 const messages = defineMessages({
-  search: { id: 'lists.search', defaultMessage: 'Search among people you follow' },
+  search: { id: 'lists.search', defaultMessage: 'Search' },
+  clear: { id: 'lists.search_clear', defaultMessage: 'Clear search' },
 });
 
 const mapStateToProps = state => ({
   value: state.getIn(['listEditor', 'suggestions', 'value']),
+  isLoading: state.getIn(['listEditor', 'suggestions', 'isLoading']),
 });
 
 const mapDispatchToProps = dispatch => ({
@@ -33,14 +35,16 @@ class Search extends PureComponent {
     onChange: PropTypes.func.isRequired,
     onSubmit: PropTypes.func.isRequired,
     onClear: PropTypes.func.isRequired,
+    isLoading: PropTypes.bool.isRequired,
   };
 
   handleChange = e => {
     this.props.onChange(e.target.value);
   };
 
-  handleKeyUp = e => {
-    if (e.keyCode === 13) {
+  handleKeyDown = e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
       this.props.onSubmit(this.props.value);
     }
   };
@@ -50,7 +54,7 @@ class Search extends PureComponent {
   };
 
   render () {
-    const { value, intl } = this.props;
+    const { value, intl, isLoading } = this.props;
     const hasValue = value.length > 0;
 
     return (
@@ -63,15 +67,17 @@ class Search extends PureComponent {
             type='text'
             value={value}
             onChange={this.handleChange}
-            onKeyUp={this.handleKeyUp}
+            onKeyDown={this.handleKeyDown}
             placeholder={intl.formatMessage(messages.search)}
+            aria-label={intl.formatMessage(messages.search)}
+            aria-busy={isLoading}
           />
         </label>
 
-        <div role='button' tabIndex={0} className='search__icon' onClick={this.handleClear}>
+        <button type='button' className='search__icon' onClick={this.handleClear} disabled={!hasValue} aria-label={intl.formatMessage(messages.clear)}>
           <Icon id='search' className={classNames({ active: !hasValue })} />
-          <Icon id='times-circle' aria-label={intl.formatMessage(messages.search)} className={classNames({ active: hasValue })} />
-        </div>
+          <Icon id='times-circle' className={classNames({ active: hasValue })} />
+        </button>
       </div>
     );
   }

@@ -1,12 +1,13 @@
 import PropTypes from 'prop-types';
 import { PureComponent } from 'react';
 
-import { FormattedMessage, FormattedDate, injectIntl, defineMessages } from 'react-intl';
+import { FormattedMessage, injectIntl, defineMessages } from 'react-intl';
 
 import { Helmet } from 'react-helmet';
 
 import api from 'mastodon/api';
 import Column from 'mastodon/components/column';
+import { FormattedDateWrapper } from 'mastodon/components/formatted_date';
 import { Skeleton } from 'mastodon/components/skeleton';
 
 const messages = defineMessages({
@@ -43,7 +44,7 @@ class PrivacyPolicy extends PureComponent {
         <div className='scrollable privacy-policy'>
           <div className='column-title'>
             <h3><FormattedMessage id='privacy_policy.title' defaultMessage='Privacy Policy' /></h3>
-            <p><FormattedMessage id='privacy_policy.last_updated' defaultMessage='Last updated {date}' values={{ date: isLoading ? <Skeleton width='10ch' /> : <FormattedDate value={lastUpdated} year='numeric' month='short' day='2-digit' /> }} /></p>
+            <p><FormattedMessage id='privacy_policy.last_updated' defaultMessage='Last updated {date}' values={{ date: isLoading ? <Skeleton width='10ch' /> : <FormattedDateWrapper value={lastUpdated} year='numeric' month='short' day='2-digit' /> }} /></p>
           </div>
 
           <div

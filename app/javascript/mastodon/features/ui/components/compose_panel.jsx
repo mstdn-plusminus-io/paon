@@ -10,9 +10,10 @@ import NavigationContainer from 'mastodon/features/compose/containers/navigation
 import SearchContainer from 'mastodon/features/compose/containers/search_container';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 
+import { shouldHideComposePanel } from './compose_panel_utils';
 import LinkFooter from './link_footer';
 
-class ComposePanel extends PureComponent {
+export class ComposePanel extends PureComponent {
 
   static contextTypes = {
   };
@@ -20,6 +21,7 @@ class ComposePanel extends PureComponent {
   static propTypes = {
     identity: identityContextPropShape,
     dispatch: PropTypes.func.isRequired,
+    hideComposer: PropTypes.bool,
   };
 
   onFocus = () => {
@@ -44,6 +46,7 @@ class ComposePanel extends PureComponent {
 
   render() {
     const { signedIn } = this.props.identity;
+    const { hideComposer } = this.props;
 
     return (
       <div className='compose-panel' onFocus={this.onFocus}>
@@ -59,7 +62,8 @@ class ComposePanel extends PureComponent {
         {signedIn && (
           <>
             <NavigationContainer onClose={this.onBlur} />
-            <ComposeFormContainer singleColumn />
+            {!hideComposer && <ComposeFormContainer singleColumn />}
+            {hideComposer && <div className='compose-form' />}
           </>
         )}
 
@@ -70,4 +74,8 @@ class ComposePanel extends PureComponent {
 
 }
 
-export default connect()(withIdentity(ComposePanel));
+const mapStateToProps = state => ({
+  hideComposer: shouldHideComposePanel(state.getIn(['compose', 'mounted'])),
+});
+
+export default connect(mapStateToProps)(withIdentity(ComposePanel));

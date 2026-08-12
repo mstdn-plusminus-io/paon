@@ -1,4 +1,6 @@
 body.rtl {
+  --text-x-direction: -1;
+
   direction: rtl;
 
   .reactions-bar {

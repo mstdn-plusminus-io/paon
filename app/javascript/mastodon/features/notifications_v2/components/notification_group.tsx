@@ -17,7 +17,9 @@ import StatusContainer from 'mastodon/containers/status_container';
 import NotificationContainer from 'mastodon/features/notifications/containers/notification_container';
 import type { NotificationGroup as NotificationGroupModel } from 'mastodon/models/notification_group';
 import { useAppDispatch, useAppSelector } from 'mastodon/store';
+import { isPrivateMentionStatus } from 'mastodon/utils/notification_labels';
 
+import { NotificationAnnualReport } from './notification_annual_report';
 import { NotificationModerationWarning } from './notification_moderation_warning';
 import { NotificationSeveredRelationships } from './notification_severed_relationships';
 
@@ -63,6 +65,10 @@ const GroupSummary: React.FC<{
   account: Account | undefined;
   unread: boolean;
 }> = ({ group, account, unread }) => {
+  const status = useAppSelector((state) =>
+    group.statusId ? state.getIn(['statuses', group.statusId]) : null,
+  );
+  const privateMention = isPrivateMentionStatus(status);
   const count = Math.max(0, group.notifications_count - 1);
   const displayName = account?.get('display_name_html') ?? '';
   const name = account ? (
@@ -98,6 +104,12 @@ const GroupSummary: React.FC<{
       <FormattedMessage
         id='notification.follow.name_and_others'
         defaultMessage='{name} and {count} others followed you'
+        values={values}
+      />
+    ) : group.type === 'favourite' && privateMention ? (
+      <FormattedMessage
+        id='notification.favourite_pm.name_and_others_with_link'
+        defaultMessage='{name} and <a>{count, plural, one {# other} other {# others}}</a> favorited your private mention'
         values={values}
       />
     ) : group.type === 'favourite' ? (
@@ -172,6 +184,13 @@ export const NotificationGroup: React.FC<{
     content = (
       <NotificationModerationWarning
         warning={group.moderationWarning}
+        unread={unread}
+      />
+    );
+  } else if (group.type === 'annual_report' && group.annualReport) {
+    content = (
+      <NotificationAnnualReport
+        annualReport={group.annualReport}
         unread={unread}
       />
     );

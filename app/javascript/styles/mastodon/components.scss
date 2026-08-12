@@ -170,6 +170,20 @@
     display: block;
     width: 100%;
   }
+
+  &.loading {
+    cursor: wait;
+
+    .button__label-wrapper {
+      // Keep the button's accessible label and dimensions while showing progress.
+      opacity: 0;
+    }
+
+    .loading-indicator {
+      position: absolute;
+      inset: 0;
+    }
+  }
 }
 
 .column__wrapper {
@@ -772,10 +786,6 @@ body > [data-popper-placement] {
   min-height: 23px;
   overflow-y: auto;
   flex: 0 2 auto;
-}
-
-.quote-indicator {
-  background: #c5b3f3;
 }
 
 .reply-indicator__header {
@@ -1841,6 +1851,16 @@ a.account__display-name {
 
   p {
     margin-bottom: 8px;
+  }
+}
+
+.notification-annual-report {
+  .notification__favourite-icon-wrapper .fa {
+    color: $gold-star;
+  }
+
+  .notification-43__details {
+    padding-top: 0;
   }
 }
 
@@ -4214,18 +4234,18 @@ a.status-card {
 }
 
 .load-more {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: $dark-text-color;
   background-color: transparent;
   border: 0;
   font-size: inherit;
-  text-align: center;
   line-height: inherit;
   margin: 0;
   padding: 15px;
   box-sizing: border-box;
   width: 100%;
-  clear: both;
   text-decoration: none;
 
   &:hover {
@@ -4545,6 +4565,23 @@ a.status-card {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.load-more .loading-indicator,
+.button .loading-indicator {
+  position: static;
+  transform: none;
+  color: inherit;
+
+  .circular-progress {
+    color: inherit;
+    width: 22px;
+    height: 22px;
+  }
+}
+
+.load-more .loading-indicator .circular-progress {
+  color: lighten($ui-base-color, 26%);
 }
 
 .circular-progress {
@@ -5541,6 +5578,10 @@ a.status-card {
 }
 
 .search__icon {
+  border: 0;
+  padding: 0;
+  background: transparent;
+
   &::-moz-focus-inner {
     border: 0;
   }
@@ -5594,6 +5635,12 @@ a.status-card {
     &:hover {
       color: lighten($action-button-color, 7%);
     }
+  }
+
+  &:focus-visible .fa-times-circle.active {
+    border-radius: 50%;
+    outline: 2px solid $highlight-text-color;
+    outline-offset: 2px;
   }
 }
 
@@ -5787,6 +5834,7 @@ a.status-card {
   position: absolute;
   top: 0;
   bottom: 0;
+  transform: scaleX(var(--text-x-direction));
 
   &:hover,
   &:focus,
@@ -5795,11 +5843,11 @@ a.status-card {
   }
 }
 
-.media-modal__nav--left {
+.media-modal__nav--prev {
   inset-inline-start: 0;
 }
 
-.media-modal__nav--right {
+.media-modal__nav--next {
   inset-inline-end: 0;
 }
 
@@ -5813,7 +5861,9 @@ a.status-card {
 
   .picture-in-picture__footer {
     border-radius: 0;
+    border: 0;
     background: transparent;
+    backdrop-filter: none;
     padding: 20px 0;
 
     .icon-button {
@@ -6054,6 +6104,145 @@ a.status-card {
   width: 480px;
   position: relative;
   flex-direction: column;
+}
+
+.annual-report-modal {
+  width: 720px;
+  max-width: 90vw;
+  max-height: 90vh;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 8px;
+  background: lighten($ui-secondary-color, 8%);
+  color: $inverted-text-color;
+
+  &__header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 16px;
+    background: $ui-secondary-color;
+
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 24px;
+    }
+  }
+
+  &__close {
+    flex: 0 0 auto;
+    color: $secondary-text-color;
+  }
+
+  &__body {
+    min-height: 180px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    user-select: text;
+  }
+}
+
+.annual-report {
+  &__loading,
+  &__empty {
+    min-height: 180px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 24px;
+    text-align: center;
+  }
+
+  &__intro {
+    padding: 24px 24px 8px;
+
+    h2 {
+      margin-bottom: 6px;
+      font-size: 22px;
+      line-height: 28px;
+    }
+
+    p {
+      color: $lighter-text-color;
+      font-size: 15px;
+      line-height: 22px;
+    }
+  }
+
+  &__stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 16px 24px 24px;
+  }
+
+  &__stat {
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid lighten($ui-base-color, 12%);
+    border-radius: 6px;
+    background: $ui-base-color;
+
+    &--wide {
+      grid-column: 1 / -1;
+    }
+
+    dt {
+      margin-bottom: 6px;
+      color: $secondary-text-color;
+      font-size: 13px;
+      line-height: 18px;
+    }
+
+    dd {
+      overflow-wrap: anywhere;
+      color: $primary-text-color;
+      font-size: 24px;
+      font-weight: 700;
+      line-height: 30px;
+    }
+  }
+
+  &__highlight {
+    padding: 0 24px 24px;
+
+    h3 {
+      margin-bottom: 8px;
+      color: $lighter-text-color;
+      font-size: 14px;
+      line-height: 20px;
+      text-transform: uppercase;
+    }
+
+    > .status {
+      overflow: hidden;
+      border: 1px solid lighten($ui-base-color, 12%);
+      border-radius: 6px;
+      background: $ui-base-color;
+    }
+  }
+}
+
+@media screen and (width <= 630px) {
+  .annual-report-modal {
+    width: 100vw;
+    max-width: 100vw;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .annual-report__stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .annual-report__stat--wide {
+    grid-column: auto;
+  }
 }
 
 .actions-modal {
@@ -6450,7 +6639,6 @@ a.status-card {
 
   ul {
     overflow-y: auto;
-    flex-shrink: 0;
     max-height: 80vh;
 
     &.with-status {
@@ -6558,6 +6746,14 @@ a.status-card {
 .confirmation-modal__container,
 .report-modal__target {
   text-align: center;
+}
+
+.confirmation-modal__container h1 {
+  margin-bottom: 12px;
+  color: $primary-text-color;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 26px;
 }
 
 .block-modal,
@@ -6756,6 +6952,10 @@ a.status-card {
   &--wide {
     grid-column: span 2;
   }
+
+  &--error img {
+    visibility: hidden;
+  }
 }
 
 .media-gallery__item-thumbnail {
@@ -6925,6 +7125,8 @@ a.status-card {
     width: 100% !important;
     height: 100% !important;
     margin: 0;
+    border-radius: 0;
+    outline: 0;
 
     video {
       max-width: 100% !important;
@@ -7229,6 +7431,14 @@ a.status-card {
 }
 
 .gifv {
+  position: relative;
+
+  canvas {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+  }
+
   video {
     max-width: 100vw;
     max-height: 80vh;
@@ -7378,7 +7588,7 @@ a.status-card {
   }
 }
 
-::-webkit-scrollbar-thumb {
+.custom-scrollbars ::-webkit-scrollbar-thumb {
   border-radius: 0;
 }
 
@@ -7679,6 +7889,13 @@ noscript {
     overflow-y: auto;
   }
 
+  &__empty {
+    padding: 32px 20px;
+    color: $darker-text-color;
+    text-align: center;
+    line-height: 1.5;
+  }
+
   .account__display-name {
     &:hover strong {
       text-decoration: none;
@@ -7691,6 +7908,11 @@ noscript {
 
   .search {
     margin-bottom: 0;
+  }
+
+  .drawer__backdrop {
+    border: 0;
+    padding: 0;
   }
 }
 
@@ -7715,6 +7937,13 @@ noscript {
     height: 50vh;
     border-radius: 0 0 8px 8px;
     overflow-y: auto;
+  }
+
+  &__empty {
+    padding: 32px 20px;
+    color: $darker-text-color;
+    text-align: center;
+    line-height: 1.5;
   }
 
   .list {
@@ -7823,6 +8052,7 @@ noscript {
 
   p {
     margin-bottom: 20px;
+    unicode-bidi: plaintext;
 
     &:last-child {
       margin-bottom: 0;
@@ -7881,7 +8111,6 @@ noscript {
     .avatar {
       display: block;
       flex: 0 0 auto;
-      width: 94px;
 
       .account__avatar {
         background: darken($ui-base-color, 8%);
@@ -7897,6 +8126,60 @@ noscript {
 
     .account-role {
       line-height: unset;
+    }
+  }
+
+  &__familiar-followers {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-block: 16px;
+    color: $darker-text-color;
+    font-size: 14px;
+    line-height: 20px;
+
+    &__avatars {
+      display: flex;
+      flex: 0 0 auto;
+      isolation: isolate;
+    }
+
+    &__avatar {
+      display: block;
+      border-radius: 4px;
+
+      &:not(:first-child) {
+        margin-inline-start: -12px;
+      }
+
+      &:first-child {
+        transform: rotate(-4deg);
+      }
+
+      &:nth-child(2) {
+        transform: rotate(-2deg);
+      }
+
+      &:focus-visible {
+        z-index: 1;
+        outline: 2px solid $highlight-text-color;
+        outline-offset: 2px;
+      }
+
+      .account__avatar {
+        box-shadow: 0 0 0 2px $ui-base-color;
+      }
+    }
+
+    a:any-link {
+      color: $primary-text-color;
+      font-weight: 500;
+      text-decoration: none;
+
+      &:hover,
+      &:focus-visible {
+        text-decoration: underline;
+      }
     }
   }
 
@@ -7961,6 +8244,8 @@ noscript {
           text-overflow: ellipsis;
 
           span {
+            overflow: hidden;
+            text-overflow: ellipsis;
             user-select: all;
           }
         }
@@ -8079,6 +8364,20 @@ noscript {
     font-size: 14px;
     font-weight: 400;
     margin-bottom: 10px;
+
+    &__loading-indicator-wrapper {
+      position: relative;
+      height: 37px;
+
+      .loading-indicator {
+        left: 10px;
+      }
+
+      .circular-progress {
+        width: 14px;
+        height: 14px;
+      }
+    }
 
     label {
       display: block;
@@ -9885,6 +10184,30 @@ noscript {
       line-height: 33px;
       font-weight: 700;
     }
+
+    &__buttons {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+
+      .button {
+        flex-shrink: 1;
+        min-width: 80px;
+        white-space: nowrap;
+      }
+
+      .icon-button {
+        box-sizing: content-box;
+        padding: 5px;
+        border: 1px solid lighten($ui-base-color, 12%);
+        border-radius: 4px;
+
+        .icon {
+          width: 24px;
+          height: 24px;
+        }
+      }
+    }
   }
 }
 
@@ -10529,6 +10852,16 @@ noscript {
     background: $ui-highlight-color;
   }
 
+  &.warning {
+    border-color: $gold-star;
+    color: $gold-star;
+
+    &.active {
+      background-color: $gold-star;
+      color: $ui-base-color;
+    }
+  }
+
   .icon {
     width: 15px;
     height: 15px;
@@ -11092,6 +11425,26 @@ noscript {
     display: -webkit-box;
     -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
+  }
+
+  &__limited-account-note {
+    text-align: center;
+    font-weight: 500;
+  }
+
+  &__relationship-tag {
+    align-self: flex-start;
+  }
+
+  &__familiar-followers {
+    color: $secondary-text-color;
+    font-size: 13px;
+    line-height: 18px;
+
+    a {
+      color: $primary-text-color;
+      font-weight: 500;
+    }
   }
 }
 

@@ -185,7 +185,7 @@ if (env.NODE_ENV === 'development') {
     plugins: [
       ...baseConfig.plugins,
       new InjectManifest({
-        additionalManifestEntries: ['1f602.svg', 'sheet_13.png'].map((filename) => {
+        additionalManifestEntries: ['1f602.svg', 'sheet_15_1.png'].map((filename) => {
           const path = resolve(root, 'public', 'emoji', filename);
           const body = readFileSync(path);
           const md5 = createHash('md5');

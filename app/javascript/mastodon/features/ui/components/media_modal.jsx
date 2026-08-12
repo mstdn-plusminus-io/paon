@@ -20,6 +20,8 @@ import Footer from 'mastodon/features/picture_in_picture/components/footer';
 import Video from 'mastodon/features/video';
 import { disableSwiping } from 'mastodon/initial_state';
 
+import { shouldDismissMediaSwipe } from '../util/media_swipe';
+
 import ImageLoader from './image_loader';
 
 const messages = defineMessages({
@@ -29,7 +31,7 @@ const messages = defineMessages({
   page: { id: 'lightbox.page', defaultMessage: 'Go to media {number}' },
 });
 
-class MediaModal extends ImmutablePureComponent {
+export class MediaModal extends ImmutablePureComponent {
 
   static propTypes = {
     media: ImmutablePropTypes.list.isRequired,
@@ -48,10 +50,43 @@ class MediaModal extends ImmutablePureComponent {
     index: null,
     navigationHidden: false,
     zoomButtonHidden: false,
+    zoomedIn: false,
+  };
+
+  touchStart = null;
+
+  handleZoomChange = zoomedIn => {
+    this.setState({ zoomedIn });
+  };
+
+  handleTouchStart = e => {
+    if (this.state.zoomedIn || e.touches.length !== 1) {
+      this.touchStart = null;
+      return;
+    }
+
+    this.touchStart = {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY,
+    };
+  };
+
+  handleTouchEnd = e => {
+    const touch = e.changedTouches[0];
+    const start = this.touchStart;
+    this.touchStart = null;
+
+    if (!start || this.state.zoomedIn || !touch) {
+      return;
+    }
+
+    if (shouldDismissMediaSwipe(start, { x: touch.clientX, y: touch.clientY }, this.state.zoomedIn)) {
+      this.props.onClose();
+    }
   };
 
   handleSwipe = (index) => {
-    this.setState({ index: index % this.props.media.size });
+    this.setState({ index: index % this.props.media.size, zoomedIn: false });
   };
 
   handleTransitionEnd = () => {
@@ -146,8 +181,8 @@ class MediaModal extends ImmutablePureComponent {
 
     const index = this.getIndex();
 
-    const leftNav  = media.size > 1 && <button type='button' className='media-modal__nav media-modal__nav--left' onClick={this.handlePrevClick} aria-label={intl.formatMessage(messages.previous)}><Icon id='chevron-left' icon={ChevronLeftIcon} /></button>;
-    const rightNav = media.size > 1 && <button type='button' className='media-modal__nav media-modal__nav--right' onClick={this.handleNextClick} aria-label={intl.formatMessage(messages.next)}><Icon id='chevron-right' icon={ChevronRightIcon} /></button>;
+    const leftNav  = media.size > 1 && <button type='button' className='media-modal__nav media-modal__nav--prev' onClick={this.handlePrevClick} aria-label={intl.formatMessage(messages.previous)}><Icon id='chevron-left' icon={ChevronLeftIcon} /></button>;
+    const rightNav = media.size > 1 && <button type='button' className='media-modal__nav media-modal__nav--next' onClick={this.handleNextClick} aria-label={intl.formatMessage(messages.next)}><Icon id='chevron-right' icon={ChevronRightIcon} /></button>;
 
     const content = media.map((image, i) => {
       const width = image.getIn(['meta', 'original', 'width']) || null;
@@ -166,6 +201,7 @@ class MediaModal extends ImmutablePureComponent {
             key={image.get('url') || image.get('remote_url')}
             onClick={this.nop}
             navigationHidden={this.state.navigationHidden || index !== i}
+            onZoomChange={this.handleZoomChange}
           />
         );
       } else if (image.get('type') === 'video') {
@@ -193,8 +229,6 @@ class MediaModal extends ImmutablePureComponent {
         return (
           <GIFV
             src={image.get('url') || image.get('remote_url')}
-            width={width}
-            height={height}
             key={image.get('url') || image.get('remote_url')}
             alt={description}
             lang={lang}
@@ -235,14 +269,14 @@ class MediaModal extends ImmutablePureComponent {
 
     return (
       <div className='modal-root__modal media-modal'>
-        <div className='media-modal__closer' role='presentation' onClick={media?.get(index)?.get('type') === 'image' ? this.onClickOuter : onClose} >
+        <div className='media-modal__closer' role='presentation' onClick={media?.get(index)?.get('type') === 'image' ? this.onClickOuter : onClose} onTouchStart={this.handleTouchStart} onTouchEnd={this.handleTouchEnd}>
           <ReactSwipeableViews
             style={swipeableViewsStyle}
             containerStyle={containerStyle}
             onChangeIndex={this.handleSwipe}
             onTransitionEnd={this.handleTransitionEnd}
             index={index}
-            disabled={disableSwiping}
+            disabled={disableSwiping || this.state.zoomedIn}
           >
             {content}
           </ReactSwipeableViews>

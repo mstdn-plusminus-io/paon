@@ -19,12 +19,12 @@ import StarIcon from '@/material-icons/400-24px/star-fill.svg?react';
 import StarBorderIcon from '@/material-icons/400-24px/star.svg?react';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { PERMISSION_MANAGE_USERS, PERMISSION_MANAGE_FEDERATION } from 'mastodon/permissions';
+import { bookmarkActionTitle, favouriteActionTitle } from 'mastodon/utils/status_action_titles';
 import { canEmbedStatus } from 'mastodon/utils/status_embed';
-import { isStatusQuoteable } from 'mastodon/utils/status_quote';
 
 import { IconButton } from '../../../components/icon_button';
 import DropdownMenuContainer from '../../../containers/dropdown_menu_container';
-import { me, feature_quote } from '../../../initial_state';
+import { me } from '../../../initial_state';
 
 const messages = defineMessages({
   delete: { id: 'status.delete', defaultMessage: 'Delete' },
@@ -37,8 +37,6 @@ const messages = defineMessages({
   reblog_private: { id: 'status.reblog_private', defaultMessage: 'Boost with original visibility' },
   cancel_reblog_private: { id: 'status.cancel_reblog_private', defaultMessage: 'Unboost' },
   cannot_reblog: { id: 'status.cannot_reblog', defaultMessage: 'This post cannot be boosted' },
-  favourite: { id: 'status.favourite', defaultMessage: 'Favorite' },
-  bookmark: { id: 'status.bookmark', defaultMessage: 'Bookmark' },
   more: { id: 'status.more', defaultMessage: 'More' },
   mute: { id: 'status.mute', defaultMessage: 'Mute @{name}' },
   muteConversation: { id: 'status.mute_conversation', defaultMessage: 'Mute conversation' },
@@ -58,7 +56,6 @@ const messages = defineMessages({
   unmute: { id: 'account.unmute', defaultMessage: 'Unmute @{name}' },
   unblock: { id: 'account.unblock', defaultMessage: 'Unblock @{name}' },
   openOriginalPage: { id: 'account.open_original_page', defaultMessage: 'Open original page' },
-  quote: { id: 'status.quote', defaultMessage: 'Quote' },
 });
 
 const mapStateToProps = (state, { status }) => ({
@@ -76,7 +73,6 @@ class ActionBar extends PureComponent {
     status: ImmutablePropTypes.map.isRequired,
     relationship: ImmutablePropTypes.map,
     onReply: PropTypes.func.isRequired,
-    onQuote: PropTypes.func.isRequired,
     onReblog: PropTypes.func.isRequired,
     onFavourite: PropTypes.func.isRequired,
     onBookmark: PropTypes.func.isRequired,
@@ -103,10 +99,6 @@ class ActionBar extends PureComponent {
 
   handleReblogClick = (e) => {
     this.props.onReblog(this.props.status, e);
-  };
-
-  handleQuoteClick = () => {
-    this.props.onQuote(this.props.status);
   };
 
   handleFavouriteClick = () => {
@@ -210,7 +202,6 @@ class ActionBar extends PureComponent {
     const account            = status.get('account');
     const writtenByMe        = status.getIn(['account', 'id']) === me;
     const isRemote           = status.getIn(['account', 'username']) !== status.getIn(['account', 'acct']);
-    const quoteableStatus    = feature_quote && isStatusQuoteable(status, relationship, signedIn);
 
     let menu = [];
 
@@ -309,13 +300,15 @@ class ActionBar extends PureComponent {
       reblogTitle = intl.formatMessage(messages.cannot_reblog);
     }
 
+    const bookmarkTitle = bookmarkActionTitle(intl, status.get('bookmarked'));
+    const favouriteTitle = favouriteActionTitle(intl, status.get('favourited'));
+
     return (
       <div className='detailed-status__action-bar'>
         <div className='detailed-status__button'><IconButton title={intl.formatMessage(messages.reply)} icon={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? 'reply' : replyIcon} iconComponent={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? ReplyIcon : replyIconComponent} onClick={this.handleReplyClick} /></div>
         <div className='detailed-status__button'><IconButton className={classNames({ reblogPrivate })} disabled={!publicStatus && !reblogPrivate} active={status.get('reblogged')} title={reblogTitle} icon='retweet' iconComponent={RepeatIcon} onClick={this.handleReblogClick} /></div>
-        {quoteableStatus && <div className='detailed-status__button'><IconButton title={intl.formatMessage(messages.quote)} icon='quote-right' onClick={this.handleQuoteClick} /></div> }
-        <div className='detailed-status__button'><IconButton className='star-icon' animate active={status.get('favourited')} title={intl.formatMessage(messages.favourite)} icon='star' iconComponent={status.get('favourited') ? StarIcon : StarBorderIcon} onClick={this.handleFavouriteClick} /></div>
-        <div className='detailed-status__button'><IconButton className='bookmark-icon' disabled={!signedIn} active={status.get('bookmarked')} title={intl.formatMessage(messages.bookmark)} icon='bookmark' iconComponent={status.get('bookmarked') ? BookmarkIcon : BookmarkBorderIcon} onClick={this.handleBookmarkClick} /></div>
+        <div className='detailed-status__button'><IconButton className='star-icon' animate active={status.get('favourited')} title={favouriteTitle} icon='star' iconComponent={status.get('favourited') ? StarIcon : StarBorderIcon} onClick={this.handleFavouriteClick} /></div>
+        <div className='detailed-status__button'><IconButton className='bookmark-icon' disabled={!signedIn} active={status.get('bookmarked')} title={bookmarkTitle} icon='bookmark' iconComponent={status.get('bookmarked') ? BookmarkIcon : BookmarkBorderIcon} onClick={this.handleBookmarkClick} /></div>
 
         {localStorage.plusminus_config_quick_report === 'visible' && (
           <div className='detailed-status__button'><IconButton title={intl.formatMessage(messages.report, { name: status.getIn(['account', 'username']) })} icon='flag' iconComponent={FlagIcon} onClick={this.handleReport} /></div>

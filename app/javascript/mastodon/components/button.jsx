@@ -3,6 +3,8 @@ import { PureComponent } from 'react';
 
 import classNames from 'classnames';
 
+import { LoadingIndicator } from './loading_indicator';
+
 export default class Button extends PureComponent {
 
   static propTypes = {
@@ -15,6 +17,7 @@ export default class Button extends PureComponent {
     dangerous: PropTypes.bool,
     autoFocus: PropTypes.bool,
     ariaBusy: PropTypes.bool,
+    loading: PropTypes.bool,
     className: PropTypes.string,
     title: PropTypes.string,
     children: PropTypes.node,
@@ -25,7 +28,10 @@ export default class Button extends PureComponent {
   };
 
   handleClick = (e) => {
-    if (!this.props.disabled && this.props.onClick) {
+    if (this.props.disabled || this.props.loading) {
+      e.preventDefault();
+      e.stopPropagation();
+    } else if (this.props.onClick) {
       this.props.onClick(e);
     }
   };
@@ -43,20 +49,29 @@ export default class Button extends PureComponent {
       'button-secondary': this.props.secondary,
       'button--block': this.props.block,
       'button--dangerous': this.props.dangerous,
+      loading: this.props.loading,
     });
+    const label = this.props.text || this.props.children;
 
     return (
       <button
         className={className}
-        disabled={this.props.disabled}
+        disabled={this.props.disabled && !this.props.loading}
         autoFocus={this.props.autoFocus}
-        aria-busy={this.props.ariaBusy}
+        aria-busy={this.props.loading || this.props.ariaBusy}
+        aria-disabled={this.props.loading || undefined}
+        aria-live={this.props.loading !== undefined ? 'polite' : undefined}
         onClick={this.handleClick}
         ref={this.setRef}
         title={this.props.title}
         type={this.props.type}
       >
-        {this.props.text || this.props.children}
+        {this.props.loading ? (
+          <>
+            <span className='button__label-wrapper'>{label}</span>
+            <LoadingIndicator role='none' />
+          </>
+        ) : label}
       </button>
     );
   }

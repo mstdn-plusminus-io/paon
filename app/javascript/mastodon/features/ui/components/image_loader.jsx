@@ -15,6 +15,7 @@ export default class ImageLoader extends PureComponent {
     lang: PropTypes.string,
     src: PropTypes.string.isRequired,
     onClick: PropTypes.func,
+    onZoomChange: PropTypes.func,
     navigationHidden: PropTypes.bool,
   }
 
@@ -115,12 +116,14 @@ export default class ImageLoader extends PureComponent {
       this.setState({
         currentScale: this.state.minScale,
       });
+      this.props.onZoomChange?.(false);
       return;
     }
 
     this.setState({
       currentScale: ref.state.scale,
     });
+    this.props.onZoomChange?.(ref.state.scale > this.state.minScale + 0.01);
   }
 
   onClickZoomButton = zoomButtonState => e => {
@@ -138,11 +141,11 @@ export default class ImageLoader extends PureComponent {
     setTimeout(() =>
       this.setState({
         currentScale: this.transformState.scale,
-      }), 0);
+      }, () => this.props.onZoomChange?.(this.state.currentScale > this.state.minScale + 0.01)), 0);
   }
 
   render () {
-    const { alt, src, onClick } = this.props;
+    const { alt, lang, src, onClick } = this.props;
     const { loading } = this.state;
 
     const className = classNames('image-loader', {
@@ -192,7 +195,7 @@ export default class ImageLoader extends PureComponent {
                 }}
               >
                 {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- image click is intentional */}
-                <img src={src} alt={alt} onLoad={this.onLoadImage} style={{ visibility: this.state.visibility }} onClick={this.onClickImage(onClick)} />
+                <img src={src} alt={alt} lang={lang} onLoad={this.onLoadImage} style={{ visibility: this.state.visibility }} onClick={this.onClickImage(onClick)} />
               </TransformComponent>
             );
           }}

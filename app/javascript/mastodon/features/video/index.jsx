@@ -1,7 +1,7 @@
 import PropTypes from 'prop-types';
 import { PureComponent } from 'react';
 
-import { defineMessages, injectIntl, FormattedMessage } from 'react-intl';
+import { defineMessages, injectIntl } from 'react-intl';
 
 import classNames from 'classnames';
 
@@ -11,10 +11,13 @@ import { throttle } from 'lodash';
 
 import { Blurhash } from 'mastodon/components/blurhash';
 import { Icon }  from 'mastodon/components/icon';
+import { SpoilerButton } from 'mastodon/components/spoiler_button';
 import { playerSettings } from 'mastodon/settings';
 
 import { displayMedia, useBlurhash } from '../../initial_state';
 import { isFullscreen, requestFullscreen, exitFullscreen } from '../ui/util/fullscreen';
+
+const HOVER_FADE_DELAY = 4000;
 
 const messages = defineMessages({
   play: { id: 'video.play', defaultMessage: 'Play' },
@@ -128,6 +131,10 @@ class Video extends PureComponent {
     componentIndex: PropTypes.number,
     autoFocus: PropTypes.bool,
     attachmentId: PropTypes.string,
+    matchedFilters: PropTypes.oneOfType([
+      PropTypes.arrayOf(PropTypes.string),
+      PropTypes.object,
+    ]),
   };
 
   static defaultProps = {
@@ -370,6 +377,7 @@ class Video extends PureComponent {
     document.removeEventListener('webkitfullscreenchange', this.handleFullscreenChange, true);
     document.removeEventListener('mozfullscreenchange', this.handleFullscreenChange, true);
     document.removeEventListener('MSFullscreenChange', this.handleFullscreenChange, true);
+    window.clearTimeout(this.hoverTimeout);
 
     if (!this.state.paused && this.video && this.props.deployPictureInPicture) {
       this.props.deployPictureInPicture('video', {
@@ -425,10 +433,22 @@ class Video extends PureComponent {
 
   handleMouseEnter = () => {
     this.setState({ hovered: true });
+    this.scheduleHoverFade();
+  };
+
+  handlePlayerMouseMove = () => {
+    this.setState({ hovered: true });
+    this.scheduleHoverFade();
   };
 
   handleMouseLeave = () => {
+    window.clearTimeout(this.hoverTimeout);
     this.setState({ hovered: false });
+  };
+
+  scheduleHoverFade = () => {
+    window.clearTimeout(this.hoverTimeout);
+    this.hoverTimeout = window.setTimeout(() => this.setState({ hovered: false }), HOVER_FADE_DELAY);
   };
 
   toggleMute = () => {
@@ -529,7 +549,7 @@ class Video extends PureComponent {
   }
 
   render () {
-    const { preview, src, aspectRatio, onOpenVideo, onCloseVideo, intl, alt, lang, detailed, sensitive, editable, blurhash, autoFocus } = this.props;
+    const { preview, src, aspectRatio, onOpenVideo, onCloseVideo, intl, alt, lang, detailed, sensitive, editable, blurhash, autoFocus, matchedFilters } = this.props;
     const { currentTime, duration, volume, buffer, dragging, paused, fullscreen, hovered, revealed } = this.state;
     const progress = Math.min((currentTime / duration) * 100, 100);
     const muted = this.state.muted || volume === 0;
@@ -544,14 +564,6 @@ class Video extends PureComponent {
       preload = 'none';
     }
 
-    let warning;
-
-    if (sensitive) {
-      warning = <FormattedMessage id='status.sensitive_warning' defaultMessage='Sensitive content' />;
-    } else {
-      warning = <FormattedMessage id='status.media_hidden' defaultMessage='Media hidden' />;
-    }
-
     // The outer wrapper is necessary to avoid reflowing the layout when going into full screen
     return (
       <div style={{ aspectRatio }}>
@@ -561,6 +573,7 @@ class Video extends PureComponent {
           style={{ aspectRatio }}
           ref={this.setPlayerRef}
           onMouseEnter={this.handleMouseEnter}
+          onMouseMove={this.handlePlayerMouseMove}
           onMouseLeave={this.handleMouseLeave}
           onClick={this.handleClickRoot}
           onKeyDown={this.handleKeyDown}
@@ -595,14 +608,7 @@ class Video extends PureComponent {
             style={{ width: '100%' }}
           />}
 
-          <div className={classNames('spoiler-button', { 'spoiler-button--hidden': revealed || editable })}>
-            <button type='button' className='spoiler-button__overlay' onClick={this.toggleReveal}>
-              <span className='spoiler-button__overlay__label'>
-                {warning}
-                <span className='spoiler-button__overlay__action'><FormattedMessage id='status.media.show' defaultMessage='Click to show' /></span>
-              </span>
-            </button>
-          </div>
+          <SpoilerButton hidden={revealed || editable} sensitive={sensitive} onClick={this.toggleReveal} matchedFilters={matchedFilters} />
 
           <div className={classNames('video-player__controls', { active: paused || hovered })}>
             <div className='video-player__seek' onMouseDown={this.handleMouseDown} ref={this.setSeekRef}>

@@ -9,7 +9,7 @@ import { connect } from 'react-redux';
 
 import { openModal } from 'mastodon/actions/modal';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
-import { domain, version, source_url, statusPageUrl, profile_directory as profileDirectory } from 'mastodon/initial_state';
+import { domain, version, source_url, statusPageUrl, profile_directory as profileDirectory, termsOfServiceEnabled } from 'mastodon/initial_state';
 import { PERMISSION_INVITE_USERS } from 'mastodon/permissions';
 import { logOut } from 'mastodon/utils/log_out';
 
@@ -88,6 +88,12 @@ class LinkFooter extends PureComponent {
           )}
           {DividingCircle}
           <Link to='/privacy-policy' target={multiColumn ? '_blank' : undefined}><FormattedMessage id='footer.privacy_policy' defaultMessage='Privacy policy' /></Link>
+          {termsOfServiceEnabled && (
+            <>
+              {DividingCircle}
+              <Link to='/terms-of-service' target={multiColumn ? '_blank' : undefined} rel='terms-of-service'><FormattedMessage id='footer.terms_of_service' defaultMessage='Terms of service' /></Link>
+            </>
+          )}
         </p>
 
         <p>

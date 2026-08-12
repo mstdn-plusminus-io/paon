@@ -24,8 +24,6 @@ export const COMPOSE_SUBMIT_SUCCESS  = 'COMPOSE_SUBMIT_SUCCESS';
 export const COMPOSE_SUBMIT_FAIL     = 'COMPOSE_SUBMIT_FAIL';
 export const COMPOSE_REPLY           = 'COMPOSE_REPLY';
 export const COMPOSE_REPLY_CANCEL    = 'COMPOSE_REPLY_CANCEL';
-export const COMPOSE_QUOTE           = 'COMPOSE_QUOTE';
-export const COMPOSE_QUOTE_CANCEL    = 'COMPOSE_QUOTE_CANCEL';
 export const COMPOSE_DIRECT          = 'COMPOSE_DIRECT';
 export const COMPOSE_MENTION         = 'COMPOSE_MENTION';
 export const COMPOSE_RESET           = 'COMPOSE_RESET';
@@ -131,20 +129,9 @@ export function replyCompose(status, routerHistory) {
   };
 }
 
-export function quoteCompose(status, routerHistory) {
-  return (dispatch, getState) => {
-    dispatch({
-      type: COMPOSE_QUOTE,
-      status: status,
-    });
-
-    ensureComposeIsVisible(getState, routerHistory);
-  };
-}
-
 export function cancelReplyCompose() {
   return {
-    type: COMPOSE_QUOTE_CANCEL,
+    type: COMPOSE_REPLY_CANCEL,
   };
 }
 
@@ -185,14 +172,13 @@ export function directCompose(account, routerHistory) {
   };
 }
 
-export function submitCompose(routerHistory) {
+export function submitCompose(routerHistory, successCallback) {
   return function (dispatch, getState) {
     const status   = getState().getIn(['compose', 'text'], '');
     const media    = getState().getIn(['compose', 'media_attachments']);
     const statusId = getState().getIn(['compose', 'id'], null);
     const pollState = getState().getIn(['compose', 'poll'], null);
     const poll = pollState?.update('options', options => options.filter(option => option.trim().length > 0));
-
     if (((!status || !status.length) && media.size === 0) || (poll && poll.get('options').size < 2)) {
       return;
     }
@@ -219,21 +205,22 @@ export function submitCompose(routerHistory) {
       });
     }
 
+    const data = {
+      status,
+      in_reply_to_id: getState().getIn(['compose', 'in_reply_to'], null),
+      media_ids: media.map(item => item.get('id')),
+      media_attributes,
+      sensitive: getState().getIn(['compose', 'sensitive']),
+      spoiler_text: getState().getIn(['compose', 'spoiler']) ? getState().getIn(['compose', 'spoiler_text'], '') : '',
+      visibility: getState().getIn(['compose', 'privacy']),
+      poll,
+      language: getState().getIn(['compose', 'language']),
+    };
+
     api().request({
       url: statusId === null ? '/api/v1/statuses' : `/api/v1/statuses/${statusId}`,
       method: statusId === null ? 'post' : 'put',
-      data: {
-        status,
-        in_reply_to_id: getState().getIn(['compose', 'in_reply_to'], null),
-        media_ids: media.map(item => item.get('id')),
-        media_attributes,
-        sensitive: getState().getIn(['compose', 'sensitive']),
-        spoiler_text: getState().getIn(['compose', 'spoiler']) ? getState().getIn(['compose', 'spoiler_text'], '') : '',
-        visibility: getState().getIn(['compose', 'privacy']),
-        poll,
-        language: getState().getIn(['compose', 'language']),
-        quote_id: getState().getIn(['compose', 'quote_id']),
-      },
+      data,
       headers: {
         'Idempotency-Key': getState().getIn(['compose', 'idempotencyKey']),
       },
@@ -244,6 +231,9 @@ export function submitCompose(routerHistory) {
 
       dispatch(insertIntoTagHistory(response.data.tags, status));
       dispatch(submitComposeSuccess({ ...response.data }));
+      if (typeof successCallback === 'function') {
+        successCallback(response.data);
+      }
 
       // To make the app more responsive, immediately push the status
       // into the columns

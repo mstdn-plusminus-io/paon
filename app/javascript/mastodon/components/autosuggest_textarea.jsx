@@ -37,6 +37,9 @@ const textAtCursorMatchesToken = (str, caretPosition) => {
   }
 };
 
+export const shouldRefreshSpellcheckLanguage = (previousLanguage, language, textarea) =>
+  Boolean(language && language !== previousLanguage && textarea === document.activeElement);
+
 export default class AutosuggestTextarea extends ImmutablePureComponent {
 
   static propTypes = {
@@ -160,6 +163,15 @@ export default class AutosuggestTextarea extends ImmutablePureComponent {
   UNSAFE_componentWillReceiveProps (nextProps) {
     if (nextProps.suggestions !== this.props.suggestions && nextProps.suggestions.size > 0 && this.state.suggestionsHidden && this.state.focused) {
       this.setState({ suggestionsHidden: false });
+    }
+  }
+
+  componentDidUpdate (prevProps) {
+    // Firefox does not update the active spellcheck dictionary when only the
+    // textarea's lang attribute changes. Briefly release focus to apply it.
+    if (shouldRefreshSpellcheckLanguage(prevProps.lang, this.props.lang, this.textarea)) {
+      this.textarea.blur();
+      this.textarea.focus();
     }
   }
 

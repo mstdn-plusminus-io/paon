@@ -17,6 +17,8 @@ import { fileNameFromURL } from 'mastodon/features/video';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { me, boostModal } from 'mastodon/initial_state';
 import { makeGetStatus } from 'mastodon/selectors';
+import { discardDraftModalProps, hasComposeDraft } from 'mastodon/utils/discard_draft';
+import { favouriteActionTitle } from 'mastodon/utils/status_action_titles';
 
 const messages = defineMessages({
   reply: { id: 'status.reply', defaultMessage: 'Reply' },
@@ -25,9 +27,6 @@ const messages = defineMessages({
   reblog_private: { id: 'status.reblog_private', defaultMessage: 'Boost with original visibility' },
   cancel_reblog_private: { id: 'status.cancel_reblog_private', defaultMessage: 'Unboost' },
   cannot_reblog: { id: 'status.cannot_reblog', defaultMessage: 'This post cannot be boosted' },
-  favourite: { id: 'status.favourite', defaultMessage: 'Favorite' },
-  replyConfirm: { id: 'confirmations.reply.confirm', defaultMessage: 'Reply' },
-  replyMessage: { id: 'confirmations.reply.message', defaultMessage: 'Replying now will overwrite the message you are currently composing. Are you sure you want to proceed?' },
   open: { id: 'status.open', defaultMessage: 'Expand this status' },
   download: { id: 'video.download', defaultMessage: 'Download file' },
 });
@@ -37,7 +36,8 @@ const makeMapStateToProps = () => {
 
   const mapStateToProps = (state, { statusId }) => ({
     status: getStatus(state, { id: statusId }),
-    askReplyConfirmation: state.getIn(['compose', 'text']).trim().length !== 0,
+    askReplyConfirmation: hasComposeDraft(state),
+    isEditing: Boolean(state.getIn(['compose', 'id'])),
   });
 
   return mapStateToProps;
@@ -56,6 +56,7 @@ class Footer extends ImmutablePureComponent {
     intl: PropTypes.object.isRequired,
     dispatch: PropTypes.func.isRequired,
     askReplyConfirmation: PropTypes.bool,
+    isEditing: PropTypes.bool,
     withOpenButton: PropTypes.bool,
     onClose: PropTypes.func,
     src: PropTypes.string,
@@ -75,7 +76,7 @@ class Footer extends ImmutablePureComponent {
   };
 
   handleReplyClick = () => {
-    const { dispatch, askReplyConfirmation, status, intl } = this.props;
+    const { dispatch, askReplyConfirmation, status, intl, isEditing } = this.props;
     const { signedIn } = this.props.identity;
 
     if (signedIn) {
@@ -83,8 +84,7 @@ class Footer extends ImmutablePureComponent {
         dispatch(openModal({
           modalType: 'CONFIRM',
           modalProps: {
-            message: intl.formatMessage(messages.replyMessage),
-            confirm: intl.formatMessage(messages.replyConfirm),
+            ...discardDraftModalProps(intl, isEditing),
             onConfirm: this._performReply,
           },
         }));
@@ -222,11 +222,13 @@ class Footer extends ImmutablePureComponent {
       reblogTitle = intl.formatMessage(messages.cannot_reblog);
     }
 
+    const favouriteTitle = favouriteActionTitle(intl, status.get('favourited'));
+
     return (
       <div className='picture-in-picture__footer'>
         <IconButton className='status__action-bar-button' title={replyTitle} icon={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? 'reply' : replyIcon} onClick={this.handleReplyClick} counter={status.get('replies_count')} />
         <IconButton className={classNames('status__action-bar-button', { reblogPrivate })} disabled={!publicStatus && !reblogPrivate}  active={status.get('reblogged')} title={reblogTitle} icon='retweet' onClick={this.handleReblogClick} counter={status.get('reblogs_count')} />
-        <IconButton className='status__action-bar-button star-icon' animate active={status.get('favourited')} title={intl.formatMessage(messages.favourite)} icon='star' onClick={this.handleFavouriteClick} counter={status.get('favourites_count')} />
+        <IconButton className='status__action-bar-button star-icon' animate active={status.get('favourited')} title={favouriteTitle} icon='star' onClick={this.handleFavouriteClick} counter={status.get('favourites_count')} />
         <IconButton className='status__action-bar-button' title={intl.formatMessage(messages.download)} icon='download' onClick={this.handleDownloadClick} disabled={!this.props?.src} />
         {withOpenButton && <IconButton className='status__action-bar-button' title={intl.formatMessage(messages.open)} icon='external-link' onClick={this.handleOpenClick} href={`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`} />}
       </div>

@@ -3,7 +3,6 @@ import { Map as ImmutableMap, OrderedSet as ImmutableOrderedSet, fromJS } from '
 import {
   COMPOSE_MENTION,
   COMPOSE_REPLY,
-  COMPOSE_QUOTE,
   COMPOSE_DIRECT,
 } from '../actions/compose';
 import {
@@ -46,7 +45,6 @@ export default function search(state = initialState, action) {
   case SEARCH_SHOW:
     return state.set('hidden', false);
   case COMPOSE_REPLY:
-  case COMPOSE_QUOTE:
   case COMPOSE_MENTION:
   case COMPOSE_DIRECT:
     return state.set('hidden', true);

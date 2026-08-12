@@ -4,17 +4,19 @@ import { PureComponent } from 'react';
 import { injectIntl, defineMessages, FormattedMessage } from 'react-intl';
 
 import { Helmet } from 'react-helmet';
+import { withRouter } from 'react-router-dom';
 
 import { List as ImmutableList } from 'immutable';
 import ImmutablePropTypes from 'react-immutable-proptypes';
 import { connect } from 'react-redux';
 
-import { submitSearch, expandSearch } from 'mastodon/actions/search';
+import { submitSearch, expandSearch, searchResultsHaveMore } from 'mastodon/actions/search';
 import { ImmutableHashtag as Hashtag } from 'mastodon/components/hashtag';
 import { Icon } from 'mastodon/components/icon';
 import ScrollableList from 'mastodon/components/scrollable_list';
 import Account from 'mastodon/containers/account_container';
 import Status from 'mastodon/containers/status_container';
+import { buildSearchQuery } from 'mastodon/utils/search_query';
 
 import { SearchSection } from './components/search_section';
 
@@ -66,6 +68,8 @@ class Results extends PureComponent {
     q: PropTypes.string,
     intl: PropTypes.object,
     submittedType: PropTypes.oneOf(['accounts', 'statuses', 'hashtags']),
+    history: PropTypes.object.isRequired,
+    location: PropTypes.object.isRequired,
   };
 
   state = {
@@ -83,51 +87,35 @@ class Results extends PureComponent {
   };
 
   handleSelectAll = () => {
-    const { submittedType, dispatch } = this.props;
-
-    // If we originally searched for a specific type, we need to resubmit
-    // the query to get all types of results
-    if (submittedType) {
-      dispatch(submitSearch());
-    }
-
-    this.setState({ type: 'all' });
+    this._selectType('all');
   };
 
   handleSelectAccounts = () => {
-    const { submittedType, dispatch } = this.props;
-
-    // If we originally searched for something else (but not everything),
-    // we need to resubmit the query for this specific type
-    if (submittedType !== 'accounts') {
-      dispatch(submitSearch('accounts'));
-    }
-
-    this.setState({ type: 'accounts' });
+    this._selectType('accounts');
   };
 
   handleSelectHashtags = () => {
-    const { submittedType, dispatch } = this.props;
-
-    // If we originally searched for something else (but not everything),
-    // we need to resubmit the query for this specific type
-    if (submittedType !== 'hashtags') {
-      dispatch(submitSearch('hashtags'));
-    }
-
-    this.setState({ type: 'hashtags' });
+    this._selectType('hashtags');
   }
 
   handleSelectStatuses = () => {
-    const { submittedType, dispatch } = this.props;
+    this._selectType('statuses');
+  }
 
-    // If we originally searched for something else (but not everything),
-    // we need to resubmit the query for this specific type
-    if (submittedType !== 'statuses') {
-      dispatch(submitSearch('statuses'));
+  _selectType (type) {
+    const { submittedType, dispatch, history, location, q } = this.props;
+    const searchType = type === 'all' ? undefined : type;
+
+    if (location.pathname === '/search') {
+      history.push({
+        pathname: '/search',
+        search: buildSearchQuery(q ?? '', searchType),
+      });
+    } else if (submittedType !== searchType) {
+      dispatch(submitSearch(searchType));
     }
 
-    this.setState({ type: 'statuses' });
+    this.setState({ type });
   }
 
   handleLoadMoreAccounts = () => this._loadMore('accounts');
@@ -152,7 +140,7 @@ class Results extends PureComponent {
     const { type } = this.state;
 
     // We request 1 more result than we display so we can tell if there'd be a next page
-    const hasMore = type !== 'all' ? results.get(type, ImmutableList()).size > INITIAL_PAGE_LIMIT && results.get(type).size % INITIAL_PAGE_LIMIT === 1 : false;
+    const hasMore = type !== 'all' ? searchResultsHaveMore(results.get(type, ImmutableList()).size) : false;
 
     let filteredResults;
 
@@ -165,19 +153,19 @@ class Results extends PureComponent {
       filteredResults = (accounts.size + hashtags.size + statuses.size) > 0 ? (
         <>
           {accounts.size > 0 && (
-            <SearchSection key='accounts' title={<><Icon id='users' fixedWidth /><FormattedMessage id='search_results.accounts' defaultMessage='Profiles' /></>} onClickMore={this.handleLoadMoreAccounts}>
+            <SearchSection key='accounts' title={<><Icon id='users' fixedWidth /><FormattedMessage id='search_results.accounts' defaultMessage='Profiles' /></>} onClickMore={this.handleSelectAccounts}>
               {accounts.take(INITIAL_DISPLAY).map(id => <Account key={id} id={id} />)}
             </SearchSection>
           )}
 
           {hashtags.size > 0 && (
-            <SearchSection key='hashtags' title={<><Icon id='hashtag' fixedWidth /><FormattedMessage id='search_results.hashtags' defaultMessage='Hashtags' /></>} onClickMore={this.handleLoadMoreHashtags}>
+            <SearchSection key='hashtags' title={<><Icon id='hashtag' fixedWidth /><FormattedMessage id='search_results.hashtags' defaultMessage='Hashtags' /></>} onClickMore={this.handleSelectHashtags}>
               {hashtags.take(INITIAL_DISPLAY).map(hashtag => <Hashtag key={hashtag.get('name')} hashtag={hashtag} />)}
             </SearchSection>
           )}
 
           {statuses.size > 0 && (
-            <SearchSection key='statuses' title={<><Icon id='quote-right' fixedWidth /><FormattedMessage id='search_results.statuses' defaultMessage='Posts' /></>} onClickMore={this.handleLoadMoreStatuses}>
+            <SearchSection key='statuses' title={<><Icon id='quote-right' fixedWidth /><FormattedMessage id='search_results.statuses' defaultMessage='Posts' /></>} onClickMore={this.handleSelectStatuses}>
               {statuses.take(INITIAL_DISPLAY).map(id => <Status key={id} id={id} />)}
             </SearchSection>
           )}
@@ -210,7 +198,7 @@ class Results extends PureComponent {
             isLoading={isLoading}
             onLoadMore={this.handleLoadMore}
             hasMore={hasMore}
-            emptyMessage={<FormattedMessage id='search_results.nothing_found' defaultMessage='Could not find anything for these search terms' />}
+            emptyMessage={q?.trim().length > 0 ? <FormattedMessage id='search_results.no_results' defaultMessage='No results.' /> : <FormattedMessage id='search_results.no_search_yet' defaultMessage='Try searching for posts, profiles or hashtags.' />}
             bindToDocument
           >
             {filteredResults}
@@ -226,4 +214,4 @@ class Results extends PureComponent {
 
 }
 
-export default connect(mapStateToProps)(injectIntl(Results));
+export default withRouter(connect(mapStateToProps)(injectIntl(Results)));

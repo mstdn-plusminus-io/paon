@@ -17,6 +17,7 @@ import {
   InteractionModal,
   SubscribedLanguagesModal,
   ClosedRegistrationsModal,
+  AnnualReportModal,
 } from 'mastodon/features/ui/util/async-components';
 import { getScrollbarWidth } from 'mastodon/utils/scrollbar';
 
@@ -30,6 +31,7 @@ import ConfirmationModal from './confirmation_modal';
 import FocalPointModal from './focal_point_modal';
 import ImageModal from './image_modal';
 import MediaModal from './media_modal';
+import MissingAltTextModal from './missing_alt_text_modal';
 import ModalLoading from './modal_loading';
 import VideoModal from './video_modal';
 
@@ -40,6 +42,7 @@ export const MODAL_COMPONENTS = {
   'IMAGE': () => Promise.resolve({ default: ImageModal }),
   'BOOST': () => Promise.resolve({ default: BoostModal }),
   'CONFIRM': () => Promise.resolve({ default: ConfirmationModal }),
+  'CONFIRM_MISSING_ALT_TEXT': () => Promise.resolve({ default: MissingAltTextModal }),
   'MUTE': MuteModal,
   'BLOCK': BlockModal,
   'DOMAIN_BLOCK': DomainBlockModal,
@@ -54,6 +57,7 @@ export const MODAL_COMPONENTS = {
   'SUBSCRIBED_LANGUAGES': SubscribedLanguagesModal,
   'INTERACTION': InteractionModal,
   'CLOSED_REGISTRATIONS': ClosedRegistrationsModal,
+  'ANNUAL_REPORT': AnnualReportModal,
 };
 
 export default class ModalRoot extends PureComponent {
