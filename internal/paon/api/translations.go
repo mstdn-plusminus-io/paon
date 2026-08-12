@@ -578,6 +578,10 @@ func railsCompatibleLocale(locale string) string {
 	if locale == "" || locale == "*" {
 		return ""
 	}
+	locale = strings.ReplaceAll(locale, "_", "-")
+	if strings.EqualFold(locale, "fr-QC") {
+		locale = "fr-CA"
+	}
 	if railsI18nLocaleAvailable(locale) {
 		return locale
 	}

@@ -106,7 +106,7 @@ func remoteMediaAttachmentTypeFromHead(ctx context.Context, rawURL string) (int,
 	}
 	client := activityHTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		client = activityHTTPClientClone(5 * time.Second)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -243,7 +243,7 @@ func (s *Server) storeRemoteMediaThumbnail(media *models.MediaAttachment, now ti
 	if media == nil || !media.ThumbnailRemoteURL.Valid || strings.TrimSpace(media.ThumbnailRemoteURL.String) == "" {
 		return mediaThumbnailAttrs{}, nil
 	}
-	download, err := fetchRemoteMedia(context.Background(), media.ThumbnailRemoteURL.String, s.imageSizeLimitBytes(), 0)
+	download, err := fetchRemoteMedia(context.Background(), media.ThumbnailRemoteURL.String, mediaPreviewImageSizeLimit, 0)
 	if err != nil {
 		return mediaThumbnailAttrs{}, err
 	}

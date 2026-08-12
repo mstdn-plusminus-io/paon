@@ -22,7 +22,7 @@ var remoteNoteContentPolicy = func() *bluemonday.Policy {
 	p := bluemonday.NewPolicy()
 	p.AllowElements(
 		"p", "br", "span", "a", "del", "s", "pre", "blockquote", "code",
-		"b", "strong", "u", "i", "em", "ul", "ol", "li",
+		"b", "strong", "u", "i", "em", "ul", "ol", "li", "ruby", "rt", "rp",
 	)
 	p.AllowAttrs("href").OnElements("a")
 	p.AllowAttrs("rel").OnElements("a")

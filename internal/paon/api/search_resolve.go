@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -170,6 +171,8 @@ func (s *Server) resolveKnownRemoteStatusFromDB(raw string, current *models.Acco
 	query := s.visibleStatusQuery(current)
 	if canonical := railsRemoteStatusURIFromWebURL(raw); canonical != "" && canonical != raw {
 		query = query.Where("(statuses.uri = ? OR (statuses.uri = ? AND statuses.url = ?))", raw, canonical, raw)
+	} else if knownPrivateStatusURL(raw) {
+		query = query.Where("(statuses.uri = ? OR statuses.url = ?)", raw, raw)
 	} else {
 		query = query.Where("statuses.uri = ?", raw)
 	}
@@ -185,6 +188,16 @@ func (s *Server) resolveKnownRemoteStatusFromDB(raw string, current *models.Acco
 		return nil, err
 	}
 	return &status, nil
+}
+
+var knownPrivateStatusPathPattern = regexp.MustCompile(`^/@[^/]+/(?:statuses/)?[0-9A-Za-z]+$`)
+
+func knownPrivateStatusURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	return knownPrivateStatusPathPattern.MatchString(parsed.EscapedPath())
 }
 
 func railsRemoteStatusURIFromWebURL(raw string) string {

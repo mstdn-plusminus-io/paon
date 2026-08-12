@@ -247,7 +247,13 @@ func settingsNavigationHTML(path string, locale string, options settingsHTMLOpti
 		}
 		items = append(items, preferences)
 		relationships := item("relationships", "/relationships", "users", "settings.relationships", "Follows and followers")
-		relationships.Selected, relationships.Leaf = selected("/relationships"), selected("/relationships")
+		relationships.Selected = selected("/relationships", "/severed_relationships")
+		if relationships.Selected {
+			relationships.Children = []settingsNavigationItem{
+				settingsNavigationLeaf("current_relationships", "/relationships", "users", settingsT(locale, "settings.relationships", "Follows and followers"), path),
+				settingsNavigationLeaf("severed_relationships", "/severed_relationships", "unlink", settingsT(locale, "settings.severed_relationships", "Severed relationships"), path),
+			}
+		}
 		filters := item("filters", "/filters", "filter", "filters.index.title", "Filters")
 		filters.Selected, filters.Leaf = selected("/filters"), selected("/filters")
 		items = append(items, relationships, filters)
@@ -298,31 +304,32 @@ func settingsNavigationHTML(path string, locale string, options settingsHTMLOpti
 
 	if has(rolePermissionManageTaxonomies) {
 		trends := item("trends", "/admin/trends/statuses", "fire", "admin.trends.title", "Trends")
-		trends.Selected = selected("/admin/trends", "/admin/tags")
+		trends.Selected = selected("/admin/trends", "/admin/follow_recommendations")
 		if trends.Selected {
 			trends.Children = []settingsNavigationItem{
 				settingsNavigationLeaf("statuses", "/admin/trends/statuses", "comments-o", settingsT(locale, "admin.trends.statuses.title", "Posts"), path),
 				settingsNavigationLeaf("tags", "/admin/trends/tags", "hashtag", settingsT(locale, "admin.trends.tags.title", "Hashtags"), path),
 				settingsNavigationLeaf("links", "/admin/trends/links", "newspaper-o", settingsT(locale, "admin.trends.links.title", "Links"), path),
+				settingsNavigationLeaf("follow_recommendations", "/admin/follow_recommendations", "user-plus", settingsT(locale, "admin.follow_recommendations.title", "Follow recommendations"), path),
 			}
 		}
 		items = append(items, trends)
 	}
 
-	moderationPermissions := []int64{rolePermissionManageReports, rolePermissionViewAuditLog, rolePermissionManageUsers, rolePermissionManageInvites, rolePermissionManageTaxonomies, rolePermissionManageFederation, rolePermissionManageBlocks}
+	moderationPermissions := []int64{rolePermissionManageReports, rolePermissionManageAppeals, rolePermissionViewAuditLog, rolePermissionManageUsers, rolePermissionManageInvites, rolePermissionManageTaxonomies, rolePermissionManageFederation, rolePermissionManageBlocks}
 	if hasAny(moderationPermissions...) {
 		moderation := item("moderation", settingsModerationNavigationHref(options.Permissions), "gavel", "moderation.title", "Moderation")
-		moderation.Selected = selected("/admin/reports", "/admin/accounts", "/admin/pending_accounts", "/admin/disputes", "/admin/users", "/admin/invites", "/admin/follow_recommendations", "/admin/instances", "/admin/domain_blocks", "/admin/domain_allows", "/admin/email_domain_blocks", "/admin/ip_blocks", "/admin/action_logs")
+		moderation.Selected = selected("/admin/reports", "/admin/accounts", "/admin/pending_accounts", "/admin/disputes", "/admin/users", "/admin/tags", "/admin/invites", "/admin/instances", "/admin/domain_blocks", "/admin/domain_allows", "/admin/email_domain_blocks", "/admin/ip_blocks", "/admin/action_logs")
 		if moderation.Selected {
 			moderation.Children = settingsModerationNavigationChildren(path, locale, options)
 		}
 		items = append(items, moderation)
 	}
 
-	adminPermissions := []int64{rolePermissionViewDashboard, rolePermissionManageSettings, rolePermissionManageRules, rolePermissionManageAnnouncements, rolePermissionManageCustomEmojis, rolePermissionManageWebhooks, rolePermissionManageFederation}
+	adminPermissions := []int64{rolePermissionViewDashboard, rolePermissionManageSettings, rolePermissionManageRules, rolePermissionManageRoles, rolePermissionManageAnnouncements, rolePermissionManageCustomEmojis, rolePermissionManageWebhooks, rolePermissionManageFederation}
 	if hasAny(adminPermissions...) {
 		admin := item("admin", settingsAdminNavigationHref(options.Permissions), "cogs", "admin.title", "Administration")
-		admin.Selected = selected("/admin/dashboard", "/admin/settings", "/admin/rules", "/admin/roles", "/admin/announcements", "/admin/custom_emojis", "/admin/webhooks", "/admin/relays")
+		admin.Selected = selected("/admin/dashboard", "/admin/settings", "/admin/rules", "/admin/warning_presets", "/admin/roles", "/admin/announcements", "/admin/custom_emojis", "/admin/webhooks", "/admin/relays")
 		if admin.Selected {
 			admin.Children = settingsAdminNavigationChildren(path, locale, options)
 		}
@@ -408,9 +415,10 @@ func settingsModerationNavigationHref(permissions int64) string {
 		href       string
 	}{
 		{rolePermissionManageReports, "/admin/reports"},
+		{rolePermissionManageAppeals, "/admin/disputes/appeals"},
 		{rolePermissionManageUsers, "/admin/accounts?origin=local"},
+		{rolePermissionManageTaxonomies, "/admin/tags"},
 		{rolePermissionManageInvites, "/admin/invites"},
-		{rolePermissionManageTaxonomies, "/admin/follow_recommendations"},
 		{rolePermissionManageFederation, "/admin/instances?limited=1"},
 		{rolePermissionManageBlocks, "/admin/email_domain_blocks"},
 		{rolePermissionViewAuditLog, "/admin/action_logs"},
@@ -431,9 +439,10 @@ func settingsModerationNavigationChildren(path, locale string, options settingsH
 		}
 	}
 	add(rolePermissionManageReports, "reports", "/admin/reports", "flag", "admin.reports.title", "Reports")
+	add(rolePermissionManageAppeals, "appeals", "/admin/disputes/appeals", "commenting-o", "admin.disputes.appeals.title", "Appeals")
 	add(rolePermissionManageUsers, "accounts", "/admin/accounts?origin=local", "users", "admin.accounts.title", "Accounts")
+	add(rolePermissionManageTaxonomies, "moderated_tags", "/admin/tags", "hashtag", "admin.tags.title", "Hashtags")
 	add(rolePermissionManageInvites, "invites", "/admin/invites", "user-plus", "admin.invites.title", "Invites")
-	add(rolePermissionManageTaxonomies, "follow_recommendations", "/admin/follow_recommendations", "user-plus", "admin.follow_recommendations.title", "Follow recommendations")
 	instancesHref := "/admin/instances?limited=1"
 	if options.LimitedFederationMode {
 		instancesHref = "/admin/instances"
@@ -477,6 +486,7 @@ func settingsAdminNavigationChildren(path, locale string, options settingsHTMLOp
 	add(rolePermissionViewDashboard, "dashboard", "/admin/dashboard", "tachometer", "admin.dashboard.title", "Dashboard")
 	add(rolePermissionManageSettings, "settings", "/admin/settings", "cogs", "admin.settings.title", "Server settings")
 	add(rolePermissionManageRules, "rules", "/admin/rules", "gavel", "admin.rules.title", "Server rules")
+	add(rolePermissionManageSettings, "warning_presets", "/admin/warning_presets", "warning", "admin.warning_presets.title", "Warning presets")
 	add(rolePermissionManageRoles, "roles", "/admin/roles", "vcard", "admin.roles.title", "Roles")
 	add(rolePermissionManageAnnouncements, "announcements", "/admin/announcements", "bullhorn", "admin.announcements.title", "Announcements")
 	add(rolePermissionManageCustomEmojis, "custom_emojis", "/admin/custom_emojis", "smile-o", "admin.custom_emojis.title", "Custom emojis")
@@ -626,7 +636,7 @@ func settingsPreferencesAppearanceHTMLWithMessages(user models.User, settings ma
 	applicationName := settingsApplicationNameArg(locale)
 	body := settingsInlineFlashHTML(notice, errorText) + `<form class="simple_form edit_user" novalidate="novalidate" method="post" action="/settings/preferences/appearance" id="edit_user"><input type="hidden" name="_method" value="put">`
 	body += `<div class="fields-row">` + settingsFieldRowColumn(settingsLocaleSelectField(user.Locale.String, loc)) + settingsFieldRowColumn(settingsTimeZoneSelectField(user.TimeZone.String, loc)) + `</div>`
-	themeField := settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_theme", "Theme"), "theme", stringSetting(settings, "theme", "default"), []string{"default", "contrast", "mastodon-light", "single-column-chat-dark"}, true, loc)
+	themeField := settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_theme", "Theme"), "theme", stringSetting(settings, "theme", "system"), []string{"system", "default", "contrast", "mastodon-light", "single-column-chat-dark"}, true, loc)
 	body += strings.ReplaceAll(themeField, "Mastodon", applicationName)
 	if loc != "en" {
 		guideText := settingsT(loc, "appearance.localization.guide_link_text", "Join the translation effort")
@@ -649,9 +659,9 @@ func settingsPreferencesAppearanceHTMLWithMessages(user models.User, settings ma
 	body += settingsPreferenceCheckboxField(settingsT(loc, "simple_form.labels.defaults.setting_crop_images", "Crop images in non-expanded posts"), "web.crop_images", rawBool(settings["web.crop_images"], true))
 	body += settingsAppearanceSectionHeading(settingsT(loc, "appearance.discovery", "Discovery"))
 	body += settingsPreferenceCheckboxField(settingsT(loc, "simple_form.labels.defaults.setting_trends", "Show trends"), "web.trends", rawBool(settings["web.trends"], true))
+	body += settingsPreferenceCheckboxField(settingsT(loc, "simple_form.labels.defaults.setting_disable_hover_cards", "Disable profile preview on hover"), "web.disable_hover_cards", rawBool(settings["web.disable_hover_cards"], false))
 	body += settingsAppearanceSectionHeading(settingsT(loc, "appearance.confirmation_dialogs", "Confirmation dialogs"))
 	body += settingsCheckboxGroupHTML(
-		settingsCheckboxInputHTML(settingsT(loc, "simple_form.labels.defaults.setting_unfollow_modal", "Confirm before unfollowing"), "", settingsPreferenceFieldName("web.unfollow_modal"), rawBool(settings["web.unfollow_modal"], true), ""),
 		settingsCheckboxInputHTML(settingsT(loc, "simple_form.labels.defaults.setting_boost_modal", "Confirm before boosting"), "", settingsPreferenceFieldName("web.reblog_modal"), rawBool(settings["web.reblog_modal"], false), ""),
 		settingsCheckboxInputHTML(settingsT(loc, "simple_form.labels.defaults.setting_delete_modal", "Confirm before deleting"), "", settingsPreferenceFieldName("web.delete_modal"), rawBool(settings["web.delete_modal"], true), ""),
 	)
@@ -1265,7 +1275,7 @@ func settingsThemeArg(localeAndTheme ...string) string {
 	if len(localeAndTheme) > 1 && strings.TrimSpace(localeAndTheme[1]) != "" {
 		return normalizedWebTheme(localeAndTheme[1])
 	}
-	return "default"
+	return "system"
 }
 
 func settingsT(locale string, key string, fallback string) string {
@@ -1304,7 +1314,7 @@ func settingsTVars(locale string, key string, fallback string, vars map[string]s
 }
 
 func settingsWebTheme(settings map[string]any) string {
-	return normalizedWebTheme(stringSetting(settings, "theme", "default"))
+	return normalizedWebTheme(stringSetting(settings, "theme", "system"))
 }
 
 func settingsDefaultPrivacy(settings map[string]any, account models.Account) string {

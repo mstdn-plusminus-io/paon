@@ -63,6 +63,8 @@ func schedulerCadence(name string, fallback time.Duration) time.Duration {
 		return featuredTagRefreshWorkerInterval
 	case "profile_verification_scheduler":
 		return profileVerificationWorkerInterval
+	case "self_destruct_scheduler":
+		return selfDestructSchedulerInterval
 	case "meili_index_definition_scheduler":
 		return 30 * time.Minute
 	default:

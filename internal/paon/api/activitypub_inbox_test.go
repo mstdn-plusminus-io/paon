@@ -797,7 +797,7 @@ func TestActivityPubStatusUpdateEditedAtModeMatchesRails(t *testing.T) {
 	}
 }
 
-func TestActivityPubUpdateUnknownObjectAgePolicyMatchesMastodon428(t *testing.T) {
+func TestActivityPubUpdateUnknownObjectAgePolicyMatchesMastodon4323(t *testing.T) {
 	if activityPubUpdateUnknownObjectAgeThreshold != 24*time.Hour {
 		t.Fatalf("unknown Update object age threshold = %s", activityPubUpdateUnknownObjectAgeThreshold)
 	}
@@ -820,6 +820,27 @@ func TestActivityPubUpdateUnknownObjectAgePolicyMatchesMastodon428(t *testing.T)
 			object := activityObject{Published: tt.published}
 			if got := activityPubUpdateShouldIgnoreUnknownObject(tt.statusMissing, object, now); got != tt.want {
 				t.Fatalf("ignore = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestActivityPubPollExpirationUpdateDoesNotRenotifyExpiredPoll(t *testing.T) {
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		previous sql.NullTime
+		want     bool
+	}{
+		{name: "previously no expiration", want: true},
+		{name: "previous expiration is future", previous: sql.NullTime{Time: now.Add(time.Minute), Valid: true}, want: true},
+		{name: "previous expiration is now", previous: sql.NullTime{Time: now, Valid: true}, want: true},
+		{name: "previous expiration is past", previous: sql.NullTime{Time: now.Add(-time.Nanosecond), Valid: true}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := activityPubPollExpirationShouldSchedule(tt.previous, now); got != tt.want {
+				t.Fatalf("schedule = %v, want %v", got, tt.want)
 			}
 		})
 	}

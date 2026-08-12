@@ -95,6 +95,93 @@ func (s *Server) vacuumInactiveListFeeds(ctx context.Context, cutoff time.Time) 
 	}
 }
 
+// vacuumOrphanedFeeds implements the deliberately more aggressive
+// `tootctl feeds vacuum` behavior. Unlike the daily scheduler above it starts
+// from Redis, so keys left behind by deleted users/lists are discoverable.
+func (s *Server) vacuumOrphanedFeeds(ctx context.Context, now time.Time) int {
+	cutoff := now.Add(-time.Duration(userActiveDays()) * 24 * time.Hour)
+	return s.vacuumOrphanedRedisFeeds(ctx, "home", cutoff) + s.vacuumOrphanedRedisFeeds(ctx, "list", cutoff)
+}
+
+func (s *Server) vacuumOrphanedRedisFeeds(ctx context.Context, feedType string, cutoff time.Time) int {
+	if s == nil || s.db == nil || (feedType != "home" && feedType != "list") {
+		return 0
+	}
+	prefix := redisConfig(s.cfg).prefix
+	pattern := prefix + "feed:" + feedType + ":*"
+	ids := map[int64]struct{}{}
+	cursor := "0"
+	for {
+		value, err := s.redisCommand(ctx, "SCAN", cursor, "MATCH", pattern, "COUNT", strconv.Itoa(feedVacuumBatchSize))
+		if err != nil {
+			return 0
+		}
+		next, keys, ok := redisScanKeys(value)
+		if !ok {
+			return 0
+		}
+		for _, key := range keys {
+			if id, ok := orphanedFeedIDFromRedisKey(prefix, feedType, key); ok {
+				ids[id] = struct{}{}
+			}
+		}
+		if next == "0" {
+			break
+		}
+		cursor = next
+	}
+	allIDs := make([]int64, 0, len(ids))
+	for id := range ids {
+		allIDs = append(allIDs, id)
+	}
+	cleaned := 0
+	for start := 0; start < len(allIDs); start += feedVacuumBatchSize {
+		end := min(start+feedVacuumBatchSize, len(allIDs))
+		batch := allIDs[start:end]
+		var activeIDs []int64
+		query := s.db.WithContext(ctx).Table("users").Where("users.confirmed_at IS NOT NULL AND users.current_sign_in_at >= ?", cutoff)
+		if feedType == "home" {
+			query = query.Where("users.account_id IN ?", batch).Pluck("users.account_id", &activeIDs)
+		} else {
+			query = query.Joins("JOIN lists ON lists.account_id = users.account_id").Where("lists.id IN ?", batch).Pluck("lists.id", &activeIDs)
+		}
+		if query.Error != nil {
+			return cleaned
+		}
+		active := make(map[int64]struct{}, len(activeIDs))
+		for _, id := range activeIDs {
+			active[id] = struct{}{}
+		}
+		for _, id := range batch {
+			if _, ok := active[id]; ok {
+				continue
+			}
+			var err error
+			if feedType == "home" {
+				err = s.clearHomeFeedCacheContext(ctx, id)
+			} else {
+				err = s.clearListFeedCacheContext(ctx, id)
+			}
+			if err == nil {
+				cleaned++
+			}
+		}
+	}
+	return cleaned
+}
+
+func orphanedFeedIDFromRedisKey(prefix string, feedType string, key string) (int64, bool) {
+	raw, ok := strings.CutPrefix(key, prefix+"feed:"+feedType+":")
+	if !ok {
+		return 0, false
+	}
+	if index := strings.IndexByte(raw, ':'); index >= 0 {
+		raw = raw[:index]
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	return id, err == nil && id > 0
+}
+
 func userActiveDays() int {
 	raw, ok := os.LookupEnv("USER_ACTIVE_DAYS")
 	if !ok {

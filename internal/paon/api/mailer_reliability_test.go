@@ -74,6 +74,31 @@ func TestBuildMailMessageProducesStandardsCompliantMultipartAlternative(t *testi
 	}
 }
 
+func TestMailHTMLUsesMastodon43CardWithSafeActionsAndUnsubscribe(t *testing.T) {
+	htmlBody := mailHTMLFromText(config.Config{Scheme: "https", LocalDomain: "social.example"}, "Security <notice>", "Hello <Alice>\n\n=> https://social.example/auth/edit", []mailHeader{
+		{Key: "List-Unsubscribe", Value: "<https://social.example/unsubscribe?token=safe>"},
+	})
+	for _, want := range []string{
+		`background:#f3f2f5`,
+		`background:#1b001f`,
+		`/packs/media/images/mailer-new/common/header-bg-start.png`,
+		`Security &lt;notice&gt;`,
+		`Hello &lt;Alice&gt;`,
+		`href="https://social.example/auth/edit"`,
+		`href="https://social.example/unsubscribe?token=safe"`,
+	} {
+		if !strings.Contains(htmlBody, want) {
+			t.Fatalf("mail HTML missing %q: %s", want, htmlBody)
+		}
+	}
+	if strings.Contains(htmlBody, "<Alice>") || strings.Contains(strings.ToLower(htmlBody), "javascript:") {
+		t.Fatalf("mail HTML contains unsafe content: %s", htmlBody)
+	}
+	if _, ok := mailActionURL("=> javascript:alert(1)"); ok {
+		t.Fatal("javascript mail action URL was accepted")
+	}
+}
+
 func TestBuildMailMessageKeepsRailsAdminMailTextOnly(t *testing.T) {
 	raw := buildMailMessage(config.Config{SMTPFrom: "notify@example.test"}, mailMessage{
 		To:       "admin@example.test",

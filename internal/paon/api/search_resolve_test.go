@@ -105,3 +105,24 @@ func TestRailsRemoteStatusURIFromWebURL(t *testing.T) {
 		}
 	}
 }
+
+func TestKnownPrivateStatusURLMatchesGoToSocialShape(t *testing.T) {
+	for _, raw := range []string{
+		"https://gts.example/@alice/01JABCDEF123",
+		"https://gts.example/@alice/statuses/01JABCDEF123",
+	} {
+		if !knownPrivateStatusURL(raw) {
+			t.Fatalf("knownPrivateStatusURL(%q) = false", raw)
+		}
+	}
+	for _, raw := range []string{
+		"https://gts.example/@alice/statuses/abc-def",
+		"https://gts.example/@alice/statuses/ABC?token=secret",
+		"https://gts.example/users/alice/statuses/ABC",
+		"javascript://gts.example/@alice/ABC",
+	} {
+		if knownPrivateStatusURL(raw) {
+			t.Fatalf("knownPrivateStatusURL(%q) = true", raw)
+		}
+	}
+}

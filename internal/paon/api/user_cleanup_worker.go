@@ -12,7 +12,7 @@ import (
 const (
 	userCleanupWorkerInterval   = 24 * time.Hour
 	userCleanupBatchSize        = 1000
-	unconfirmedUserTTL          = 48 * time.Hour
+	unconfirmedUserTTL          = 7 * 24 * time.Hour
 	discardedStatusRetentionTTL = 30 * 24 * time.Hour
 )
 

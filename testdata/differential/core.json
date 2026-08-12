@@ -15,18 +15,131 @@
       "compare_headers": ["Content-Type", "Cache-Control"]
     },
     {
+      "id": "DISC-HOSTMETA-XRD-001",
+      "contract": "DISCOVERY",
+      "method": "GET",
+      "path": "/.well-known/host-meta",
+      "headers": { "Accept": "application/xrd+xml" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "DISC-HOSTMETA-JRD-001",
+      "contract": "DISCOVERY",
+      "method": "GET",
+      "path": "/.well-known/host-meta.json",
+      "headers": { "Accept": "application/jrd+json" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "DISC-OAUTH-METADATA-001",
+      "contract": "OAUTH-METADATA",
+      "method": "GET",
+      "path": "/.well-known/oauth-authorization-server",
+      "compare_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Access-Control-Allow-Origin"
+      ]
+    },
+    {
+      "id": "DISC-NODEINFO-20-001",
+      "contract": "NODEINFO",
+      "method": "GET",
+      "path": "/nodeinfo/2.0",
+      "compare_headers": [
+        "Content-Type",
+        "Cache-Control",
+        "Access-Control-Allow-Origin"
+      ]
+    },
+    {
       "id": "REST-INSTANCE-001",
       "contract": "REST-API",
       "method": "GET",
       "path": "/api/v1/instance",
-      "compare_headers": ["Content-Type", "Cache-Control"]
+      "compare_headers": ["Content-Type", "Cache-Control"],
+      "json_replacements": {
+        "/thumbnail": "{{PAON_UI_ASSET}}"
+      }
+    },
+    {
+      "id": "REST-INSTANCE-V2-001",
+      "contract": "REST-API",
+      "method": "GET",
+      "path": "/api/v2/instance",
+      "compare_headers": ["Content-Type", "Cache-Control"],
+      "json_replacements": {
+        "/thumbnail/url": "{{PAON_UI_ASSET}}",
+        "/icon/0/src": "{{PAON_UI_ASSET}}",
+        "/icon/1/src": "{{PAON_UI_ASSET}}",
+        "/icon/2/src": "{{PAON_UI_ASSET}}",
+        "/icon/3/src": "{{PAON_UI_ASSET}}",
+        "/icon/4/src": "{{PAON_UI_ASSET}}",
+        "/icon/5/src": "{{PAON_UI_ASSET}}",
+        "/icon/6/src": "{{PAON_UI_ASSET}}",
+        "/icon/7/src": "{{PAON_UI_ASSET}}",
+        "/icon/8/src": "{{PAON_UI_ASSET}}"
+      }
+    },
+    {
+      "id": "REST-BATCH-ACCOUNTS-EMPTY-001",
+      "contract": "REST-API",
+      "method": "GET",
+      "path": "/api/v1/accounts?id%5B%5D=0&id%5B%5D=0",
+      "compare_headers": ["Content-Type", "Cache-Control", "Link"]
+    },
+    {
+      "id": "REST-BATCH-STATUSES-EMPTY-001",
+      "contract": "REST-API",
+      "method": "GET",
+      "path": "/api/v1/statuses?id%5B%5D=0&id%5B%5D=0",
+      "compare_headers": ["Content-Type", "Cache-Control", "Link"]
+    },
+    {
+      "id": "AUTH-NOTIFICATION-V2-001",
+      "contract": "AUTH-BOUNDARY",
+      "method": "GET",
+      "path": "/api/v2/notifications",
+      "compare_headers": ["Content-Type", "Cache-Control", "WWW-Authenticate"]
+    },
+    {
+      "id": "AUTH-NOTIFICATION-POLICY-V2-001",
+      "contract": "AUTH-BOUNDARY",
+      "method": "GET",
+      "path": "/api/v2/notifications/policy",
+      "compare_headers": ["Content-Type", "Cache-Control", "WWW-Authenticate"]
+    },
+    {
+      "id": "AUTH-ANNUAL-REPORTS-001",
+      "contract": "AUTH-BOUNDARY",
+      "method": "GET",
+      "path": "/api/v1/annual_reports",
+      "compare_headers": ["Content-Type", "Cache-Control", "WWW-Authenticate"]
+    },
+    {
+      "id": "OAUTH-REVOKE-CORS-001",
+      "contract": "OAUTH-CORS",
+      "method": "OPTIONS",
+      "path": "/oauth/revoke",
+      "headers": {
+        "Origin": "https://client.example",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type"
+      },
+      "compare_headers": [
+        "Access-Control-Allow-Headers",
+        "Access-Control-Allow-Methods",
+        "Access-Control-Allow-Origin",
+        "Vary"
+      ]
     },
     {
       "id": "AUTH-SIGNIN-001",
       "contract": "AUTH-WEB",
       "method": "GET",
       "path": "/auth/sign_in",
-      "compare_headers": ["Content-Type", "Cache-Control"]
+      "compare_headers": ["Content-Type", "Cache-Control"],
+      "compare_body": false
     }
   ]
 }

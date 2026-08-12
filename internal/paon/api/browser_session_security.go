@@ -56,9 +56,10 @@ type browserSessionState struct {
 	NewOTPUserID    int64     `json:"new_otp_user_id,omitempty"`
 	NewOTPExpiresAt time.Time `json:"new_otp_expires_at,omitempty"`
 
-	OIDCState     string    `json:"oidc_state,omitempty"`
-	OIDCNonce     string    `json:"oidc_nonce,omitempty"`
-	OIDCExpiresAt time.Time `json:"oidc_expires_at,omitempty"`
+	OIDCState        string    `json:"oidc_state,omitempty"`
+	OIDCNonce        string    `json:"oidc_nonce,omitempty"`
+	OIDCPKCEVerifier string    `json:"oidc_pkce_verifier,omitempty"`
+	OIDCExpiresAt    time.Time `json:"oidc_expires_at,omitempty"`
 }
 
 var (
@@ -403,14 +404,27 @@ func (s *Server) clearBrowserNewOTPSecret(c *echo.Context) error {
 }
 
 func (s *Server) setBrowserOIDCState(c *echo.Context, oidcState string, nonce string) error {
+	return s.setBrowserOIDCStateWithPKCE(c, oidcState, nonce, "")
+}
+
+func (s *Server) setBrowserOIDCStateWithPKCE(c *echo.Context, oidcState string, nonce string, verifier string) error {
 	state, err := s.browserSession(c, true)
 	if err != nil {
 		return err
 	}
 	state.OIDCState = oidcState
 	state.OIDCNonce = nonce
+	state.OIDCPKCEVerifier = verifier
 	state.OIDCExpiresAt = time.Now().UTC().Add(browserTransientLifetime)
 	return s.persistBrowserSession(c, state)
+}
+
+func (s *Server) browserOIDCPKCEVerifier(c *echo.Context) string {
+	state, err := s.browserSession(c, false)
+	if err != nil || strings.TrimSpace(state.OIDCState) == "" || !state.OIDCExpiresAt.After(time.Now().UTC()) {
+		return ""
+	}
+	return strings.TrimSpace(state.OIDCPKCEVerifier)
 }
 
 func (s *Server) browserOIDCState(c *echo.Context) (string, string, bool) {
@@ -428,6 +442,7 @@ func (s *Server) clearBrowserOIDCState(c *echo.Context) error {
 	}
 	state.OIDCState = ""
 	state.OIDCNonce = ""
+	state.OIDCPKCEVerifier = ""
 	state.OIDCExpiresAt = time.Time{}
 	return s.persistBrowserSession(c, state)
 }
@@ -469,10 +484,10 @@ func browserCSRFProtectedRequest(req *http.Request) bool {
 		return false
 	}
 	path := req.URL.Path
-	if strings.HasPrefix(path, "/api/") || path == "/oauth/token" || path == "/oauth/revoke" {
+	if strings.HasPrefix(path, "/api/") || path == "/oauth/token" || path == "/oauth/revoke" || path == "/oauth/introspect" {
 		return false
 	}
-	if strings.HasSuffix(path, "/inbox") || strings.HasSuffix(path, "/inbox.json") || strings.HasSuffix(path, "/claim") || strings.HasSuffix(path, "/claim.json") {
+	if strings.HasSuffix(path, "/inbox") || strings.HasSuffix(path, "/inbox.json") {
 		return false
 	}
 	if strings.HasPrefix(path, "/auth/") && strings.HasSuffix(path, "/callback") {

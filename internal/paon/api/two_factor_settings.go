@@ -1,8 +1,6 @@
 package api
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
@@ -21,9 +19,9 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	paonotp "github.com/mstdn-plusminus-io/paon/internal/paon/otp"
 	qrcode "github.com/skip2/go-qrcode"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/pbkdf2"
 	"gorm.io/gorm"
 )
 
@@ -207,6 +205,7 @@ func disableTwoFactorForUserTx(tx *gorm.DB, userID int64, now time.Time) error {
 	}
 	return tx.Model(&models.User{}).Where("id = ?", userID).Updates(map[string]any{
 		"otp_required_for_login":    false,
+		"otp_secret":                nil,
 		"encrypted_otp_secret":      nil,
 		"encrypted_otp_secret_iv":   nil,
 		"encrypted_otp_secret_salt": nil,
@@ -216,7 +215,7 @@ func disableTwoFactorForUserTx(tx *gorm.DB, userID int64, now time.Time) error {
 	}).Error
 }
 
-const goOTPSecretPrefix = "paon-go-totp:"
+const goOTPSecretPrefix = paonotp.LegacyPaonPrefix
 
 func (s *Server) enableGoOTPForUser(userID int64, secret string) error {
 	if s.db == nil {
@@ -226,35 +225,29 @@ func (s *Server) enableGoOTPForUser(userID int64, secret string) error {
 	if secret == "" {
 		return gorm.ErrRecordNotFound
 	}
+	encryptedSecret, err := paonotp.EncryptActiveRecord(secret, s.activeRecordEncryptionCredentials())
+	if err != nil {
+		return fmt.Errorf("encrypt otp secret: %w", err)
+	}
 	now := time.Now().UTC()
 	return s.db.Model(&models.User{}).Where("id = ?", userID).Updates(map[string]any{
-		"otp_required_for_login":    true,
-		"encrypted_otp_secret":      goOTPSecretPrefix + secret,
-		"encrypted_otp_secret_iv":   nil,
-		"encrypted_otp_secret_salt": nil,
-		"consumed_timestep":         nil,
-		"updated_at":                now,
+		"otp_required_for_login": true,
+		"otp_secret":             encryptedSecret,
+		"consumed_timestep":      nil,
+		"updated_at":             now,
 	}).Error
 }
 
 func (s *Server) validateAndConsumeUserOTP(user *models.User, attempt string, now time.Time) error {
-	secret, ok := goOTPSecretFromUser(user)
 	if s.db == nil {
 		return gorm.ErrRecordNotFound
 	}
+	secret, ok, err := s.otpSecretFromUser(user)
+	if err != nil {
+		return errors.New("invalid otp")
+	}
 	if ok {
 		step, valid := validTOTPStep(secret, attempt, now)
-		if valid {
-			if user.ConsumedTimestep.Valid && step <= user.ConsumedTimestep.Int64 {
-				return errors.New("otp already consumed")
-			}
-			return s.db.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-				"consumed_timestep": step,
-				"updated_at":        now,
-			}).Error
-		}
-	} else if legacySecret, legacyOK := s.legacyOTPSecretFromUser(user); legacyOK {
-		step, valid := validTOTPStep(legacySecret, attempt, now)
 		if valid {
 			if user.ConsumedTimestep.Valid && step <= user.ConsumedTimestep.Int64 {
 				return errors.New("otp already consumed")
@@ -271,15 +264,67 @@ func (s *Server) validateAndConsumeUserOTP(user *models.User, attempt string, no
 	return errors.New("invalid otp")
 }
 
+func (s *Server) activeRecordEncryptionCredentials() paonotp.Credentials {
+	return paonotp.Credentials{
+		PrimaryKey:        s.cfg.ActiveRecordEncryptionPrimaryKey,
+		DeterministicKey:  s.cfg.ActiveRecordEncryptionDeterministicKey,
+		KeyDerivationSalt: s.cfg.ActiveRecordEncryptionKeyDerivationSalt,
+	}
+}
+
+// otpSecretFromUser implements the 4.3 mixed-version read path. The new
+// Active Record encrypted column always wins; a malformed value must never be
+// reinterpreted through a legacy column.
+func (s *Server) otpSecretFromUser(user *models.User) (string, bool, error) {
+	if user == nil {
+		return "", false, nil
+	}
+	if user.OTPSecret.Valid {
+		secret, err := paonotp.DecryptActiveRecord(user.OTPSecret.String, s.activeRecordEncryptionCredentials())
+		if err != nil {
+			return "", false, err
+		}
+		secret = normalizeOTPSecret(secret)
+		if secret == "" {
+			return "", false, paonotp.ErrInvalidCiphertext
+		}
+		return secret, true, nil
+	}
+	if user.EncryptedOTPSecret.Valid && strings.HasPrefix(strings.TrimSpace(user.EncryptedOTPSecret.String), goOTPSecretPrefix) {
+		secret, ok := goOTPSecretFromUser(user)
+		if !ok {
+			return "", false, errors.New("invalid legacy Paon otp secret")
+		}
+		return secret, true, nil
+	}
+	if user.EncryptedOTPSecret.Valid || user.EncryptedOTPSecretIV.Valid || user.EncryptedOTPSecretSalt.Valid {
+		secret, err := paonotp.DecryptLegacyMastodon(
+			user.EncryptedOTPSecret.String,
+			user.EncryptedOTPSecretIV.String,
+			user.EncryptedOTPSecretSalt.String,
+			s.cfg.OTPSecret,
+		)
+		if err != nil {
+			return "", false, err
+		}
+		secret = normalizeOTPSecret(secret)
+		if secret == "" {
+			return "", false, errors.New("empty legacy Mastodon otp secret")
+		}
+		return secret, true, nil
+	}
+	return "", false, nil
+}
+
 func goOTPSecretFromUser(user *models.User) (string, bool) {
 	if user == nil || !user.EncryptedOTPSecret.Valid {
 		return "", false
 	}
-	value := strings.TrimSpace(user.EncryptedOTPSecret.String)
-	if !strings.HasPrefix(value, goOTPSecretPrefix) {
+	secret, ok := paonotp.ParseLegacyPaon(user.EncryptedOTPSecret.String)
+	if !ok {
 		return "", false
 	}
-	secret := normalizeOTPSecret(strings.TrimPrefix(value, goOTPSecretPrefix))
+	secret = normalizeOTPSecret(secret)
 	return secret, secret != ""
 }
 
@@ -287,7 +332,7 @@ func (s *Server) legacyOTPSecretFromUser(user *models.User) (string, bool) {
 	if user == nil || strings.TrimSpace(s.cfg.OTPSecret) == "" {
 		return "", false
 	}
-	secret, err := decryptLegacyOTPSecret(
+	secret, err := paonotp.DecryptLegacyMastodon(
 		user.EncryptedOTPSecret.String,
 		user.EncryptedOTPSecretIV.String,
 		user.EncryptedOTPSecretSalt.String,
@@ -301,54 +346,7 @@ func (s *Server) legacyOTPSecretFromUser(user *models.User) (string, bool) {
 }
 
 func decryptLegacyOTPSecret(encryptedValue string, encodedIV string, encodedSalt string, otpSecretKey string) (string, error) {
-	if strings.TrimSpace(encryptedValue) == "" || strings.TrimSpace(encodedIV) == "" || strings.TrimSpace(encodedSalt) == "" || otpSecretKey == "" {
-		return "", errors.New("missing legacy otp secret material")
-	}
-	ciphertextWithTag, err := decodeAttrEncryptedBase64(encryptedValue)
-	if err != nil {
-		return "", err
-	}
-	iv, err := decodeAttrEncryptedBase64(encodedIV)
-	if err != nil {
-		return "", err
-	}
-	salt, err := decodeAttrEncryptedSalt(encodedSalt)
-	if err != nil {
-		return "", err
-	}
-	if len(ciphertextWithTag) <= 16 {
-		return "", errors.New("legacy otp ciphertext is too short")
-	}
-	key := pbkdf2.Key([]byte(otpSecretKey), salt, 2000, 32, sha1.New)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	plaintext, err := gcm.Open(nil, iv, ciphertextWithTag, []byte(""))
-	if err != nil {
-		return "", err
-	}
-	return string(plaintext), nil
-}
-
-func decodeAttrEncryptedSalt(value string) ([]byte, error) {
-	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, "$") {
-		return decodeAttrEncryptedBase64(strings.TrimPrefix(value, "$"))
-	}
-	return []byte(value), nil
-}
-
-func decodeAttrEncryptedBase64(value string) ([]byte, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil, errors.New("empty attr_encrypted value")
-	}
-	return base64.StdEncoding.DecodeString(value)
+	return paonotp.DecryptLegacyMastodon(encryptedValue, encodedIV, encodedSalt, otpSecretKey)
 }
 
 func normalizeOTPSecret(secret string) string {

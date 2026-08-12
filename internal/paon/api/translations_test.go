@@ -451,6 +451,14 @@ func TestLibreTranslateResultsKeepsProviderAndDetectedLanguage(t *testing.T) {
 	}
 }
 
+func TestRailsCompatibleLocaleMapsLegacyCanadianFrench(t *testing.T) {
+	for _, input := range []string{"fr-QC", "fr_qc", "fr_QC"} {
+		if got := railsCompatibleLocale(input); got != "fr-CA" {
+			t.Fatalf("railsCompatibleLocale(%q) = %q, want fr-CA", input, got)
+		}
+	}
+}
+
 func TestTranslateTextsRejectsProviderResultCountMismatch(t *testing.T) {
 	previous := translationHTTPClient
 	t.Cleanup(func() { translationHTTPClient = previous })

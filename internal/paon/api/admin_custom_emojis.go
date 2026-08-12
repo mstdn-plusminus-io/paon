@@ -24,7 +24,11 @@ import (
 
 var customEmojiShortcodePattern = regexp.MustCompile(`^[a-zA-Z0-9_]{2,}$`)
 
-const customEmojiMaxBytes = 256 * 1024
+const (
+	customEmojiMaxBytes           = 256 * 1024
+	localCustomEmojiShortcodeMax  = 128
+	remoteCustomEmojiShortcodeMax = 2048
+)
 
 var (
 	errCustomEmojiImageSizeInvalid = errors.New("custom emoji image size is invalid")
@@ -76,7 +80,7 @@ func (s *Server) createAdminCustomEmojiWeb(c *echo.Context) error {
 		return apiError(c, http.StatusBadRequest, "Malformed request")
 	}
 	shortcode := c.FormValue("custom_emoji[shortcode]")
-	if !customEmojiShortcodePattern.MatchString(shortcode) {
+	if !validLocalCustomEmojiShortcode(shortcode) {
 		return c.HTML(http.StatusOK, adminCustomEmojiFormHTMLWithShortcode(shortcode, adminCustomEmojiMessage(locale, "errors.shortcode_invalid", "Shortcode is invalid"), locale))
 	}
 	file, err := c.FormFile("custom_emoji[image]")
@@ -191,6 +195,9 @@ func (s *Server) adminCustomEmojiCategories() ([]models.CustomEmojiCategory, err
 }
 
 func (s *Server) createLocalCustomEmoji(shortcode string, file *multipart.FileHeader, visible bool) (models.CustomEmoji, error) {
+	if !validLocalCustomEmojiShortcode(shortcode) {
+		return models.CustomEmoji{}, errors.New("custom emoji shortcode is invalid")
+	}
 	filename := paperclipObfuscatedFilename(file.Filename)
 	contentType := mediaContentType(filename, file.Header.Get("Content-Type"))
 	if file.Size <= 0 || file.Size >= customEmojiMaxBytes {
@@ -429,7 +436,7 @@ func (s *Server) copyAdminCustomEmojis(tx *gorm.DB, ids []int64, actorAccountID 
 	}
 	copied := make([]models.CustomEmoji, 0, len(emojis))
 	for _, emoji := range emojis {
-		if emoji.Local() {
+		if emoji.Local() || !validLocalCustomEmojiShortcode(emoji.Shortcode) {
 			continue
 		}
 		copy := models.CustomEmoji{}
@@ -486,6 +493,10 @@ func (s *Server) copyAdminCustomEmojis(tx *gorm.DB, ids []int64, actorAccountID 
 		copied = append(copied, copy)
 	}
 	return copied, nil
+}
+
+func validLocalCustomEmojiShortcode(shortcode string) bool {
+	return len(shortcode) <= localCustomEmojiShortcodeMax && customEmojiShortcodePattern.MatchString(shortcode)
 }
 
 func (s *Server) removeReplacedCustomEmojiFiles(previous models.CustomEmoji, next models.CustomEmoji) {

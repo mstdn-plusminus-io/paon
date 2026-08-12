@@ -107,9 +107,9 @@ func TestSetAppAssetsUsesManifestResolvedPathsForServerRenderedHTML(t *testing.T
 		`href="/packs/css/mastodon-light-hash.css"`,
 		`src="/packs/js/common-hash.js"`,
 		`src="/packs/js/locale/en-json-hash.chunk.js"`,
-		`href="/packs/media/icons/favicon-16x16-hash.png"`,
-		`href="/packs/media/icons/favicon-32x32-hash.png"`,
-		`href="/packs/media/icons/favicon-48x48-hash.png"`,
+		`href="/favicon-16x16.png"`,
+		`href="/favicon-32x32.png"`,
+		`href="/favicon-48x48.png"`,
 		`href="/packs/media/images/logo-symbol-icon-hash.svg"`,
 		`href="/manifest.json"`,
 		`href="/inert.css"`,
@@ -117,7 +117,7 @@ func TestSetAppAssetsUsesManifestResolvedPathsForServerRenderedHTML(t *testing.T
 		`<meta name="plusminus-disable-remote-media-cache" content="true">`,
 	}
 	for _, size := range appAppleTouchIconSizes {
-		wants = append(wants, `href="/packs/media/icons/apple-touch-icon-`+size+`x`+size+`-hash.png"`)
+		wants = append(wants, `href="/apple-touch-icon-`+size+`x`+size+`.png"`)
 	}
 	for _, want := range wants {
 		if !strings.Contains(head, want) {
@@ -130,7 +130,7 @@ func TestSetAppAssetsUsesManifestResolvedPathsForServerRenderedHTML(t *testing.T
 		`src="/packs/js/public-hash.js"`,
 		`src="/packs/media/images/logo-symbol-wordmark-hash.svg"`,
 		`class="logo logo--wordmark"`,
-		`class="app-body lighter theme-default no-reduce-motion"`,
+		`class="app-body lighter theme-system no-reduce-motion"`,
 	} {
 		if !strings.Contains(shell, want) {
 			t.Fatalf("authShellHTML missing manifest path %q\nhtml=%s", want, shell)

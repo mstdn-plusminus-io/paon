@@ -20,6 +20,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
 )
 
 type oEmbedResponse struct {
@@ -138,11 +139,18 @@ func (s *Server) statusEmbed(c *echo.Context) error {
 	c.Response().Header().Del("X-Frame-Options")
 	c.Response().Header().Set("Content-Security-Policy", railsContentSecurityPolicyWithoutDirective(s.cfg, "frame-ancestors"))
 	s.setPublicStatusLinkHeaderForStatus(c, *status)
-	emojis, err := s.statusEmbedCustomEmojis(*status)
+	renderer := s.renderer
+	if renderer == nil {
+		renderer, err = web.NewRenderer(s.cfg)
+		if err != nil {
+			return err
+		}
+	}
+	body, err := renderer.EmbedHTML(strconv.FormatInt(status.ID, 10), s.settingStringValue("site_title", s.cfg.Title))
 	if err != nil {
 		return err
 	}
-	return c.HTML(http.StatusOK, statusEmbedHTMLWithConfig(s.settingStringValue("site_title", s.cfg.Title), s.cfg, *status, emojis, s.cfg.Locale()))
+	return c.HTML(http.StatusOK, body)
 }
 
 func (s *Server) oEmbedResponse(status models.Status, width int, height *int) oEmbedResponse {
@@ -1144,13 +1152,16 @@ func statusEmbedMediaLabel(attachment models.MediaAttachment) string {
 }
 
 func embedHTML(src string, script string, width int, height *int) string {
-	heightAttr := ""
-	if height != nil {
-		heightAttr = ` height="` + strconv.Itoa(*height) + `"`
-	}
-	return `<iframe src="` + html.EscapeString(src) + `" class="mastodon-embed" style="max-width: 100%; border: 0" width="` +
-		strconv.Itoa(width) + `"` + heightAttr + ` allowfullscreen="allowfullscreen"></iframe>` +
-		`<script src="` + html.EscapeString(script) + `" async="async"></script>`
+	statusURL := strings.TrimSuffix(src, "/embed")
+	allowedPrefix := strings.TrimSuffix(script, "/embed.js") + "/"
+	// Width and height stay in the oEmbed response fields. The placeholder is
+	// responsive and is replaced by embed.js once the iframe reports its size.
+	_ = width
+	_ = height
+	return `<blockquote class="mastodon-embed" data-embed-url="` + html.EscapeString(src) + `" style="background:#fff;border-radius:8px;border:1px solid #d9e1e8;margin:0;max-width:540px;min-width:270px;overflow:hidden;padding:0">` +
+		`<a href="` + html.EscapeString(statusURL) + `" target="_blank" rel="noreferrer noopener" style="align-items:center;color:#282c37;display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;justify-content:center;line-height:20px;padding:24px;text-decoration:none">` +
+		`<span aria-hidden="true" style="font-size:32px;line-height:1">&#129436;</span><span style="color:#657786;margin-top:16px">Post on Paon</span><strong>View post</strong></a></blockquote>` +
+		`<script data-allowed-prefixes="` + html.EscapeString(allowedPrefix) + `" async src="` + html.EscapeString(script) + `"></script>`
 }
 
 func statusIDFromLocalURL(baseURL string, rawURL string) string {

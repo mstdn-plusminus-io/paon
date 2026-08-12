@@ -711,6 +711,9 @@ func (s *Server) createAdminAccountWebWarning(user *models.User, account *models
 		if err := tx.Create(&warning).Error; err != nil {
 			return err
 		}
+		if err := createModerationWarningNotification(tx, warning, now); err != nil {
+			return err
+		}
 		createdWarning = warning
 		if err := logAdminAction(tx, user.AccountID, "create", accountWarningAuditLogTarget(warning), now); err != nil {
 			return err
@@ -722,6 +725,7 @@ func (s *Server) createAdminAccountWebWarning(user *models.User, account *models
 	}); err != nil {
 		return err
 	}
+	s.publishModerationWarningNotification(createdWarning.ID)
 	if actionType == "disable" {
 		s.publishStreamingKillForLocalAccount(*account)
 	}
@@ -1150,7 +1154,7 @@ func adminAccountHTMLWithViewData(account models.Account, notice string, errorTe
 	for _, note := range moderationNotes {
 		body.WriteString(adminAccountModerationNoteHTML(note, loc, cfg))
 	}
-	body.WriteString(`</div><form method="post" action="/admin/account_moderation_notes" class="simple_form new_account_moderation_note"><input type="hidden" name="account_moderation_note[target_account_id]" value="` + id + `"><div class="field-group"><div class="input text optional account_moderation_note_content"><div class="label_input"><textarea class="text optional" name="account_moderation_note[content]" rows="6" maxlength="500" placeholder="` + html.EscapeString(adminT(loc, "admin.reports.notes.placeholder", "Leave a note")) + `"></textarea></div></div></div><div class="actions"><button class="button" type="submit">` + html.EscapeString(adminT(loc, "admin.account_moderation_notes.create", "Create note")) + `</button></div></form><hr class="spacer">`)
+	body.WriteString(`</div><form method="post" action="/admin/account_moderation_notes" class="simple_form new_account_moderation_note"><input type="hidden" name="account_moderation_note[target_account_id]" value="` + id + `"><div class="field-group"><div class="input text optional account_moderation_note_content"><div class="label_input"><textarea class="text optional" name="account_moderation_note[content]" rows="6" maxlength="2000" placeholder="` + html.EscapeString(adminT(loc, "admin.reports.notes.placeholder", "Leave a note")) + `"></textarea></div></div></div><div class="actions"><button class="button" type="submit">` + html.EscapeString(adminT(loc, "admin.account_moderation_notes.create", "Create note")) + `</button></div></form><hr class="spacer">`)
 	return authPageHTML(adminReportAccountLabel(account), notice, errorText, body.String(), loc)
 }
 

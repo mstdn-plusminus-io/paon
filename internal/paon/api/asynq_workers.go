@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/telemetry"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -25,82 +27,85 @@ import (
 // Sidekiq-like Redis-backed async job queue (github.com/hibiken/asynq) for jobs that must
 // not block request handlers and need retry semantics.
 const (
-	asynqTaskRedownloadAvatar         = "redownload:avatar"
-	asynqTaskRedownloadHeader         = "redownload:header"
-	asynqTaskRedownloadMedia          = "redownload:media"
-	asynqTaskRefollow                 = "refollow"
-	asynqTaskFetchReply               = "fetch:reply"
-	asynqTaskFetchReplies             = "fetch:replies"
-	asynqTaskThreadResolve            = "thread:resolve"
-	asynqTaskFeedInsert               = "feed:insert"
-	asynqTaskLocalNotification        = "local_notification"
-	asynqTaskNotificationMail         = "notification:mail"
-	asynqTaskConfirmationMail         = "confirmation:mail"
-	asynqTaskMailerDelivery           = "mailer:delivery"
-	asynqTaskBackup                   = "backup"
-	asynqTaskBulkImport               = "bulk_import"
-	asynqTaskLegacyImport             = "import"
-	asynqTaskImportRow                = "import:row"
-	asynqTaskImportRelationship       = "import:relationship"
-	asynqTaskLinkCrawl                = "link_crawl"
-	asynqTaskPostProcessMedia         = "post_process_media"
-	asynqTaskRemoveFeaturedTag        = "remove_featured_tag"
-	asynqTaskTagUnmerge               = "tag_unmerge"
-	asynqTaskUnfollowFollow           = "unfollow_follow"
-	asynqTaskPublishScheduledStatus   = "publish:scheduled_status"
-	asynqTaskPublishAnnouncement      = "publish:announcement"
-	asynqTaskUnpublishAnnouncement    = "unpublish:announcement"
-	asynqTaskRemoteAccountRefresh     = "remote_account:refresh"
-	asynqTaskAccountRefresh           = "account:refresh"
-	asynqTaskAccountMerging           = "account:merging"
-	asynqTaskResolveAccount           = "resolve:account"
-	asynqTaskPollExpiration           = "poll:expiration"
-	asynqTaskPollUpdate               = "poll:update"
-	asynqTaskAccountUpdate            = "account:update"
-	asynqTaskRawDistribution          = "raw_distribution"
-	asynqTaskAccountRawDistribution   = "account:raw_distribution"
-	asynqTaskFeaturedCollectionSync   = "featured_collection:sync"
-	asynqTaskFeaturedTagsSync         = "featured_tags:sync"
-	asynqTaskMoveDistribution         = "move:distribution"
-	asynqTaskPostUpgrade              = "post_upgrade"
-	asynqTaskFollowersSync            = "followers_synchronization"
-	asynqTaskActivityPubProcessing    = "activitypub:processing"
-	asynqTaskActivityPubDelivery      = "activitypub:delivery"
-	asynqTaskActivityPubDistribution  = "activitypub:distribution"
-	asynqTaskStatusUpdateDistribution = "activitypub:status_update_distribution"
-	asynqTaskCacheBuster              = "cache_buster"
-	asynqTaskAnnouncementReaction     = "announcement:reaction"
-	asynqTaskRemoval                  = "removal"
-	asynqTaskPushConversation         = "push:conversation"
-	asynqTaskPushEncryptedMessage     = "push:encrypted_message"
-	asynqTaskPushUpdate               = "push:update"
-	asynqTaskWebPushNotification      = "web:push_notification"
-	asynqTaskAuthorizeFollow          = "authorize_follow"
-	asynqTaskBootstrapTimeline        = "bootstrap_timeline"
-	asynqTaskRegeneration             = "regeneration"
-	asynqTaskVerifyAccountLinks       = "verify_account_links"
-	asynqTaskTriggerWebhook           = "trigger_webhook"
-	asynqTaskWebhookDelivery          = "webhook:delivery"
-	asynqTaskDomainBlock              = "domain_block"
-	asynqTaskDomainClearMedia         = "domain_clear_media"
-	asynqTaskAdminDomainPurge         = "admin:domain_purge"
-	asynqTaskAccountDeletion          = "account_deletion"
-	asynqTaskAdminAccountDeletion     = "admin:account_deletion"
-	asynqTaskAdminSuspension          = "admin:suspension"
-	asynqTaskAdminUnsuspension        = "admin:unsuspension"
-	asynqTaskBlock                    = "block"
-	asynqTaskMute                     = "mute"
-	asynqTaskMerge                    = "merge"
-	asynqTaskUnmerge                  = "unmerge"
-	asynqTaskDeleteMute               = "delete_mute"
-	asynqTaskUnfavourite              = "unfavourite"
-	asynqTaskAfterUnallowDomain       = "after_unallow_domain"
-	asynqQueueDefault                 = "default"
-	asynqQueuePull                    = "pull"
-	asynqQueuePush                    = "push"
-	asynqQueueMailers                 = "mailers"
-	asynqQueueIngress                 = "ingress"
-	railsSidekiqUniqueDefaultLockTTL  = 50 * 24 * time.Hour
+	asynqTaskRedownloadAvatar            = "redownload:avatar"
+	asynqTaskRedownloadHeader            = "redownload:header"
+	asynqTaskRedownloadMedia             = "redownload:media"
+	asynqTaskRefollow                    = "refollow"
+	asynqTaskFetchReply                  = "fetch:reply"
+	asynqTaskFetchReplies                = "fetch:replies"
+	asynqTaskThreadResolve               = "thread:resolve"
+	asynqTaskMentionResolve              = "mention:resolve"
+	asynqTaskFeedInsert                  = "feed:insert"
+	asynqTaskLocalNotification           = "local_notification"
+	asynqTaskFilteredNotificationCleanup = "notification:filtered_cleanup"
+	asynqTaskUnfilterNotifications       = "notification:unfilter"
+	asynqTaskGenerateAnnualReport        = "annual_report:generate"
+	asynqTaskNotificationMail            = "notification:mail"
+	asynqTaskConfirmationMail            = "confirmation:mail"
+	asynqTaskMailerDelivery              = "mailer:delivery"
+	asynqTaskBackup                      = "backup"
+	asynqTaskBulkImport                  = "bulk_import"
+	asynqTaskLegacyImport                = "import"
+	asynqTaskImportRow                   = "import:row"
+	asynqTaskImportRelationship          = "import:relationship"
+	asynqTaskLinkCrawl                   = "link_crawl"
+	asynqTaskPostProcessMedia            = "post_process_media"
+	asynqTaskRemoveFeaturedTag           = "remove_featured_tag"
+	asynqTaskTagUnmerge                  = "tag_unmerge"
+	asynqTaskUnfollowFollow              = "unfollow_follow"
+	asynqTaskPublishScheduledStatus      = "publish:scheduled_status"
+	asynqTaskPublishAnnouncement         = "publish:announcement"
+	asynqTaskUnpublishAnnouncement       = "unpublish:announcement"
+	asynqTaskRemoteAccountRefresh        = "remote_account:refresh"
+	asynqTaskAccountRefresh              = "account:refresh"
+	asynqTaskAccountMerging              = "account:merging"
+	asynqTaskResolveAccount              = "resolve:account"
+	asynqTaskPollExpiration              = "poll:expiration"
+	asynqTaskPollUpdate                  = "poll:update"
+	asynqTaskAccountUpdate               = "account:update"
+	asynqTaskRawDistribution             = "raw_distribution"
+	asynqTaskAccountRawDistribution      = "account:raw_distribution"
+	asynqTaskFeaturedCollectionSync      = "featured_collection:sync"
+	asynqTaskFeaturedTagsSync            = "featured_tags:sync"
+	asynqTaskMoveDistribution            = "move:distribution"
+	asynqTaskPostUpgrade                 = "post_upgrade"
+	asynqTaskFollowersSync               = "followers_synchronization"
+	asynqTaskActivityPubProcessing       = "activitypub:processing"
+	asynqTaskActivityPubDelivery         = "activitypub:delivery"
+	asynqTaskActivityPubDistribution     = "activitypub:distribution"
+	asynqTaskStatusUpdateDistribution    = "activitypub:status_update_distribution"
+	asynqTaskCacheBuster                 = "cache_buster"
+	asynqTaskAnnouncementReaction        = "announcement:reaction"
+	asynqTaskRemoval                     = "removal"
+	asynqTaskPushConversation            = "push:conversation"
+	asynqTaskPushUpdate                  = "push:update"
+	asynqTaskWebPushNotification         = "web:push_notification"
+	asynqTaskAuthorizeFollow             = "authorize_follow"
+	asynqTaskBootstrapTimeline           = "bootstrap_timeline"
+	asynqTaskRegeneration                = "regeneration"
+	asynqTaskVerifyAccountLinks          = "verify_account_links"
+	asynqTaskTriggerWebhook              = "trigger_webhook"
+	asynqTaskWebhookDelivery             = "webhook:delivery"
+	asynqTaskDomainBlock                 = "domain_block"
+	asynqTaskDomainClearMedia            = "domain_clear_media"
+	asynqTaskAdminDomainPurge            = "admin:domain_purge"
+	asynqTaskAccountDeletion             = "account_deletion"
+	asynqTaskAdminAccountDeletion        = "admin:account_deletion"
+	asynqTaskAdminSuspension             = "admin:suspension"
+	asynqTaskAdminUnsuspension           = "admin:unsuspension"
+	asynqTaskBlock                       = "block"
+	asynqTaskMute                        = "mute"
+	asynqTaskMerge                       = "merge"
+	asynqTaskUnmerge                     = "unmerge"
+	asynqTaskDeleteMute                  = "delete_mute"
+	asynqTaskUnfavourite                 = "unfavourite"
+	asynqTaskAfterUnallowDomain          = "after_unallow_domain"
+	asynqQueueDefault                    = "default"
+	asynqQueuePull                       = "pull"
+	asynqQueuePush                       = "push"
+	asynqQueueMailers                    = "mailers"
+	asynqQueueIngress                    = "ingress"
+	railsSidekiqUniqueDefaultLockTTL     = 50 * 24 * time.Hour
 )
 
 const asynqTaskAfterAccountDomainBlock = "after_account_domain_block"
@@ -121,6 +126,7 @@ func workerLookupError(operation string, err error) error {
 
 // asynqAccountPayload is the JSON payload for account-scoped asynq tasks.
 type asynqAccountPayload struct {
+	Version       int    `json:"version"`
 	AccountID     int64  `json:"account_id"`
 	OldPrivateKey string `json:"old_private_key,omitempty"`
 }
@@ -146,6 +152,96 @@ type asynqThreadResolvePayload struct {
 	ChildStatusID int64  `json:"child_status_id"`
 	ParentURL     string `json:"parent_url"`
 	RequestID     string `json:"request_id,omitempty"`
+}
+
+const asynqPayloadVersion43 = 1
+
+// validateAsynqPayloadVersion keeps jobs already queued by an older Paon
+// binary readable while reserving positive versions for explicit dispatch.
+// Version zero is the legacy, versionless JSON shape produced before the 4.3
+// upgrade. Unknown future versions are permanent failures rather than retrying
+// a payload with semantics this binary does not understand.
+func validateAsynqPayloadVersion(name string, version int) error {
+	if version == 0 || version == asynqPayloadVersion43 {
+		return nil
+	}
+	return fmt.Errorf("%s payload version %d: %w", name, version, asynq.SkipRetry)
+}
+
+// marshalAsynqTaskPayload adds the Paon payload contract version at the Asynq
+// boundary. Some payload structs are also persisted by the Redis fallback
+// queues, so the version belongs to the Asynq representation rather than the
+// shared in-memory struct.
+func marshalAsynqTaskPayload(payload any) ([]byte, error) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &object); err != nil || object == nil {
+		if err == nil {
+			err = errors.New("payload is not a JSON object")
+		}
+		return nil, fmt.Errorf("asynq payload: %w", err)
+	}
+	object["version"] = json.RawMessage(strconv.Itoa(asynqPayloadVersion43))
+	return json.Marshal(object)
+}
+
+// validateAsynqTaskPayloadVersion is intentionally a worker-boundary check.
+// Versionless payloads already queued by Paon 4.2 remain readable, while a
+// newer producer cannot be retried indefinitely by a worker that does not
+// understand its payload semantics.
+func validateAsynqTaskPayloadVersion(task *asynq.Task) error {
+	if task == nil {
+		return nil
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(task.Payload(), &envelope); err != nil {
+		// Let the concrete handler retain its existing invalid-JSON error.
+		return nil
+	}
+	rawVersion, ok := envelope["version"]
+	if !ok {
+		return validateAsynqPayloadVersion(task.Type(), 0)
+	}
+	var version *int
+	if err := json.Unmarshal(rawVersion, &version); err != nil || version == nil {
+		return fmt.Errorf("%s payload has an invalid version: %w", task.Type(), asynq.SkipRetry)
+	}
+	return validateAsynqPayloadVersion(task.Type(), *version)
+}
+
+func asynqPayloadVersionMiddleware() asynq.MiddlewareFunc {
+	return func(next asynq.Handler) asynq.Handler {
+		return asynq.HandlerFunc(func(ctx context.Context, task *asynq.Task) error {
+			if err := validateAsynqTaskPayloadVersion(task); err != nil {
+				return err
+			}
+			return next.ProcessTask(ctx, task)
+		})
+	}
+}
+
+// Version is explicit so future payload changes can be dispatched without
+// interpreting old retry/dead-letter entries using a new shape.
+type asynqMentionResolvePayload struct {
+	Version   int    `json:"version"`
+	StatusID  int64  `json:"status_id"`
+	URI       string `json:"uri"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+type asynqNotificationPairPayload struct {
+	Version       int   `json:"version"`
+	AccountID     int64 `json:"account_id"`
+	FromAccountID int64 `json:"from_account_id"`
+}
+
+type asynqAnnualReportPayload struct {
+	Version   int   `json:"version"`
+	AccountID int64 `json:"account_id"`
+	Year      int   `json:"year"`
 }
 
 // asynqResolveAccountPayload mirrors ResolveAccountWorker.perform(uri).
@@ -253,6 +349,7 @@ type asynqFeaturedTagsPayload struct {
 
 // asynqFollowersSynchronizationPayload mirrors ActivityPub::FollowersSynchronizationWorker.
 type asynqFollowersSynchronizationPayload struct {
+	Version   int    `json:"version"`
 	AccountID int64  `json:"account_id"`
 	URL       string `json:"url"`
 }
@@ -310,6 +407,7 @@ type asynqMediaPostProcessPayload struct {
 
 // asynqMediaAttachmentPayload mirrors RedownloadMediaWorker.perform(media_attachment_id).
 type asynqMediaAttachmentPayload struct {
+	Version           int   `json:"version"`
 	MediaAttachmentID int64 `json:"media_attachment_id"`
 }
 
@@ -339,11 +437,6 @@ type asynqRemovalPayload struct {
 // asynqConversationPayload mirrors PushConversationWorker.perform.
 type asynqConversationPayload struct {
 	ConversationAccountID int64 `json:"conversation_account_id"`
-}
-
-// asynqEncryptedMessagePayload mirrors PushEncryptedMessageWorker.perform.
-type asynqEncryptedMessagePayload struct {
-	EncryptedMessageID int64 `json:"encrypted_message_id"`
 }
 
 // asynqPushUpdatePayload mirrors PushUpdateWorker.perform.
@@ -440,17 +533,31 @@ func asynqRedisOpt(cfg config.Config) asynq.RedisConnOpt {
 	if strings.TrimSpace(cfg.SidekiqRedisURL) != "" {
 		cfg.RedisURL = cfg.SidekiqRedisURL
 	}
+	cfg.RedisSentinel = cfg.SidekiqRedisSentinel
 	rc := redisConfig(cfg)
-	opt := asynq.RedisClientOpt{
-		Addr:     rc.address,
-		Username: rc.username,
-		Password: rc.password,
-		DB:       rc.db,
-	}
+	var tlsConfig *tls.Config
 	if rc.tls {
-		opt.TLSConfig = &tls.Config{}
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
-	return opt
+	if strings.TrimSpace(rc.sentinelMaster) != "" && len(rc.sentinelAddrs) > 0 {
+		return asynq.RedisFailoverClientOpt{
+			MasterName:       rc.sentinelMaster,
+			SentinelAddrs:    append([]string(nil), rc.sentinelAddrs...),
+			SentinelUsername: rc.sentinelUsername,
+			SentinelPassword: rc.sentinelPassword,
+			Username:         rc.username,
+			Password:         rc.password,
+			DB:               rc.db,
+			TLSConfig:        tlsConfig,
+		}
+	}
+	return asynq.RedisClientOpt{
+		Addr:      rc.address,
+		Username:  rc.username,
+		Password:  rc.password,
+		DB:        rc.db,
+		TLSConfig: tlsConfig,
+	}
 }
 
 func newAsynqAccountTask(typ string, accountID int64, retry int) (*asynq.Task, error) {
@@ -462,7 +569,7 @@ func newAsynqAccountTaskWithDelay(typ string, accountID int64, retry int, delay 
 }
 
 func newAsynqAccountTaskWithDelayAndQueue(typ string, accountID int64, retry int, delay time.Duration, queue string) (*asynq.Task, error) {
-	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqAccountPayload{Version: asynqPayloadVersion43, AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +617,7 @@ func (s *Server) enqueueRedownloadMediaTask(mediaAttachmentID int64) bool {
 	if s == nil || s.asynqClient == nil || mediaAttachmentID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqMediaAttachmentPayload{MediaAttachmentID: mediaAttachmentID})
+	payload, err := marshalAsynqTaskPayload(asynqMediaAttachmentPayload{Version: asynqPayloadVersion43, MediaAttachmentID: mediaAttachmentID})
 	if err != nil {
 		return false
 	}
@@ -531,7 +638,7 @@ func (s *Server) enqueueFetchReplyTask(uri string, requestID string) {
 	if s == nil || s.asynqClient == nil || strings.TrimSpace(uri) == "" {
 		return
 	}
-	payload, err := json.Marshal(asynqFetchReplyPayload{URI: uri, RequestID: requestID})
+	payload, err := marshalAsynqTaskPayload(asynqFetchReplyPayload{URI: uri, RequestID: requestID})
 	if err != nil {
 		return
 	}
@@ -548,7 +655,7 @@ func (s *Server) enqueueFetchRepliesTask(parentStatusID int64, collectionURI str
 	if s == nil || s.asynqClient == nil || parentStatusID == 0 || strings.TrimSpace(collectionURI) == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqFetchRepliesPayload{ParentStatusID: parentStatusID, CollectionURI: collectionURI, RequestID: requestID})
+	payload, err := marshalAsynqTaskPayload(asynqFetchRepliesPayload{ParentStatusID: parentStatusID, CollectionURI: collectionURI, RequestID: requestID})
 	if err != nil {
 		return false
 	}
@@ -565,7 +672,7 @@ func (s *Server) enqueueThreadResolveTask(childStatusID int64, parentURL string,
 	if s == nil || s.asynqClient == nil || childStatusID == 0 || parentURL == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqThreadResolvePayload{ChildStatusID: childStatusID, ParentURL: parentURL, RequestID: requestID})
+	payload, err := marshalAsynqTaskPayload(asynqThreadResolvePayload{ChildStatusID: childStatusID, ParentURL: parentURL, RequestID: requestID})
 	if err != nil {
 		return false
 	}
@@ -574,6 +681,100 @@ func (s *Server) enqueueThreadResolveTask(childStatusID int64, parentURL string,
 	defer cancel()
 	_, err = s.asynqClient.EnqueueContext(ctx, task)
 	return err == nil
+}
+
+// enqueueMentionResolveTask mirrors MentionResolveWorker.perform_in(rand(30...600), ...).
+// The database uniqueness constraint on (status_id, account_id) is the final
+// idempotency boundary; Asynq uniqueness prevents duplicate remote fetches.
+func (s *Server) enqueueMentionResolveTask(statusID int64, uri string, requestID string) bool {
+	uri = activityPubHTTPURI(uri)
+	if s == nil || s.asynqClient == nil || statusID == 0 || uri == "" {
+		return false
+	}
+	payload, err := marshalAsynqTaskPayload(asynqMentionResolvePayload{Version: asynqPayloadVersion43, StatusID: statusID, URI: uri, RequestID: requestID})
+	if err != nil {
+		return false
+	}
+	task := asynq.NewTask(asynqTaskMentionResolve, payload)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = s.asynqClient.EnqueueContext(ctx, task,
+		asynq.Queue(s.asynqQueue(asynqQueuePull)),
+		asynq.MaxRetry(7),
+		asynq.Timeout(2*time.Minute),
+		asynq.ProcessIn(mentionResolveDelay()),
+		asynq.Unique(24*time.Hour),
+	)
+	return asynqEnqueueAccepted(err)
+}
+
+func mentionResolveDelay() time.Duration {
+	return mentionResolveDelayWithRand(rand.Int63n)
+}
+
+func mentionResolveDelayWithRand(int63n func(int64) int64) time.Duration {
+	if int63n == nil {
+		return 30 * time.Second
+	}
+	return time.Duration(30+int63n(570)) * time.Second
+}
+
+func (s *Server) enqueueFilteredNotificationCleanupTask(accountID int64, fromAccountID int64) bool {
+	if s == nil || s.asynqClient == nil || accountID == 0 || fromAccountID == 0 {
+		return false
+	}
+	payload, err := marshalAsynqTaskPayload(asynqNotificationPairPayload{Version: asynqPayloadVersion43, AccountID: accountID, FromAccountID: fromAccountID})
+	if err != nil {
+		return false
+	}
+	task := asynq.NewTask(asynqTaskFilteredNotificationCleanup, payload)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = s.asynqClient.EnqueueContext(ctx, task, asynq.Queue(s.asynqQueue(asynqQueueDefault)), asynq.MaxRetry(25), asynq.Timeout(5*time.Minute), asynq.Unique(30*time.Minute))
+	return asynqEnqueueAccepted(err)
+}
+
+// enqueueUnfilterNotificationsTask increments the completion barrier before
+// enqueueing. A rejected/duplicate enqueue compensates the increment, so a
+// duplicate request cannot leave notifications_merged permanently blocked.
+func (s *Server) enqueueUnfilterNotificationsTask(ctx context.Context, accountID int64, fromAccountID int64) bool {
+	if s == nil || s.asynqClient == nil || accountID == 0 || fromAccountID == 0 {
+		return false
+	}
+	key := notificationUnfilterJobsRedisKey(s.cfg, accountID)
+	if _, err := s.redisCommand(ctx, "INCR", key); err != nil {
+		return false
+	}
+	_, _ = s.redisCommand(ctx, "EXPIRE", key, strconv.FormatInt(int64((30*time.Minute)/time.Second), 10))
+	payload, err := marshalAsynqTaskPayload(asynqNotificationPairPayload{Version: asynqPayloadVersion43, AccountID: accountID, FromAccountID: fromAccountID})
+	if err != nil {
+		_, _ = s.redisCommand(ctx, "DECR", key)
+		return false
+	}
+	task := asynq.NewTask(asynqTaskUnfilterNotifications, payload)
+	enqueueCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err = s.asynqClient.EnqueueContext(enqueueCtx, task, asynq.Queue(s.asynqQueue(asynqQueueDefault)), asynq.MaxRetry(25), asynq.Timeout(15*time.Minute), asynq.Unique(30*time.Minute))
+	if err != nil {
+		_, _ = s.redisCommand(ctx, "DECR", key)
+		return errors.Is(err, asynq.ErrDuplicateTask) || errors.Is(err, asynq.ErrTaskIDConflict)
+	}
+	return true
+}
+
+func (s *Server) enqueueGenerateAnnualReportTask(accountID int64, year int) bool {
+	if s == nil || s.asynqClient == nil || accountID == 0 || year < 2000 || year > 9999 {
+		return false
+	}
+	payload, err := marshalAsynqTaskPayload(asynqAnnualReportPayload{Version: asynqPayloadVersion43, AccountID: accountID, Year: year})
+	if err != nil {
+		return false
+	}
+	task := asynq.NewTask(asynqTaskGenerateAnnualReport, payload)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = s.asynqClient.EnqueueContext(ctx, task, asynq.Queue(s.asynqQueue(asynqQueueDefault)), asynq.MaxRetry(25), asynq.Timeout(30*time.Minute), asynq.Unique(50*24*time.Hour))
+	return asynqEnqueueAccepted(err)
 }
 
 // enqueueFeedInsertTask mirrors FeedInsertWorker.perform_async: insert one status into one
@@ -590,7 +791,7 @@ func (s *Server) enqueueFeedInsertTaskWithOptions(statusID int64, feedType strin
 	if s == nil || s.asynqClient == nil || statusID == 0 || feedID == 0 || feedType == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqFeedInsertPayload{StatusID: statusID, FeedType: feedType, FeedID: feedID, AggregateReblogs: aggregateReblogs, Update: update})
+	payload, err := marshalAsynqTaskPayload(asynqFeedInsertPayload{StatusID: statusID, FeedType: feedType, FeedID: feedID, AggregateReblogs: aggregateReblogs, Update: update})
 	if err != nil {
 		return false
 	}
@@ -606,7 +807,7 @@ func (s *Server) enqueueLocalNotificationTask(receiverAccountID int64, fromAccou
 	if s == nil || s.asynqClient == nil || receiverAccountID == 0 || activityID == 0 || strings.TrimSpace(activityType) == "" || strings.TrimSpace(kind) == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqLocalNotificationPayload{
+	payload, err := marshalAsynqTaskPayload(asynqLocalNotificationPayload{
 		ReceiverAccountID: receiverAccountID,
 		FromAccountID:     fromAccountID,
 		ActivityID:        activityID,
@@ -629,7 +830,7 @@ func (s *Server) enqueueNotificationMailTask(notificationID int64) {
 	if s == nil || s.asynqClient == nil || notificationID == 0 {
 		return
 	}
-	payload, err := json.Marshal(asynqNotificationMailPayload{NotificationID: notificationID})
+	payload, err := marshalAsynqTaskPayload(asynqNotificationMailPayload{NotificationID: notificationID})
 	if err != nil {
 		return
 	}
@@ -644,7 +845,7 @@ func newAsynqConfirmationMailTask(userID int64, token string, queue string) (*as
 	if userID <= 0 || token == "" {
 		return nil, fmt.Errorf("confirmation mail: user id and token are required")
 	}
-	payload, err := json.Marshal(asynqConfirmationMailPayload{UserID: userID, Token: token})
+	payload, err := marshalAsynqTaskPayload(asynqConfirmationMailPayload{UserID: userID, Token: token})
 	if err != nil {
 		return nil, fmt.Errorf("confirmation mail payload: %w", err)
 	}
@@ -678,7 +879,7 @@ func newAsynqMailerDeliveryTask(userID int64, eligibility string, message mailMe
 	default:
 		return nil, fmt.Errorf("mailer delivery: unsupported eligibility %q", eligibility)
 	}
-	payload, err := json.Marshal(asynqMailerDeliveryPayload{UserID: userID, Eligibility: eligibility, Message: message})
+	payload, err := marshalAsynqTaskPayload(asynqMailerDeliveryPayload{UserID: userID, Eligibility: eligibility, Message: message})
 	if err != nil {
 		return nil, fmt.Errorf("mailer delivery payload: %w", err)
 	}
@@ -706,7 +907,7 @@ func (s *Server) enqueueBackupTask(backupID int64) {
 	if s == nil || s.asynqClient == nil || backupID == 0 {
 		return
 	}
-	payload, err := json.Marshal(asynqBackupPayload{BackupID: backupID})
+	payload, err := marshalAsynqTaskPayload(asynqBackupPayload{BackupID: backupID})
 	if err != nil {
 		return
 	}
@@ -721,7 +922,7 @@ func (s *Server) enqueueBulkImportTask(bulkImportID int64) bool {
 	if s == nil || s.asynqClient == nil || bulkImportID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqBulkImportPayload{BulkImportID: bulkImportID})
+	payload, err := marshalAsynqTaskPayload(asynqBulkImportPayload{BulkImportID: bulkImportID})
 	if err != nil {
 		return false
 	}
@@ -737,7 +938,7 @@ func (s *Server) enqueueLegacyImportTask(importID int64) bool {
 	if s == nil || s.asynqClient == nil || importID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqLegacyImportPayload{ImportID: importID})
+	payload, err := marshalAsynqTaskPayload(asynqLegacyImportPayload{ImportID: importID})
 	if err != nil {
 		return false
 	}
@@ -753,7 +954,7 @@ func (s *Server) enqueueImportRowTask(rowID int64) bool {
 	if s == nil || s.asynqClient == nil || rowID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqImportRowPayload{BulkImportRowID: rowID})
+	payload, err := marshalAsynqTaskPayload(asynqImportRowPayload{BulkImportRowID: rowID})
 	if err != nil {
 		return false
 	}
@@ -769,7 +970,7 @@ func (s *Server) enqueueImportRelationshipTask(accountID int64, targetAccountURI
 	if s == nil || s.asynqClient == nil || accountID == 0 || strings.TrimSpace(targetAccountURI) == "" || strings.TrimSpace(relationship) == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqImportRelationshipPayload{
+	payload, err := marshalAsynqTaskPayload(asynqImportRelationshipPayload{
 		AccountID:        accountID,
 		TargetAccountURI: targetAccountURI,
 		Relationship:     relationship,
@@ -795,7 +996,7 @@ func (s *Server) enqueueLinkCrawlTaskWithDelay(statusID int64, delay time.Durati
 	if s == nil || s.asynqClient == nil || statusID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqStatusPayload{StatusID: statusID})
+	payload, err := marshalAsynqTaskPayload(asynqStatusPayload{StatusID: statusID})
 	if err != nil {
 		return false
 	}
@@ -815,7 +1016,7 @@ func (s *Server) enqueueMediaPostProcessTask(mediaAttachmentID int64) bool {
 	if s == nil || s.asynqClient == nil || mediaAttachmentID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqMediaPostProcessPayload{MediaAttachmentID: mediaAttachmentID})
+	payload, err := marshalAsynqTaskPayload(asynqMediaPostProcessPayload{MediaAttachmentID: mediaAttachmentID})
 	if err != nil {
 		return false
 	}
@@ -831,7 +1032,7 @@ func (s *Server) enqueueRemoveFeaturedTagTask(accountID int64, featuredTagID int
 	if s == nil || s.asynqClient == nil || accountID == 0 || featuredTagID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqFeaturedTagPayload{AccountID: accountID, FeaturedTagID: featuredTagID})
+	payload, err := marshalAsynqTaskPayload(asynqFeaturedTagPayload{AccountID: accountID, FeaturedTagID: featuredTagID})
 	if err != nil {
 		return false
 	}
@@ -847,7 +1048,7 @@ func (s *Server) enqueueTagUnmergeTask(tagID int64, accountID int64) bool {
 	if s == nil || s.asynqClient == nil || tagID == 0 || accountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqTagUnmergePayload{TagID: tagID, AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqTagUnmergePayload{TagID: tagID, AccountID: accountID})
 	if err != nil {
 		return false
 	}
@@ -864,7 +1065,7 @@ func (s *Server) enqueueUnfollowFollowTask(followerAccountID int64, oldTargetAcc
 	if s == nil || s.asynqClient == nil || followerAccountID == 0 || oldTargetAccountID == 0 || newTargetAccountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqUnfollowFollowPayload{
+	payload, err := marshalAsynqTaskPayload(asynqUnfollowFollowPayload{
 		FollowerAccountID:  followerAccountID,
 		OldTargetAccountID: oldTargetAccountID,
 		NewTargetAccountID: newTargetAccountID,
@@ -885,7 +1086,7 @@ func (s *Server) enqueuePublishScheduledStatusTask(scheduledStatusID int64, sche
 	if s == nil || s.asynqClient == nil || scheduledStatusID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqScheduledStatusPayload{ScheduledStatusID: scheduledStatusID})
+	payload, err := marshalAsynqTaskPayload(asynqScheduledStatusPayload{ScheduledStatusID: scheduledStatusID})
 	if err != nil {
 		return false
 	}
@@ -905,7 +1106,7 @@ func (s *Server) enqueuePublishAnnouncementTask(announcementID int64, scheduledA
 	if s == nil || s.asynqClient == nil || announcementID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAnnouncementPayload{AnnouncementID: announcementID})
+	payload, err := marshalAsynqTaskPayload(asynqAnnouncementPayload{AnnouncementID: announcementID})
 	if err != nil {
 		return false
 	}
@@ -925,7 +1126,7 @@ func (s *Server) enqueueUnpublishAnnouncementTask(announcementID int64) bool {
 	if s == nil || s.asynqClient == nil || announcementID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAnnouncementPayload{AnnouncementID: announcementID})
+	payload, err := marshalAsynqTaskPayload(asynqAnnouncementPayload{AnnouncementID: announcementID})
 	if err != nil {
 		return false
 	}
@@ -943,7 +1144,7 @@ func (s *Server) enqueueCacheBusterTask(rawURL string) bool {
 	if s == nil || s.asynqClient == nil || rawURL == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqCacheBusterPayload{URL: rawURL})
+	payload, err := marshalAsynqTaskPayload(asynqCacheBusterPayload{URL: rawURL})
 	if err != nil {
 		return false
 	}
@@ -961,7 +1162,7 @@ func (s *Server) enqueueAnnouncementReactionTask(announcementID int64, name stri
 	if s == nil || s.asynqClient == nil || announcementID == 0 || name == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqAnnouncementReactionPayload{AnnouncementID: announcementID, Name: name})
+	payload, err := marshalAsynqTaskPayload(asynqAnnouncementReactionPayload{AnnouncementID: announcementID, Name: name})
 	if err != nil {
 		return false
 	}
@@ -977,7 +1178,7 @@ func (s *Server) enqueueRemovalTask(payload asynqRemovalPayload) bool {
 	if s == nil || s.asynqClient == nil || payload.StatusID == 0 {
 		return false
 	}
-	raw, err := json.Marshal(payload)
+	raw, err := marshalAsynqTaskPayload(payload)
 	if err != nil {
 		return false
 	}
@@ -1009,7 +1210,7 @@ func (s *Server) enqueueActivityPubDeliveryTask(job activityPubDeliveryRetryJob)
 	if s == nil || s.asynqClient == nil || job.SourceAccountID == 0 || strings.TrimSpace(job.InboxURL) == "" || len(job.Body) == 0 {
 		return false
 	}
-	payload, err := json.Marshal(job)
+	payload, err := marshalAsynqTaskPayload(job)
 	if err != nil {
 		return false
 	}
@@ -1039,7 +1240,7 @@ func (s *Server) enqueueActivityPubStatusDistributionTask(taskType string, statu
 	if s == nil || s.asynqClient == nil || statusID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqStatusPayload{StatusID: statusID})
+	payload, err := marshalAsynqTaskPayload(asynqStatusPayload{StatusID: statusID})
 	if err != nil {
 		return false
 	}
@@ -1056,28 +1257,11 @@ func (s *Server) enqueuePushConversationTask(conversationAccountID int64) bool {
 	if s == nil || s.asynqClient == nil || conversationAccountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqConversationPayload{ConversationAccountID: conversationAccountID})
+	payload, err := marshalAsynqTaskPayload(asynqConversationPayload{ConversationAccountID: conversationAccountID})
 	if err != nil {
 		return false
 	}
 	task := asynq.NewTask(asynqTaskPushConversation, payload, asynq.Queue(s.asynqQueue(asynqQueueDefault)), asynq.MaxRetry(25))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err = s.asynqClient.EnqueueContext(ctx, task)
-	return err == nil
-}
-
-// enqueuePushEncryptedMessageTask mirrors PushEncryptedMessageWorker.perform_async on
-// Rails' default queue.
-func (s *Server) enqueuePushEncryptedMessageTask(encryptedMessageID int64) bool {
-	if s == nil || s.asynqClient == nil || encryptedMessageID == 0 {
-		return false
-	}
-	payload, err := json.Marshal(asynqEncryptedMessagePayload{EncryptedMessageID: encryptedMessageID})
-	if err != nil {
-		return false
-	}
-	task := asynq.NewTask(asynqTaskPushEncryptedMessage, payload, asynq.Queue(s.asynqQueue(asynqQueueDefault)), asynq.MaxRetry(25))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = s.asynqClient.EnqueueContext(ctx, task)
@@ -1089,7 +1273,7 @@ func (s *Server) enqueuePushUpdateTask(accountID int64, statusID int64, timeline
 	if s == nil || s.asynqClient == nil || accountID == 0 || statusID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqPushUpdatePayload{AccountID: accountID, StatusID: statusID, TimelineID: timelineID, Update: update})
+	payload, err := marshalAsynqTaskPayload(asynqPushUpdatePayload{AccountID: accountID, StatusID: statusID, TimelineID: timelineID, Update: update})
 	if err != nil {
 		return false
 	}
@@ -1106,7 +1290,7 @@ func (s *Server) enqueueWebPushNotificationTask(subscriptionID int64, notificati
 	if s == nil || s.asynqClient == nil || subscriptionID == 0 || notificationID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqWebPushNotificationPayload{SubscriptionID: subscriptionID, NotificationID: notificationID})
+	payload, err := marshalAsynqTaskPayload(asynqWebPushNotificationPayload{SubscriptionID: subscriptionID, NotificationID: notificationID})
 	if err != nil {
 		return false
 	}
@@ -1123,7 +1307,7 @@ func (s *Server) enqueueAuthorizeFollowTask(sourceAccountID int64, targetAccount
 	if s == nil || s.asynqClient == nil || sourceAccountID == 0 || targetAccountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAuthorizeFollowPayload{SourceAccountID: sourceAccountID, TargetAccountID: targetAccountID})
+	payload, err := marshalAsynqTaskPayload(asynqAuthorizeFollowPayload{SourceAccountID: sourceAccountID, TargetAccountID: targetAccountID})
 	if err != nil {
 		return false
 	}
@@ -1140,7 +1324,7 @@ func (s *Server) enqueueBootstrapTimelineTask(accountID int64) bool {
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqAccountPayload{Version: asynqPayloadVersion43, AccountID: accountID})
 	if err != nil {
 		return false
 	}
@@ -1157,7 +1341,7 @@ func (s *Server) enqueueRegenerationTask(accountID int64) bool {
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqAccountPayload{Version: asynqPayloadVersion43, AccountID: accountID})
 	if err != nil {
 		return false
 	}
@@ -1174,7 +1358,7 @@ func (s *Server) enqueueVerifyAccountLinksTask(accountID int64) bool {
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqAccountPayload{Version: asynqPayloadVersion43, AccountID: accountID})
 	if err != nil {
 		return false
 	}
@@ -1193,7 +1377,7 @@ func (s *Server) enqueueTriggerWebhookTask(event string, className string, id in
 	if s == nil || s.asynqClient == nil || event == "" || className == "" || id == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqTriggerWebhookPayload{Event: event, ClassName: className, ID: id})
+	payload, err := marshalAsynqTaskPayload(asynqTriggerWebhookPayload{Event: event, ClassName: className, ID: id})
 	if err != nil {
 		return false
 	}
@@ -1210,7 +1394,7 @@ func (s *Server) enqueueWebhookDeliveryTask(webhookID int64, body []byte) bool {
 	if s == nil || s.asynqClient == nil || webhookID == 0 || len(body) == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqWebhookDeliveryPayload{WebhookID: webhookID, Body: append(json.RawMessage(nil), body...)})
+	payload, err := marshalAsynqTaskPayload(asynqWebhookDeliveryPayload{WebhookID: webhookID, Body: append(json.RawMessage(nil), body...)})
 	if err != nil {
 		return false
 	}
@@ -1226,7 +1410,7 @@ func (s *Server) enqueueDomainBlockTask(domainBlockID int64, update bool) bool {
 	if s == nil || s.asynqClient == nil || domainBlockID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqDomainBlockPayload{DomainBlockID: domainBlockID, Update: update})
+	payload, err := marshalAsynqTaskPayload(asynqDomainBlockPayload{DomainBlockID: domainBlockID, Update: update})
 	if err != nil {
 		return false
 	}
@@ -1243,7 +1427,7 @@ func (s *Server) enqueueDomainClearMediaTask(domainBlockID int64) bool {
 	if s == nil || s.asynqClient == nil || domainBlockID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqDomainBlockPayload{DomainBlockID: domainBlockID})
+	payload, err := marshalAsynqTaskPayload(asynqDomainBlockPayload{DomainBlockID: domainBlockID})
 	if err != nil {
 		return false
 	}
@@ -1260,7 +1444,7 @@ func (s *Server) enqueueAdminDomainPurgeTask(domain string) bool {
 	if s == nil || s.asynqClient == nil || domain == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqDomainPayload{Domain: domain})
+	payload, err := marshalAsynqTaskPayload(asynqDomainPayload{Domain: domain})
 	if err != nil {
 		return false
 	}
@@ -1282,7 +1466,7 @@ func (s *Server) enqueueAccountDeletionTaskContext(ctx context.Context, accountI
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return errors.New("account deletion queue is unavailable")
 	}
-	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqAccountPayload{Version: asynqPayloadVersion43, AccountID: accountID})
 	if err != nil {
 		return err
 	}
@@ -1299,7 +1483,7 @@ func (s *Server) enqueueAdminAccountDeletionTask(accountID int64) bool {
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqAccountPayload{Version: asynqPayloadVersion43, AccountID: accountID})
 	if err != nil {
 		return false
 	}
@@ -1315,7 +1499,7 @@ func (s *Server) enqueueAdminSuspensionTask(accountID int64) bool {
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqAccountPayload{Version: asynqPayloadVersion43, AccountID: accountID})
 	if err != nil {
 		return false
 	}
@@ -1331,7 +1515,7 @@ func (s *Server) enqueueAdminUnsuspensionTask(accountID int64) bool {
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqAccountPayload{Version: asynqPayloadVersion43, AccountID: accountID})
 	if err != nil {
 		return false
 	}
@@ -1363,7 +1547,7 @@ func (s *Server) enqueueUnmergeTask(fromAccountID int64, intoAccountID int64) bo
 	if s == nil || s.asynqClient == nil || fromAccountID == 0 || intoAccountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqRelationshipPayload{AccountID: fromAccountID, TargetAccountID: intoAccountID})
+	payload, err := marshalAsynqTaskPayload(asynqRelationshipPayload{AccountID: fromAccountID, TargetAccountID: intoAccountID})
 	if err != nil {
 		return false
 	}
@@ -1378,7 +1562,7 @@ func (s *Server) enqueueRelationshipTask(taskType string, accountID int64, targe
 	if s == nil || s.asynqClient == nil || accountID == 0 || targetAccountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqRelationshipPayload{AccountID: accountID, TargetAccountID: targetAccountID})
+	payload, err := marshalAsynqTaskPayload(asynqRelationshipPayload{AccountID: accountID, TargetAccountID: targetAccountID})
 	if err != nil {
 		return false
 	}
@@ -1394,7 +1578,7 @@ func (s *Server) enqueueDeleteMuteTask(muteID int64, processAt time.Time) bool {
 	if s == nil || s.asynqClient == nil || muteID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqMutePayload{MuteID: muteID})
+	payload, err := marshalAsynqTaskPayload(asynqMutePayload{MuteID: muteID})
 	if err != nil {
 		return false
 	}
@@ -1414,7 +1598,7 @@ func (s *Server) enqueueUnfavouriteTask(accountID int64, statusID int64) bool {
 	if s == nil || s.asynqClient == nil || accountID == 0 || statusID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqStatusAccountPayload{AccountID: accountID, StatusID: statusID})
+	payload, err := marshalAsynqTaskPayload(asynqStatusAccountPayload{AccountID: accountID, StatusID: statusID})
 	if err != nil {
 		return false
 	}
@@ -1431,7 +1615,7 @@ func (s *Server) enqueueAfterAccountDomainBlockTask(accountID int64, domain stri
 	if s == nil || s.asynqClient == nil || accountID == 0 || domain == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqAccountDomainPayload{AccountID: accountID, Domain: domain})
+	payload, err := marshalAsynqTaskPayload(asynqAccountDomainPayload{AccountID: accountID, Domain: domain})
 	if err != nil {
 		return false
 	}
@@ -1448,7 +1632,7 @@ func (s *Server) enqueueAfterUnallowDomainTask(domain string) bool {
 	if s == nil || s.asynqClient == nil || domain == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqDomainPayload{Domain: domain})
+	payload, err := marshalAsynqTaskPayload(asynqDomainPayload{Domain: domain})
 	if err != nil {
 		return false
 	}
@@ -1465,7 +1649,7 @@ func (s *Server) enqueueRemoteAccountRefreshTask(accountID int64, requestID stri
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return
 	}
-	payload, err := json.Marshal(asynqRemoteAccountRefreshPayload{AccountID: accountID, RequestID: requestID})
+	payload, err := marshalAsynqTaskPayload(asynqRemoteAccountRefreshPayload{AccountID: accountID, RequestID: requestID})
 	if err != nil {
 		return
 	}
@@ -1482,7 +1666,7 @@ func (s *Server) enqueueAccountRefreshTask(accountID int64) {
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return
 	}
-	payload, err := json.Marshal(asynqAccountRefreshPayload{AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqAccountRefreshPayload{AccountID: accountID})
 	if err != nil {
 		return
 	}
@@ -1497,7 +1681,7 @@ func (s *Server) enqueueAccountMergingTask(accountID int64) bool {
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
+	payload, err := marshalAsynqTaskPayload(asynqAccountPayload{Version: asynqPayloadVersion43, AccountID: accountID})
 	if err != nil {
 		return false
 	}
@@ -1514,7 +1698,7 @@ func (s *Server) enqueueResolveAccountTask(uri string) bool {
 	if s == nil || s.asynqClient == nil || uri == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqResolveAccountPayload{URI: uri})
+	payload, err := marshalAsynqTaskPayload(asynqResolveAccountPayload{URI: uri})
 	if err != nil {
 		return false
 	}
@@ -1531,7 +1715,7 @@ func (s *Server) enqueuePollUpdateTask(statusID int64, delay time.Duration) bool
 	if s == nil || s.asynqClient == nil || statusID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqStatusPayload{StatusID: statusID})
+	payload, err := marshalAsynqTaskPayload(asynqStatusPayload{StatusID: statusID})
 	if err != nil {
 		return false
 	}
@@ -1555,7 +1739,7 @@ func (s *Server) enqueuePollExpirationTask(pollID int64, runAt time.Time) bool {
 	if s == nil || s.asynqClient == nil || pollID == 0 || runAt.IsZero() {
 		return false
 	}
-	payload, err := json.Marshal(asynqPollPayload{PollID: pollID})
+	payload, err := marshalAsynqTaskPayload(asynqPollPayload{PollID: pollID})
 	if err != nil {
 		return false
 	}
@@ -1600,7 +1784,7 @@ func newAsynqAccountUpdateTask(accountID int64, oldPrivateKey string) (*asynq.Ta
 	if accountID <= 0 {
 		return nil, errors.New("account update: account id is required")
 	}
-	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID, OldPrivateKey: oldPrivateKey})
+	payload, err := marshalAsynqTaskPayload(asynqAccountPayload{Version: asynqPayloadVersion43, AccountID: accountID, OldPrivateKey: oldPrivateKey})
 	if err != nil {
 		return nil, fmt.Errorf("account update payload: %w", err)
 	}
@@ -1614,7 +1798,7 @@ func (s *Server) enqueueAccountRawDistributionTask(sourceAccountID int64, rawJSO
 	if s == nil || s.asynqClient == nil || sourceAccountID == 0 || len(rawJSON) == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqAccountRawDistributionPayload{
+	payload, err := marshalAsynqTaskPayload(asynqAccountRawDistributionPayload{
 		SourceAccountID: sourceAccountID,
 		JSON:            string(rawJSON),
 		ExcludeInboxes:  excludeInboxes,
@@ -1635,7 +1819,7 @@ func (s *Server) enqueueRawDistributionTask(sourceAccountID int64, rawJSON []byt
 	if s == nil || s.asynqClient == nil || sourceAccountID == 0 || len(rawJSON) == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqRawDistributionPayload{
+	payload, err := marshalAsynqTaskPayload(asynqRawDistributionPayload{
 		SourceAccountID: sourceAccountID,
 		JSON:            string(rawJSON),
 		ExcludeInboxes:  excludeInboxes,
@@ -1656,7 +1840,7 @@ func (s *Server) enqueueFeaturedCollectionSyncTask(accountID int64, collectionUR
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqFeaturedCollectionPayload{AccountID: accountID, CollectionURI: collectionURI, RequestID: requestID, SyncTags: syncTags})
+	payload, err := marshalAsynqTaskPayload(asynqFeaturedCollectionPayload{AccountID: accountID, CollectionURI: collectionURI, RequestID: requestID, SyncTags: syncTags})
 	if err != nil {
 		return false
 	}
@@ -1673,7 +1857,7 @@ func (s *Server) enqueueFeaturedTagsSyncTask(accountID int64, collectionURI stri
 	if s == nil || s.asynqClient == nil || accountID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqFeaturedTagsPayload{AccountID: accountID, CollectionURI: collectionURI})
+	payload, err := marshalAsynqTaskPayload(asynqFeaturedTagsPayload{AccountID: accountID, CollectionURI: collectionURI})
 	if err != nil {
 		return false
 	}
@@ -1689,7 +1873,7 @@ func (s *Server) enqueueMoveDistributionTask(migrationID int64) bool {
 	if s == nil || s.asynqClient == nil || migrationID == 0 {
 		return false
 	}
-	payload, err := json.Marshal(asynqMigrationPayload{MigrationID: migrationID})
+	payload, err := marshalAsynqTaskPayload(asynqMigrationPayload{MigrationID: migrationID})
 	if err != nil {
 		return false
 	}
@@ -1706,7 +1890,7 @@ func (s *Server) enqueuePostUpgradeTask(domain string) bool {
 	if s == nil || s.asynqClient == nil || strings.TrimSpace(domain) == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqDomainPayload{Domain: domain})
+	payload, err := marshalAsynqTaskPayload(asynqDomainPayload{Domain: domain})
 	if err != nil {
 		return false
 	}
@@ -1723,7 +1907,7 @@ func (s *Server) enqueueFollowersSynchronizationTask(accountID int64, collection
 	if s == nil || s.asynqClient == nil || accountID == 0 || strings.TrimSpace(collectionURL) == "" {
 		return false
 	}
-	payload, err := json.Marshal(asynqFollowersSynchronizationPayload{AccountID: accountID, URL: collectionURL})
+	payload, err := marshalAsynqTaskPayload(asynqFollowersSynchronizationPayload{Version: asynqPayloadVersion43, AccountID: accountID, URL: collectionURL})
 	if err != nil {
 		return false
 	}
@@ -1738,15 +1922,25 @@ func (s *Server) enqueueFollowersSynchronizationTask(accountID int64, collection
 // on Rails' ingress queue. Processing errors must remain on this Asynq path so retry
 // exhaustion preserves the failed event in the archive.
 func (s *Server) enqueueActivityPubProcessingTask(job activityPubInboxProcessingJob) bool {
+	return s.enqueueActivityPubProcessingTaskWithContext(context.Background(), job)
+}
+
+func (s *Server) enqueueActivityPubProcessingTaskWithContext(ctx context.Context, job activityPubInboxProcessingJob) bool {
 	if s == nil || s.asynqClient == nil || job.ActorID == 0 || len(job.Body) == 0 {
 		return false
 	}
-	payload, err := json.Marshal(job)
+	payload, err := marshalAsynqTaskPayload(job)
 	if err != nil {
 		return false
 	}
-	task := asynq.NewTask(asynqTaskActivityPubProcessing, payload, asynq.Queue(s.asynqQueue(asynqQueueIngress)), asynq.MaxRetry(activityPubInboxProcessingRetryLimit))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	options := []asynq.Option{asynq.Queue(s.asynqQueue(asynqQueueIngress)), asynq.MaxRetry(activityPubInboxProcessingRetryLimit)}
+	var task *asynq.Task
+	if s.cfg.OpenTelemetryEnabled {
+		task = asynq.NewTaskWithHeaders(asynqTaskActivityPubProcessing, payload, telemetry.AsynqHeaders(ctx), options...)
+	} else {
+		task = asynq.NewTask(asynqTaskActivityPubProcessing, payload, options...)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	_, err = s.asynqClient.EnqueueContext(ctx, task)
 	return err == nil
@@ -1787,6 +1981,7 @@ func railsExponentialBackoffAsynqTask(task *asynq.Task) bool {
 		asynqTaskFetchReply,
 		asynqTaskFetchReplies,
 		asynqTaskThreadResolve,
+		asynqTaskMentionResolve,
 		asynqTaskRemoteAccountRefresh:
 		return true
 	default:
@@ -1797,6 +1992,10 @@ func railsExponentialBackoffAsynqTask(task *asynq.Task) bool {
 // newAsynqServeMux wires task types to handlers, matching Rails Sidekiq workers.
 func (s *Server) newAsynqServeMux() *asynq.ServeMux {
 	mux := asynq.NewServeMux()
+	mux.Use(asynqPayloadVersionMiddleware())
+	if s != nil && s.cfg.OpenTelemetryEnabled {
+		mux.Use(telemetry.WorkerMiddleware())
+	}
 	if s != nil && s.cfg.StatsDSidekiq {
 		mux.Use(asynqStatsDMiddleware(newStatsDClient(s.cfg)))
 	}
@@ -1807,8 +2006,12 @@ func (s *Server) newAsynqServeMux() *asynq.ServeMux {
 	mux.HandleFunc(asynqTaskFetchReply, s.handleAsynqFetchReply)
 	mux.HandleFunc(asynqTaskFetchReplies, s.handleAsynqFetchReplies)
 	mux.HandleFunc(asynqTaskThreadResolve, s.handleAsynqThreadResolve)
+	mux.HandleFunc(asynqTaskMentionResolve, s.handleAsynqMentionResolve)
 	mux.HandleFunc(asynqTaskFeedInsert, s.handleAsynqFeedInsert)
 	mux.HandleFunc(asynqTaskLocalNotification, s.handleAsynqLocalNotification)
+	mux.HandleFunc(asynqTaskFilteredNotificationCleanup, s.handleAsynqFilteredNotificationCleanup)
+	mux.HandleFunc(asynqTaskUnfilterNotifications, s.handleAsynqUnfilterNotifications)
+	mux.HandleFunc(asynqTaskGenerateAnnualReport, s.handleAsynqGenerateAnnualReport)
 	mux.HandleFunc(asynqTaskNotificationMail, s.handleAsynqNotificationMail)
 	mux.HandleFunc(asynqTaskConfirmationMail, s.handleAsynqConfirmationMail)
 	mux.HandleFunc(asynqTaskMailerDelivery, s.handleAsynqMailerDelivery)
@@ -1841,13 +2044,13 @@ func (s *Server) newAsynqServeMux() *asynq.ServeMux {
 	mux.HandleFunc(asynqTaskFollowersSync, s.handleAsynqFollowersSynchronization)
 	mux.HandleFunc(asynqTaskActivityPubProcessing, s.handleAsynqActivityPubProcessing)
 	mux.HandleFunc(asynqTaskActivityPubDelivery, s.handleAsynqActivityPubDelivery)
+	mux.HandleFunc(asynqTaskSelfDestructDelivery, s.handleAsynqSelfDestructDelivery)
 	mux.HandleFunc(asynqTaskActivityPubDistribution, s.handleAsynqActivityPubDistribution)
 	mux.HandleFunc(asynqTaskStatusUpdateDistribution, s.handleAsynqStatusUpdateDistribution)
 	mux.HandleFunc(asynqTaskCacheBuster, s.handleAsynqCacheBuster)
 	mux.HandleFunc(asynqTaskAnnouncementReaction, s.handleAsynqAnnouncementReaction)
 	mux.HandleFunc(asynqTaskRemoval, s.handleAsynqRemoval)
 	mux.HandleFunc(asynqTaskPushConversation, s.handleAsynqPushConversation)
-	mux.HandleFunc(asynqTaskPushEncryptedMessage, s.handleAsynqPushEncryptedMessage)
 	mux.HandleFunc(asynqTaskPushUpdate, s.handleAsynqPushUpdate)
 	mux.HandleFunc(asynqTaskWebPushNotification, s.handleAsynqWebPushNotification)
 	mux.HandleFunc(asynqTaskAuthorizeFollow, s.handleAsynqAuthorizeFollow)
@@ -1954,10 +2157,15 @@ func paonGoAsynqConcurrency(cfg config.Config) int {
 	return 5
 }
 
-// startAsynqWorker runs the asynq server (Sidekiq-equivalent) until ctx is canceled,
-// then shuts it down gracefully. It is launched from StartBackgroundWorkers.
-func (s *Server) startAsynqWorker(ctx context.Context) {
+// startAsynqWorker starts the Asynq server (Sidekiq-equivalent), reports the
+// result only after handlers have been registered and the server entered its
+// running state, then waits for shutdown. The readiness callback lets the
+// process create MASTODON_SIDEKIQ_READY_FILENAME after queue initialization.
+func (s *Server) startAsynqWorker(ctx context.Context, ready func(error)) {
 	if s == nil {
+		if ready != nil {
+			ready(nil)
+		}
 		return
 	}
 	srv := asynq.NewServer(asynqRedisOpt(s.cfg), asynq.Config{
@@ -1968,11 +2176,14 @@ func (s *Server) startAsynqWorker(ctx context.Context) {
 			s.handleAsynqTaskError(ctx, task, err)
 		}),
 	})
-	go func() {
-		if err := srv.Run(s.newAsynqServeMux()); err != nil {
-			log.Printf("level=ERROR event=asynq_worker_stopped error=%q", activityPubErrorLogValue(err))
-		}
-	}()
+	err := srv.Start(s.newAsynqServeMux())
+	if ready != nil {
+		ready(err)
+	}
+	if err != nil {
+		log.Printf("level=ERROR event=asynq_worker_stopped error=%q", activityPubErrorLogValue(err))
+		return
+	}
 	<-ctx.Done()
 	srv.Shutdown()
 }
@@ -2036,6 +2247,9 @@ func (s *Server) handleAsynqRedownloadAccountMedia(ctx context.Context, t *asynq
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		return taskTargetError("redownload account media payload", "local", serverLocalTaskTargetHost(s), err)
 	}
+	if err := validateAsynqPayloadVersion("redownload account media", p.Version); err != nil {
+		return err
+	}
 	if s == nil || s.db == nil || p.AccountID == 0 {
 		return nil
 	}
@@ -2079,6 +2293,9 @@ func (s *Server) handleAsynqRedownloadMedia(ctx context.Context, t *asynq.Task) 
 	var p asynqMediaAttachmentPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		return taskTargetError("redownload media payload", "local", serverLocalTaskTargetHost(s), err)
+	}
+	if err := validateAsynqPayloadVersion("redownload media", p.Version); err != nil {
+		return err
 	}
 	return s.redownloadRemoteMediaAttachment(ctx, p.MediaAttachmentID)
 }
@@ -2206,6 +2423,181 @@ func (s *Server) handleAsynqThreadResolve(ctx context.Context, t *asynq.Task) er
 	return s.resolveActivityPubThread(p.ChildStatusID, p.ParentURL, p.RequestID)
 }
 
+func (s *Server) handleAsynqMentionResolve(ctx context.Context, t *asynq.Task) error {
+	var p asynqMentionResolvePayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("mention resolve payload: %w: %w", err, asynq.SkipRetry)
+	}
+	if err := validateAsynqPayloadVersion("mention resolve", p.Version); err != nil {
+		return err
+	}
+	if s == nil || s.db == nil || p.StatusID == 0 || activityPubHTTPURI(p.URI) == "" {
+		return nil
+	}
+	var statusCount int64
+	if err := s.db.WithContext(ctx).Model(&models.Status{}).Where("id = ? AND deleted_at IS NULL", p.StatusID).Count(&statusCount).Error; err != nil {
+		return err
+	}
+	if statusCount == 0 {
+		return nil
+	}
+	account, err := s.accountFromActivityURIWithDB(s.db.WithContext(ctx), p.URI)
+	if err != nil {
+		return mentionResolveWorkerError(err)
+	}
+	if account == nil {
+		account, err = s.fetchActivityPubMentionAccountByHref(s.db.WithContext(ctx), p.URI)
+		if err != nil {
+			return mentionResolveWorkerError(err)
+		}
+	}
+	if account == nil || account.ID == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	mention := models.Mention{StatusID: models.MentionStatusID(p.StatusID), AccountID: models.MentionAccountID(account.ID), Silent: false, CreatedAt: now, UpdatedAt: now}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "status_id"}, {Name: "account_id"}},
+		DoUpdates: clause.Assignments(map[string]any{"silent": false, "updated_at": now}),
+	}).Create(&mention).Error
+}
+
+func mentionResolveWorkerError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if status, ok := activityFetchStatus(err); ok {
+		if activityPubDeliveryResponseErrorUnsalvageable(status) {
+			return nil
+		}
+		return err
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var databaseError interface{ SQLState() string }
+	if errors.As(err, &databaseError) {
+		return err
+	}
+	// Actor validation, malformed JSON-LD, unsupported schemes, and missing
+	// public keys are permanent for this payload. Do not poison the retry set.
+	return nil
+}
+
+func (s *Server) handleAsynqFilteredNotificationCleanup(ctx context.Context, t *asynq.Task) error {
+	p, err := notificationPairPayload(t)
+	if err != nil {
+		return err
+	}
+	return s.processFilteredNotificationCleanup(ctx, p)
+}
+
+func (s *Server) processFilteredNotificationCleanup(ctx context.Context, p asynqNotificationPairPayload) error {
+	if s == nil || s.db == nil || p.AccountID == 0 || p.FromAccountID == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).
+		Where("account_id = ? AND from_account_id = ? AND filtered = ?", p.AccountID, p.FromAccountID, true).
+		Delete(&models.Notification{}).Error
+}
+
+func (s *Server) handleAsynqUnfilterNotifications(ctx context.Context, t *asynq.Task) error {
+	p, err := notificationPairPayload(t)
+	if err != nil {
+		return err
+	}
+	return s.processUnfilterNotifications(ctx, p, true)
+}
+
+// processUnfilterNotifications performs the durable notification/conversation
+// mutations before publishing them. When completeBarrier is false the caller is
+// executing the synchronous queue-unavailable fallback and owns the final
+// notifications_merged event.
+func (s *Server) processUnfilterNotifications(ctx context.Context, p asynqNotificationPairPayload, completeBarrier bool) error {
+	if s == nil || s.db == nil || p.AccountID == 0 || p.FromAccountID == 0 {
+		return nil
+	}
+	var notificationIDs []int64
+	var conversationIDs []int64
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.Notification{}).
+			Where("account_id = ? AND from_account_id = ? AND filtered = ?", p.AccountID, p.FromAccountID, true).
+			Pluck("id", &notificationIDs).Error; err != nil {
+			return err
+		}
+		var statuses []models.Status
+		if err := tx.Model(&models.Status{}).
+			Joins("JOIN mentions ON mentions.status_id = statuses.id").
+			Joins("JOIN notifications ON notifications.activity_type = ? AND notifications.activity_id = mentions.id", "Mention").
+			Where("notifications.account_id = ? AND notifications.from_account_id = ? AND notifications.filtered = ?", p.AccountID, p.FromAccountID, true).
+			Where("statuses.visibility = ? AND statuses.deleted_at IS NULL", 3).
+			Distinct("statuses.*").Find(&statuses).Error; err != nil {
+			return err
+		}
+		for _, status := range statuses {
+			updated, err := s.addDirectStatusToConversations(tx, status, nil)
+			if err != nil {
+				return err
+			}
+			conversationIDs = append(conversationIDs, updated...)
+		}
+		return tx.Model(&models.Notification{}).
+			Where("account_id = ? AND from_account_id = ? AND filtered = ?", p.AccountID, p.FromAccountID, true).
+			Updates(map[string]any{"filtered": false, "updated_at": time.Now().UTC()}).Error
+	})
+	if err != nil {
+		return err
+	}
+	s.publishConversationIDs(ctx, uniqueInt64s(conversationIDs))
+	s.publishNotificationIDs(uniqueInt64s(notificationIDs))
+	if !completeBarrier {
+		return nil
+	}
+	key := notificationUnfilterJobsRedisKey(s.cfg, p.AccountID)
+	value, decrementErr := s.redisCommand(ctx, "DECR", key)
+	if decrementErr != nil {
+		return fmt.Errorf("complete notification unfilter barrier: %w", decrementErr)
+	}
+	if redisInteger(value) <= 0 {
+		_, _ = s.redisCommand(ctx, "DEL", key)
+		s.publishNotificationsMerged(p.AccountID)
+	}
+	return nil
+}
+
+func notificationPairPayload(t *asynq.Task) (asynqNotificationPairPayload, error) {
+	var p asynqNotificationPairPayload
+	if t == nil {
+		return p, fmt.Errorf("notification task is nil: %w", asynq.SkipRetry)
+	}
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return p, fmt.Errorf("notification task payload: %w: %w", err, asynq.SkipRetry)
+	}
+	if err := validateAsynqPayloadVersion("notification task", p.Version); err != nil {
+		return p, err
+	}
+	return p, nil
+}
+
+func notificationUnfilterJobsRedisKey(cfg config.Config, accountID int64) string {
+	return redisConfig(cfg).prefix + "notification_unfilter_jobs:" + strconv.FormatInt(accountID, 10)
+}
+
+func (s *Server) handleAsynqGenerateAnnualReport(ctx context.Context, t *asynq.Task) error {
+	var p asynqAnnualReportPayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("annual report payload: %w: %w", err, asynq.SkipRetry)
+	}
+	if err := validateAsynqPayloadVersion("annual report", p.Version); err != nil {
+		return err
+	}
+	if s == nil || s.db == nil || p.AccountID == 0 || p.Year < 2000 || p.Year > 9999 {
+		return nil
+	}
+	return s.generateAnnualReport(ctx, p.AccountID, p.Year)
+}
+
 // handleAsynqFeedInsert mirrors FeedInsertWorker: check the feed filter at execution time,
 // insert one status into one recipient's home or list feed, unpush filtered updates, then trim.
 func (s *Server) handleAsynqFeedInsert(ctx context.Context, t *asynq.Task) error {
@@ -2217,8 +2609,19 @@ func (s *Server) handleAsynqFeedInsert(ctx context.Context, t *asynq.Task) error
 		return nil
 	}
 	var status models.Status
-	if err := s.db.WithContext(ctx).Where("id = ?", p.StatusID).First(&status).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", p.StatusID).First(&status).Error; err != nil {
 		return workerLookupError("feed insert status lookup", err)
+	}
+	if status.ReblogOfID.Valid {
+		var rebloggedStatusCount int64
+		if err := s.db.WithContext(ctx).Model(&models.Status{}).
+			Where("id = ? AND deleted_at IS NULL", status.ReblogOfID.Int64).
+			Count(&rebloggedStatusCount).Error; err != nil {
+			return err
+		}
+		if rebloggedStatusCount == 0 {
+			return nil
+		}
 	}
 	filterResult, err := s.asynqFeedInsertFilter(ctx, p, status)
 	if err != nil {
@@ -3016,6 +3419,9 @@ func (s *Server) handleAsynqAccountUpdate(ctx context.Context, t *asynq.Task) er
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		return fmt.Errorf("account update: %w", err)
 	}
+	if err := validateAsynqPayloadVersion("account update", p.Version); err != nil {
+		return err
+	}
 	if s == nil || s.db == nil || p.AccountID == 0 {
 		return nil
 	}
@@ -3159,6 +3565,9 @@ func (s *Server) handleAsynqFollowersSynchronization(ctx context.Context, t *asy
 	var p asynqFollowersSynchronizationPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		return fmt.Errorf("followers synchronization: %w", err)
+	}
+	if err := validateAsynqPayloadVersion("followers synchronization", p.Version); err != nil {
+		return err
 	}
 	if s == nil || s.db == nil || p.AccountID == 0 || strings.TrimSpace(p.URL) == "" {
 		return nil
@@ -3631,24 +4040,6 @@ func (s *Server) handleAsynqPushConversation(ctx context.Context, t *asynq.Task)
 	return nil
 }
 
-// handleAsynqPushEncryptedMessage mirrors PushEncryptedMessageWorker: load the message
-// with its target device and publish it to the device streaming timeline.
-func (s *Server) handleAsynqPushEncryptedMessage(ctx context.Context, t *asynq.Task) error {
-	var p asynqEncryptedMessagePayload
-	if err := json.Unmarshal(t.Payload(), &p); err != nil {
-		return fmt.Errorf("push encrypted message: %w", err)
-	}
-	if s == nil || s.db == nil || p.EncryptedMessageID == 0 {
-		return nil
-	}
-	var message models.EncryptedMessage
-	if err := s.db.WithContext(ctx).Preload("Device").Where("id = ?", p.EncryptedMessageID).First(&message).Error; err != nil {
-		return workerLookupError("encrypted message lookup", err)
-	}
-	s.publishEncryptedMessageNowWithContext(ctx, message, message.Device)
-	return nil
-}
-
 // handleAsynqPushUpdate mirrors PushUpdateWorker: hydrate the status for one recipient
 // account and publish the update/status.update payload to the requested timeline.
 func (s *Server) handleAsynqPushUpdate(ctx context.Context, t *asynq.Task) error {
@@ -3730,7 +4121,7 @@ func (s *Server) handleAsynqRegeneration(ctx context.Context, t *asynq.Task) err
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
-	return s.populateHomeFeed(ctx, s.db, p.AccountID, settings)
+	return s.populateAccountFeeds(ctx, s.db, p.AccountID, settings)
 }
 
 // handleAsynqVerifyAccountLinks mirrors VerifyAccountLinksWorker: run rel=me checks for

@@ -150,13 +150,19 @@ func TestEnsureRepresentativeAccountStatConcurrentAgainstPostgres(t *testing.T) 
 	if applied, err := migrate.Run(context.Background(), database); err != nil || !applied {
 		t.Fatalf("migrate = %v, %v", applied, err)
 	}
-	if err := database.Model(&models.Account{}).Create(map[string]any{
-		"id":         int64(-99),
-		"username":   instanceActorUsername,
-		"created_at": time.Now().UTC(),
-		"updated_at": time.Now().UTC(),
-	}).Error; err != nil {
+	var representative models.Account
+	if err := database.Where("id = ?", int64(-99)).First(&representative).Error; err != nil {
+		t.Fatalf("load seeded representative account: %v", err)
+	}
+	if representative.Username != instanceActorUsername {
+		t.Fatalf("seeded representative username = %q, want %q", representative.Username, instanceActorUsername)
+	}
+	var initialCount int64
+	if err := database.Model(&models.AccountStat{}).Where("account_id = ?", representative.ID).Count(&initialCount).Error; err != nil {
 		t.Fatal(err)
+	}
+	if initialCount != 0 {
+		t.Fatalf("initial representative account_stats rows = %d, want 0", initialCount)
 	}
 
 	server := &Server{cfg: cfg, db: database}
@@ -169,7 +175,7 @@ func TestEnsureRepresentativeAccountStatConcurrentAgainstPostgres(t *testing.T) 
 		go func() {
 			defer group.Done()
 			<-start
-			errorsByWorker <- server.ensureRepresentativeAccountStat(-99)
+			errorsByWorker <- server.ensureRepresentativeAccountStat(representative.ID)
 		}()
 	}
 	close(start)
@@ -182,7 +188,7 @@ func TestEnsureRepresentativeAccountStatConcurrentAgainstPostgres(t *testing.T) 
 	}
 
 	var count int64
-	if err := database.Model(&models.AccountStat{}).Where("account_id = ?", int64(-99)).Count(&count).Error; err != nil {
+	if err := database.Model(&models.AccountStat{}).Where("account_id = ?", representative.ID).Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {

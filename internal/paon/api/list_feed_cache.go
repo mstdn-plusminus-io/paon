@@ -427,7 +427,7 @@ func (s *Server) regenerateHomeFeedForReturningUser(ctx context.Context, user mo
 	go func() {
 		workerCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		_ = s.populateHomeFeed(workerCtx, s.db, user.AccountID, user.Settings)
+		_ = s.populateAccountFeeds(workerCtx, s.db, user.AccountID, user.Settings)
 		_, _ = s.redisCommand(workerCtx, "DEL", key)
 	}()
 }
@@ -446,6 +446,7 @@ func (s *Server) populateHomeFeed(ctx context.Context, database *gorm.DB, accoun
 	}
 	var statuses []models.Status
 	if err := s.homeTimelineQuery(&account).
+		Where("statuses.reblog_of_id IS NULL OR EXISTS (SELECT 1 FROM statuses reblogged_statuses WHERE reblogged_statuses.id = statuses.reblog_of_id AND reblogged_statuses.deleted_at IS NULL)").
 		Order("statuses.id DESC").
 		Limit(feedMaxItems / 2).
 		Find(&statuses).Error; err != nil {
@@ -456,6 +457,45 @@ func (s *Server) populateHomeFeed(ctx context.Context, database *gorm.DB, accoun
 		_, _ = s.addStatusToFeedContext(ctx, "home", account.ID, status, aggregateReblogs)
 	}
 	return s.trimFeedContext(ctx, "home", account.ID)
+}
+
+func (s *Server) populateAccountFeeds(ctx context.Context, database *gorm.DB, accountID int64, settings sql.NullString) error {
+	if err := s.populateHomeFeed(ctx, database, accountID, settings); err != nil {
+		return err
+	}
+	var lists []models.List
+	if err := database.WithContext(ctx).Where("account_id = ?", accountID).Order("id ASC").Find(&lists).Error; err != nil {
+		return err
+	}
+	for _, list := range lists {
+		if err := s.populateListFeed(ctx, list, settings); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) populateListFeed(ctx context.Context, list models.List, settings sql.NullString) error {
+	if s == nil || s.db == nil || list.ID == 0 {
+		return nil
+	}
+	var statuses []models.Status
+	if err := s.listTimelineQuery(list).
+		WithContext(ctx).
+		Where("statuses.reblog_of_id IS NULL OR EXISTS (SELECT 1 FROM statuses reblogged_statuses WHERE reblogged_statuses.id = statuses.reblog_of_id AND reblogged_statuses.deleted_at IS NULL)").
+		Order("statuses.id DESC").
+		Limit(feedMaxItems / 2).
+		Find(&statuses).Error; err != nil {
+		return err
+	}
+	aggregateReblogs := aggregateReblogsFromSettings(settings)
+	for _, status := range statuses {
+		if s.filterStatusFromList(ctx, s.db, status, list) {
+			continue
+		}
+		_, _ = s.addStatusToFeedContext(ctx, "list", list.ID, status, aggregateReblogs)
+	}
+	return s.trimFeedContext(ctx, "list", list.ID)
 }
 
 func userSignedInRecently(user models.User, now time.Time) bool {

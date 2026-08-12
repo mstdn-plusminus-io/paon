@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -65,6 +66,12 @@ func TestPostAdminSiteUploadDestroyMethodOverrideRequiresSession(t *testing.T) {
 func TestSiteUploadStyles(t *testing.T) {
 	if got, want := siteUploadStyles("thumbnail"), []string{"original", "@1x", "@2x"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("thumbnail styles = %#v, want %#v", got, want)
+	}
+	if got, want := siteUploadStyles("favicon"), []string{"original", "16", "32", "48"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("favicon styles = %#v, want %#v", got, want)
+	}
+	if got, want := siteUploadStyles("app_icon"), []string{"original", "57", "60", "72", "76", "114", "120", "144", "152", "167", "180", "1024", "36", "48", "96", "192", "256", "384", "512"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("app icon styles = %#v, want %#v", got, want)
 	}
 	if got, want := siteUploadStyles("mascot"), []string{"original"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("mascot styles = %#v, want %#v", got, want)
@@ -185,6 +192,34 @@ func TestStoreSiteUploadThumbnailStylesGeneratesRailsGeometry(t *testing.T) {
 	}
 	if originalCfg.Width != 1600 || originalCfg.Height != 900 {
 		t.Fatalf("original dimensions = %dx%d", originalCfg.Width, originalCfg.Height)
+	}
+}
+
+func TestStoreSiteUploadFaviconStylesGeneratesRailsGeometry(t *testing.T) {
+	root := t.TempDir()
+	s := &Server{cfg: config.Config{PublicDir: root}}
+	header := siteUploadTestFileHeader(t, "icon.webp", siteUploadTestPNG(t, 80, 60))
+	if _, err := s.storeSiteUploadFileStyles(header, 42, "favicon", "icon.webp"); err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []int{16, 32, 48} {
+		style := strconv.Itoa(size)
+		path := s.siteUploadFilePath(42, style, "icon.png")
+		file, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, format, err := image.DecodeConfig(file)
+		_ = file.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if format != "png" || cfg.Width != size || cfg.Height != size {
+			t.Fatalf("%s favicon = %s %dx%d, want png %dx%d", style, format, cfg.Width, cfg.Height, size, size)
+		}
+	}
+	if got := siteUploadStyleFilename("app_icon", "192", "icon.gif"); got != "icon.png" {
+		t.Fatalf("app icon style filename = %q", got)
 	}
 }
 

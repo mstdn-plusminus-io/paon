@@ -12,7 +12,7 @@ func TestUserCleanupConstantsMatchRailsScheduler(t *testing.T) {
 	if userCleanupBatchSize != 1000 {
 		t.Fatalf("userCleanupBatchSize = %d", userCleanupBatchSize)
 	}
-	if unconfirmedUserTTL != 48*time.Hour {
+	if unconfirmedUserTTL != 7*24*time.Hour {
 		t.Fatalf("unconfirmedUserTTL = %s", unconfirmedUserTTL)
 	}
 	if discardedStatusRetentionTTL != 30*24*time.Hour {

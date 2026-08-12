@@ -146,7 +146,7 @@ func (s *Server) updateAdminAccountChangeEmail(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	if newEmail == "" || !strings.Contains(newEmail, "@") {
+	if !railsEmailAddressValid(newEmail) {
 		return c.Redirect(http.StatusFound, "/admin/accounts/"+url.PathEscape(c.Param("account_id"))+"/change_email?error="+url.QueryEscape(settingsT(s.webLocale(c, user), "users.invalid_email", "E-mail is invalid")))
 	}
 	if s.db == nil {
@@ -495,6 +495,7 @@ func (s *Server) applyAdminStatusBatchAction(user *models.User, accountID int64,
 		}
 	}
 	if createdWarning.ID != 0 {
+		s.publishModerationWarningNotification(createdWarning.ID)
 		_ = s.sendAdminStatusBatchWarningMail(accountID, createdWarning, false)
 	}
 	return nil
@@ -544,6 +545,9 @@ func createAdminStatusBatchWarning(tx *gorm.DB, actorAccountID int64, targetAcco
 		warning.ReportID = sql.NullInt64{Int64: reportID, Valid: true}
 	}
 	if err := tx.Create(&warning).Error; err != nil {
+		return models.AccountWarning{}, err
+	}
+	if err := createModerationWarningNotification(tx, warning, now); err != nil {
 		return models.AccountWarning{}, err
 	}
 	return warning, nil

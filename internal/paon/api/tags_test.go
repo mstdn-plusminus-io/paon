@@ -146,7 +146,7 @@ func TestPublicTagActivityPubCollection(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("Content-Type"); got != "application/activity+json" {
+	if got := rec.Header().Get("Content-Type"); got != "application/activity+json; charset=utf-8" {
 		t.Fatalf("content-type = %q", got)
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "max-age=180, public" {

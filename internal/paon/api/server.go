@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -35,6 +36,7 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/i18n"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/telemetry"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
 	"github.com/rivo/uniseg"
 	"golang.org/x/text/unicode/norm"
@@ -217,7 +219,11 @@ func NewServer(cfg config.Config, database *gorm.DB) (*Server, error) {
 	e.Pre(apiTrailingSlashMiddleware)
 	e.Pre(railsFormContentTypeMiddleware)
 	e.Pre(methodOverrideMiddleware)
+	e.Use(railsResponseContentTypeMiddleware)
 	e.Use(requestIDMiddleware)
+	if cfg.OpenTelemetryEnabled {
+		e.Use(telemetry.HTTPMiddleware())
+	}
 	e.Use(accessLogMiddleware(cfg))
 	e.Use(corsMiddleware)
 	e.Use(hostAuthorizationMiddleware(cfg))
@@ -259,6 +265,7 @@ func NewServer(cfg config.Config, database *gorm.DB) (*Server, error) {
 	setWebDefaultLocale(i18n.NormalizeLocale(cfg.Locale()))
 	e.Use(server.ipBlockBlocklistMiddleware)
 	e.Use(server.rackAttackThrottleMiddleware)
+	e.Use(server.selfDestructMiddleware)
 	e.Use(server.apiAuthenticationGateMiddleware)
 	e.Use(server.browserSecurityMiddleware)
 	server.routes()
@@ -460,6 +467,68 @@ func headMethodMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		c.SetResponse(headResponseWriter{ResponseWriter: c.Response()})
 		return next(c)
 	}
+}
+
+type railsContentTypeResponseWriter struct {
+	http.ResponseWriter
+}
+
+func (w railsContentTypeResponseWriter) WriteHeader(status int) {
+	normalizeRailsResponseContentType(w.Header())
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w railsContentTypeResponseWriter) Write(body []byte) (int, error) {
+	normalizeRailsResponseContentType(w.Header())
+	return w.ResponseWriter.Write(body)
+}
+
+func (w railsContentTypeResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w railsContentTypeResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w railsContentTypeResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (w railsContentTypeResponseWriter) Push(target string, options *http.PushOptions) error {
+	pusher, ok := w.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return pusher.Push(target, options)
+}
+
+func railsResponseContentTypeMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		c.SetResponse(railsContentTypeResponseWriter{ResponseWriter: c.Response()})
+		return next(c)
+	}
+}
+
+func normalizeRailsResponseContentType(header http.Header) {
+	value := header.Get("Content-Type")
+	if value == "" {
+		return
+	}
+	lower := strings.ToLower(value)
+	mediaType := strings.TrimSpace(strings.SplitN(lower, ";", 2)[0])
+	if !strings.Contains(lower, "charset=") && (mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")) {
+		value += "; charset=utf-8"
+		lower = strings.ToLower(value)
+	}
+	if index := strings.Index(lower, "charset=utf-8"); index >= 0 {
+		value = value[:index] + "charset=utf-8" + value[index+len("charset=utf-8"):]
+	}
+	header.Set("Content-Type", value)
 }
 
 func encodedAtMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -1186,7 +1255,7 @@ func rackAttackFormValue(req *http.Request, key string) string {
 	if req.Form == nil {
 		_ = req.ParseForm()
 	}
-	return strings.TrimSpace(req.Form.Get(key))
+	return strings.ToLower(strings.TrimSpace(req.Form.Get(key)))
 }
 
 func rackAttackTokenIdentities(accessToken *models.OAuthAccessToken) (string, string) {
@@ -1565,8 +1634,10 @@ func (s *Server) routes() {
 	e.GET("/.well-known/nodeinfo.json", s.nodeInfoDiscovery)
 	e.GET("/.well-known/nodeinfo.:format", s.nodeInfoDiscovery)
 	e.GET("/.well-known/host-meta", s.hostMeta)
+	e.GET("/.well-known/host-meta.json", s.hostMetaJSON)
 	e.GET("/.well-known/host-meta.xml", s.hostMeta)
 	e.GET("/.well-known/host-meta.:format", s.hostMeta)
+	e.GET("/.well-known/oauth-authorization-server", s.oauthAuthorizationServerMetadata)
 	e.GET("/.well-known/webfinger", s.webfinger)
 	e.GET("/.well-known/webfinger.json", s.webfinger)
 	e.GET("/.well-known/webfinger.:format", s.webfinger)
@@ -1615,15 +1686,18 @@ func (s *Server) routes() {
 	e.GET("/users/:username/followers_synchronization.json", s.activityPubFollowersSynchronization)
 	e.GET("/users/:username/followers_synchronization.:format", s.activityPubFollowersSynchronization)
 	e.GET("/users/:username/followers_synchronization", s.activityPubFollowersSynchronization)
-	e.POST("/users/:username/claim.json", s.activityPubClaim)
-	e.POST("/users/:username/claim.:format", s.activityPubClaim)
-	e.POST("/users/:username/claim", s.activityPubClaim)
 	e.GET("/users/:username/collections/:id.json", s.activityPubCollection)
 	e.GET("/users/:username/collections/:id.:format", s.activityPubCollection)
 	e.GET("/users/:username/collections/:id", s.activityPubCollection)
 	e.GET("/users/:username/statuses/:id/replies.json", s.activityPubReplies)
 	e.GET("/users/:username/statuses/:id/replies.:format", s.activityPubReplies)
 	e.GET("/users/:username/statuses/:id/replies", s.activityPubReplies)
+	e.GET("/users/:username/statuses/:id/likes.json", s.activityPubStatusLikes)
+	e.GET("/users/:username/statuses/:id/likes.:format", s.activityPubStatusLikes)
+	e.GET("/users/:username/statuses/:id/likes", s.activityPubStatusLikes)
+	e.GET("/users/:username/statuses/:id/shares.json", s.activityPubStatusShares)
+	e.GET("/users/:username/statuses/:id/shares.:format", s.activityPubStatusShares)
+	e.GET("/users/:username/statuses/:id/shares", s.activityPubStatusShares)
 	e.GET("/users/:username/statuses/:id/embed.:format", s.statusEmbed)
 	e.GET("/users/:username/statuses/:id/embed", s.statusEmbed)
 	e.GET("/users/:username/statuses/:id.json", s.activityPubStatus)
@@ -1644,6 +1718,11 @@ func (s *Server) routes() {
 	e.POST("/inbox", s.activityPubInbox)
 	e.GET("/invite/:invite_code.:format", s.publicInvite)
 	e.GET("/invite/:invite_code", s.publicInvite)
+	e.GET("/redirect/accounts/:id", s.redirectRemoteAccount)
+	e.GET("/redirect/statuses/:id", s.redirectRemoteStatus)
+	e.GET("/severed_relationships", s.severedRelationshipsPage)
+	e.GET("/severed_relationships/:id/following.csv", s.severedRelationshipsFollowing)
+	e.GET("/severed_relationships/:id/followers.csv", s.severedRelationshipsFollowers)
 	e.GET("/unsubscribe.:format", s.unsubscribePage)
 	e.GET("/unsubscribe", s.unsubscribePage)
 	e.POST("/unsubscribe.:format", s.createUnsubscribe)
@@ -1688,11 +1767,14 @@ func (s *Server) routes() {
 	e.POST("/auth/auth/:provider/callback", s.omniauthCallback)
 	e.GET("/auth/auth/:provider/logout", s.omniauthLogout)
 	e.GET("/oauth/authorize", s.oauthAuthorize)
+	e.GET("/oauth/authorize/native", s.oauthNativeAuthorizationCode)
 	e.POST("/oauth/authorize", s.oauthAuthorizeDecision)
 	e.DELETE("/oauth/authorize", s.oauthAuthorizeDecision)
 	e.POST("/oauth/token", s.oauthToken)
+	e.POST("/oauth/introspect", s.oauthIntrospect)
 	e.GET("/oauth/token/info", s.oauthTokenInfo)
 	e.POST("/oauth/revoke", s.oauthRevoke)
+	e.OPTIONS("/oauth/revoke", s.oauthRevokeOptions)
 	e.GET("/oauth/applications", s.oauthApplicationsForbidden)
 	e.GET("/oauth/applications.:format", s.oauthApplicationsForbidden)
 	e.POST("/oauth/applications", s.oauthApplicationsForbidden)
@@ -1747,6 +1829,9 @@ func (s *Server) routes() {
 	e.FileFS("/web-push-icon_expand.png", "web-push-icon_expand.png", publicFS)
 	e.FileFS("/web-push-icon_favourite.png", "web-push-icon_favourite.png", publicFS)
 	e.FileFS("/web-push-icon_reblog.png", "web-push-icon_reblog.png", publicFS)
+	for _, size := range []string{"16", "32", "48"} {
+		e.GET("/favicon-"+size+"x"+size+".png", s.faviconPNGIcon)
+	}
 	for _, size := range []string{"36", "48", "72", "96", "144", "192", "256", "384", "512"} {
 		e.GET("/android-chrome-"+size+"x"+size+".png", s.androidChromeIcon)
 	}
@@ -1858,9 +1943,29 @@ func (s *Server) routes() {
 	e.GET("/api/v1/markers", s.markers)
 	e.POST("/api/v1/markers", s.updateMarkers)
 	e.GET("/api/v1/notifications", s.notifications)
+	e.GET("/api/v1/notifications/unread_count", s.unreadNotificationCount)
+	e.GET("/api/v1/notifications/policy", s.showNotificationPolicyV1)
+	e.PUT("/api/v1/notifications/policy", s.updateNotificationPolicyV1)
+	e.PATCH("/api/v1/notifications/policy", s.updateNotificationPolicyV1)
+	e.GET("/api/v1/notifications/requests", s.notificationRequests)
+	e.GET("/api/v1/notifications/requests/merged", s.notificationRequestsMerged)
+	e.POST("/api/v1/notifications/requests/accept", s.acceptNotificationRequests)
+	e.POST("/api/v1/notifications/requests/dismiss", s.dismissNotificationRequests)
+	e.GET("/api/v1/notifications/requests/:id", s.showNotificationRequest)
+	e.POST("/api/v1/notifications/requests/:id/accept", s.acceptNotificationRequest)
+	e.POST("/api/v1/notifications/requests/:id/dismiss", s.dismissNotificationRequest)
 	e.GET("/api/v1/notifications/:id", s.showNotification)
 	e.POST("/api/v1/notifications/clear", s.clearNotifications)
 	e.POST("/api/v1/notifications/:id/dismiss", s.dismissNotification)
+	e.GET("/api/v2/notifications", s.groupedNotifications)
+	e.GET("/api/v2/notifications/unread_count", s.unreadGroupedNotificationCount)
+	e.GET("/api/v2/notifications/policy", s.showNotificationPolicyV2)
+	e.PUT("/api/v2/notifications/policy", s.updateNotificationPolicyV2)
+	e.PATCH("/api/v2/notifications/policy", s.updateNotificationPolicyV2)
+	e.POST("/api/v2/notifications/clear", s.clearNotifications)
+	e.GET("/api/v2/notifications/:group_key", s.showGroupedNotification)
+	e.POST("/api/v2/notifications/:group_key/dismiss", s.dismissGroupedNotification)
+	e.GET("/api/v2/notifications/:group_key/accounts", s.groupedNotificationAccounts)
 	e.POST("/api/v1/reports", s.createReport)
 	e.GET("/api/v1/conversations", s.conversations)
 	e.POST("/api/v1/conversations/:id/read", s.readConversation)
@@ -1883,6 +1988,7 @@ func (s *Server) routes() {
 	e.POST("/api/v1/accounts", s.createAccount)
 	e.POST("/api/v1/emails/confirmations", s.createEmailConfirmation)
 	e.GET("/api/v1/emails/check_confirmation", s.checkEmailConfirmation)
+	e.GET("/api/v1/accounts", s.accountsByID)
 	e.GET("/api/v1/accounts/verify_credentials", s.verifyCredentials)
 	e.PATCH("/api/v1/accounts/update_credentials", s.updateCredentials)
 	e.GET("/api/v1/accounts/search", s.searchAccounts)
@@ -1907,6 +2013,7 @@ func (s *Server) routes() {
 	e.POST("/api/v1/accounts/:id/pin", s.pinAccount)
 	e.POST("/api/v1/accounts/:id/unpin", s.unpinAccount)
 
+	e.GET("/api/v1/statuses", s.statusesByID)
 	e.GET("/api/v1/statuses/:id", s.getStatus)
 	e.DELETE("/api/v1/statuses/:id", s.deleteStatus)
 	e.PUT("/api/v1/statuses/:id", s.updateStatus)
@@ -1943,6 +2050,7 @@ func (s *Server) routes() {
 	e.PATCH("/api/v1/media/:id", s.updateMedia)
 
 	e.GET("/api/v1/timelines/public", s.publicTimeline)
+	e.GET("/api/v1/timelines/link", s.linkTimeline)
 	e.GET("/api/v1/timelines/home", s.homeTimeline)
 	e.GET("/api/v1/timelines/tag/:tag", s.tagTimeline)
 	e.GET("/api/v1/timelines/list/:id", s.listTimeline)
@@ -1956,6 +2064,9 @@ func (s *Server) routes() {
 	e.GET("/api/v1/featured_tags/suggestions", s.featuredTagSuggestions)
 	e.GET("/api/v1/favourites", s.favourites)
 	e.GET("/api/v1/bookmarks", s.bookmarks)
+	e.GET("/api/v1/domain_blocks/preview", s.domainBlockPreview)
+	e.GET("/api/v1/annual_reports", s.annualReports)
+	e.POST("/api/v1/annual_reports/:year/read", s.readAnnualReport)
 	e.GET("/api/v1/filters", s.v1Filters)
 	e.POST("/api/v1/filters", s.createV1Filter)
 	e.GET("/api/v1/filters/:id", s.showV1Filter)
@@ -2012,11 +2123,16 @@ func (s *Server) routes() {
 		"/conversations",
 		"/lists",
 		"/lists/*",
+		"/links/*",
 		"/notifications",
+		"/notifications/*",
+		"/notifications_v2",
+		"/notifications_v2/*",
 		"/favourites",
 		"/bookmarks",
 		"/pinned",
 		"/start",
+		"/start/*",
 		"/directory",
 		"/publish",
 		"/statuses/new",
@@ -2177,6 +2293,8 @@ func (s *Server) routes() {
 	e.POST("/admin/users/:user_id/two_factor_authentication", s.notFound)
 	e.GET("/admin/software_updates.:format", s.adminSoftwareUpdatesPage)
 	e.GET("/admin/software_updates", s.adminSoftwareUpdatesPage)
+	e.GET("/admin/tags.:format", s.adminTagsPage)
+	e.GET("/admin/tags", s.adminTagsPage)
 	e.GET("/admin/tags/:id.:format", optionalFormatPathParam("id", s.adminTagPage))
 	e.GET("/admin/tags/:id", s.adminTagPage)
 	e.PATCH("/admin/tags/:id.:format", optionalFormatPathParam("id", s.updateAdminTagWeb))
@@ -2574,6 +2692,10 @@ func (s *Server) routes() {
 	e.DELETE("/settings/migration/redirect", s.destroySettingsMigrationRedirect)
 	e.GET("/settings/verification.:format", s.settingsVerificationPage)
 	e.GET("/settings/verification", s.settingsVerificationPage)
+	e.PUT("/settings/verification.:format", s.updateSettingsVerification)
+	e.PUT("/settings/verification", s.updateSettingsVerification)
+	e.PATCH("/settings/verification.:format", s.updateSettingsVerification)
+	e.PATCH("/settings/verification", s.updateSettingsVerification)
 	e.GET("/settings/aliases.:format", s.settingsAliasesPage)
 	e.GET("/settings/aliases", s.settingsAliasesPage)
 	e.POST("/settings/aliases.:format", s.createSettingsAlias)
@@ -2675,6 +2797,8 @@ func (s *Server) routes() {
 }
 
 func (s *Server) health(c *echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "max-age=0, private, must-revalidate")
+	c.Response().Header().Set("Content-Type", "text/plain; charset=utf-8")
 	return c.String(http.StatusOK, "OK")
 }
 
@@ -2752,7 +2876,7 @@ func (s *Server) webAppPermalinkRedirectPath(path string, account *models.Accoun
 	if user != nil && account != nil && !account.MovedToAccountID.Valid {
 		return ""
 	}
-	return s.permalinkRedirectPath(path)
+	return s.permalinkRedirectConfirmationPath(path)
 }
 
 func (s *Server) permalinkRedirectPath(path string) string {
@@ -2855,13 +2979,10 @@ func (s *Server) permalinkAccountURLByName(name string) string {
 }
 
 func permalinkRemoteURL(value sql.NullString) string {
-	if !value.Valid {
+	if !value.Valid || value.String != strings.TrimSpace(value.String) {
 		return ""
 	}
-	if strings.HasPrefix(value.String, "http://") || strings.HasPrefix(value.String, "https://") {
-		return value.String
-	}
-	return ""
+	return safeExternalHTTPURL(value.String)
 }
 
 func (s *Server) privacyPolicy(c *echo.Context) error {
@@ -3540,7 +3661,6 @@ func (s *Server) instanceV1(c *echo.Context) error {
 		"description":       metadata.Description,
 		"email":             metadata.ContactEmail,
 		"version":           instance.Version,
-		"actual_version":    instance.ActualVersion,
 		"urls":              map[string]string{"streaming_api": s.cfg.StreamingBaseURL()},
 		"stats":             s.instanceV1Stats(),
 		"thumbnail":         serializer.InstanceV1ThumbnailFromSiteUpload(s.cfg, metadata.Thumbnail, metadata.PreviewImageURL),
@@ -3549,7 +3669,6 @@ func (s *Server) instanceV1(c *echo.Context) error {
 		"approval_required": approvalRequired,
 		"invites_enabled":   invitesEnabled,
 		"configuration":     instanceV1Configuration(instance.Configuration),
-		"feature_quote":     instance.FeatureQuote,
 		"contact_account":   contactAccount,
 		"rules":             instance.Rules,
 	})
@@ -3558,7 +3677,18 @@ func (s *Server) instanceV1(c *echo.Context) error {
 func instanceV1Configuration(configuration map[string]any) map[string]any {
 	out := make(map[string]any, len(configuration))
 	for key, value := range configuration {
-		if key == "urls" || key == "translation" {
+		if key == "urls" || key == "translation" || key == "vapid" {
+			continue
+		}
+		if key == "accounts" {
+			accounts, _ := value.(map[string]any)
+			legacyAccounts := make(map[string]any, len(accounts))
+			for accountKey, accountValue := range accounts {
+				if accountKey != "max_pinned_statuses" {
+					legacyAccounts[accountKey] = accountValue
+				}
+			}
+			out[key] = legacyAccounts
 			continue
 		}
 		out[key] = value
@@ -3598,6 +3728,7 @@ func (s *Server) instanceV2(c *echo.Context) error {
 func (s *Server) instanceMetadata() serializer.InstanceMetadata {
 	contactAccount, _ := s.instanceContactAccount()
 	thumbnail, _ := s.instanceSiteUpload("thumbnail")
+	appIcon, _ := s.instanceSiteUpload("app_icon")
 	return serializer.InstanceMetadata{
 		Title:            s.settingRawValue("site_title", s.cfg.Title),
 		TitleSet:         true,
@@ -3606,9 +3737,20 @@ func (s *Server) instanceMetadata() serializer.InstanceMetadata {
 		ContactEmail:     s.settingRawValue("site_contact_email", ""),
 		ContactAccount:   contactAccount,
 		Thumbnail:        thumbnail,
+		AppIcon:          appIcon,
+		AppIconURLs:      s.instanceAppIconURLs(),
 		PreviewImageURL:  s.packAssetURL("media/images/preview.png"),
 		StatusPageURL:    s.settingRawValue("status_page_url", ""),
 	}
+}
+
+func (s *Server) instanceAppIconURLs() map[string]string {
+	out := make(map[string]string, 9)
+	for _, size := range []string{"36", "48", "72", "96", "144", "192", "256", "384", "512"} {
+		dimensions := size + "x" + size
+		out[dimensions] = s.packAssetURL("media/icons/android-chrome-" + dimensions + ".png")
+	}
+	return out
 }
 
 func (s *Server) instanceSiteUpload(name string) (*models.SiteUpload, error) {
@@ -3643,15 +3785,12 @@ func (s *Server) packAssetPath(name string) string {
 
 func (s *Server) androidChromeIcon(c *echo.Context) error {
 	name := strings.TrimPrefix(c.Request().URL.Path, "/")
-	assetName := "media/icons/" + name
-	path := ""
-	if s.renderer != nil {
-		path = s.renderer.Asset(assetName)
+	dimensions := strings.TrimSuffix(strings.TrimPrefix(name, "android-chrome-"), ".png")
+	size := "192"
+	if width, height, ok := strings.Cut(dimensions, "x"); ok && width == height {
+		size = width
 	}
-	if path == "" {
-		path = "/packs/" + assetName
-	}
-	return c.Redirect(http.StatusFound, path)
+	return s.siteUploadIconRedirect(c, "app_icon", size, "media/icons/"+name)
 }
 
 func (s *Server) appleTouchIcon(c *echo.Context) error {
@@ -3662,7 +3801,30 @@ func (s *Server) appleTouchIcon(c *echo.Context) error {
 	if name == "apple-touch-icon.png" {
 		name = "apple-touch-icon-180x180.png"
 	}
-	assetName := "media/icons/" + name
+	dimensions := strings.TrimSuffix(strings.TrimPrefix(name, "apple-touch-icon-"), ".png")
+	size := "180"
+	if width, height, ok := strings.Cut(dimensions, "x"); ok && width == height {
+		size = width
+	}
+	return s.siteUploadIconRedirect(c, "app_icon", size, "media/icons/"+name)
+}
+
+func (s *Server) faviconPNGIcon(c *echo.Context) error {
+	name := strings.TrimPrefix(c.Request().URL.Path, "/")
+	dimensions := strings.TrimSuffix(strings.TrimPrefix(name, "favicon-"), ".png")
+	size := "48"
+	if width, height, ok := strings.Cut(dimensions, "x"); ok && width == height {
+		size = width
+	}
+	return s.siteUploadIconRedirect(c, "favicon", size, "media/icons/"+name)
+}
+
+func (s *Server) siteUploadIconRedirect(c *echo.Context, uploadName string, style string, assetName string) error {
+	if upload, _ := s.instanceSiteUpload(uploadName); upload != nil {
+		if path := serializer.SiteUploadFileURL(s.cfg, *upload, style); path != "" {
+			return c.Redirect(http.StatusFound, path)
+		}
+	}
 	path := ""
 	if s.renderer != nil {
 		path = s.renderer.Asset(assetName)
@@ -3855,7 +4017,7 @@ func (s *Server) emptyObject(c *echo.Context) error {
 }
 
 func (s *Server) verifyCredentials(c *echo.Context) error {
-	user, _, err := s.requireUserScope(c, "read", "read:accounts")
+	user, _, err := s.requireUserScope(c, "profile", "read", "read:accounts")
 	if err != nil {
 		return err
 	}
@@ -3944,14 +4106,14 @@ func (s *Server) searchAccounts(c *echo.Context) error {
 	}
 	nonExactLimit := accountSearchNonExactLimit(q, account, limitValue, exactAccount)
 	if q != "" && nonExactLimit > 0 {
-		meiliAccounts, usedMeili, err := s.accountSearchMeiliResults(c.Request().Context(), q, account, following, nonExactLimit, offsetValue, excludeAccountID)
+		meiliAccounts, usedMeili, err := s.accountSearchMeiliResults(c.Request().Context(), q, account, following, false, nonExactLimit, offsetValue, excludeAccountID)
 		if err != nil {
 			return err
 		}
 		if usedMeili {
 			accounts = append(accounts, meiliAccounts...)
 		} else {
-			searchResults, err := s.accountSearchDatabaseResults(q, account, following, nonExactLimit, offsetValue, excludeAccountID)
+			searchResults, err := s.accountSearchDatabaseResults(q, account, following, false, nonExactLimit, offsetValue, excludeAccountID)
 			if err != nil {
 				return err
 			}
@@ -3971,9 +4133,10 @@ func (s *Server) getStatus(c *echo.Context) error {
 	if err := s.authorizeTokenScopeIfPresent(c, "read", "read:statuses"); err != nil {
 		return err
 	}
+	appendVaryHeader(c, "Origin")
 	status, account, err := s.findVisibleStatusForRequest(c, c.Param("id"))
 	if err != nil {
-		return apiError(c, http.StatusNotFound, "Record not found")
+		return apiError(c, http.StatusNotFound, "Not Found")
 	}
 	if err := s.hydrateStatusRelationship(status, account); err != nil {
 		return err
@@ -4915,12 +5078,12 @@ func (s *Server) findQuoteStatusForAccount(account *models.Account, quoteID stri
 	if err != nil {
 		return nil, err
 	}
-	if quote.ReblogOfID.Valid {
-		reblog, err := s.findVisibleStatusForAccount(account, strconv.FormatInt(quote.ReblogOfID.Int64, 10))
-		if err != nil {
-			return nil, err
-		}
-		quote = reblog
+	allowed, err := s.statusQuoteTargetAllowedForAccount(context.Background(), account, quote)
+	if err != nil {
+		return nil, err
+	}
+	if !allowed {
+		return nil, gorm.ErrRecordNotFound
 	}
 	return quote, nil
 }
@@ -5965,14 +6128,14 @@ func (s *Server) search(c *echo.Context) error {
 		}
 		nonExactLimit := accountSearchNonExactLimit(q, account, limitValue, exactAccount)
 		if nonExactLimit > 0 {
-			meiliAccounts, usedMeili, err := s.accountSearchMeiliResults(c.Request().Context(), q, account, following, nonExactLimit, offsetValue, exactAccountID)
+			meiliAccounts, usedMeili, err := s.accountSearchMeiliResults(c.Request().Context(), q, account, following, true, nonExactLimit, offsetValue, exactAccountID)
 			if err != nil {
 				return err
 			}
 			if usedMeili {
 				accounts = append(accounts, meiliAccounts...)
 			} else {
-				searchResults, err := s.accountSearchDatabaseResults(q, account, following, nonExactLimit, offsetValue, exactAccountID)
+				searchResults, err := s.accountSearchDatabaseResults(q, account, following, true, nonExactLimit, offsetValue, exactAccountID)
 				if err != nil {
 					return err
 				}
@@ -6300,7 +6463,20 @@ func appRegistrationFromRequest(c *echo.Context) (oauthApplication, error) {
 	value := func(keys ...string) string {
 		for _, key := range keys {
 			if raw, ok := payload[key]; ok {
-				if item := rawScalarStringFromJSONValue(raw); strings.TrimSpace(item) != "" {
+				if item := rawStringFromJSONValue(raw); strings.TrimSpace(item) != "" {
+					return item
+				}
+			}
+			if c.Request().Form == nil {
+				_ = c.Request().ParseForm()
+			}
+			if values := c.Request().Form[key+"[]"]; len(values) > 0 {
+				if item := strings.Join(uniqueNonEmptyStrings(values), " "); strings.TrimSpace(item) != "" {
+					return item
+				}
+			}
+			if values := c.Request().Form[key]; len(values) > 1 {
+				if item := strings.Join(uniqueNonEmptyStrings(values), " "); strings.TrimSpace(item) != "" {
 					return item
 				}
 			}
@@ -6437,10 +6613,17 @@ func (s *Server) manifest(c *echo.Context) error {
 func (s *Server) manifestIcons() []map[string]string {
 	sizes := []string{"36", "48", "72", "96", "144", "192", "256", "384", "512"}
 	icons := make([]map[string]string, 0, len(sizes))
+	appIcon, _ := s.instanceSiteUpload("app_icon")
 	for _, size := range sizes {
 		dimensions := size + "x" + size
+		src := s.packAssetURL("media/icons/android-chrome-" + dimensions + ".png")
+		if appIcon != nil {
+			if custom := serializer.SiteUploadFileURL(s.cfg, *appIcon, size); custom != "" {
+				src = custom
+			}
+		}
 		icons = append(icons, map[string]string{
-			"src":     s.packAssetURL("media/icons/android-chrome-" + dimensions + ".png"),
+			"src":     src,
 			"sizes":   dimensions,
 			"type":    "image/png",
 			"purpose": "any maskable",
@@ -6497,11 +6680,7 @@ func (s *Server) statusListWithStatus(c *echo.Context, query *gorm.DB, statusCod
 	return c.JSON(statusCode, serializeStatusesWithFilterContext(s.cfg, statuses, account, s.accountFilters(account), filterContext))
 }
 
-func statusListIncludesPagination(c *echo.Context) bool {
-	path := c.Request().URL.Path
-	if truthy(c.QueryParam("pinned")) && strings.Contains(path, "/api/v1/accounts/") && strings.HasSuffix(path, "/statuses") {
-		return false
-	}
+func statusListIncludesPagination(_ *echo.Context) bool {
 	return true
 }
 
@@ -6519,6 +6698,8 @@ func statusListPaginationLink(c *echo.Context, first int64, last int64, includeN
 func statusListPaginationParamKeys(c *echo.Context) []string {
 	path := c.Request().URL.Path
 	switch {
+	case strings.Contains(path, "/api/v1/timelines/link"):
+		return []string{"url", "limit"}
 	case strings.Contains(path, "/api/v1/timelines/public"):
 		return []string{"local", "remote", "limit", "only_media"}
 	case strings.Contains(path, "/api/v1/timelines/home"):
@@ -6644,6 +6825,9 @@ func (s *Server) statusQuery() *gorm.DB {
 		Preload("Mentions.Account.AccountStat").
 		Preload("Tags").
 		Preload("PreviewCards").
+		Preload("PreviewCards.AuthorAccount.AccountStat").
+		Preload("PreviewCards.AuthorAccount.User.Role").
+		Preload("PreviewCardStatuses").
 		Preload("Poll.Votes").
 		Preload("Reblog.Account.AccountStat").
 		Preload("Reblog.Account.User.Role").
@@ -6652,6 +6836,9 @@ func (s *Server) statusQuery() *gorm.DB {
 		Preload("Reblog.Mentions.Account.AccountStat").
 		Preload("Reblog.Tags").
 		Preload("Reblog.PreviewCards").
+		Preload("Reblog.PreviewCards.AuthorAccount.AccountStat").
+		Preload("Reblog.PreviewCards.AuthorAccount.User.Role").
+		Preload("Reblog.PreviewCardStatuses").
 		Preload("Reblog.Application").
 		Preload("Reblog.Poll.Votes")
 }
@@ -7015,6 +7202,9 @@ func (s *Server) hydrateStatusRelationships(statuses []models.Status, current *m
 		return err
 	}
 	s.hydrateStatusesQuote(statuses)
+	for i := range statuses {
+		applyStatusPreviewCardOriginalURLs(&statuses[i])
+	}
 	if current == nil {
 		return nil
 	}
@@ -7051,6 +7241,24 @@ func (s *Server) hydrateStatusRelationships(statuses []models.Status, current *m
 		applyStatusRelationshipFlags(&statuses[i], favourites, bookmarks, reblogs, mutes, pins)
 	}
 	return nil
+}
+
+func applyStatusPreviewCardOriginalURLs(status *models.Status) {
+	if status == nil {
+		return
+	}
+	originalURLs := make(map[int64]string, len(status.PreviewCardStatuses))
+	for _, join := range status.PreviewCardStatuses {
+		if join.PreviewCardID != 0 && join.URL.Valid && strings.TrimSpace(join.URL.String) != "" {
+			originalURLs[join.PreviewCardID] = join.URL.String
+		}
+	}
+	for i := range status.PreviewCards {
+		if originalURL := originalURLs[status.PreviewCards[i].ID]; originalURL != "" {
+			status.PreviewCards[i].URL = originalURL
+		}
+	}
+	applyStatusPreviewCardOriginalURLs(status.Reblog)
 }
 
 func relationshipStatusIDs(statuses []models.Status) ([]int64, []int64) {
@@ -7264,6 +7472,9 @@ func handleAPIErrorWithHTML(c *echo.Context, err error, renderHTML errorHTMLRend
 			logUnexpectedHTTPError(c, apiErr.cause)
 		}
 		copyErrorHeaders(c.Response().Header(), apiErr.headers)
+		if apiErr.status == http.StatusUnauthorized && apiErr.message == "The access token is invalid" {
+			c.Response().Header().Set("WWW-Authenticate", `Bearer realm="Doorkeeper", error="invalid_token", error_description="The access token is invalid"`)
+		}
 		if errorRequestWantsHTML(c) {
 			_ = c.HTML(apiErr.status, renderHTML(c, apiErr.status, apiErr.message))
 			return
@@ -7378,13 +7589,13 @@ func errorRequestWantsHTML(c *echo.Context) bool {
 }
 
 func htmlErrorPage(status int, message string) string {
-	return errorPageHTML(status, "en", "", "default", message)
+	return errorPageHTML(status, "en", "", "system", message)
 }
 
 func (s *Server) serverErrorPage(c *echo.Context, status int, publicMessage string) string {
 	locale := s.webLocale(c, nil)
 	siteTitle := firstNonEmpty(s.settingStringValue("site_title", s.cfg.Title), s.cfg.Title)
-	theme := adminThemeSetting(s.settingStringValue("theme", "default"))
+	theme := adminThemeSetting(s.settingStringValue("theme", "system"))
 	return errorPageHTML(status, locale, siteTitle, theme, publicMessage)
 }
 

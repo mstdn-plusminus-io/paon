@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
@@ -91,7 +92,7 @@ func (s *Server) createV1Filter(c *echo.Context) error {
 		return apiError(c, http.StatusBadRequest, "Malformed request")
 	}
 	contexts := normalizeFilterContexts(payload.Context)
-	if strings.TrimSpace(payload.Phrase) == "" || len(contexts) == 0 || !validFilterContexts(contexts) {
+	if !validFilterKeyword(payload.Phrase) || len(contexts) == 0 || !validFilterContexts(contexts) {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Filter is invalid")
 	}
 	now := time.Now().UTC()
@@ -144,6 +145,9 @@ func (s *Server) updateV1Filter(c *echo.Context) error {
 	filterUpdates := map[string]any{"updated_at": now}
 	if payload.PhraseSet && strings.TrimSpace(payload.Phrase) == "" {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Keyword can't be blank")
+	}
+	if payload.PhraseSet && !validFilterKeyword(payload.Phrase) {
+		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Keyword is invalid")
 	}
 	if payload.PhraseSet {
 		keywordUpdates["keyword"] = payload.Phrase
@@ -236,7 +240,7 @@ func (s *Server) createFilter(c *echo.Context) error {
 		return apiError(c, http.StatusBadRequest, "Malformed request")
 	}
 	payload.Context = normalizeFilterContexts(payload.Context)
-	if strings.TrimSpace(payload.Title) == "" || len(payload.Context) == 0 || !validFilterContexts(payload.Context) {
+	if !validFilterTitle(payload.Title) || len(payload.Context) == 0 || !validFilterContexts(payload.Context) {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Filter is invalid")
 	}
 	action, ok := filterActionValue(firstNonEmpty(payload.FilterAction, "warn"))
@@ -290,6 +294,9 @@ func (s *Server) updateFilter(c *echo.Context) error {
 	if payload.TitleSet {
 		if strings.TrimSpace(payload.Title) == "" {
 			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Title can't be blank")
+		}
+		if !validFilterTitle(payload.Title) {
+			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Title is invalid")
 		}
 		updates["phrase"] = payload.Title
 	}
@@ -385,8 +392,8 @@ func (s *Server) createFilterKeyword(c *echo.Context) error {
 	if err != nil {
 		return apiError(c, http.StatusBadRequest, "Malformed request")
 	}
-	if strings.TrimSpace(payload.Keyword) == "" {
-		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Keyword can't be blank")
+	if !validFilterKeyword(payload.Keyword) {
+		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Keyword is invalid")
 	}
 	wholeWord := true
 	if payload.WholeWord != nil {
@@ -415,6 +422,9 @@ func (s *Server) updateFilterKeyword(c *echo.Context) error {
 	}
 	if payload.KeywordSet && strings.TrimSpace(payload.Keyword) == "" {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Keyword can't be blank")
+	}
+	if payload.KeywordSet && !validFilterKeyword(payload.Keyword) {
+		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Keyword is invalid")
 	}
 	updates := map[string]any{"updated_at": time.Now().UTC()}
 	if payload.KeywordSet {
@@ -916,6 +926,9 @@ func applyFilterKeywordAttributes(tx *gorm.DB, filterID int64, attributes []filt
 			if attr.KeywordSet && strings.TrimSpace(attr.Keyword) == "" {
 				return apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: Keyword can't be blank"}
 			}
+			if attr.KeywordSet && !validFilterKeyword(attr.Keyword) {
+				return apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: Keyword is invalid"}
+			}
 			updates := map[string]any{"updated_at": now}
 			if attr.KeywordSet {
 				updates["keyword"] = attr.Keyword
@@ -931,6 +944,9 @@ func applyFilterKeywordAttributes(tx *gorm.DB, filterID int64, attributes []filt
 		if strings.TrimSpace(attr.Keyword) == "" || attr.Destroy {
 			continue
 		}
+		if !validFilterKeyword(attr.Keyword) {
+			return apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: Keyword is invalid"}
+		}
 		wholeWord := true
 		if attr.WholeWord != nil {
 			wholeWord = *attr.WholeWord
@@ -941,6 +957,14 @@ func applyFilterKeywordAttributes(tx *gorm.DB, filterID int64, attributes []filt
 		}
 	}
 	return nil
+}
+
+func validFilterTitle(title string) bool {
+	return strings.TrimSpace(title) != "" && utf8.RuneCountInString(title) <= 256
+}
+
+func validFilterKeyword(keyword string) bool {
+	return strings.TrimSpace(keyword) != "" && utf8.RuneCountInString(keyword) <= 512
 }
 
 func normalizeFilterContexts(contexts []string) []string {

@@ -15,16 +15,18 @@ import (
 )
 
 var notificationTypes = map[string]struct{}{
-	"mention":        {},
-	"status":         {},
-	"reblog":         {},
-	"follow":         {},
-	"follow_request": {},
-	"favourite":      {},
-	"poll":           {},
-	"update":         {},
-	"admin.sign_up":  {},
-	"admin.report":   {},
+	"mention":               {},
+	"status":                {},
+	"reblog":                {},
+	"follow":                {},
+	"follow_request":        {},
+	"favourite":             {},
+	"poll":                  {},
+	"update":                {},
+	"admin.sign_up":         {},
+	"admin.report":          {},
+	"severed_relationships": {},
+	"moderation_warning":    {},
 }
 
 func (s *Server) notifications(c *echo.Context) error {
@@ -36,6 +38,7 @@ func (s *Server) notifications(c *echo.Context) error {
 
 	query := s.notificationQuery(account.ID)
 	query = applyNotificationFilters(c, query)
+	query = applyNotificationFilteredVisibility(c, query)
 	if minID := c.QueryParam("min_id"); queryParamValuePresent(c, "min_id") {
 		query = query.Where("notifications.id > ?", minID).Order("notifications.id ASC")
 		if maxID := c.QueryParam("max_id"); queryParamValuePresent(c, "max_id") {
@@ -65,6 +68,9 @@ func (s *Server) notifications(c *echo.Context) error {
 	if err := s.hydrateNotificationReports(notifications); err != nil {
 		return err
 	}
+	if err := s.hydrateNotificationSpecialEvents(notifications); err != nil {
+		return err
+	}
 	if err := s.hydrateNotificationAccounts(notifications); err != nil {
 		return err
 	}
@@ -80,7 +86,7 @@ func (s *Server) notifications(c *echo.Context) error {
 }
 
 func notificationPaginationLink(c *echo.Context, first int64, last int64) string {
-	return paginationLinkWithAllowedParams(c, first, last, "min_id", true, true, []string{"limit", "account_id", "types[]", "exclude_types[]"})
+	return paginationLinkWithAllowedParams(c, first, last, "min_id", true, true, []string{"limit", "account_id", "types[]", "exclude_types[]", "include_filtered"})
 }
 
 func (s *Server) showNotification(c *echo.Context) error {
@@ -100,6 +106,9 @@ func (s *Server) showNotification(c *echo.Context) error {
 		return err
 	}
 	if err := s.hydrateNotificationReports(notifications); err != nil {
+		return err
+	}
+	if err := s.hydrateNotificationSpecialEvents(notifications); err != nil {
 		return err
 	}
 	if err := s.hydrateNotificationAccounts(notifications); err != nil {
@@ -165,13 +174,20 @@ func applyNotificationFilters(c *echo.Context, query *gorm.DB) *gorm.DB {
 	return query
 }
 
+func applyNotificationFilteredVisibility(c *echo.Context, query *gorm.DB) *gorm.DB {
+	if truthy(c.QueryParam("include_filtered")) || strings.TrimSpace(c.QueryParam("account_id")) != "" {
+		return query
+	}
+	return query.Where("notifications.filtered = ?", false)
+}
+
 func notificationAccountIDFilter(raw string) (int64, bool) {
 	accountID, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 	return accountID, err == nil && accountID > 0
 }
 
 func notificationFilterTypeSQL() string {
-	return "notifications.type"
+	return notificationTypeSQL()
 }
 
 func notificationTypeSQL() string {
@@ -241,6 +257,56 @@ func (s *Server) hydrateNotificationReports(notifications []models.Notification)
 	for i := range reports {
 		for _, notificationIndex := range indexesByID[reports[i].ID] {
 			notifications[notificationIndex].Report = &reports[i]
+		}
+	}
+	return nil
+}
+
+func (s *Server) hydrateNotificationSpecialEvents(notifications []models.Notification) error {
+	warningIndexes := map[int64][]int{}
+	severanceIndexes := map[int64][]int{}
+	for i := range notifications {
+		switch notifications[i].ResolvedType() {
+		case "moderation_warning":
+			warningIndexes[notifications[i].ActivityID] = append(warningIndexes[notifications[i].ActivityID], i)
+		case "severed_relationships":
+			severanceIndexes[notifications[i].ActivityID] = append(severanceIndexes[notifications[i].ActivityID], i)
+		}
+	}
+	if len(warningIndexes) > 0 {
+		ids := make([]int64, 0, len(warningIndexes))
+		for id := range warningIndexes {
+			ids = append(ids, id)
+		}
+		var warnings []models.AccountWarning
+		query := accountRelationSerializerPreloads(s.db.Model(&models.AccountWarning{}), "TargetAccount")
+		if err := query.Where("account_warnings.id IN ?", ids).Find(&warnings).Error; err != nil {
+			return err
+		}
+		for i := range warnings {
+			if err := s.hydrateAccountCustomEmojis(&warnings[i].TargetAccount); err != nil {
+				return err
+			}
+			for _, index := range warningIndexes[warnings[i].ID] {
+				notifications[index].AccountWarning = &warnings[i]
+			}
+		}
+	}
+	if len(severanceIndexes) > 0 {
+		ids := make([]int64, 0, len(severanceIndexes))
+		for id := range severanceIndexes {
+			ids = append(ids, id)
+		}
+		var events []models.AccountRelationshipSeveranceEvent
+		if err := s.db.Preload("RelationshipSeveranceEvent").Where("id IN ?", ids).Find(&events).Error; err != nil {
+			return err
+		}
+		for i := range events {
+			for _, index := range severanceIndexes[events[i].ID] {
+				if events[i].AccountID == notifications[index].AccountID {
+					notifications[index].SeveranceEvent = &events[i]
+				}
+			}
 		}
 	}
 	return nil

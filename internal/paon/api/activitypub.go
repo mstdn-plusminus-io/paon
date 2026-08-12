@@ -16,8 +16,10 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v5"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/telemetry"
 	"gorm.io/gorm"
 )
 
@@ -52,8 +54,8 @@ func (s *Server) nodeInfoVersion(c *echo.Context, version string) error {
 	return c.JSON(http.StatusOK, map[string]any{
 		"version": version,
 		"software": map[string]string{
-			"name":    "paon",
-			"version": s.cfg.Version,
+			"name":    "mastodon",
+			"version": firstNonEmptyString(strings.TrimSpace(s.cfg.MastodonVersion), config.DefaultMastodonVersion),
 		},
 		"protocols": []string{"activitypub"},
 		"services": map[string]any{
@@ -63,34 +65,34 @@ func (s *Server) nodeInfoVersion(c *echo.Context, version string) error {
 		"openRegistrations": s.registrationsOpen(),
 		"usage": map[string]any{
 			"users": map[string]any{
-				"total":           stats.UserCount,
-				"active_month":    activeMonth,
-				"active_halfyear": activeHalfYear,
+				"total":          stats.UserCount,
+				"activeMonth":    activeMonth,
+				"activeHalfyear": activeHalfYear,
 			},
 			"localPosts": stats.StatusCount,
 		},
-		"metadata": map[string]any{},
+		"metadata": map[string]any{
+			"nodeName":        s.settingStringValue("site_title", s.cfg.Title),
+			"nodeDescription": s.settingStringValue("site_short_description", ""),
+		},
 	})
 }
 
 func (s *Server) hostMeta(c *echo.Context) error {
-	type XRD struct {
-		XMLName xml.Name `xml:"XRD"`
-		Xmlns   string   `xml:"xmlns,attr"`
-		Link    struct {
-			Rel      string `xml:"rel,attr"`
-			Template string `xml:"template,attr"`
-		} `xml:"Link"`
+	if hostMetaWantsJSON(c) {
+		return s.hostMetaJSON(c)
 	}
-	xrd := XRD{Xmlns: "http://docs.oasis-open.org/ns/xri/xrd-1.0"}
-	xrd.Link.Rel = "lrdd"
-	xrd.Link.Template = s.cfg.BaseURL() + "/.well-known/webfinger?resource={uri}"
-	body, err := xml.Marshal(xrd)
-	if err != nil {
+	appendVaryHeader(c, "Accept")
+	appendVaryHeader(c, "Origin")
+	var escapedTemplate bytes.Buffer
+	if err := xml.EscapeText(&escapedTemplate, []byte(s.cfg.BaseURL()+"/.well-known/webfinger?resource={uri}")); err != nil {
 		return err
 	}
+	body := xml.Header + `<XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0">` + "\n" +
+		`  <Link rel="lrdd" template="` + escapedTemplate.String() + `"/>` + "\n" +
+		"</XRD>\n"
 	c.Response().Header().Set("Cache-Control", "max-age=259200, public")
-	return c.Blob(http.StatusOK, "application/xrd+xml; charset=UTF-8", append([]byte(xml.Header), body...))
+	return c.Blob(http.StatusOK, "application/xrd+xml; charset=utf-8", []byte(body))
 }
 
 func (s *Server) webfinger(c *echo.Context) error {
@@ -538,20 +540,6 @@ func (s *Server) activityPubCollection(c *echo.Context) error {
 			context = activityPubHashtagContext()
 		}
 		return activityJSONWithCachePrivacy(c, map[string]any{"@context": context, "id": base, "type": "Collection", "totalItems": len(items), "items": items}, 180, publicCache)
-	case "devices":
-		var devices []models.Device
-		if err := s.db.Where("account_id = ?", account.ID).Find(&devices).Error; err != nil {
-			return err
-		}
-		items := make([]any, 0, len(devices))
-		for _, device := range devices {
-			items = append(items, activityPubDeviceObject(s, *account, device))
-		}
-		context := any(activityPubActivityStreamsContext())
-		if len(items) > 0 {
-			context = activityPubOLMContext()
-		}
-		return activityJSONWithCachePrivacy(c, map[string]any{"@context": context, "id": base, "type": "Collection", "totalItems": len(items), "items": items}, 180, publicCache)
 	default:
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
@@ -598,6 +586,37 @@ func (s *Server) activityPubStatus(c *echo.Context) error {
 		return err
 	}
 	return activityJSONWithCachePrivacy(c, note, 180, activityPubStatusPublicCache(s, status))
+}
+
+func (s *Server) activityPubStatusLikes(c *echo.Context) error {
+	return s.activityPubStatusEngagementCollection(c, "likes")
+}
+
+func (s *Server) activityPubStatusShares(c *echo.Context) error {
+	return s.activityPubStatusEngagementCollection(c, "shares")
+}
+
+func (s *Server) activityPubStatusEngagementCollection(c *echo.Context, kind string) error {
+	s.activityPubAccountVary(c)
+	signed, err := s.activityPubSignatureAccountForPublicFetch(c)
+	if err != nil {
+		return err
+	}
+	status, err := s.findActivityPubStatus(c, signed)
+	if err != nil {
+		return err
+	}
+	total := status.StatusStat.FavouritesCount
+	if kind == "shares" {
+		total = status.StatusStat.ReblogsCount
+	}
+	id := activityPubStatusURL(s, status.Account, status.ID) + "/" + kind
+	return activityJSONWithCachePrivacy(c, map[string]any{
+		"@context":   activityPubActivityStreamsContext(),
+		"id":         id,
+		"type":       "Collection",
+		"totalItems": total,
+	}, 0, activityPubStatusPublicCache(s, status))
 }
 
 func (s *Server) activityPubStatusActivity(c *echo.Context) error {
@@ -667,12 +686,25 @@ func activityPubStatusPublicCache(s *Server, status *models.Status) bool {
 	return activityPubPublicFetchCache(s) && status != nil && (status.Visibility == 0 || status.Visibility == 1)
 }
 
-func (s *Server) activityPubInbox(c *echo.Context) error {
+func (s *Server) activityPubInbox(c *echo.Context) (err error) {
+	ctx := c.Request().Context()
+	finishTelemetry := func(int, error) {}
+	if s != nil && s.cfg.OpenTelemetryEnabled {
+		ctx, finishTelemetry = telemetry.StartFederation(ctx, "inbox")
+	}
+	defer func() { finishTelemetry(0, err) }()
+	c.SetRequest(c.Request().WithContext(ctx))
 	c.Response().Header().Set("Vary", "Authorization")
 	setPrivateNoStoreCacheHeaders(c)
-	body, err := io.ReadAll(c.Request().Body)
+	if c.Request().ContentLength > activityPubInboxMaxJSONBytes {
+		return c.NoContent(http.StatusRequestEntityTooLarge)
+	}
+	body, err := io.ReadAll(io.LimitReader(c.Request().Body, activityPubInboxMaxJSONBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(body) > activityPubInboxMaxJSONBytes {
+		return c.NoContent(http.StatusRequestEntityTooLarge)
 	}
 	c.Request().Body = io.NopCloser(bytes.NewReader(body))
 	var target *models.Account
@@ -699,7 +731,7 @@ func (s *Server) activityPubInbox(c *echo.Context) error {
 	if target != nil {
 		deliveredTo = target.ID
 	}
-	if err := s.enqueueActivityPubInboxProcessingJob(actor.ID, deliveredTo, "Account", body); err != nil {
+	if err := s.enqueueActivityPubInboxProcessingJobWithContext(c.Request().Context(), actor.ID, deliveredTo, "Account", body); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError)).Wrap(
 			activityPubProcessingError(body, actor.ID, deliveredTo, fmt.Errorf("enqueue ingress job: %w", err)),
 		)
@@ -1098,8 +1130,9 @@ func activityJSONWithCachePrivacy(c *echo.Context, value any, maxAgeSeconds int,
 }
 
 func enforceRailsHighEntropyVaryCacheControl(c *echo.Context) {
-	for _, vary := range strings.Fields(c.Response().Header().Get("Vary")) {
-		switch strings.ToLower(strings.TrimSpace(vary)) {
+	for _, vary := range strings.Split(c.Response().Header().Get("Vary"), ",") {
+		vary = strings.TrimSpace(vary)
+		switch strings.ToLower(vary) {
 		case "cookie", "authorization", "signature":
 			if c.Request().Header.Get(vary) != "" {
 				c.Response().Header().Set("Cache-Control", "private, no-store")
@@ -1196,23 +1229,9 @@ func activityPubEmojiContext() []any {
 	}
 }
 
-func activityPubOLMContext() []any {
-	return []any{
-		activityPubActivityStreamsContext(),
-		activityPubOLMContextExtension(),
-	}
-}
-
-func activityPubEncryptedMessageContext() []any {
-	return []any{
-		activityPubActivityStreamsContext(),
-		"https://w3id.org/security/v1",
-		activityPubOLMContextExtension(),
-	}
-}
-
 func activityPubActorContext() []any {
 	extension := map[string]any{
+		"toot":                      "http://joinmastodon.org/ns#",
 		"manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
 		"movedTo":                   map[string]any{"@id": "as:movedTo", "@type": "@id"},
 		"alsoKnownAs":               map[string]any{"@id": "as:alsoKnownAs", "@type": "@id"},
@@ -1225,9 +1244,7 @@ func activityPubActorContext() []any {
 		"indexable":                 "toot:indexable",
 		"memorial":                  "toot:memorial",
 		"suspended":                 "toot:suspended",
-	}
-	for key, value := range activityPubOLMContextExtension() {
-		extension[key] = value
+		"attributionDomains":        map[string]any{"@id": "toot:attributionDomains", "@type": "@id"},
 	}
 	return []any{
 		activityPubActivityStreamsContext(),
@@ -1262,26 +1279,6 @@ func activityPubActorContextForNestedSerializers(tags []any, icon map[string]any
 		}
 	}
 	return context
-}
-
-func activityPubOLMContextExtension() map[string]any {
-	return map[string]any{
-		"toot":             "http://joinmastodon.org/ns#",
-		"Device":           "toot:Device",
-		"Ed25519Signature": "toot:Ed25519Signature",
-		"Ed25519Key":       "toot:Ed25519Key",
-		"Curve25519Key":    "toot:Curve25519Key",
-		"EncryptedMessage": "toot:EncryptedMessage",
-		"publicKeyBase64":  "toot:publicKeyBase64",
-		"deviceId":         "toot:deviceId",
-		"claim":            map[string]any{"@type": "@id", "@id": "toot:claim"},
-		"fingerprintKey":   map[string]any{"@type": "@id", "@id": "toot:fingerprintKey"},
-		"identityKey":      map[string]any{"@type": "@id", "@id": "toot:identityKey"},
-		"devices":          map[string]any{"@type": "@id", "@id": "toot:devices"},
-		"messageFranking":  "toot:messageFranking",
-		"messageType":      "toot:messageType",
-		"cipherText":       "toot:cipherText",
-	}
 }
 
 func shouldRedirectActivityPubHTML(c *echo.Context) bool {
@@ -1393,7 +1390,6 @@ func activityPubActorID(s *Server, account models.Account) string {
 
 func activityPubActorObject(s *Server, account models.Account) map[string]any {
 	actorID := activityPubActorID(s, account)
-	collectionBase := activityPubActorURL(s, account)
 	actorType := activityPubActorType(account)
 	suspended := activityPubActorSuspended(account)
 	name := account.DisplayName
@@ -1419,6 +1415,9 @@ func activityPubActorObject(s *Server, account models.Account) map[string]any {
 		profileURL = s.cfg.BaseURL() + "/about/more?instance_actor=true"
 	}
 	tags := activityPubActorTags(s, account)
+	if suspended {
+		tags = []any{}
+	}
 	object := map[string]any{
 		"@context":                  activityPubActorContextForNestedSerializers(tags, icon, image),
 		"id":                        actorID,
@@ -1429,11 +1428,10 @@ func activityPubActorObject(s *Server, account models.Account) map[string]any {
 		"url":                       profileURL,
 		"inbox":                     inboxURL,
 		"outbox":                    outboxURL,
-		"devices":                   collectionBase + "/collections/devices",
-		"featured":                  collectionBase + "/collections/featured",
-		"featuredTags":              collectionBase + "/collections/tags",
-		"followers":                 collectionBase + "/followers",
-		"following":                 collectionBase + "/following",
+		"featured":                  activityPubActorURL(s, account) + "/collections/featured",
+		"featuredTags":              activityPubActorURL(s, account) + "/collections/tags",
+		"followers":                 activityPubActorURL(s, account) + "/followers",
+		"following":                 activityPubActorURL(s, account) + "/following",
 		"manuallyApprovesFollowers": !suspended && account.Locked,
 		"discoverable":              !suspended && account.Discoverable.Valid && account.Discoverable.Bool,
 		"indexable":                 !suspended && account.Indexable,
@@ -1457,6 +1455,9 @@ func activityPubActorObject(s *Server, account models.Account) map[string]any {
 	}
 	if len(account.AlsoKnownAs) > 0 && !suspended {
 		object["alsoKnownAs"] = append([]string{}, account.AlsoKnownAs...)
+	}
+	if len(account.AttributionDomains) > 0 {
+		object["attributionDomains"] = append([]string{}, account.AttributionDomains...)
 	}
 	if !suspended {
 		if moved := s.movedToAccountFor(&account); moved != nil {
@@ -1681,23 +1682,6 @@ func activityPubCustomEmojiURL(s *Server, emoji models.CustomEmoji) string {
 	return s.cfg.SystemAssetURL(prefix + "custom_emojis/images/" + adminPaperclipIDPartition(emoji.ID) + "/original/" + url.PathEscape(emoji.ImageFileName.String))
 }
 
-func activityPubDeviceObject(s *Server, account models.Account, device models.Device) map[string]any {
-	return map[string]any{
-		"type":     "Device",
-		"deviceId": device.DeviceID,
-		"name":     device.Name,
-		"claim":    activityPubActorURL(s, account) + "/claim?id=" + url.QueryEscape(device.DeviceID),
-		"fingerprintKey": map[string]any{
-			"type":            "Ed25519Key",
-			"publicKeyBase64": device.FingerprintKey,
-		},
-		"identityKey": map[string]any{
-			"type":            "Curve25519Key",
-			"publicKeyBase64": device.IdentityKey,
-		},
-	}
-}
-
 func activityPubAccountURI(s *Server, account models.Account) string {
 	if account.Local() {
 		return activityPubActorURL(s, account)
@@ -1770,8 +1754,7 @@ func activityPubStatusPublicURL(s *Server, status models.Status) string {
 }
 
 func activityPubHTTPURL(value string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+	return activityNormalizedHTTPURIRaw(value) != ""
 }
 
 func activityPubNoteID(s *Server, status models.Status) any {
@@ -1789,7 +1772,7 @@ func activityPubNoteURL(s *Server, status models.Status) any {
 }
 
 func activityPubRawHTTPURL(value string) bool {
-	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+	return activityNormalizedHTTPURIRaw(value) != ""
 }
 
 func activityPubOStatusTag(s *Server, createdAt time.Time, id int64, objectType string) string {
@@ -1850,11 +1833,22 @@ func activityPubNoteWithError(s *Server, status models.Status) (map[string]any, 
 		"attachment":       activityPubMediaAttachments(s, status),
 	}
 	if status.Account.Local() {
+		localID := activityPubStatusURL(s, status.Account, status.ID)
 		replies, err := activityPubRepliesPreview(s, status)
 		if err != nil {
 			return nil, err
 		}
 		note["replies"] = replies
+		note["likes"] = map[string]any{
+			"id":         localID + "/likes",
+			"type":       "Collection",
+			"totalItems": status.StatusStat.FavouritesCount,
+		}
+		note["shares"] = map[string]any{
+			"id":         localID + "/shares",
+			"type":       "Collection",
+			"totalItems": status.StatusStat.ReblogsCount,
+		}
 	}
 	if status.Language.Valid && strings.TrimSpace(status.Language.String) != "" {
 		note["contentMap"] = map[string]string{status.Language.String: content}

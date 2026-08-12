@@ -206,15 +206,16 @@ func TestSuggestionsUseRequestLocaleForGlobalRecommendations(t *testing.T) {
 	}
 }
 
-func TestSuggestionsV2UsesRailsSourcesWithoutDatabaseFallback(t *testing.T) {
+func TestSuggestionsV2UsesFourMastodon43SourcesWithoutDatabaseFallback(t *testing.T) {
 	src, err := os.ReadFile("suggestions.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`s.suggestedAccountsFromStaffSetting(accountID, skip, limitValue)`,
-		`s.suggestedAccountsFromPastInteractions(accountID, skip, limitValue-len(selected))`,
-		`s.suggestedAccountsFromGlobalRecommendations(accountID, skip, locale, limitValue-len(selected))`,
+		`s.suggestedAccountsFromStaffSetting(accountID, map[int64]struct{}{}, suggestionSourceBatchSize)`,
+		`s.suggestedAccountsFromFriendsOfFriends(accountID, suggestionSourceBatchSize)`,
+		`s.suggestedAccountsFromSimilarProfiles(accountID, suggestionSourceBatchSize)`,
+		`s.suggestedAccountsFromGlobalRecommendations(accountID, map[int64]struct{}{}, locale, suggestionSourceBatchSize)`,
 	} {
 		if !functionBodyContains(t, src, "suggestedAccounts", want) {
 			t.Fatalf("suggestedAccounts missing %q", want)
@@ -253,7 +254,8 @@ func TestSuggestionsUseRailsDefaultAccountsLimit(t *testing.T) {
 		functionName string
 		want         string
 	}{
-		{"suggestionsV2", `s.suggestedAccounts(account.ID, requestSuggestionLocale(c, s.cfg.DefaultLocale), limit(c, 40, 80))`},
+		{"suggestionsV2", `limitValue := limit(c, 40, 80)`},
+		{"suggestionsV2", `s.suggestedAccounts(account.ID, requestSuggestionLocale(c, s.cfg.DefaultLocale), limitValue+offsetValue)`},
 		{"suggestionsV1", `s.suggestedAccountsFromPastInteractions(account.ID, map[int64]struct{}{}, limit(c, 40, 80))`},
 	} {
 		if !functionBodyContains(t, src, check.functionName, check.want) {
@@ -303,7 +305,16 @@ func TestSuggestionQueriesMatchRailsSourceScopes(t *testing.T) {
 	if functionBodyContains(t, src, "suggestionFollowableAccountQuery", `suggestion_account_mutes.expires_at`) {
 		t.Fatal("suggestionAccountBaseQuery must not filter mutes by expires_at")
 	}
-	if functionBodyContains(t, src, "suggestionSearchableAccountQuery", `accounts.silenced_at IS NULL`) || functionBodyContains(t, src, "suggestionFollowableAccountQuery", `accounts.silenced_at IS NULL`) {
-		t.Fatal("suggestionAccountBaseQuery must not add without_silenced; Rails suggestion sources use Account.searchable")
+	if !functionBodyContains(t, src, "suggestionSearchableAccountQuery", `accounts.silenced_at IS NULL`) {
+		t.Fatal("Mastodon 4.3 recommendation sources must exclude silenced accounts")
+	}
+	for _, want := range []string{
+		`accounts.memorial = FALSE`,
+		`COALESCE(accounts.discoverable, FALSE) = TRUE`,
+		`COALESCE(accounts.hide_collections, FALSE) = FALSE`,
+	} {
+		if !functionBodyContains(t, src, "suggestionSearchableAccountQuery", want) {
+			t.Fatalf("suggestionSearchableAccountQuery missing 4.3 exclusion %q", want)
+		}
 	}
 }

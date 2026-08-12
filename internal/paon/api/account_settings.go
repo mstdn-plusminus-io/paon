@@ -54,6 +54,7 @@ func (s *Server) authEditPage(c *echo.Context) error {
 		Account:               account,
 		Strikes:               strikes,
 		RenderArgs:            renderArgs,
+		SelfDestructDomain:    selfDestructDomain(s),
 	}))
 }
 
@@ -160,7 +161,7 @@ func (s *Server) updateAuthSetup(c *echo.Context) error {
 		return apiError(c, http.StatusBadRequest, "Malformed request")
 	}
 	email := strings.ToLower(strings.TrimSpace(c.FormValue("user[email]")))
-	if email == "" || !strings.Contains(email, "@") {
+	if !railsEmailAddressValid(email) {
 		return s.renderAuthSetupShow(c, user, email, settingsT(locale, "users.invalid_email", "Email is invalid"))
 	}
 	if err := s.ensureEmailDomainAllowed(c.Request().Context(), email, c.RealIP(), s.shouldRunEmailDomainProviderBlockForUser(*user), false); err != nil {
@@ -235,6 +236,7 @@ type authEditHTMLOptions struct {
 	Account               *models.Account
 	Strikes               []models.AccountWarning
 	RenderArgs            []string
+	SelfDestructDomain    string
 }
 
 func authEditHTMLWithOptions(email string, notice string, errorText string, options authEditHTMLOptions) string {
@@ -245,7 +247,11 @@ func authEditHTMLWithOptions(email string, notice string, errorText string, opti
 	if suspended {
 		disabledAttr = " disabled"
 	}
-	body := authEditStatusHTML(options.User, options.Account, options.Strikes, loc) + `<h3>` + html.EscapeString(settingsT(loc, "auth.security", "Security")) + `</h3>
+	body := authEditStatusHTML(options.User, options.Account, options.Strikes, loc)
+	if options.SelfDestructDomain != "" {
+		body = `<div class="flash-message warning">` + html.EscapeString(settingsTVars(loc, "auth.status.self_destruct", "As %{domain} is closing down, you will only get limited access to your account.", map[string]string{"domain": options.SelfDestructDomain})) + `</div>` + body
+	}
+	body += `<h3>` + html.EscapeString(settingsT(loc, "auth.security", "Security")) + `</h3>
     <form class="simple_form auth_edit" id="edit_user" method="post" action="/auth">`
 	if (!options.SeamlessExternalLogin || strings.TrimSpace(options.EncryptedPassword) != "") && !options.OmniAuthOnly {
 		body += `

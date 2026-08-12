@@ -122,30 +122,32 @@ func TestRequiredPackAssetsIncludeRailsAvailableLocaleChunks(t *testing.T) {
 
 func TestRailsPackEntrypointsAreExplicitlyCovered(t *testing.T) {
 	expected := map[string]bool{
-		"admin.jsx":                    true,
+		"admin.tsx":                    true,
 		"application.js":               true,
+		"embed.tsx":                    true,
 		"error.js":                     true,
-		"mailer.js":                    true,
+		"mailer.ts":                    true,
 		"public-path.js":               true,
-		"public.jsx":                   true,
+		"public.tsx":                   true,
 		"remote_interaction_helper.ts": true,
 		"share.jsx":                    true,
-		"sign_up.js":                   true,
+		"sign_up.ts":                   true,
 		"two_factor_authentication.js": true,
 	}
 	requiredManifestEntries := map[string]string{
-		"admin.jsx":                    "admin.js",
+		"admin.tsx":                    "admin.js",
 		"application.js":               "application.js",
+		"embed.tsx":                    "embed.js",
 		"error.js":                     "error.js",
-		"mailer.js":                    "mailer.js",
-		"public.jsx":                   "public.js",
+		"mailer.ts":                    "mailer.js",
+		"public.tsx":                   "public.js",
 		"remote_interaction_helper.ts": "remote_interaction_helper.js",
 		"share.jsx":                    "share.js",
-		"sign_up.js":                   "sign_up.js",
+		"sign_up.ts":                   "sign_up.js",
 		"two_factor_authentication.js": "two_factor_authentication.js",
 	}
 
-	entries, err := os.ReadDir("../../../app/javascript/packs")
+	entries, err := os.ReadDir("../../../app/javascript/entrypoints")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,12 +199,14 @@ func TestFallbackPackAssetPathMatchesShakapackerOutputLayout(t *testing.T) {
 	for name, want := range map[string]string{
 		"application.js":                       "/packs/js/application.js",
 		"admin.js":                             "/packs/js/admin.js",
+		"embed.js":                             "/packs/js/embed.js",
 		"public.js":                            "/packs/js/public.js",
 		"error.js":                             "/packs/js/error.js",
 		"mailer.js":                            "/packs/js/mailer.js",
 		"sign_up.js":                           "/packs/js/sign_up.js",
 		"two_factor_authentication.js":         "/packs/js/two_factor_authentication.js",
 		"features/home_timeline.js":            "/packs/js/features/home_timeline.js",
+		"features/link_timeline.js":            "/packs/js/features/link_timeline.js",
 		"modals/report_modal.js":               "/packs/js/modals/report_modal.js",
 		"locale/ja-json.js":                    "/packs/js/locale/ja-json.js",
 		"common.css":                           "/packs/css/common.css",
@@ -217,6 +221,24 @@ func TestFallbackPackAssetPathMatchesShakapackerOutputLayout(t *testing.T) {
 	}
 	if got := FallbackPackAssetPath("manifest.json"); got != "" {
 		t.Fatalf("FallbackPackAssetPath(non-pack) = %q", got)
+	}
+}
+
+func TestResolvePackAssetPathUsesProductionManifestAndSafeFallback(t *testing.T) {
+	publicDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(publicDir, "packs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"media/images/mailer-new/common/header-bg-start.png":"/packs/media/images/header-bg-start-deadbeef.png"}`
+	if err := os.WriteFile(filepath.Join(publicDir, "packs", "manifest.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	name := "media/images/mailer-new/common/header-bg-start.png"
+	if got := ResolvePackAssetPath(config.Config{PublicDir: publicDir}, name); got != "/packs/media/images/header-bg-start-deadbeef.png" {
+		t.Fatalf("production asset path = %q", got)
+	}
+	if got := ResolvePackAssetPath(config.Config{}, name); got != "/packs/"+name {
+		t.Fatalf("fallback asset path = %q", got)
 	}
 }
 
@@ -325,7 +347,15 @@ func TestValidatePublicAssetsRejectsMissingAuthSetupAndTwoFactorPacks(t *testing
 }
 
 func TestValidatePublicAssetsRejectsMissingErrorAndMailerLayoutAssets(t *testing.T) {
-	for _, missing := range []string{"error.js", "mailer.css", "media/images/mailer/logo.png"} {
+	for _, missing := range []string{
+		"error.js",
+		"mailer.css",
+		"media/images/mailer/logo.png",
+		"media/images/mailer-new/common/header-bg-start.png",
+		"media/images/mailer-new/common/header-bg-end.png",
+		"media/images/mailer-new/common/logo-header.png",
+		"media/images/mailer-new/common/logo-footer.png",
+	} {
 		publicDir := writePublicAssetManifest(t, map[string]string{
 			missing: "",
 		}, true)
@@ -572,108 +602,117 @@ func writePublicAssetManifest(t *testing.T, entries map[string]string, createFil
 
 func defaultRequiredPackEntries(locale string) map[string]string {
 	entries := map[string]string{
-		"application.js":                             "/packs/js/application-hash.js",
-		"admin.js":                                   "/packs/js/admin-hash.js",
-		"public.js":                                  "/packs/js/public-hash.js",
-		"error.js":                                   "/packs/js/error-hash.js",
-		"mailer.js":                                  "/packs/js/mailer-hash.js",
-		"share.js":                                   "/packs/js/share-hash.js",
-		"sign_up.js":                                 "/packs/js/sign_up-hash.js",
-		"two_factor_authentication.js":               "/packs/js/two_factor_authentication-hash.js",
-		"common.js":                                  "/packs/js/common-hash.js",
-		"common.css":                                 "/packs/css/common-hash.css",
-		"mailer.css":                                 "/packs/css/mailer-hash.css",
-		"base_polyfills.js":                          "/packs/js/base_polyfills-hash.chunk.js",
-		"extra_polyfills.js":                         "/packs/js/extra_polyfills-hash.chunk.js",
-		"i18n-pluralrules-polyfill.js":               "/packs/js/i18n-pluralrules-polyfill-hash.chunk.js",
-		"arrow-key-navigation.js":                    "/packs/js/arrow-key-navigation-hash.chunk.js",
-		"default.css":                                "/packs/css/default-hash.css",
-		"contrast.css":                               "/packs/css/contrast-hash.css",
-		"mastodon-light.css":                         "/packs/css/mastodon-light-hash.css",
-		"single-column-chat-dark.css":                "/packs/css/single-column-chat-dark-hash.css",
-		"media/images/logo-symbol-icon.svg":          "/packs/media/images/logo-symbol-icon-hash.svg",
-		"media/images/mailer/icon_cached.png":        "/packs/media/images/mailer/icon_cached-hash.png",
-		"media/images/mailer/icon_done.png":          "/packs/media/images/mailer/icon_done-hash.png",
-		"media/images/mailer/icon_email.png":         "/packs/media/images/mailer/icon_email-hash.png",
-		"media/images/mailer/icon_file_download.png": "/packs/media/images/mailer/icon_file_download-hash.png",
-		"media/images/mailer/icon_flag.png":          "/packs/media/images/mailer/icon_flag-hash.png",
-		"media/images/mailer/icon_grade.png":         "/packs/media/images/mailer/icon_grade-hash.png",
-		"media/images/mailer/icon_lock_open.png":     "/packs/media/images/mailer/icon_lock_open-hash.png",
-		"media/images/mailer/icon_person_add.png":    "/packs/media/images/mailer/icon_person_add-hash.png",
-		"media/images/mailer/icon_reply.png":         "/packs/media/images/mailer/icon_reply-hash.png",
-		"media/images/mailer/logo.png":               "/packs/media/images/mailer/logo-hash.png",
-		"media/images/mailer/wordmark.png":           "/packs/media/images/mailer/wordmark-hash.png",
-		"media/icons/favicon-16x16.png":              "/packs/media/icons/favicon-16x16-hash.png",
-		"media/icons/favicon-32x32.png":              "/packs/media/icons/favicon-32x32-hash.png",
-		"media/icons/favicon-48x48.png":              "/packs/media/icons/favicon-48x48-hash.png",
-		"media/icons/android-chrome-36x36.png":       "/packs/media/icons/android-chrome-36x36-hash.png",
-		"media/icons/android-chrome-48x48.png":       "/packs/media/icons/android-chrome-48x48-hash.png",
-		"media/icons/android-chrome-72x72.png":       "/packs/media/icons/android-chrome-72x72-hash.png",
-		"media/icons/android-chrome-96x96.png":       "/packs/media/icons/android-chrome-96x96-hash.png",
-		"media/icons/android-chrome-144x144.png":     "/packs/media/icons/android-chrome-144x144-hash.png",
-		"media/icons/android-chrome-192x192.png":     "/packs/media/icons/android-chrome-192x192-hash.png",
-		"media/icons/android-chrome-256x256.png":     "/packs/media/icons/android-chrome-256x256-hash.png",
-		"media/icons/android-chrome-384x384.png":     "/packs/media/icons/android-chrome-384x384-hash.png",
-		"media/icons/android-chrome-512x512.png":     "/packs/media/icons/android-chrome-512x512-hash.png",
-		"media/icons/apple-touch-icon-57x57.png":     "/packs/media/icons/apple-touch-icon-57x57-hash.png",
-		"media/icons/apple-touch-icon-60x60.png":     "/packs/media/icons/apple-touch-icon-60x60-hash.png",
-		"media/icons/apple-touch-icon-72x72.png":     "/packs/media/icons/apple-touch-icon-72x72-hash.png",
-		"media/icons/apple-touch-icon-76x76.png":     "/packs/media/icons/apple-touch-icon-76x76-hash.png",
-		"media/icons/apple-touch-icon-114x114.png":   "/packs/media/icons/apple-touch-icon-114x114-hash.png",
-		"media/icons/apple-touch-icon-120x120.png":   "/packs/media/icons/apple-touch-icon-120x120-hash.png",
-		"media/icons/apple-touch-icon-144x144.png":   "/packs/media/icons/apple-touch-icon-144x144-hash.png",
-		"media/icons/apple-touch-icon-152x152.png":   "/packs/media/icons/apple-touch-icon-152x152-hash.png",
-		"media/icons/apple-touch-icon-167x167.png":   "/packs/media/icons/apple-touch-icon-167x167-hash.png",
-		"media/icons/apple-touch-icon-180x180.png":   "/packs/media/icons/apple-touch-icon-180x180-hash.png",
-		"media/icons/apple-touch-icon-1024x1024.png": "/packs/media/icons/apple-touch-icon-1024x1024-hash.png",
-		"emoji_picker.js":                            "/packs/js/emoji_picker-hash.chunk.js",
-		"containers/media_container.js":              "/packs/js/containers/media_container-hash.chunk.js",
-		"features/compose.js":                        "/packs/js/features/compose-hash.chunk.js",
-		"features/home_timeline.js":                  "/packs/js/features/home_timeline-hash.chunk.js",
-		"features/notifications.js":                  "/packs/js/features/notifications-hash.chunk.js",
-		"features/public_timeline.js":                "/packs/js/features/public_timeline-hash.chunk.js",
-		"features/community_timeline.js":             "/packs/js/features/community_timeline-hash.chunk.js",
-		"features/firehose.js":                       "/packs/js/features/firehose-hash.chunk.js",
-		"features/hashtag_timeline.js":               "/packs/js/features/hashtag_timeline-hash.chunk.js",
-		"features/direct_timeline.js":                "/packs/js/features/direct_timeline-hash.chunk.js",
-		"features/list_timeline.js":                  "/packs/js/features/list_timeline-hash.chunk.js",
-		"features/lists.js":                          "/packs/js/features/lists-hash.chunk.js",
-		"features/status.js":                         "/packs/js/features/status-hash.chunk.js",
-		"features/getting_started.js":                "/packs/js/features/getting_started-hash.chunk.js",
-		"features/keyboard_shortcuts.js":             "/packs/js/features/keyboard_shortcuts-hash.chunk.js",
-		"features/pinned_statuses.js":                "/packs/js/features/pinned_statuses-hash.chunk.js",
-		"features/account_timeline.js":               "/packs/js/features/account_timeline-hash.chunk.js",
-		"features/account_gallery.js":                "/packs/js/features/account_gallery-hash.chunk.js",
-		"features/followers.js":                      "/packs/js/features/followers-hash.chunk.js",
-		"features/following.js":                      "/packs/js/features/following-hash.chunk.js",
-		"features/reblogs.js":                        "/packs/js/features/reblogs-hash.chunk.js",
-		"features/favourites.js":                     "/packs/js/features/favourites-hash.chunk.js",
-		"features/follow_requests.js":                "/packs/js/features/follow_requests-hash.chunk.js",
-		"features/favourited_statuses.js":            "/packs/js/features/favourited_statuses-hash.chunk.js",
-		"features/followed_tags.js":                  "/packs/js/features/followed_tags-hash.chunk.js",
-		"features/bookmarked_statuses.js":            "/packs/js/features/bookmarked_statuses-hash.chunk.js",
-		"features/blocks.js":                         "/packs/js/features/blocks-hash.chunk.js",
-		"features/domain_blocks.js":                  "/packs/js/features/domain_blocks-hash.chunk.js",
-		"features/mutes.js":                          "/packs/js/features/mutes-hash.chunk.js",
-		"modals/mute_modal.js":                       "/packs/js/modals/mute_modal-hash.chunk.js",
-		"modals/block_modal.js":                      "/packs/js/modals/block_modal-hash.chunk.js",
-		"modals/report_modal.js":                     "/packs/js/modals/report_modal-hash.chunk.js",
-		"modals/embed_modal.js":                      "/packs/js/modals/embed_modal-hash.chunk.js",
-		"features/list_editor.js":                    "/packs/js/features/list_editor-hash.chunk.js",
-		"features/list_adder.js":                     "/packs/js/features/list_adder-hash.chunk.js",
-		"tesseract.js":                               "/packs/js/tesseract-hash.chunk.js",
-		"features/directory.js":                      "/packs/js/features/directory-hash.chunk.js",
-		"features/onboarding.js":                     "/packs/js/features/onboarding-hash.chunk.js",
-		"modals/compare_history_modal.js":            "/packs/js/modals/compare_history_modal-hash.chunk.js",
-		"features/explore.js":                        "/packs/js/features/explore-hash.chunk.js",
-		"modals/filter_modal.js":                     "/packs/js/modals/filter_modal-hash.chunk.js",
-		"modals/interaction_modal.js":                "/packs/js/modals/interaction_modal-hash.chunk.js",
-		"modals/subscribed_languages_modal.js":       "/packs/js/modals/subscribed_languages_modal-hash.chunk.js",
-		"modals/closed_registrations_modal.js":       "/packs/js/modals/closed_registrations_modal-hash.chunk.js",
-		"features/instance_stats.js":                 "/packs/js/features/instance_stats-hash.chunk.js",
-		"features/about.js":                          "/packs/js/features/about-hash.chunk.js",
-		"features/privacy_policy.js":                 "/packs/js/features/privacy_policy-hash.chunk.js",
-		"remote_interaction_helper.js":               "/packs/js/remote_interaction_helper-hash.js",
+		"application.js":                      "/packs/js/application-hash.js",
+		"admin.js":                            "/packs/js/admin-hash.js",
+		"embed.js":                            "/packs/js/embed-hash.js",
+		"public.js":                           "/packs/js/public-hash.js",
+		"error.js":                            "/packs/js/error-hash.js",
+		"mailer.js":                           "/packs/js/mailer-hash.js",
+		"share.js":                            "/packs/js/share-hash.js",
+		"sign_up.js":                          "/packs/js/sign_up-hash.js",
+		"two_factor_authentication.js":        "/packs/js/two_factor_authentication-hash.js",
+		"common.js":                           "/packs/js/common-hash.js",
+		"common.css":                          "/packs/css/common-hash.css",
+		"mailer.css":                          "/packs/css/mailer-hash.css",
+		"base_polyfills.js":                   "/packs/js/base_polyfills-hash.chunk.js",
+		"extra_polyfills.js":                  "/packs/js/extra_polyfills-hash.chunk.js",
+		"i18n-pluralrules-polyfill.js":        "/packs/js/i18n-pluralrules-polyfill-hash.chunk.js",
+		"arrow-key-navigation.js":             "/packs/js/arrow-key-navigation-hash.chunk.js",
+		"default.css":                         "/packs/css/default-hash.css",
+		"contrast.css":                        "/packs/css/contrast-hash.css",
+		"mastodon-light.css":                  "/packs/css/mastodon-light-hash.css",
+		"single-column-chat-dark.css":         "/packs/css/single-column-chat-dark-hash.css",
+		"media/images/logo-symbol-icon.svg":   "/packs/media/images/logo-symbol-icon-hash.svg",
+		"media/images/mailer/icon_cached.png": "/packs/media/images/mailer/icon_cached-hash.png",
+		"media/images/mailer/icon_done.png":   "/packs/media/images/mailer/icon_done-hash.png",
+		"media/images/mailer/icon_email.png":  "/packs/media/images/mailer/icon_email-hash.png",
+		"media/images/mailer/icon_file_download.png":         "/packs/media/images/mailer/icon_file_download-hash.png",
+		"media/images/mailer/icon_flag.png":                  "/packs/media/images/mailer/icon_flag-hash.png",
+		"media/images/mailer/icon_grade.png":                 "/packs/media/images/mailer/icon_grade-hash.png",
+		"media/images/mailer/icon_lock_open.png":             "/packs/media/images/mailer/icon_lock_open-hash.png",
+		"media/images/mailer/icon_person_add.png":            "/packs/media/images/mailer/icon_person_add-hash.png",
+		"media/images/mailer/icon_reply.png":                 "/packs/media/images/mailer/icon_reply-hash.png",
+		"media/images/mailer/logo.png":                       "/packs/media/images/mailer/logo-hash.png",
+		"media/images/mailer/wordmark.png":                   "/packs/media/images/mailer/wordmark-hash.png",
+		"media/images/mailer-new/common/header-bg-start.png": "/packs/media/images/mailer-new/common/header-bg-start-hash.png",
+		"media/images/mailer-new/common/header-bg-end.png":   "/packs/media/images/mailer-new/common/header-bg-end-hash.png",
+		"media/images/mailer-new/common/logo-header.png":     "/packs/media/images/mailer-new/common/logo-header-hash.png",
+		"media/images/mailer-new/common/logo-footer.png":     "/packs/media/images/mailer-new/common/logo-footer-hash.png",
+		"media/icons/favicon-16x16.png":                      "/packs/media/icons/favicon-16x16-hash.png",
+		"media/icons/favicon-32x32.png":                      "/packs/media/icons/favicon-32x32-hash.png",
+		"media/icons/favicon-48x48.png":                      "/packs/media/icons/favicon-48x48-hash.png",
+		"media/icons/android-chrome-36x36.png":               "/packs/media/icons/android-chrome-36x36-hash.png",
+		"media/icons/android-chrome-48x48.png":               "/packs/media/icons/android-chrome-48x48-hash.png",
+		"media/icons/android-chrome-72x72.png":               "/packs/media/icons/android-chrome-72x72-hash.png",
+		"media/icons/android-chrome-96x96.png":               "/packs/media/icons/android-chrome-96x96-hash.png",
+		"media/icons/android-chrome-144x144.png":             "/packs/media/icons/android-chrome-144x144-hash.png",
+		"media/icons/android-chrome-192x192.png":             "/packs/media/icons/android-chrome-192x192-hash.png",
+		"media/icons/android-chrome-256x256.png":             "/packs/media/icons/android-chrome-256x256-hash.png",
+		"media/icons/android-chrome-384x384.png":             "/packs/media/icons/android-chrome-384x384-hash.png",
+		"media/icons/android-chrome-512x512.png":             "/packs/media/icons/android-chrome-512x512-hash.png",
+		"media/icons/apple-touch-icon-57x57.png":             "/packs/media/icons/apple-touch-icon-57x57-hash.png",
+		"media/icons/apple-touch-icon-60x60.png":             "/packs/media/icons/apple-touch-icon-60x60-hash.png",
+		"media/icons/apple-touch-icon-72x72.png":             "/packs/media/icons/apple-touch-icon-72x72-hash.png",
+		"media/icons/apple-touch-icon-76x76.png":             "/packs/media/icons/apple-touch-icon-76x76-hash.png",
+		"media/icons/apple-touch-icon-114x114.png":           "/packs/media/icons/apple-touch-icon-114x114-hash.png",
+		"media/icons/apple-touch-icon-120x120.png":           "/packs/media/icons/apple-touch-icon-120x120-hash.png",
+		"media/icons/apple-touch-icon-144x144.png":           "/packs/media/icons/apple-touch-icon-144x144-hash.png",
+		"media/icons/apple-touch-icon-152x152.png":           "/packs/media/icons/apple-touch-icon-152x152-hash.png",
+		"media/icons/apple-touch-icon-167x167.png":           "/packs/media/icons/apple-touch-icon-167x167-hash.png",
+		"media/icons/apple-touch-icon-180x180.png":           "/packs/media/icons/apple-touch-icon-180x180-hash.png",
+		"media/icons/apple-touch-icon-1024x1024.png":         "/packs/media/icons/apple-touch-icon-1024x1024-hash.png",
+		"emoji_picker.js":                                    "/packs/js/emoji_picker-hash.chunk.js",
+		"containers/media_container.js":                      "/packs/js/containers/media_container-hash.chunk.js",
+		"features/compose.js":                                "/packs/js/features/compose-hash.chunk.js",
+		"features/home_timeline.js":                          "/packs/js/features/home_timeline-hash.chunk.js",
+		"features/notifications.js":                          "/packs/js/features/notifications-hash.chunk.js",
+		"features/notifications/requests.js":                 "/packs/js/features/notifications/requests-hash.chunk.js",
+		"features/notifications/request.js":                  "/packs/js/features/notifications/request-hash.chunk.js",
+		"features/public_timeline.js":                        "/packs/js/features/public_timeline-hash.chunk.js",
+		"features/community_timeline.js":                     "/packs/js/features/community_timeline-hash.chunk.js",
+		"features/firehose.js":                               "/packs/js/features/firehose-hash.chunk.js",
+		"features/hashtag_timeline.js":                       "/packs/js/features/hashtag_timeline-hash.chunk.js",
+		"features/direct_timeline.js":                        "/packs/js/features/direct_timeline-hash.chunk.js",
+		"features/list_timeline.js":                          "/packs/js/features/list_timeline-hash.chunk.js",
+		"features/lists.js":                                  "/packs/js/features/lists-hash.chunk.js",
+		"features/status.js":                                 "/packs/js/features/status-hash.chunk.js",
+		"features/getting_started.js":                        "/packs/js/features/getting_started-hash.chunk.js",
+		"features/keyboard_shortcuts.js":                     "/packs/js/features/keyboard_shortcuts-hash.chunk.js",
+		"features/pinned_statuses.js":                        "/packs/js/features/pinned_statuses-hash.chunk.js",
+		"features/account_timeline.js":                       "/packs/js/features/account_timeline-hash.chunk.js",
+		"features/account_gallery.js":                        "/packs/js/features/account_gallery-hash.chunk.js",
+		"features/followers.js":                              "/packs/js/features/followers-hash.chunk.js",
+		"features/following.js":                              "/packs/js/features/following-hash.chunk.js",
+		"features/reblogs.js":                                "/packs/js/features/reblogs-hash.chunk.js",
+		"features/favourites.js":                             "/packs/js/features/favourites-hash.chunk.js",
+		"features/follow_requests.js":                        "/packs/js/features/follow_requests-hash.chunk.js",
+		"features/favourited_statuses.js":                    "/packs/js/features/favourited_statuses-hash.chunk.js",
+		"features/followed_tags.js":                          "/packs/js/features/followed_tags-hash.chunk.js",
+		"features/bookmarked_statuses.js":                    "/packs/js/features/bookmarked_statuses-hash.chunk.js",
+		"features/blocks.js":                                 "/packs/js/features/blocks-hash.chunk.js",
+		"features/domain_blocks.js":                          "/packs/js/features/domain_blocks-hash.chunk.js",
+		"features/mutes.js":                                  "/packs/js/features/mutes-hash.chunk.js",
+		"modals/mute_modal.js":                               "/packs/js/modals/mute_modal-hash.chunk.js",
+		"modals/block_modal.js":                              "/packs/js/modals/block_modal-hash.chunk.js",
+		"modals/domain_block_modal.js":                       "/packs/js/modals/domain_block_modal-hash.chunk.js",
+		"modals/report_modal.js":                             "/packs/js/modals/report_modal-hash.chunk.js",
+		"modals/embed_modal.js":                              "/packs/js/modals/embed_modal-hash.chunk.js",
+		"features/list_editor.js":                            "/packs/js/features/list_editor-hash.chunk.js",
+		"features/list_adder.js":                             "/packs/js/features/list_adder-hash.chunk.js",
+		"tesseract.js":                                       "/packs/js/tesseract-hash.chunk.js",
+		"features/directory.js":                              "/packs/js/features/directory-hash.chunk.js",
+		"features/onboarding.js":                             "/packs/js/features/onboarding-hash.chunk.js",
+		"modals/compare_history_modal.js":                    "/packs/js/modals/compare_history_modal-hash.chunk.js",
+		"features/explore.js":                                "/packs/js/features/explore-hash.chunk.js",
+		"features/link_timeline.js":                          "/packs/js/features/link_timeline-hash.chunk.js",
+		"modals/filter_modal.js":                             "/packs/js/modals/filter_modal-hash.chunk.js",
+		"modals/interaction_modal.js":                        "/packs/js/modals/interaction_modal-hash.chunk.js",
+		"modals/subscribed_languages_modal.js":               "/packs/js/modals/subscribed_languages_modal-hash.chunk.js",
+		"modals/closed_registrations_modal.js":               "/packs/js/modals/closed_registrations_modal-hash.chunk.js",
+		"features/instance_stats.js":                         "/packs/js/features/instance_stats-hash.chunk.js",
+		"features/about.js":                                  "/packs/js/features/about-hash.chunk.js",
+		"features/privacy_policy.js":                         "/packs/js/features/privacy_policy-hash.chunk.js",
+		"remote_interaction_helper.js":                       "/packs/js/remote_interaction_helper-hash.js",
 	}
 	for _, loc := range append(config.RailsI18nAvailableLocales(), locale) {
 		loc = strings.TrimSpace(loc)
@@ -787,9 +826,41 @@ func TestShareHTMLUsesRailsComposeStandaloneBodyClasses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `<body class="modal-layout compose-standalone theme-default no-reduce-motion">`
+	want := `<body class="modal-layout compose-standalone theme-system no-reduce-motion">`
 	if !strings.Contains(html, want) {
 		t.Fatalf("share html missing body classes %s: %s", want, html)
+	}
+}
+
+func TestEmbedHTMLBootsStandaloneReactStatus(t *testing.T) {
+	renderer := &Renderer{
+		cfg: config.Config{Title: "Fallback", DefaultLocale: "ja"},
+		manifest: map[string]string{
+			"common.js":          "/packs/common-fingerprint.js",
+			"common.css":         "/packs/common-fingerprint.css",
+			"mastodon-light.css": "/packs/light-fingerprint.css",
+			"embed.js":           "/packs/embed-fingerprint.js",
+			"locale/ja-json.js":  "/packs/ja-fingerprint.js",
+		},
+	}
+	html, err := renderer.EmbedHTML("123", "Paon Social")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`<html lang="ja">`,
+		`<meta name="robots" content="noindex">`,
+		`<title>Paon Social</title>`,
+		`class="embed theme-mastodon-light no-reduce-motion"`,
+		`id="initial-state"`,
+		`id="mastodon-status"`,
+		`data-props="{&#34;id&#34;:&#34;123&#34;,&#34;locale&#34;:&#34;ja&#34;}"`,
+		`src="/packs/common-fingerprint.js"`,
+		`src="/packs/embed-fingerprint.js"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("embed html missing %q: %s", want, html)
+		}
 	}
 }
 
@@ -997,12 +1068,12 @@ func TestAppHTMLIncludesPublishComposeQueryDefaults(t *testing.T) {
 func TestAppHTMLIncludesAuthenticatedMetaSettings(t *testing.T) {
 	renderer := &Renderer{cfg: config.Config{Title: "Paon"}}
 	html, err := renderer.AppHTML("/home", &models.Account{ID: 42, Username: "alice"}, "token", AppOptions{
-		User: &models.User{Settings: sql.NullString{String: `{"web.unfollow_modal":false,"web.display_media":"hide_all","web.use_blurhash":false}`, Valid: true}},
+		User: &models.User{Settings: sql.NullString{String: `{"web.disable_hover_cards":true,"web.display_media":"hide_all","web.use_blurhash":false}`, Valid: true}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"unfollow_modal":false`, `"display_media":"hide_all"`, `"use_blurhash":false`} {
+	for _, want := range []string{`"disable_hover_cards":true`, `"display_media":"hide_all"`, `"use_blurhash":false`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("initial state missing %s: %s", want, html)
 		}

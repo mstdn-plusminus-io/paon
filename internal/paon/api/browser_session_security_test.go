@@ -291,9 +291,9 @@ func TestBrowserCSRFProtocolExemptions(t *testing.T) {
 		"/api/v1/statuses",
 		"/oauth/token",
 		"/oauth/revoke",
+		"/oauth/introspect",
 		"/inbox",
 		"/users/alice/inbox",
-		"/users/alice/claim",
 		"/auth/auth/openid_connect/callback",
 	} {
 		req := httptest.NewRequest(http.MethodPost, target, nil)

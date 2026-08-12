@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -239,14 +240,10 @@ func TestRequiredMastodonTablesCoverDropInSchemaCore(t *testing.T) {
 		"global_follow_recommendations",
 		"login_activities",
 		"user_ips",
-		"devices",
-		"one_time_keys",
-		"encrypted_messages",
 		"relays",
 		"webhooks",
 		"site_uploads",
 		"software_updates",
-		"system_keys",
 		"admin_action_logs",
 		"notifications",
 		"oauth_applications",
@@ -272,6 +269,12 @@ func TestRequiredMastodonTablesCoverConcreteGoModels(t *testing.T) {
 	excluded := map[string]bool{
 		// pghero_space_stats is an optional PgHero-owned table rather than a Mastodon core table.
 		"pghero_space_stats": true,
+		// Mastodon 4.3 removed the former end-to-end message tables. Legacy
+		// compile-only models are not part of the target database contract.
+		"devices":            true,
+		"encrypted_messages": true,
+		"one_time_keys":      true,
+		"system_keys":        true,
 	}
 	for _, match := range modelTableNamePattern.FindAllStringSubmatch(string(raw), -1) {
 		table := match[1]
@@ -309,6 +312,10 @@ func TestModelBackedMastodonColumnsCoverConcreteGoModels(t *testing.T) {
 	excluded := map[string]bool{
 		// pghero_space_stats is an optional PgHero-owned table rather than a Mastodon core table.
 		"pghero_space_stats": true,
+		"devices":            true,
+		"encrypted_messages": true,
+		"one_time_keys":      true,
+		"system_keys":        true,
 	}
 	for _, match := range modelTableNamePattern.FindAllStringSubmatch(string(raw), -1) {
 		table := match[1]
@@ -403,14 +410,10 @@ func TestRequiredMastodonColumnsCoverDropInSchemaCore(t *testing.T) {
 		},
 		"login_activities":     {"id", "user_id", "authentication_method", "success", "ip", "created_at"},
 		"user_ips":             {"user_id", "ip", "used_at"},
-		"devices":              {"id", "account_id", "device_id", "fingerprint_key", "identity_key"},
-		"one_time_keys":        {"id", "device_id", "key_id", "key", "signature"},
-		"encrypted_messages":   {"id", "device_id", "from_account_id", "type", "body", "digest"},
 		"relays":               {"id", "inbox_url", "state"},
 		"webhooks":             {"id", "url", "events", "secret", "enabled"},
 		"site_uploads":         {"id", "var", "file_file_name", "file_content_type", "meta", "blurhash"},
 		"software_updates":     {"id", "version", "urgent", "type", "release_notes"},
-		"system_keys":          {"id", "key"},
 		"admin_action_logs":    {"id", "account_id", "action", "target_type", "target_id", "permalink"},
 		"webauthn_credentials": {"id", "user_id", "external_id", "public_key", "nickname", "sign_count"},
 		"web_settings":         {"id", "user_id", "data"},
@@ -488,11 +491,9 @@ func TestRequiredMastodonIndexesCoverDropInSchemaCore(t *testing.T) {
 		"custom_filter_keywords":             {"index_custom_filter_keywords_on_custom_filter_id"},
 		"custom_filter_statuses":             {"index_custom_filter_statuses_on_custom_filter_id", "index_custom_filter_statuses_on_status_id"},
 		"custom_filters":                     {"index_custom_filters_on_account_id"},
-		"devices":                            {"index_devices_on_access_token_id", "index_devices_on_account_id"},
 		"domain_allows":                      {"index_domain_allows_on_domain"},
 		"domain_blocks":                      {"index_domain_blocks_on_domain"},
 		"email_domain_blocks":                {"index_email_domain_blocks_on_domain"},
-		"encrypted_messages":                 {"index_encrypted_messages_on_device_id", "index_encrypted_messages_on_from_account_id"},
 		"favourites":                         {"index_favourites_on_account_id_and_id", "index_favourites_on_account_id_and_status_id", "index_favourites_on_status_id"},
 		"featured_tags":                      {"index_featured_tags_on_account_id_and_tag_id"},
 		"follow_recommendation_suppressions": {"index_follow_recommendation_suppressions_on_account_id"},
@@ -518,7 +519,6 @@ func TestRequiredMastodonIndexesCoverDropInSchemaCore(t *testing.T) {
 		"oauth_access_grants": {"index_oauth_access_grants_on_resource_owner_id", "index_oauth_access_grants_on_token"},
 		"oauth_access_tokens": {"index_oauth_access_tokens_on_refresh_token", "index_oauth_access_tokens_on_token", "index_oauth_access_tokens_on_resource_owner_id"},
 		"oauth_applications":  {"index_oauth_applications_on_owner_id_and_owner_type", "index_oauth_applications_on_superapp", "index_oauth_applications_on_uid"},
-		"one_time_keys":       {"index_one_time_keys_on_device_id", "index_one_time_keys_on_key_id"},
 		"poll_votes":          {"index_poll_votes_on_account_id", "index_poll_votes_on_poll_id"},
 		"polls":               {"index_polls_on_account_id", "index_polls_on_status_id"},
 		"preview_card_providers": {
@@ -704,9 +704,7 @@ func TestRequiredMastodonPrimaryKeysCoverDropInCoreTables(t *testing.T) {
 		"bulk_imports":                       {"id"},
 		"canonical_email_blocks":             {"id"},
 		"custom_emojis":                      {"id"},
-		"devices":                            {"id"},
 		"domain_blocks":                      {"id"},
-		"encrypted_messages":                 {"id"},
 		"favourites":                         {"id"},
 		"featured_tags":                      {"id"},
 		"follow_recommendation_suppressions": {"id"},
@@ -838,15 +836,6 @@ func TestRequiredMastodonColumnDefinitionsCoverDropInCoreDefaults(t *testing.T) 
 		{Table: "domain_blocks", Column: "obfuscate", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "conversation_mutes", Column: "conversation_id", NotNull: true},
 		{Table: "conversation_mutes", Column: "account_id", NotNull: true},
-		{Table: "devices", Column: "device_id", NotNull: true, DefaultFragments: []string{"''::character varying"}},
-		{Table: "devices", Column: "name", NotNull: true, DefaultFragments: []string{"''::character varying"}},
-		{Table: "devices", Column: "fingerprint_key", NotNull: true, DefaultFragments: []string{"''::text"}},
-		{Table: "devices", Column: "identity_key", NotNull: true, DefaultFragments: []string{"''::text"}},
-		{Table: "encrypted_messages", Column: "from_device_id", NotNull: true, DefaultFragments: []string{"''::character varying"}},
-		{Table: "encrypted_messages", Column: "type", NotNull: true, DefaultFragments: []string{"0"}},
-		{Table: "encrypted_messages", Column: "body", NotNull: true, DefaultFragments: []string{"''::text"}},
-		{Table: "encrypted_messages", Column: "digest", NotNull: true, DefaultFragments: []string{"''::text"}},
-		{Table: "encrypted_messages", Column: "message_franking", NotNull: true, DefaultFragments: []string{"''::text"}},
 		{Table: "email_domain_blocks", Column: "domain", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "favourites", Column: "account_id", NotNull: true},
 		{Table: "favourites", Column: "status_id", NotNull: true},
@@ -892,9 +881,6 @@ func TestRequiredMastodonColumnDefinitionsCoverDropInCoreDefaults(t *testing.T) 
 		{Table: "oauth_access_grants", Column: "expires_in", NotNull: true},
 		{Table: "oauth_applications", Column: "scopes", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "oauth_applications", Column: "confidential", NotNull: true, DefaultFragments: []string{"true"}},
-		{Table: "one_time_keys", Column: "key_id", NotNull: true, DefaultFragments: []string{"''::character varying"}},
-		{Table: "one_time_keys", Column: "key", NotNull: true, DefaultFragments: []string{"''::text"}},
-		{Table: "one_time_keys", Column: "signature", NotNull: true, DefaultFragments: []string{"''::text"}},
 		{Table: "poll_votes", Column: "choice", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "polls", Column: "options", NotNull: true, DefaultFragments: []string{"ARRAY[]::character varying[]"}},
 		{Table: "polls", Column: "cached_tallies", NotNull: true, DefaultFragments: []string{"'{}'::bigint[]"}},
@@ -1024,9 +1010,7 @@ func TestRequiredMastodonForeignKeysCoverDropInCascadeCore(t *testing.T) {
 		{Table: "canonical_email_blocks", Column: "reference_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "custom_filter_statuses", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
 		{Table: "custom_filters", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "devices", Column: "access_token_id", ForeignTable: "oauth_access_tokens", OnDelete: "c"},
 		{Table: "email_domain_blocks", Column: "parent_id", ForeignTable: "email_domain_blocks", OnDelete: "c"},
-		{Table: "encrypted_messages", Column: "device_id", ForeignTable: "devices", OnDelete: "c"},
 		{Table: "favourites", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
 		{Table: "follow_recommendation_suppressions", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "follow_requests", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
@@ -1042,7 +1026,6 @@ func TestRequiredMastodonForeignKeysCoverDropInCascadeCore(t *testing.T) {
 		{Table: "notifications", Column: "from_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "oauth_access_tokens", Column: "resource_owner_id", ForeignTable: "users", OnDelete: "c"},
 		{Table: "oauth_applications", Column: "owner_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "one_time_keys", Column: "device_id", ForeignTable: "devices", OnDelete: "c"},
 		{Table: "poll_votes", Column: "poll_id", ForeignTable: "polls", OnDelete: "c"},
 		{Table: "polls", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
 		{Table: "preview_card_trends", Column: "preview_card_id", ForeignTable: "preview_cards", OnDelete: "c"},
@@ -1170,6 +1153,23 @@ func TestSchemaAvailableChecksColumnsAfterTables(t *testing.T) {
 	}
 	if strings.Index(body, `RequiredMastodonIndexes()`) > strings.Index(body, `mastodonSchemaMigrationApplied(database, requiredMastodonSchemaVersion)`) {
 		t.Fatal("SchemaAvailable must verify indexes before accepting the Rails migration version")
+	}
+}
+
+func TestForbiddenMastodonColumnsCoversEvery43ContractDrop(t *testing.T) {
+	forbidden := ForbiddenMastodonColumns()
+	for table, columns := range map[string][]string{
+		"account_relationship_severance_events": {"relationships_count"},
+		"accounts":                              {"devices_url"},
+		"notification_requests":                 {"dismissed"},
+		"notification_policies":                 {"filter_not_followers", "filter_not_following", "filter_new_accounts", "filter_private_mentions"},
+		"users":                                 {"admin", "moderator"},
+	} {
+		for _, column := range columns {
+			if !slices.Contains(forbidden[table], column) {
+				t.Fatalf("ForbiddenMastodonColumns missing %s.%s", table, column)
+			}
+		}
 	}
 }
 

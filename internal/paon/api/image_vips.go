@@ -10,6 +10,11 @@ import (
 	vips "github.com/cshum/vipsgen/vips816"
 )
 
+// Mastodon 4.3 permits larger user-provided preview images when libvips is
+// available. This limit is deliberately separate from the original media
+// attachment size limit.
+const mediaPreviewImageSizeLimit = 8 * 1024 * 1024
+
 func tryConvertVIPSFileToJPEG(source string, target string) error {
 	img, err := vips.NewImageFromFile(source, vips.DefaultLoadOptions())
 	if err != nil {

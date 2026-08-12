@@ -939,6 +939,32 @@ func TestValidateRuntimeAcceptsDefaultDropInConfig(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeRequiresSecretSafeActiveRecordEncryptionKeysInProduction(t *testing.T) {
+	t.Setenv("RAILS_ENV", "production")
+	t.Setenv("SECRET_KEY_BASE", strings.Repeat("s", 64))
+	t.Setenv("OTP_SECRET", strings.Repeat("o", 64))
+	t.Setenv("ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY", "short-deterministic")
+	t.Setenv("ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT", "short-salt")
+	t.Setenv("ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY", "short-primary")
+	cfg := FromEnv()
+	err := cfg.ValidateRuntime()
+	if err == nil {
+		t.Fatal("production accepted short Active Record encryption credentials")
+	}
+	for _, name := range []string{
+		"ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY",
+		"ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT",
+		"ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY",
+	} {
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("validation error %q missing %s", err, name)
+		}
+		if strings.Contains(err.Error(), "short-") {
+			t.Fatalf("validation error leaked a credential: %v", err)
+		}
+	}
+}
+
 func TestValidateRuntimeRejectsInvalidBaseURL(t *testing.T) {
 	cfg := FromEnv()
 	cfg.Scheme = "ftp"
@@ -1442,6 +1468,9 @@ func TestRuntimeWarningsReportDropInCompatibilityGaps(t *testing.T) {
 	for _, want := range []string{
 		"SECRET_KEY_BASE",
 		"OTP_SECRET",
+		"ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY",
+		"ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT",
+		"ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY",
 		"VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY",
 		"DYNAMODB_ENABLED=true",
 		"S3_ENABLED=true",
@@ -1492,5 +1521,83 @@ func TestRuntimeWarningsPreserveRailsRawFFmpegEnvBoundary(t *testing.T) {
 		if !strings.Contains(warnings, want) {
 			t.Fatalf("RuntimeWarnings should preserve raw ffmpeg env value; missing %q in %q", want, warnings)
 		}
+	}
+}
+
+func TestRedisSentinelConfigInheritsDataCredentialsAndHonorsExplicitBlank(t *testing.T) {
+	t.Setenv("REDIS_USER", "data-user")
+	t.Setenv("REDIS_PASSWORD", "data-password")
+	t.Setenv("REDIS_SENTINEL_MASTER", "mymaster")
+	t.Setenv("REDIS_SENTINELS", "sentinel-one,sentinel-two:26380")
+
+	got := redisSentinelConfigFromEnv("", RedisSentinelConfig{})
+	if got.MasterName != "mymaster" || strings.Join(got.Addresses, ",") != "sentinel-one:26379,sentinel-two:26380" || got.Username != "data-user" || got.Password != "data-password" {
+		t.Fatalf("sentinel config = %#v", got)
+	}
+
+	t.Setenv("REDIS_SENTINEL_USERNAME", "")
+	t.Setenv("REDIS_SENTINEL_PASSWORD", "")
+	got = redisSentinelConfigFromEnv("", RedisSentinelConfig{})
+	if got.Username != "" || got.Password != "" {
+		t.Fatalf("explicit blank sentinel credentials = %#v", got)
+	}
+}
+
+func TestRoleRedisPartialConfigurationFallsBackAsAWhole(t *testing.T) {
+	fallback := RedisSentinelConfig{MasterName: "base", Addresses: []string{"base-sentinel:26379"}, Username: "base-user"}
+	t.Setenv("CACHE_REDIS_PASSWORD", "partial-password")
+	if got := redisSentinelConfigFromEnv("CACHE", fallback); got.MasterName != fallback.MasterName || got.Username != fallback.Username {
+		t.Fatalf("partial cache sentinel config = %#v, want fallback %#v", got, fallback)
+	}
+
+	t.Setenv("CACHE_REDIS_HOST", "cache.example")
+	if got := redisSentinelConfigFromEnv("CACHE", fallback); got.MasterName != "" || len(got.Addresses) != 0 {
+		t.Fatalf("complete direct cache Redis should not inherit sentinel config: %#v", got)
+	}
+}
+
+func TestS3BatchSettingsRejectExplicitInvalidValues(t *testing.T) {
+	t.Setenv("S3_BATCH_DELETE_LIMIT", "not-a-number")
+	t.Setenv("S3_BATCH_DELETE_RETRY", "0")
+	cfg := FromEnv()
+	err := cfg.ValidateRuntime()
+	if err == nil || !strings.Contains(err.Error(), "S3_BATCH_DELETE_LIMIT") || !strings.Contains(err.Error(), "S3_BATCH_DELETE_RETRY") {
+		t.Fatalf("ValidateRuntime error = %v", err)
+	}
+}
+
+func TestS3ObjectKeyAppliesPrefixExactlyOncePerBoundary(t *testing.T) {
+	cfg := Config{S3KeyPrefix: "tenant/production"}
+	if got := cfg.S3ObjectKey("/media/file.png"); got != "tenant/production/media/file.png" {
+		t.Fatalf("S3ObjectKey = %q", got)
+	}
+	if got := (Config{Scheme: "https", LocalDomain: "example.test", S3Enabled: true, S3KeyPrefix: "tenant"}).SystemAssetURL("media/file.png"); got != "https://example.test/system/tenant/media/file.png" {
+		t.Fatalf("SystemAssetURL = %q", got)
+	}
+}
+
+func TestRuntimeWarningsReportsDeprecatedRedisNamespace(t *testing.T) {
+	warnings := strings.Join((Config{RedisNamespace: "mastodon:"}).RuntimeWarnings(), "\n")
+	if !strings.Contains(warnings, "REDIS_NAMESPACE is deprecated") {
+		t.Fatalf("warnings = %q", warnings)
+	}
+}
+
+func TestRuntimeWarningsReportsLibvipsBuildTimeSelection(t *testing.T) {
+	t.Setenv("MASTODON_USE_LIBVIPS", "true")
+	warnings := strings.Join((Config{}).RuntimeWarnings(), "\n")
+	if !strings.Contains(warnings, "MASTODON_USE_LIBVIPS is not a runtime selector") || !strings.Contains(warnings, "PAON_IMAGE_PROCESSOR") {
+		t.Fatalf("warnings = %q", warnings)
+	}
+}
+
+func TestFromEnvReadsSelfDestructWithoutTreatingWhitespaceAsEnabled(t *testing.T) {
+	t.Setenv("SELF_DESTRUCT", " signed-token ")
+	if got := FromEnv().SelfDestruct; got != " signed-token " {
+		t.Fatalf("SelfDestruct = %q", got)
+	}
+	t.Setenv("SELF_DESTRUCT", "   ")
+	if got := FromEnv().SelfDestruct; got != "" {
+		t.Fatalf("blank SelfDestruct = %q", got)
 	}
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/telemetry"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -60,7 +61,7 @@ func activityHTTPPrivateNetworkAllowed(ctx context.Context) bool {
 	return allowed
 }
 
-// Keep this list aligned with Mastodon 4.2's private_address_check ranges.
+// Keep this list aligned with Mastodon 4.3's private_address_check ranges.
 // Addresses are normalized with Unmap before matching so IPv4-mapped IPv6
 // forms such as ::ffff:0.0.0.1 cannot bypass the IPv4 ranges.
 var activityForbiddenAddressPrefixes = []netip.Prefix{
@@ -83,6 +84,7 @@ var activityForbiddenAddressPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("::/128"),
 	netip.MustParsePrefix("::1/128"),
 	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
 	netip.MustParsePrefix("100::/64"),
 	netip.MustParsePrefix("2001::/32"),
 	netip.MustParsePrefix("2001:10::/28"),
@@ -91,6 +93,7 @@ var activityForbiddenAddressPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("2002::/16"),
 	netip.MustParsePrefix("fc00::/7"),
 	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("3fff::/20"),
 	netip.MustParsePrefix("ff00::/8"),
 }
 
@@ -100,6 +103,7 @@ var (
 	activityAllowAccessHiddenService = os.Getenv("ALLOW_ACCESS_TO_HIDDEN_SERVICE") == "true"
 	activityPrivateAddressExceptions = parseActivityPrivateAddressExceptions(os.Getenv("ALLOWED_PRIVATE_ADDRESSES"))
 	activityHTTPProxyConfigured      = strings.TrimSpace(os.Getenv("http_proxy")) != ""
+	activityLookupIP                 = net.LookupIP
 )
 
 func configureActivityHTTPClient(cfg config.Config) {
@@ -110,6 +114,24 @@ func configureActivityHTTPClient(cfg config.Config) {
 		defaultActivityHTTPClient = activityHTTPClientFromConfig(cfg)
 		activityHTTPClient = defaultActivityHTTPClient
 	}
+	if oidcHTTPClient == defaultOIDCHTTPClient {
+		defaultOIDCHTTPClient = activityHTTPClientClone(10 * time.Second)
+		oidcHTTPClient = defaultOIDCHTTPClient
+	}
+}
+
+func activityHTTPClientClone(timeout time.Duration) *http.Client {
+	if activityHTTPClient == nil {
+		client := activityHTTPClientFromConfig(config.Config{})
+		client.Timeout = timeout
+		return client
+	}
+	client := *activityHTTPClient
+	client.Timeout = timeout
+	if client.CheckRedirect == nil {
+		client.CheckRedirect = activityHTTPCheckRedirect
+	}
+	return &client
 }
 
 func activityHTTPClientFromConfig(cfg config.Config) *http.Client {
@@ -121,7 +143,11 @@ func activityHTTPClientFromConfig(cfg config.Config) *http.Client {
 	if transport == nil {
 		return client
 	}
-	client.Transport = transport
+	if telemetry.Enabled() {
+		client.Transport = telemetry.NewHTTPTransport(transport, "federation")
+	} else {
+		client.Transport = transport
+	}
 	return client
 }
 
@@ -433,6 +459,9 @@ func parseActivitySignatureParamsWithTokenValidation(raw string, strictTokens bo
 		}
 		if strictTokens && !activitySignatureTokenValid(key) {
 			return nil, fmt.Errorf("error parsing signature parameters")
+		}
+		if _, exists := params[key]; exists {
+			return nil, fmt.Errorf("error parsing signature with duplicate keys")
 		}
 		quoted := strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`) && len(value) >= 2
 		if !quoted && value == "" {
@@ -1022,8 +1051,8 @@ func (s *Server) refreshKnownActivityPubActorOnlyKey(account *models.Account) (*
 		updates["discoverable"] = sql.NullBool{Bool: actor.Discoverable, Valid: true}
 		updates["indexable"] = actor.Indexable
 		updates["featured_collection_url"] = sql.NullString{String: actor.Featured, Valid: actor.Featured != ""}
-		updates["devices_url"] = actor.Devices
-		updates["also_known_as"] = models.StringArray(activityRailsValueOrIDList(actor.AlsoKnownAs))
+		updates["also_known_as"] = models.StringArray(activityLimitedValueOrIDList(actor.AlsoKnownAs, 256))
+		updates["attribution_domains"] = models.StringArray(activityLimitedValueOrIDList(actor.AttributionDomains, 256))
 	}
 	if actor.Published != "" {
 		updates["created_at"] = activityActorPublishedAt(actor.Published, account.CreatedAt)
@@ -1307,10 +1336,7 @@ func fetchActivityWebFingerHostMetaURL(domain string, resource string) (string, 
 }
 
 func activityWebFingerHTTPClient() *http.Client {
-	if activityHTTPClient == nil {
-		return http.DefaultClient
-	}
-	client := *activityHTTPClient
+	client := *activityHTTPClientClone(activityHTTPReadDeadline)
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 3 {
 			return http.ErrUseLastResponse
@@ -1675,7 +1701,6 @@ func parseRemoteActivityActorWithImageFetcher(body []byte, imageFetcher func(str
 		FeaturedCollection:        activityCollectionInlinePage(featuredValue),
 		FeaturedTags:              activityActorCollectionURI(featuredTagsValue),
 		SharedInboxURL:            sharedInboxURL,
-		Devices:                   activityRailsActorDevicesURL(activityJSONLDValue(raw, "devices")),
 		ManuallyApprovesFollowers: activityBoolValue(activityJSONLDValue(raw, "manuallyApprovesFollowers")),
 		Discoverable:              activityBoolValue(activityJSONLDValue(raw, "discoverable")),
 		Indexable:                 activityBoolValue(activityJSONLDValue(raw, "indexable")),
@@ -1683,6 +1708,7 @@ func parseRemoteActivityActorWithImageFetcher(body []byte, imageFetcher func(str
 		Suspended:                 activityRailsSuspendedTruthy(activityJSONLDValue(raw, "suspended")),
 		MovedTo:                   activityJSONLDValue(raw, "movedTo"),
 		AlsoKnownAs:               activityJSONLDValue(raw, "alsoKnownAs"),
+		AttributionDomains:        activityJSONLDValue(raw, "attributionDomains"),
 		Attachment:                activityJSONLDValue(raw, "attachment"),
 		AvatarRemoteURL:           activityActorImageURLWithFetcher(activityJSONLDValue(raw, "icon"), imageFetcher),
 		HeaderRemoteURL:           activityActorImageURLWithFetcher(activityJSONLDValue(raw, "image"), imageFetcher),
@@ -1692,6 +1718,11 @@ func parseRemoteActivityActorWithImageFetcher(body []byte, imageFetcher func(str
 	if strings.TrimSpace(actor.PreferredUsername) == "" {
 		return remoteActivityActor{}, fmt.Errorf("remote actor missing preferredUsername")
 	}
+	if len([]rune(actor.PreferredUsername)) > 2048 {
+		return remoteActivityActor{}, fmt.Errorf("remote actor preferredUsername exceeds 2048 characters")
+	}
+	actor.Name = activityTruncateRunes(actor.Name, 2048)
+	actor.Summary = activityTruncateUTF8Bytes(actor.Summary, 20*1024)
 	return actor, nil
 }
 
@@ -2007,7 +2038,7 @@ func activityFetchHostAllowed(host string) bool {
 	if activityHTTPProxyConfigured {
 		return true
 	}
-	ips, err := net.LookupIP(host)
+	ips, err := activityLookupIP(host)
 	if err != nil {
 		return true
 	}
@@ -2220,8 +2251,8 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 		account.Discoverable = sql.NullBool{Bool: actor.Discoverable, Valid: true}
 		account.Indexable = actor.Indexable
 		account.FeaturedCollectionURL = sql.NullString{String: actor.Featured, Valid: actor.Featured != ""}
-		account.DevicesURL = models.NullSafeString(actor.Devices)
-		account.AlsoKnownAs = models.StringArray(activityRailsValueOrIDList(actor.AlsoKnownAs))
+		account.AlsoKnownAs = models.StringArray(activityLimitedValueOrIDList(actor.AlsoKnownAs, 256))
+		account.AttributionDomains = models.StringArray(activityLimitedValueOrIDList(actor.AttributionDomains, 256))
 		if movedToSet {
 			account.MovedToAccountID = movedToID
 		}
@@ -2303,11 +2334,11 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 				updates["discoverable"] = account.Discoverable
 				updates["indexable"] = account.Indexable
 				updates["featured_collection_url"] = account.FeaturedCollectionURL
-				updates["devices_url"] = account.DevicesURL
 				if movedToSet {
 					updates["moved_to_account_id"] = movedToID
 				}
 				updates["also_known_as"] = account.AlsoKnownAs
+				updates["attribution_domains"] = account.AttributionDomains
 				updates["fields"] = models.JSONValue(account.Fields)
 				var skipErr error
 				skipMedia, skipErr = activityPubActorSkipsMedia(tx, &existing)
@@ -2736,7 +2767,6 @@ type remoteActivityActor struct {
 	FeaturedCollection        *activityCollection
 	FeaturedTags              string `json:"featuredTags"`
 	SharedInboxURL            string `json:"sharedInbox"`
-	Devices                   string `json:"devices"`
 	ManuallyApprovesFollowers bool   `json:"manuallyApprovesFollowers"`
 	Discoverable              bool   `json:"discoverable"`
 	Indexable                 bool   `json:"indexable"`
@@ -2744,6 +2774,7 @@ type remoteActivityActor struct {
 	Suspended                 bool   `json:"suspended"`
 	MovedTo                   any    `json:"movedTo"`
 	AlsoKnownAs               any    `json:"alsoKnownAs"`
+	AttributionDomains        any    `json:"attributionDomains"`
 	Attachment                any    `json:"attachment"`
 	AvatarRemoteURL           string
 	HeaderRemoteURL           string

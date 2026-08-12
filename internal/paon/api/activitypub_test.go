@@ -55,7 +55,7 @@ func TestNodeInfoHonorsSingleUserMode(t *testing.T) {
 		t.Fatalf("openRegistrations = %#v", out["openRegistrations"])
 	}
 	software, ok := out["software"].(map[string]any)
-	if !ok || software["name"] != "paon" {
+	if !ok || software["name"] != "mastodon" || software["version"] != config.DefaultMastodonVersion {
 		t.Fatalf("software = %#v", out["software"])
 	}
 	usage, ok := out["usage"].(map[string]any)
@@ -66,7 +66,7 @@ func TestNodeInfoHonorsSingleUserMode(t *testing.T) {
 		t.Fatalf("localPosts = %#v", usage["localPosts"])
 	}
 	users, ok := usage["users"].(map[string]any)
-	if !ok || users["total"] != float64(0) || users["active_month"] != float64(0) || users["active_halfyear"] != float64(0) {
+	if !ok || users["total"] != float64(0) || users["activeMonth"] != float64(0) || users["activeHalfyear"] != float64(0) {
 		t.Fatalf("usage users = %#v", usage["users"])
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "max-age=1800, public" {
@@ -305,7 +305,7 @@ func apiErrorStatus(err error, status int) bool {
 	return errors.As(err, &apiErr) && apiErr.status == status
 }
 
-func TestActivityPubNoteRepliesOnlyForLocalStatusesLikeRails(t *testing.T) {
+func TestActivityPubNoteEngagementCollectionsOnlyForLocalStatusesLikeRails(t *testing.T) {
 	src, err := os.ReadFile("activitypub.go")
 	if err != nil {
 		t.Fatal(err)
@@ -330,6 +330,25 @@ func TestActivityPubNoteRepliesOnlyForLocalStatusesLikeRails(t *testing.T) {
 	}
 	if _, ok := activityPubNote(server, remote)["replies"]; ok {
 		t.Fatal("remote ActivityPub Note must omit replies like Rails NoteSerializer local? guard")
+	}
+	for _, collection := range []string{"likes", "shares"} {
+		if _, ok := activityPubNote(server, remote)[collection]; ok {
+			t.Fatalf("remote ActivityPub Note must omit %s", collection)
+		}
+	}
+
+	local := remote
+	local.Account.Domain = sql.NullString{}
+	local.Account.URI = ""
+	local.StatusStat = models.StatusStat{FavouritesCount: 7, ReblogsCount: 3}
+	note := activityPubNote(server, local)
+	likes, ok := note["likes"].(map[string]any)
+	if !ok || likes["id"] != "https://example.com/users/alice/statuses/123/likes" || likes["type"] != "Collection" || likes["totalItems"] != int64(7) {
+		t.Fatalf("likes = %#v", note["likes"])
+	}
+	shares, ok := note["shares"].(map[string]any)
+	if !ok || shares["id"] != "https://example.com/users/alice/statuses/123/shares" || shares["type"] != "Collection" || shares["totalItems"] != int64(3) {
+		t.Fatalf("shares = %#v", note["shares"])
 	}
 }
 
@@ -608,11 +627,14 @@ func TestActivityJSONWithCacheKeepsActivityContentType(t *testing.T) {
 	}
 }
 
-func TestActivityPubActorObjectIncludesDevicesCollection(t *testing.T) {
+func TestActivityPubActorObjectOmitsRemovedDevicesAndIncludesAttributionDomains(t *testing.T) {
 	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "example.com", LocalDomain: "example.com"}}
-	actor := activityPubActorObject(server, models.Account{ID: 42, Username: "alice"})
-	if actor["devices"] != "https://example.com/users/alice/collections/devices" {
-		t.Fatalf("devices = %#v", actor["devices"])
+	actor := activityPubActorObject(server, models.Account{ID: 42, Username: "alice", AttributionDomains: models.StringArray{"example.org"}})
+	if _, ok := actor["devices"]; ok {
+		t.Fatalf("4.3 actor must omit removed devices collection: %#v", actor)
+	}
+	if got := actor["attributionDomains"]; !reflect.DeepEqual(got, []string{"example.org"}) {
+		t.Fatalf("attributionDomains = %#v", got)
 	}
 }
 
@@ -638,11 +660,15 @@ func TestActivityPubActorObjectContextMatchesRailsExtensions(t *testing.T) {
 		"indexable",
 		"memorial",
 		"suspended",
-		"Device",
-		"devices",
+		"attributionDomains",
 	} {
 		if _, ok := extension[want]; !ok {
 			t.Fatalf("actor context extension missing %q: %#v", want, extension)
+		}
+	}
+	for _, removed := range []string{"Device", "devices"} {
+		if _, ok := extension[removed]; ok {
+			t.Fatalf("actor context must omit removed 4.2 E2EE term %q: %#v", removed, extension)
 		}
 	}
 	if extension["toot"] != "http://joinmastodon.org/ns#" || extension["schema"] != "http://schema.org#" {
@@ -733,43 +759,42 @@ func TestActivityPubActorObjectIncludesIconAndImageWhenPresent(t *testing.T) {
 func TestActivityPubActorObjectOmitsSuspendedIconAndImage(t *testing.T) {
 	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "example.com", LocalDomain: "example.com"}}
 	actor := activityPubActorObject(server, models.Account{
-		ID:                42,
-		Username:          "alice",
-		AvatarFileName:    sql.NullString{String: "avatar.png", Valid: true},
-		AvatarContentType: sql.NullString{String: "image/png", Valid: true},
-		HeaderFileName:    sql.NullString{String: "header.jpg", Valid: true},
-		HeaderContentType: sql.NullString{String: "image/jpeg", Valid: true},
-		SuspendedAt:       sql.NullTime{Time: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC), Valid: true},
+		ID:                 42,
+		Username:           "alice",
+		AvatarFileName:     sql.NullString{String: "avatar.png", Valid: true},
+		AvatarContentType:  sql.NullString{String: "image/png", Valid: true},
+		HeaderFileName:     sql.NullString{String: "header.jpg", Valid: true},
+		HeaderContentType:  sql.NullString{String: "image/jpeg", Valid: true},
+		AttributionDomains: models.StringArray{"example.org"},
+		SuspendedAt:        sql.NullTime{Time: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC), Valid: true},
 	})
 
-	if actor["icon"] != nil || actor["image"] != nil {
-		t.Fatalf("suspended actor should omit icon/image: %#v", actor)
+	if actor["icon"] != nil || actor["image"] != nil || len(actor["tag"].([]any)) != 0 || len(actor["attachment"].([]any)) != 0 {
+		t.Fatalf("suspended actor should omit icon/image/profile tags and fields: %#v", actor)
+	}
+	if !reflect.DeepEqual(actor["attributionDomains"], []string{"example.org"}) {
+		t.Fatalf("suspended actor attributionDomains = %#v", actor["attributionDomains"])
 	}
 }
 
-func TestActivityPubDeviceCollectionContextMatchesRailsOLMShape(t *testing.T) {
-	contexts := activityPubOLMContext()
-	if len(contexts) != 2 || contexts[0] != "https://www.w3.org/ns/activitystreams" {
-		t.Fatalf("contexts = %#v", contexts)
+func TestActivityPubJSONLDContextsOmitRemovedE2EETerms(t *testing.T) {
+	removed := []string{"Device", "EncryptedMessage", "Ed25519Key", "Curve25519Key", "publicKeyBase64", "deviceId", "claim", "fingerprintKey", "identityKey", "devices", "messageFranking", "messageType", "cipherText"}
+	for name, context := range map[string]map[string]any{
+		"toot":             activityPubTootJSONLDContext(),
+		"activity-streams": activityPubActivityStreamsJSONLDContext(),
+		"full":             activityPubFullJSONLDContextExtensions(),
+	} {
+		for _, term := range removed {
+			if _, ok := context[term]; ok {
+				t.Fatalf("%s context exposes removed E2EE term %q: %#v", name, term, context)
+			}
+		}
 	}
-	olm, ok := contexts[1].(map[string]any)
-	if !ok {
-		t.Fatalf("olm context = %#v", contexts[1])
-	}
-	if olm["toot"] != "http://joinmastodon.org/ns#" || olm["Device"] != "toot:Device" || olm["EncryptedMessage"] != "toot:EncryptedMessage" || olm["devices"].(map[string]any)["@id"] != "toot:devices" {
-		t.Fatalf("olm context = %#v", olm)
-	}
-	if _, ok := olm["fingerprintKey"].(map[string]any); !ok || olm["publicKeyBase64"] != "toot:publicKeyBase64" {
-		t.Fatalf("device key context = %#v", olm)
-	}
-	if activityPubTootJSONLDContext()["EncryptedMessage"] != "toot:EncryptedMessage" || activityPubActivityStreamsJSONLDContext()["EncryptedMessage"] != "toot:EncryptedMessage" {
-		t.Fatalf("LD Signature OLM context should match Rails EncryptedMessage IRI")
-	}
-	if activityPubTootJSONLDContext()["Digest"] != "as:Digest" || activityPubActivityStreamsJSONLDContext()["digestValue"] != "https://www.w3.org/ns/activitystreams#digestValue" {
-		t.Fatalf("LD Signature encrypted-message digest context should match Rails shape")
+	if activityKnownType("EncryptedMessage") {
+		t.Fatal("EncryptedMessage must not be accepted as a Mastodon 4.3 ActivityPub type")
 	}
 	if activityPubTootJSONLDContext()["Emoji"] != "toot:Emoji" || activityPubActivityStreamsJSONLDContext()["Emoji"] != "toot:Emoji" || activityPubActivityStreamsJSONLDContext()["Hashtag"] != "https://www.w3.org/ns/activitystreams#Hashtag" {
-		t.Fatalf("LD Signature tag context should match Rails Emoji/Hashtag IRIs")
+		t.Fatal("removing E2EE terms must preserve Emoji and Hashtag contexts")
 	}
 }
 
@@ -1420,6 +1445,30 @@ func TestDeliverActivityPubAccountDeleteDeduplicatesInboxes(t *testing.T) {
 	}
 }
 
+func TestActivityPubAccountReachUsesLocalSuspensionTimestamp(t *testing.T) {
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	suspendedAt := now.Add(-7 * 24 * time.Hour)
+
+	active := models.Account{}
+	if got, want := activityPubAccountReachCutoff(active, now), now.Add(-48*time.Hour); !got.Equal(want) {
+		t.Fatalf("active account cutoff = %s, want %s", got, want)
+	}
+
+	locallySuspended := models.Account{
+		SuspendedAt:      sql.NullTime{Time: suspendedAt, Valid: true},
+		SuspensionOrigin: sql.NullInt64{Int64: 0, Valid: true},
+	}
+	if got, want := activityPubAccountReachCutoff(locallySuspended, now), suspendedAt.Add(-48*time.Hour); !got.Equal(want) {
+		t.Fatalf("locally suspended account cutoff = %s, want %s", got, want)
+	}
+
+	remotelySuspended := locallySuspended
+	remotelySuspended.SuspensionOrigin.Int64 = 1
+	if got, want := activityPubAccountReachCutoff(remotelySuspended, now), now.Add(-48*time.Hour); !got.Equal(want) {
+		t.Fatalf("remotely suspended account cutoff = %s, want %s", got, want)
+	}
+}
+
 func TestActivityPubDeliveryAvailabilityDefaultsToAvailableWithoutDatabase(t *testing.T) {
 	server := &Server{}
 	if !server.activityPubDeliveryAvailable("remote.example") {
@@ -1520,7 +1569,7 @@ func TestActivityPubDeliveryUnsalvageableResponseTracksFailureWithoutRetrying(t 
 			t.Cleanup(func() { activityHTTPClient = previousClient })
 
 			server := &Server{cfg: config.Config{RedisHost: host, RedisPort: port, RedisNamespace: "mastodon:"}}
-			if err := server.deliverActivityPubOnce(local, "https://remote.example/inbox", []byte(`{}`), "remote.example", false); err != nil {
+			if err := server.deliverActivityPubOnce(context.Background(), local, "https://remote.example/inbox", []byte(`{}`), "remote.example", false); err != nil {
 				t.Fatalf("deliverActivityPubOnce error = %v", err)
 			}
 			command := <-recordedKey
@@ -1739,7 +1788,7 @@ func TestParseRemoteActivityActorAcceptsExpandedJSONLDLikeInboxActorUpdate(t *te
 		"https://www.w3.org/ns/activitystreams#followers":[{"@id":"https://remote.example/users/alice/followers"}],
 			"https://joinmastodon.org/ns#featured":[{"@id":"https://remote.example/users/alice/collections/featured"}],
 			"https://joinmastodon.org/ns#featuredTags":[{"@id":"https://remote.example/users/alice/collections/tags"}],
-			"https://joinmastodon.org/ns#devices":[{"@id":"https://remote.example/users/alice/collections/devices"}],
+			"https://joinmastodon.org/ns#attributionDomains":[{"@id":"https://EXAMPLE.org"},{"@value":"*.sub.example"}],
 		"https://www.w3.org/ns/activitystreams#endpoints":[{"@list":[{"https://www.w3.org/ns/activitystreams#sharedInbox":[{"@id":"https://remote.example/inbox"}]}]}],
 		"https://www.w3.org/ns/activitystreams#manuallyApprovesFollowers":[{"@list":[{"@value":true}]}],
 			"https://joinmastodon.org/ns#discoverable":[{"@list":[{"@value":true}]}],
@@ -1768,15 +1817,8 @@ func TestParseRemoteActivityActorAcceptsExpandedJSONLDLikeInboxActorUpdate(t *te
 		actor.SharedInbox() != "https://remote.example/inbox" {
 		t.Fatalf("expanded actor collections = %#v", actor)
 	}
-	if actor.Devices == "https://remote.example/users/alice/collections/devices" || !strings.Contains(actor.Devices, `"@id"=>"https://remote.example/users/alice/collections/devices"`) {
-		t.Fatalf("expanded actor devices must use Rails raw cast instead of value_or_id, got %q", actor.Devices)
-	}
-	src, err := os.ReadFile("activitypub_signature.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !functionBodyContains(t, src, "parseRemoteActivityActorWithImageFetcher", `Devices:                   activityRailsActorDevicesURL(activityJSONLDValue(raw, "devices"))`) {
-		t.Fatal("remote actor fetch parser must store devices_url through Rails raw string-cast helper, not value_or_id")
+	if got := activityLimitedValueOrIDList(actor.AttributionDomains, 256); !reflect.DeepEqual(got, []string{"https://EXAMPLE.org", "*.sub.example"}) {
+		t.Fatalf("expanded actor attribution domains = %#v", got)
 	}
 	inlineFeaturedActor, err := parseRemoteActivityActor([]byte(activityTestJSON(`{
 		"id":"https://remote.example/users/alice",
@@ -1803,35 +1845,6 @@ func TestParseRemoteActivityActorAcceptsExpandedJSONLDLikeInboxActorUpdate(t *te
 	}
 	if got := activityPubFeaturedTagNamesFromTags(inlineFeaturedActor.FeaturedCollection.Tags); !reflect.DeepEqual(got, []activityPubFeaturedTagName{{Normalized: "go", Display: "go"}}) {
 		t.Fatalf("inline featured collection tags = %#v", got)
-	}
-	bearcapDevices := "bear:?u=https%3A%2F%2Fremote.example%2Fusers%2Falice%2Fcollections%2Fdevices"
-	bearcapActor, err := parseRemoteActivityActor([]byte(activityTestJSON(`{
-		"id":"https://remote.example/users/alice",
-		"type":"Person",
-		"preferredUsername":"alice",
-		"inbox":"https://remote.example/users/alice/inbox",
-		"devices":"` + bearcapDevices + `",
-		"publicKey":{"publicKeyPem":"PEM"}
-	}`)))
-	if err != nil {
-		t.Fatalf("parse bearcap devices actor error = %v", err)
-	}
-	if bearcapActor.Devices != bearcapDevices {
-		t.Fatalf("remote actor devices should preserve Rails raw value, got %#v", bearcapActor)
-	}
-	rawDevicesActor, err := parseRemoteActivityActor([]byte(activityTestJSON(`{
-		"id":"https://remote.example/users/alice",
-		"type":"Person",
-		"preferredUsername":"alice",
-		"inbox":"https://remote.example/users/alice/inbox",
-		"devices":{"type":"Collection","id":"https://remote.example/users/alice/collections/devices"},
-		"publicKey":{"publicKeyPem":"PEM"}
-	}`)))
-	if err != nil {
-		t.Fatalf("parse raw devices actor error = %v", err)
-	}
-	if rawDevicesActor.Devices == "https://remote.example/users/alice/collections/devices" || !strings.Contains(rawDevicesActor.Devices, `"id"=>"https://remote.example/users/alice/collections/devices"`) {
-		t.Fatalf("remote actor devices Link object must use Rails raw cast instead of value_or_id, got %q", rawDevicesActor.Devices)
 	}
 	if !actor.ManuallyApprovesFollowers || !actor.Discoverable || !actor.Indexable || !actor.Memorial {
 		t.Fatalf("expanded actor flags = %#v", actor)
@@ -2288,7 +2301,9 @@ func TestActivityFetchPrivateIPRejected(t *testing.T) {
 		"::",
 		"::1",
 		"::ffff:0.0.0.1",
+		"::ffff:127.0.0.1",
 		"64:ff9b::1",
+		"64:ff9b:1::101:101",
 		"100::1",
 		"2001::1",
 		"2001:10::1",
@@ -2297,6 +2312,7 @@ func TestActivityFetchPrivateIPRejected(t *testing.T) {
 		"2002::1",
 		"fc00::1",
 		"fe80::1",
+		"3fff::1",
 		"ff00::1",
 	} {
 		ip := net.ParseIP(raw)
@@ -2335,7 +2351,7 @@ func TestActivityHTTPDialControlRejectsResolvedPrivateAddresses(t *testing.T) {
 	if control == nil {
 		t.Fatal("direct connections must install a dial-time address check")
 	}
-	for _, address := range []string{"0.0.0.1:443", "[::ffff:0.0.0.1]:443", "[64:ff9b::1]:443"} {
+	for _, address := range []string{"0.0.0.1:443", "[::ffff:0.0.0.1]:443", "[64:ff9b::1]:443", "[64:ff9b:1::101:101]:443", "[3fff::1]:443"} {
 		err := control(context.Background(), "tcp", address, nil)
 		if !errors.Is(err, errActivityPrivateNetworkAddress) {
 			t.Fatalf("resolved address %s error = %v, want private-network rejection", address, err)
@@ -2345,6 +2361,22 @@ func TestActivityHTTPDialControlRejectsResolvedPrivateAddresses(t *testing.T) {
 		if err := control(context.Background(), "tcp", address, nil); err != nil {
 			t.Fatalf("public resolved address %s error = %v", address, err)
 		}
+	}
+}
+
+func TestActivityFetchHostRejectsAnyPrivateAddressInDNSAnswer(t *testing.T) {
+	oldLookup := activityLookupIP
+	oldProxy := activityHTTPProxyConfigured
+	activityHTTPProxyConfigured = false
+	activityLookupIP = func(string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("8.8.8.8"), net.ParseIP("127.0.0.1")}, nil
+	}
+	t.Cleanup(func() {
+		activityLookupIP = oldLookup
+		activityHTTPProxyConfigured = oldProxy
+	})
+	if activityFetchHostAllowed("rebinding.example") {
+		t.Fatal("host with a mixed public/private DNS answer was accepted")
 	}
 }
 
@@ -2683,7 +2715,7 @@ func TestActivityPubQuoteURLPriorityMatchesRailsInbound(t *testing.T) {
 	}
 }
 
-func TestParseActivityPayloadEncryptedMessage(t *testing.T) {
+func TestParseActivityPayloadDoesNotDispatchRemovedEncryptedMessage(t *testing.T) {
 	payload, err := parseActivityPayload([]byte(`{
 		"type":"Create",
 		"actor":"https://remote.example/users/alice",
@@ -2698,68 +2730,15 @@ func TestParseActivityPayloadEncryptedMessage(t *testing.T) {
 		}
 	}`))
 	if err != nil {
-		t.Fatalf("parse encrypted message error = %v", err)
+		t.Fatalf("parse removed encrypted message envelope error = %v", err)
 	}
-	object := payload.Object
-	if payload.Type != "Create" || object.Type != "EncryptedMessage" || object.TypeExact != "EncryptedMessage" {
+	if payload.Type != "Create" || payload.Object.Type != "EncryptedMessage" || payload.Object.TypeExact != "" || !payload.Object.TypePresent {
 		t.Fatalf("payload = %#v", payload)
-	}
-	if object.SourceDeviceID != "source-device" || object.TargetDeviceID != "target-device" {
-		t.Fatalf("device ids = %#v", object)
-	}
-	if object.MessageType != 1 || object.CipherText != "ciphertext" || object.MessageFranking != "remote-franking" || object.DigestValue != "digest-value" {
-		t.Fatalf("encrypted fields = %#v", object)
-	}
-
-	expanded, err := parseActivityPayload([]byte(`{
-		"@context":["https://www.w3.org/ns/activitystreams",{"toot":"http://joinmastodon.org/ns#"}],
-		"@type":"https://www.w3.org/ns/activitystreams#Create",
-		"https://www.w3.org/ns/activitystreams#actor":[{"@id":"https://remote.example/users/alice"}],
-		"https://www.w3.org/ns/activitystreams#object":[{"@list":[{
-			"@type":"http://joinmastodon.org/ns#EncryptedMessage",
-			"https://www.w3.org/ns/activitystreams#attributedTo":[{"@list":[{
-				"@type":"http://joinmastodon.org/ns#Device",
-				"http://joinmastodon.org/ns#deviceId":[{"@list":[{"@value":"source-device"}]}]
-			}]}],
-			"https://www.w3.org/ns/activitystreams#to":[{"@list":[{
-				"@type":"http://joinmastodon.org/ns#Device",
-				"http://joinmastodon.org/ns#deviceId":[{"@list":[{"@value":"target-device"}]}]
-			}]}],
-			"http://joinmastodon.org/ns#messageType":[{"@list":[{"@value":1}]}],
-			"http://joinmastodon.org/ns#cipherText":[{"@value":"ciphertext"}],
-			"http://joinmastodon.org/ns#messageFranking":[{"@value":"remote-franking"}],
-			"https://www.w3.org/ns/activitystreams#digest":[{"@list":[{
-				"https://www.w3.org/ns/activitystreams#digestValue":[{"@list":[{"@value":"digest-value"}]}]
-			}]}]
-		}]}]
-	}`))
-	if err != nil {
-		t.Fatalf("parse expanded encrypted message error = %v", err)
-	}
-	if expanded.Type != "Create" || expanded.Object.Type != "EncryptedMessage" || expanded.Object.TypeExact != "EncryptedMessage" ||
-		expanded.Object.SourceDeviceID != "source-device" || expanded.Object.TargetDeviceID != "target-device" ||
-		expanded.Object.MessageType != 1 || expanded.Object.CipherText != "ciphertext" ||
-		expanded.Object.MessageFranking != "remote-franking" || expanded.Object.DigestValue != "digest-value" {
-		t.Fatalf("expanded encrypted object = %#v", expanded.Object)
-	}
-	arrayType, err := parseActivityPayload([]byte(`{
-		"type":"Create",
-		"actor":"https://remote.example/users/alice",
-		"object":{
-			"type":["EncryptedMessage"],
-			"to":{"type":"Device","deviceId":"target-device"}
-		}
-	}`))
-	if err != nil {
-		t.Fatalf("parse encrypted array type error = %v", err)
-	}
-	if arrayType.Object.Type != "EncryptedMessage" || arrayType.Object.TypeExact != "" || !arrayType.Object.TypePresent {
-		t.Fatalf("encrypted array type should not exact-dispatch like Rails Create#perform case: %#v", arrayType.Object)
 	}
 }
 
 func TestParseActivityPayloadUpdateActorAndDelete(t *testing.T) {
-	update, err := parseActivityPayload([]byte(`{"type":"Update","actor":"https://remote.example/users/alice","object":{"id":"https://remote.example/users/alice","type":"Person","name":"Alice","summary":"Bio","url":"https://remote.example/@alice","published":"2026-06-18T12:00:00Z","inbox":"https://remote.example/users/alice/inbox","outbox":"https://remote.example/users/alice/outbox","following":"https://remote.example/users/alice/following","followers":"https://remote.example/users/alice/followers","endpoints":{"sharedInbox":"https://remote.example/inbox"},"featured":"https://remote.example/users/alice/collections/featured","featuredTags":"https://remote.example/users/alice/collections/tags","devices":"https://remote.example/users/alice/collections/devices","manuallyApprovesFollowers":true,"discoverable":true,"indexable":true,"memorial":true,"suspended":true,"movedTo":"https://remote.example/users/newalice","alsoKnownAs":["https://old.example/users/alice"," ",{"id":"https://old.example/users/alice"}],"icon":{"type":"Image","url":"https://remote.example/avatar.png"},"image":{"href":"https://remote.example/header.png"},"tag":[{"type":"Emoji","id":"https://remote.example/emoji/party","name":":party:","icon":{"type":"Image","url":"https://remote.example/emoji/party.png"},"updated":"2026-06-22T00:00:00Z"}],"attachment":[{"type":"PropertyValue","name":"Site","value":"https://example.com"},{"type":"Document","name":"ignored"}],"publicKey":{"https://w3id.org/security#publicKeyPem":[{"@value":"PEM"}]}}}`))
+	update, err := parseActivityPayload([]byte(`{"type":"Update","actor":"https://remote.example/users/alice","object":{"id":"https://remote.example/users/alice","type":"Person","name":"Alice","summary":"Bio","url":"https://remote.example/@alice","published":"2026-06-18T12:00:00Z","inbox":"https://remote.example/users/alice/inbox","outbox":"https://remote.example/users/alice/outbox","following":"https://remote.example/users/alice/following","followers":"https://remote.example/users/alice/followers","endpoints":{"sharedInbox":"https://remote.example/inbox"},"featured":"https://remote.example/users/alice/collections/featured","featuredTags":"https://remote.example/users/alice/collections/tags","attributionDomains":["https://EXAMPLE.org","*.sub.example"],"manuallyApprovesFollowers":true,"discoverable":true,"indexable":true,"memorial":true,"suspended":true,"movedTo":"https://remote.example/users/newalice","alsoKnownAs":["https://old.example/users/alice"," ",{"id":"https://old.example/users/alice"}],"icon":{"type":"Image","url":"https://remote.example/avatar.png"},"image":{"href":"https://remote.example/header.png"},"tag":[{"type":"Emoji","id":"https://remote.example/emoji/party","name":":party:","icon":{"type":"Image","url":"https://remote.example/emoji/party.png"},"updated":"2026-06-22T00:00:00Z"}],"attachment":[{"type":"PropertyValue","name":"Site","value":"https://example.com"},{"type":"Document","name":"ignored"}],"publicKey":{"https://w3id.org/security#publicKeyPem":[{"@value":"PEM"}]}}}`))
 	if err != nil {
 		t.Fatalf("parse update error = %v", err)
 	}
@@ -2775,7 +2754,7 @@ func TestParseActivityPayloadUpdateActorAndDelete(t *testing.T) {
 		update.Object.HeaderRemoteURL != "https://remote.example/header.png" ||
 		len(update.Object.Tags) != 1 || update.Object.Tags[0].IconURL != "https://remote.example/emoji/party.png" ||
 		update.Object.FeaturedTags != "https://remote.example/users/alice/collections/tags" ||
-		update.Object.Devices != "https://remote.example/users/alice/collections/devices" ||
+		!reflect.DeepEqual(activityLimitedValueOrIDList(update.Object.AttributionDomains, 256), []string{"https://EXAMPLE.org", "*.sub.example"}) ||
 		!update.Object.Locked || !update.Object.Discoverable || !update.Object.Indexable || !update.Object.Memorial || !update.Object.Suspended ||
 		activityPubObjectID(update.Object.MovedTo) != "https://remote.example/users/newalice" ||
 		!reflect.DeepEqual(activityRailsValueOrIDList(update.Object.AlsoKnownAs), []string{"https://old.example/users/alice", " ", "https://old.example/users/alice"}) ||

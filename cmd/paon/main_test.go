@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mstdn-plusminus-io/paon/internal/paon/api"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 )
 
 func TestMainUsesContextAwareServerStart(t *testing.T) {
@@ -76,6 +81,57 @@ func TestMainUsesContextAwareServerStart(t *testing.T) {
 	if workerStartGuard < 0 || workerStart < workerStartGuard || httpStartGuard < workerStart || httpStart < httpStartGuard {
 		t.Fatal("main.go must gate worker startup before deciding whether to open the HTTP listener")
 	}
+}
+
+func TestActivateWorkerReadinessCreatesAndRemovesConfiguredBasename(t *testing.T) {
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	if err := os.Chdir(directory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+
+	remove, err := activateWorkerReadiness(context.Background(), config.Config{WorkerReadyFilename: "worker.ready"}, &api.BackgroundWorkers{})
+	if err != nil {
+		t.Fatalf("activateWorkerReadiness: %v", err)
+	}
+	readyPath := filepath.Join(directory, "tmp", "worker.ready")
+	if _, err := os.Stat(readyPath); err != nil {
+		t.Fatalf("readiness file was not created: %v", err)
+	}
+	remove()
+	if _, err := os.Stat(readyPath); !os.IsNotExist(err) {
+		t.Fatalf("readiness file remains after shutdown cleanup: %v", err)
+	}
+}
+
+func TestActivateWorkerReadinessWaitsBeforeCreatingFile(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	start := strings.Index(body, "func activateWorkerReadiness(")
+	if start < 0 {
+		t.Fatal("activateWorkerReadiness was not found")
+	}
+	body = body[start:]
+	wait := strings.Index(body, "workers.WaitReady(ctx)")
+	create := strings.Index(body, "os.CreateTemp(directory")
+	if wait < 0 || create < 0 || wait > create {
+		t.Fatal("worker readiness file must be created after the worker initialization barrier")
+	}
+}
+
+func TestActivateWorkerReadinessDoesNothingWithoutWorkers(t *testing.T) {
+	remove, err := activateWorkerReadiness(context.Background(), config.Config{WorkerReadyFilename: "worker.ready"}, nil)
+	if err != nil {
+		t.Fatalf("activateWorkerReadiness: %v", err)
+	}
+	remove()
 }
 
 func TestVersionFlagExitsBeforeRuntimeChecks(t *testing.T) {

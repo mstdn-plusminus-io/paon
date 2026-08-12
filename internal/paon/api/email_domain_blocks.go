@@ -38,8 +38,9 @@ func (s *Server) ensureEmailDomainAllowed(ctx context.Context, email string, att
 			if err != nil {
 				return err
 			}
-			if len(blocks) > 0 {
-				s.recordEmailDomainBlockHistory(ctx, blocks, attemptIP, time.Now().UTC())
+			hardBlocks := hardEmailDomainBlocks(blocks)
+			if len(hardBlocks) > 0 {
+				s.recordEmailDomainBlockHistory(ctx, hardBlocks, attemptIP, time.Now().UTC())
 				return apiHTTPError{status: 422, message: "Validation failed: Email domain is blocked"}
 			}
 		}
@@ -104,11 +105,49 @@ func (s *Server) ensureEmailDomainMXAllowed(ctx context.Context, domain string, 
 	if err != nil {
 		return err
 	}
-	if len(blocks) == 0 {
+	hardBlocks := hardEmailDomainBlocks(blocks)
+	if len(hardBlocks) == 0 {
 		return nil
 	}
-	s.recordEmailDomainBlockHistory(ctx, blocks, attemptIP, time.Now().UTC())
+	s.recordEmailDomainBlockHistory(ctx, hardBlocks, attemptIP, time.Now().UTC())
 	return apiHTTPError{status: 422, message: "Validation failed: Email domain is blocked"}
+}
+
+func hardEmailDomainBlocks(blocks []models.EmailDomainBlock) []models.EmailDomainBlock {
+	out := make([]models.EmailDomainBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if !block.AllowWithApproval {
+			out = append(out, block)
+		}
+	}
+	return out
+}
+
+func (s *Server) emailSignUpRequiresApproval(ctx context.Context, email string, attemptIP string) (bool, error) {
+	variants := emailDomainBlockVariants(email)
+	if len(variants) == 0 || s == nil || s.db == nil {
+		return false, nil
+	}
+	allVariants := append([]string{}, variants...)
+	if emailDomainDNSValidationEnabled() {
+		_, resolvedDomains := resolveEmailDomainMX(variants[0])
+		allVariants = append(allVariants, emailDomainBlockVariantsForDomains(resolvedDomains)...)
+	}
+	blocks, err := s.emailDomainBlocksForVariants(ctx, uniqueNonEmptyStrings(allVariants))
+	if err != nil {
+		return false, err
+	}
+	approvalBlocks := make([]models.EmailDomainBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.AllowWithApproval {
+			approvalBlocks = append(approvalBlocks, block)
+		}
+	}
+	if len(approvalBlocks) == 0 {
+		return false, nil
+	}
+	s.recordEmailDomainBlockHistory(ctx, approvalBlocks, attemptIP, time.Now().UTC())
+	return true, nil
 }
 
 func (s *Server) emailDomainBlocksForVariants(ctx context.Context, variants []string) ([]models.EmailDomainBlock, error) {

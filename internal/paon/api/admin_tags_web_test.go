@@ -35,6 +35,85 @@ func TestAdminTagPageRequiresSession(t *testing.T) {
 	}
 }
 
+func TestAdminTagsPageRequiresSession(t *testing.T) {
+	s, err := NewServer(config.Config{Title: "Paon", LocalDomain: "example.com"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/tags?name=go&status=unreviewed", nil)
+	rec := httptest.NewRecorder()
+	s.echo.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	want := "/auth/sign_in?redirect_to=" + url.QueryEscape("/admin/tags?name=go&status=unreviewed")
+	if got := rec.Header().Get("Location"); got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
+func TestAdminTagsHTMLIncludesSearchFiltersRowsAndPagination(t *testing.T) {
+	html := adminTagsHTML([]models.Tag{
+		{
+			ID:          7,
+			Name:        "golang",
+			DisplayName: sql.NullString{String: "Go", Valid: true},
+			Usable:      sql.NullBool{Bool: false, Valid: true},
+			Trendable:   sql.NullBool{Bool: true, Valid: true},
+			ReviewedAt:  sql.NullTime{Time: time.Now().UTC(), Valid: true},
+		},
+		{
+			ID:                8,
+			Name:              "gopher",
+			RequestedReviewAt: sql.NullTime{Time: time.Now().UTC(), Valid: true},
+		},
+	}, adminTagIndexFilters{Status: "not_usable", Name: "go &", Order: "oldest", Page: 2}, true, false, "en")
+
+	for _, want := range []string{
+		`action="/admin/tags"`,
+		`method="get"`,
+		`name="status"`,
+		`value="not_usable" selected`,
+		`name="order"`,
+		`value="oldest" selected`,
+		`name="name" value="go &amp;"`,
+		`href="/admin/tags/7"`,
+		`#Go`,
+		`batch-table__row--muted`,
+		`Review requested`,
+		`rel="prev"`,
+		`rel="next"`,
+		`name=go+%26`,
+		`page=3`,
+		`status=not_usable`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin tags html missing %q: %s", want, html)
+		}
+	}
+}
+
+func TestAdminTagIndexFiltersValidateRailsValues(t *testing.T) {
+	for _, path := range []string{
+		"/admin/tags?status=unknown",
+		"/admin/tags?order=popular",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		c := echo.NewContext(req, httptest.NewRecorder(), echo.New())
+		if _, err := adminTagIndexFiltersFromContext(c); err == nil {
+			t.Fatalf("adminTagIndexFiltersFromContext(%q) accepted an unknown filter", path)
+		}
+	}
+}
+
+func TestAdminTagSearchPatternMatchesNormalizedPrefixLiterally(t *testing.T) {
+	if got, want := adminTagSearchPattern(`Go%_\`), `go\%\_\\%`; got != want {
+		t.Fatalf("adminTagSearchPattern = %q, want %q", got, want)
+	}
+}
+
 func TestAdminTagUpdatesRequireRailsRootParameter(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/admin/tags/7", strings.NewReader("display_name=Go"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

@@ -152,7 +152,7 @@ api().request({ method: 'POST', url: '/api/v1/statuses/123/favourite' });
 
 func TestFrontendStaticAPIScanCoversWebpackPackEntrypoints(t *testing.T) {
 	root := t.TempDir()
-	packsRoot := filepath.Join(root, "app", "javascript", "packs")
+	packsRoot := filepath.Join(root, "app", "javascript", "entrypoints")
 	if err := os.MkdirAll(packsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestFrontendStaticAPIScanCoversWebpackPackEntrypoints(t *testing.T) {
 axios.get('/api/v1/emails/check_confirmation');
 api().post('/api/v1/statuses');
 `
-	if err := os.WriteFile(filepath.Join(packsRoot, "sign_up.js"), []byte(src), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(packsRoot, "sign_up.ts"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	calls, err := frontendStaticAPICalls(root)
@@ -199,7 +199,7 @@ func TestFrontendStaticServerLinksHaveGoRoutes(t *testing.T) {
 
 func TestFrontendStaticServerLinkScanCoversWebpackPackEntrypoints(t *testing.T) {
 	root := t.TempDir()
-	packsRoot := filepath.Join(root, "app", "javascript", "packs")
+	packsRoot := filepath.Join(root, "app", "javascript", "entrypoints")
 	if err := os.MkdirAll(packsRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func railsRequestSpecCalls(root string) ([]railsSpecAPICall, error) {
 func frontendStaticServerCalls(root string) ([]railsSpecAPICall, error) {
 	frontendRoots := []string{
 		filepath.Join(root, "app", "javascript", "mastodon"),
-		filepath.Join(root, "app", "javascript", "packs"),
+		filepath.Join(root, "app", "javascript", "entrypoints"),
 	}
 	linkPattern := regexp.MustCompile(`(?:href|action)=['"](/[^'"]+)['"]`)
 	jsxLinkPattern := regexp.MustCompile(`(?:href|action)=\{['"](/[^'"]+)['"]\}`)
@@ -483,7 +483,7 @@ func frontendServerPath(path string) bool {
 func frontendStaticAPICalls(root string) ([]railsSpecAPICall, error) {
 	frontendRoots := []string{
 		filepath.Join(root, "app", "javascript", "mastodon"),
-		filepath.Join(root, "app", "javascript", "packs"),
+		filepath.Join(root, "app", "javascript", "entrypoints"),
 	}
 	axiosMethodPattern := regexp.MustCompile("\\.(get|post|put|patch|delete)(?:<[^>]+>)?\\(\\s*['\"](/api/[^'\"]+)['\"]")
 	axiosTemplateMethodPattern := regexp.MustCompile("\\.(get|post|put|patch|delete)(?:<[^>]+>)?\\(\\s*`([^`]+)`")

@@ -217,7 +217,7 @@ func (s *Server) deletePushSubscription(c *echo.Context) error {
 }
 
 func (s *Server) updateWebPushSubscription(c *echo.Context) error {
-	_, _, err := s.requireUser(c)
+	user, _, err := s.requireUser(c)
 	if err != nil {
 		return err
 	}
@@ -232,14 +232,14 @@ func (s *Server) updateWebPushSubscription(c *echo.Context) error {
 	data := normalizeWebPushData(payload.Data)
 
 	var subscription models.WebPushSubscription
-	err = s.db.Where("id = ?", c.Param("id")).First(&subscription).Error
+	err = s.db.Where("id = ? AND user_id = ?", c.Param("id"), user.ID).First(&subscription).Error
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	subscription.Data = data
 	subscription.UpdatedAt = time.Now().UTC()
 	if err := s.db.Model(&models.WebPushSubscription{}).
-		Where("id = ?", subscription.ID).
+		Where("id = ? AND user_id = ?", subscription.ID, user.ID).
 		Updates(map[string]any{"data": data, "updated_at": subscription.UpdatedAt}).Error; err != nil {
 		return err
 	}

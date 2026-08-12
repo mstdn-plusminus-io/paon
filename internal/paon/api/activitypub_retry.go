@@ -33,6 +33,10 @@ type activityPubInboxProcessingJob struct {
 }
 
 func (s *Server) enqueueActivityPubInboxProcessingJob(actorID, deliveredTo int64, actorType string, body []byte) error {
+	return s.enqueueActivityPubInboxProcessingJobWithContext(context.Background(), actorID, deliveredTo, actorType, body)
+}
+
+func (s *Server) enqueueActivityPubInboxProcessingJobWithContext(ctx context.Context, actorID, deliveredTo int64, actorType string, body []byte) error {
 	job := activityPubInboxProcessingJob{
 		ActorID:              actorID,
 		DeliveredToAccountID: deliveredTo,
@@ -44,7 +48,9 @@ func (s *Server) enqueueActivityPubInboxProcessingJob(actorID, deliveredTo int64
 	if s == nil {
 		return errors.New("activitypub inbox processing Asynq backend unavailable")
 	}
-	return enqueueActivityPubInboxProcessingJobWithAsynq(job, s.enqueueActivityPubProcessingTask)
+	return enqueueActivityPubInboxProcessingJobWithAsynq(job, func(job activityPubInboxProcessingJob) bool {
+		return s.enqueueActivityPubProcessingTaskWithContext(ctx, job)
+	})
 }
 
 func enqueueActivityPubInboxProcessingJobWithAsynq(
@@ -186,17 +192,27 @@ func activityPubDeliveryRetryDelayWithRand(attempts int, int63n func(int64) int6
 func (s *Server) StartBackgroundWorkers(ctx context.Context) *BackgroundWorkers {
 	workers := newBackgroundWorkers()
 	workers.Go(ctx, s.runPaonGoWorkerHeartbeat)
+	workers.Go(ctx, s.runStatsDInformantWorker)
+	workers.Go(ctx, s.runActivityPubDeliveryRetryWorker)
+	workers.Go(ctx, s.runActivityPubInboxProcessingWorker)
+	workers.Go(ctx, func(ctx context.Context) {
+		s.startAsynqWorker(ctx, workers.markReady)
+	})
+	workers.Go(ctx, s.runWebhookDeliveryRetryWorker)
+	workers.Go(ctx, s.runWebPushDeliveryRetryWorker)
+	// Mastodon 4.3 replaces its normal recurring schedule while self-destruct
+	// mode is active. Queue consumers remain alive so accepted Delete deliveries
+	// and pre-existing retries can drain, but no unrelated recurring work starts.
+	if s.selfDestructEnabled() {
+		workers.Go(ctx, s.runSelfDestructScheduler)
+		workers.Seal()
+		return workers
+	}
 	workers.Go(ctx, func(ctx context.Context) {
 		s.runSchedulerWithRedisLock(ctx, "meili_index_definition_scheduler", 30*time.Minute, func() {
 			s.syncMeiliIndexesBestEffort(ctx)
 		})
 	})
-	workers.Go(ctx, s.runStatsDInformantWorker)
-	workers.Go(ctx, s.runActivityPubDeliveryRetryWorker)
-	workers.Go(ctx, s.runActivityPubInboxProcessingWorker)
-	workers.Go(ctx, s.startAsynqWorker)
-	workers.Go(ctx, s.runWebhookDeliveryRetryWorker)
-	workers.Go(ctx, s.runWebPushDeliveryRetryWorker)
 	workers.Go(ctx, s.runScheduledStatusPublishWorker)
 	workers.Go(ctx, s.runStatusesCleanupWorker)
 	workers.Go(ctx, s.runPollExpirationWorker)
@@ -290,7 +306,7 @@ func (s *Server) performActivityPubDeliveryRetryOnce(ctx context.Context, job ac
 	if !job.BypassAvailability && !s.activityPubDeliveryAvailable(host) {
 		return nil
 	}
-	if err := s.deliverActivityPubOnce(account, job.InboxURL, job.Body, host, job.SynchronizeFollowers); err != nil {
+	if err := s.deliverActivityPubOnce(ctx, account, job.InboxURL, job.Body, host, job.SynchronizeFollowers); err != nil {
 		s.trackActivityPubDeliveryFailure(host)
 		return err
 	}
@@ -312,7 +328,7 @@ func (s *Server) performActivityPubDeliveryInitial(ctx context.Context, job acti
 	if !job.BypassAvailability && !s.activityPubDeliveryAvailable(host) {
 		return nil
 	}
-	if err := s.deliverActivityPubOnce(account, job.InboxURL, job.Body, host, job.SynchronizeFollowers); err != nil {
+	if err := s.deliverActivityPubOnce(ctx, account, job.InboxURL, job.Body, host, job.SynchronizeFollowers); err != nil {
 		s.trackActivityPubDeliveryFailure(host)
 		return err
 	}

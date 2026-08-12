@@ -159,17 +159,11 @@ func fallbackAppleTouchIcon(size string) string {
 	return "/packs/media/icons/apple-touch-icon-" + dimensions + ".png"
 }
 
-func buildAppleTouchIconLinks(a appAssetPaths) string {
+func buildAppleTouchIconLinks(_ appAssetPaths) string {
 	var b strings.Builder
 	for _, size := range appAppleTouchIconSizes {
 		dimensions := size + "x" + size
-		href := ""
-		if a.apple != nil {
-			href = a.apple[size]
-		}
-		if strings.TrimSpace(href) == "" {
-			href = fallbackAppleTouchIcon(size)
-		}
+		href := "/apple-touch-icon-" + dimensions + ".png"
 		b.WriteString(`    <link rel="apple-touch-icon" sizes="`)
 		b.WriteString(html.EscapeString(dimensions))
 		b.WriteString(`" href="`)
@@ -185,27 +179,37 @@ func buildAppleTouchIconLinks(a appAssetPaths) string {
 // session-bound CSRF meta tag; the CSP nonce meta is omitted because Go's CSP is header-based.
 func buildAppHead(title string, theme ...string) string {
 	a := currentAppAssets()
-	themeCSS := a.themeCSS
+	themeName := "system"
 	if len(theme) > 0 {
-		if css := a.themes[normalizedWebTheme(theme[0])]; css != "" {
-			themeCSS = css
+		themeName = normalizedWebTheme(theme[0])
+	}
+	themeColorTags := `    <meta name="theme-color" content="#181820" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">`
+	themeStyleTags := `    <link rel="stylesheet" href="` + html.EscapeString(a.themes["mastodon-light"]) + `" media="not all and (prefers-color-scheme: dark)" crossorigin="anonymous">
+    <link rel="stylesheet" href="` + html.EscapeString(a.themes["default"]) + `" media="(prefers-color-scheme: dark)" crossorigin="anonymous">`
+	if themeName != "system" {
+		themeColor := "#181820"
+		if themeName == "mastodon-light" {
+			themeColor = "#ffffff"
 		}
+		themeColorTags = `    <meta name="theme-color" content="` + themeColor + `">`
+		themeStyleTags = `    <link rel="stylesheet" href="` + html.EscapeString(a.themes[themeName]) + `" media="all" crossorigin="anonymous">`
 	}
 	return `<meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex,nofollow">
     <link rel="icon" href="/favicon.ico" type="image/x-icon">
-    <link rel="icon" sizes="16x16" href="` + html.EscapeString(a.favicon16) + `" type="image/png">
-    <link rel="icon" sizes="32x32" href="` + html.EscapeString(a.favicon32) + `" type="image/png">
-    <link rel="icon" sizes="48x48" href="` + html.EscapeString(a.favicon48) + `" type="image/png">
+    <link rel="icon" sizes="16x16" href="/favicon-16x16.png" type="image/png">
+    <link rel="icon" sizes="32x32" href="/favicon-32x32.png" type="image/png">
+    <link rel="icon" sizes="48x48" href="/favicon-48x48.png" type="image/png">
 ` + buildAppleTouchIconLinks(a) + `    <link rel="mask-icon" href="` + html.EscapeString(a.logoSVG) + `" color="#6364FF">
     <link rel="manifest" href="/manifest.json">
-    <meta name="theme-color" content="#191b22">
+` + themeColorTags + `
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="plusminus-disable-remote-media-cache" content="` + html.EscapeString(a.remoteCacheMeta) + `">
     <title>` + html.EscapeString(title) + `</title>
     <link rel="stylesheet" href="` + html.EscapeString(a.commonCSS) + `" media="all" crossorigin="anonymous">
-    <link rel="stylesheet" href="` + html.EscapeString(themeCSS) + `" media="all" crossorigin="anonymous">
+` + themeStyleTags + `
     <link rel="stylesheet" href="/inert.css" media="all" id="inert-style">
     <link rel="stylesheet" href="/custom.css" media="all">
     <script src="` + html.EscapeString(a.commonJS) + `" crossorigin="anonymous" defer></script>
@@ -214,10 +218,10 @@ func buildAppHead(title string, theme ...string) string {
 
 func normalizedWebTheme(theme string) string {
 	switch strings.TrimSpace(theme) {
-	case "contrast", "mastodon-light", "single-column-chat-dark":
+	case "system", "default", "contrast", "mastodon-light", "single-column-chat-dark":
 		return strings.TrimSpace(theme)
 	default:
-		return "default"
+		return "system"
 	}
 }
 
@@ -226,7 +230,7 @@ func normalizedWebTheme(theme string) string {
 // public.js pack. This is the shell for all auth pages (sign in/up/reset/2FA/...).
 func authShellHTML(title string, notice string, errorText string, body string, locale ...string) string {
 	loc := ""
-	theme := "default"
+	theme := "system"
 	if len(locale) > 0 {
 		loc = locale[0]
 	}

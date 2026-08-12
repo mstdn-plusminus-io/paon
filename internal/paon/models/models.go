@@ -228,7 +228,7 @@ type Account struct {
 	FeaturedCollectionURL      sql.NullString `gorm:"column:featured_collection_url"`
 	Fields                     []byte         `gorm:"column:fields"`
 	AlsoKnownAs                StringArray    `gorm:"column:also_known_as"`
-	DevicesURL                 NullSafeString `gorm:"column:devices_url"`
+	AttributionDomains         StringArray    `gorm:"column:attribution_domains"`
 	ActorType                  sql.NullString `gorm:"column:actor_type"`
 	Discoverable               sql.NullBool   `gorm:"column:discoverable"`
 	HideCollections            sql.NullBool   `gorm:"column:hide_collections"`
@@ -340,76 +340,6 @@ type AccountWarningPreset struct {
 }
 
 func (AccountWarningPreset) TableName() string { return "account_warning_presets" }
-
-type SystemKey struct {
-	ID        int64     `gorm:"primaryKey;column:id"`
-	Key       []byte    `gorm:"column:key"`
-	CreatedAt time.Time `gorm:"column:created_at"`
-	UpdatedAt time.Time `gorm:"column:updated_at"`
-}
-
-func (SystemKey) TableName() string { return "system_keys" }
-
-type Device struct {
-	ID             int64         `gorm:"primaryKey;column:id"`
-	AccessTokenID  sql.NullInt64 `gorm:"column:access_token_id"`
-	AccountID      sql.NullInt64 `gorm:"column:account_id"`
-	DeviceID       string        `gorm:"column:device_id"`
-	Name           string        `gorm:"column:name"`
-	FingerprintKey string        `gorm:"column:fingerprint_key"`
-	IdentityKey    string        `gorm:"column:identity_key"`
-	CreatedAt      time.Time     `gorm:"column:created_at"`
-	UpdatedAt      time.Time     `gorm:"column:updated_at"`
-	Account        Account       `gorm:"foreignKey:AccountID"`
-}
-
-func (Device) TableName() string { return "devices" }
-
-func DeviceAccountID(value int64) sql.NullInt64 {
-	return sql.NullInt64{Int64: value, Valid: true}
-}
-
-type OneTimeKey struct {
-	ID        int64         `gorm:"primaryKey;column:id"`
-	DeviceID  sql.NullInt64 `gorm:"column:device_id"`
-	KeyID     string        `gorm:"column:key_id"`
-	Key       string        `gorm:"column:key"`
-	Signature string        `gorm:"column:signature"`
-	CreatedAt time.Time     `gorm:"column:created_at"`
-	UpdatedAt time.Time     `gorm:"column:updated_at"`
-	Device    Device        `gorm:"foreignKey:DeviceID"`
-}
-
-func (OneTimeKey) TableName() string { return "one_time_keys" }
-
-func OneTimeKeyDeviceID(value int64) sql.NullInt64 {
-	return sql.NullInt64{Int64: value, Valid: true}
-}
-
-type EncryptedMessage struct {
-	ID              int64         `gorm:"primaryKey;column:id"`
-	DeviceID        sql.NullInt64 `gorm:"column:device_id"`
-	FromAccountID   sql.NullInt64 `gorm:"column:from_account_id"`
-	FromDeviceID    string        `gorm:"column:from_device_id"`
-	MessageType     int           `gorm:"column:type"`
-	Body            string        `gorm:"column:body"`
-	Digest          string        `gorm:"column:digest"`
-	MessageFranking string        `gorm:"column:message_franking"`
-	CreatedAt       time.Time     `gorm:"column:created_at"`
-	UpdatedAt       time.Time     `gorm:"column:updated_at"`
-	Device          Device        `gorm:"foreignKey:DeviceID"`
-	FromAccount     Account       `gorm:"foreignKey:FromAccountID"`
-}
-
-func (EncryptedMessage) TableName() string { return "encrypted_messages" }
-
-func EncryptedMessageDeviceID(value int64) sql.NullInt64 {
-	return sql.NullInt64{Int64: value, Valid: true}
-}
-
-func EncryptedMessageFromAccountID(value int64) sql.NullInt64 {
-	return sql.NullInt64{Int64: value, Valid: true}
-}
 
 type AccountAlias struct {
 	ID        int64         `gorm:"primaryKey;column:id"`
@@ -623,11 +553,12 @@ type UnavailableDomain struct {
 func (UnavailableDomain) TableName() string { return "unavailable_domains" }
 
 type EmailDomainBlock struct {
-	ID        int64         `gorm:"primaryKey;column:id"`
-	Domain    string        `gorm:"column:domain"`
-	CreatedAt time.Time     `gorm:"column:created_at"`
-	UpdatedAt time.Time     `gorm:"column:updated_at"`
-	ParentID  sql.NullInt64 `gorm:"column:parent_id"`
+	ID                int64         `gorm:"primaryKey;column:id"`
+	Domain            string        `gorm:"column:domain"`
+	CreatedAt         time.Time     `gorm:"column:created_at"`
+	UpdatedAt         time.Time     `gorm:"column:updated_at"`
+	ParentID          sql.NullInt64 `gorm:"column:parent_id"`
+	AllowWithApproval bool          `gorm:"column:allow_with_approval"`
 }
 
 func (EmailDomainBlock) TableName() string { return "email_domain_blocks" }
@@ -722,6 +653,7 @@ type Rule struct {
 	Priority  int          `gorm:"column:priority"`
 	DeletedAt sql.NullTime `gorm:"column:deleted_at"`
 	Text      string       `gorm:"column:text"`
+	Hint      string       `gorm:"column:hint"`
 	CreatedAt time.Time    `gorm:"column:created_at"`
 	UpdatedAt time.Time    `gorm:"column:updated_at"`
 }
@@ -917,9 +849,7 @@ type User struct {
 	UpdatedAt              time.Time      `gorm:"column:updated_at"`
 	ResetPasswordToken     sql.NullString `gorm:"column:reset_password_token"`
 	ResetPasswordSentAt    sql.NullTime   `gorm:"column:reset_password_sent_at"`
-	Admin                  bool           `gorm:"column:admin"`
 	Disabled               bool           `gorm:"column:disabled"`
-	Moderator              bool           `gorm:"column:moderator"`
 	Approved               bool           `gorm:"column:approved"`
 	ConfirmationToken      sql.NullString `gorm:"column:confirmation_token"`
 	ConfirmedAt            sql.NullTime   `gorm:"column:confirmed_at"`
@@ -929,6 +859,7 @@ type User struct {
 	EncryptedOTPSecret     sql.NullString `gorm:"column:encrypted_otp_secret"`
 	EncryptedOTPSecretIV   sql.NullString `gorm:"column:encrypted_otp_secret_iv"`
 	EncryptedOTPSecretSalt sql.NullString `gorm:"column:encrypted_otp_secret_salt"`
+	OTPSecret              sql.NullString `gorm:"column:otp_secret"`
 	ConsumedTimestep       sql.NullInt64  `gorm:"column:consumed_timestep"`
 	OTPRequiredForLogin    bool           `gorm:"column:otp_required_for_login"`
 	OTPBackupCodes         StringArray    `gorm:"column:otp_backup_codes;type:text[]"`
@@ -1140,15 +1071,17 @@ type WebPushSubscription struct {
 func (WebPushSubscription) TableName() string { return "web_push_subscriptions" }
 
 type OAuthAccessGrant struct {
-	ID              int64          `gorm:"primaryKey;column:id"`
-	Token           string         `gorm:"column:token"`
-	ExpiresIn       int64          `gorm:"column:expires_in"`
-	RedirectURI     string         `gorm:"column:redirect_uri"`
-	CreatedAt       time.Time      `gorm:"column:created_at"`
-	RevokedAt       sql.NullTime   `gorm:"column:revoked_at"`
-	Scopes          NullSafeString `gorm:"column:scopes"`
-	ApplicationID   int64          `gorm:"column:application_id"`
-	ResourceOwnerID int64          `gorm:"column:resource_owner_id"`
+	ID                  int64          `gorm:"primaryKey;column:id"`
+	Token               string         `gorm:"column:token"`
+	ExpiresIn           int64          `gorm:"column:expires_in"`
+	RedirectURI         string         `gorm:"column:redirect_uri"`
+	CreatedAt           time.Time      `gorm:"column:created_at"`
+	RevokedAt           sql.NullTime   `gorm:"column:revoked_at"`
+	Scopes              NullSafeString `gorm:"column:scopes"`
+	ApplicationID       int64          `gorm:"column:application_id"`
+	ResourceOwnerID     int64          `gorm:"column:resource_owner_id"`
+	CodeChallenge       sql.NullString `gorm:"column:code_challenge"`
+	CodeChallengeMethod sql.NullString `gorm:"column:code_challenge_method"`
 }
 
 func (OAuthAccessGrant) TableName() string { return "oauth_access_grants" }
@@ -1199,49 +1132,64 @@ type PgHeroSpaceStat struct {
 func (PgHeroSpaceStat) TableName() string { return "pghero_space_stats" }
 
 type Status struct {
-	ID                        int64             `gorm:"primaryKey;column:id"`
-	URI                       sql.NullString    `gorm:"column:uri"`
-	Text                      string            `gorm:"column:text"`
-	CreatedAt                 time.Time         `gorm:"column:created_at"`
-	UpdatedAt                 time.Time         `gorm:"column:updated_at"`
-	InReplyToID               sql.NullInt64     `gorm:"column:in_reply_to_id"`
-	ReblogOfID                sql.NullInt64     `gorm:"column:reblog_of_id"`
-	URL                       sql.NullString    `gorm:"column:url"`
-	Sensitive                 bool              `gorm:"column:sensitive"`
-	Visibility                int               `gorm:"column:visibility"`
-	SpoilerText               string            `gorm:"column:spoiler_text"`
-	Reply                     bool              `gorm:"column:reply"`
-	Language                  sql.NullString    `gorm:"column:language"`
-	ConversationID            sql.NullInt64     `gorm:"column:conversation_id"`
-	Local                     sql.NullBool      `gorm:"column:local"`
-	AccountID                 int64             `gorm:"column:account_id"`
-	ApplicationID             sql.NullInt64     `gorm:"column:application_id"`
-	InReplyToAccountID        sql.NullInt64     `gorm:"column:in_reply_to_account_id"`
-	PollID                    sql.NullInt64     `gorm:"column:poll_id"`
-	DeletedAt                 sql.NullTime      `gorm:"column:deleted_at"`
-	EditedAt                  sql.NullTime      `gorm:"column:edited_at"`
-	Trendable                 sql.NullBool      `gorm:"column:trendable"`
-	OrderedMediaAttachmentIDs Int64Array        `gorm:"column:ordered_media_attachment_ids"`
-	Account                   Account           `gorm:"foreignKey:AccountID"`
-	Reblog                    *Status           `gorm:"foreignKey:ReblogOfID"`
-	StatusStat                StatusStat        `gorm:"foreignKey:StatusID"`
-	Application               *OAuthApplication `gorm:"foreignKey:ApplicationID"`
-	MediaAttachments          []MediaAttachment `gorm:"foreignKey:StatusID"`
-	Mentions                  []Mention         `gorm:"foreignKey:StatusID"`
-	Tags                      []Tag             `gorm:"many2many:statuses_tags;joinForeignKey:StatusID;joinReferences:TagID"`
-	PreviewCards              []PreviewCard     `gorm:"many2many:preview_cards_statuses;joinForeignKey:StatusID;joinReferences:PreviewCardID"`
-	Poll                      *Poll             `gorm:"foreignKey:StatusID"`
-	FavouritedByCurrent       bool              `gorm:"-"`
-	RebloggedByCurrent        bool              `gorm:"-"`
-	MutedByCurrent            bool              `gorm:"-"`
-	BookmarkedByCurrent       bool              `gorm:"-"`
-	PinnedByCurrent           bool              `gorm:"-"`
-	CustomEmojis              []CustomEmoji     `gorm:"-"`
-	QuoteID                   sql.NullString    `gorm:"-"`
-	QuoteOriginalURL          sql.NullString    `gorm:"-"`
+	ID                        int64               `gorm:"primaryKey;column:id"`
+	URI                       sql.NullString      `gorm:"column:uri"`
+	Text                      string              `gorm:"column:text"`
+	CreatedAt                 time.Time           `gorm:"column:created_at"`
+	UpdatedAt                 time.Time           `gorm:"column:updated_at"`
+	InReplyToID               sql.NullInt64       `gorm:"column:in_reply_to_id"`
+	ReblogOfID                sql.NullInt64       `gorm:"column:reblog_of_id"`
+	URL                       sql.NullString      `gorm:"column:url"`
+	Sensitive                 bool                `gorm:"column:sensitive"`
+	Visibility                int                 `gorm:"column:visibility"`
+	SpoilerText               string              `gorm:"column:spoiler_text"`
+	Reply                     bool                `gorm:"column:reply"`
+	Language                  sql.NullString      `gorm:"column:language"`
+	ConversationID            sql.NullInt64       `gorm:"column:conversation_id"`
+	Local                     sql.NullBool        `gorm:"column:local"`
+	AccountID                 int64               `gorm:"column:account_id"`
+	ApplicationID             sql.NullInt64       `gorm:"column:application_id"`
+	InReplyToAccountID        sql.NullInt64       `gorm:"column:in_reply_to_account_id"`
+	PollID                    sql.NullInt64       `gorm:"column:poll_id"`
+	DeletedAt                 sql.NullTime        `gorm:"column:deleted_at"`
+	EditedAt                  sql.NullTime        `gorm:"column:edited_at"`
+	Trendable                 sql.NullBool        `gorm:"column:trendable"`
+	OrderedMediaAttachmentIDs Int64Array          `gorm:"column:ordered_media_attachment_ids"`
+	Account                   Account             `gorm:"foreignKey:AccountID"`
+	Reblog                    *Status             `gorm:"foreignKey:ReblogOfID"`
+	StatusStat                StatusStat          `gorm:"foreignKey:StatusID"`
+	Application               *OAuthApplication   `gorm:"foreignKey:ApplicationID"`
+	MediaAttachments          []MediaAttachment   `gorm:"foreignKey:StatusID"`
+	Mentions                  []Mention           `gorm:"foreignKey:StatusID"`
+	Tags                      []Tag               `gorm:"many2many:statuses_tags;joinForeignKey:StatusID;joinReferences:TagID"`
+	PreviewCards              []PreviewCard       `gorm:"many2many:preview_cards_statuses;joinForeignKey:StatusID;joinReferences:PreviewCardID"`
+	PreviewCardStatuses       []PreviewCardStatus `gorm:"foreignKey:StatusID"`
+	Poll                      *Poll               `gorm:"foreignKey:StatusID"`
+	FavouritedByCurrent       bool                `gorm:"-"`
+	RebloggedByCurrent        bool                `gorm:"-"`
+	MutedByCurrent            bool                `gorm:"-"`
+	BookmarkedByCurrent       bool                `gorm:"-"`
+	PinnedByCurrent           bool                `gorm:"-"`
+	CustomEmojis              []CustomEmoji       `gorm:"-"`
+	QuoteID                   sql.NullString      `gorm:"-"`
+	QuoteOriginalURL          sql.NullString      `gorm:"-"`
 }
 
 func (Status) TableName() string { return "statuses" }
+
+func (status Status) FirstPreviewCard() (PreviewCard, bool) {
+	if len(status.PreviewCards) == 0 {
+		return PreviewCard{}, false
+	}
+	card := status.PreviewCards[0]
+	for _, join := range status.PreviewCardStatuses {
+		if join.PreviewCardID == card.ID && join.URL.Valid && strings.TrimSpace(join.URL.String) != "" {
+			card.URL = join.URL.String
+			break
+		}
+	}
+	return card, true
+}
 
 type Tombstone struct {
 	ID          int64         `gorm:"primaryKey;column:id"`
@@ -1359,15 +1307,18 @@ type PreviewCard struct {
 	LinkType                  sql.NullInt64   `gorm:"column:link_type"`
 	PublishedAt               sql.NullTime    `gorm:"column:published_at"`
 	ImageDescription          string          `gorm:"column:image_description"`
+	AuthorAccountID           sql.NullInt64   `gorm:"column:author_account_id"`
+	AuthorAccount             *Account        `gorm:"foreignKey:AuthorAccountID"`
 }
 
 func (PreviewCard) TableName() string { return "preview_cards" }
 
 type PreviewCardStatus struct {
-	StatusID      int64       `gorm:"primaryKey;column:status_id"`
-	PreviewCardID int64       `gorm:"primaryKey;column:preview_card_id"`
-	PreviewCard   PreviewCard `gorm:"foreignKey:PreviewCardID"`
-	Status        Status      `gorm:"foreignKey:StatusID"`
+	StatusID      int64          `gorm:"primaryKey;column:status_id"`
+	PreviewCardID int64          `gorm:"primaryKey;column:preview_card_id"`
+	URL           sql.NullString `gorm:"column:url"`
+	PreviewCard   PreviewCard    `gorm:"foreignKey:PreviewCardID"`
+	Status        Status         `gorm:"foreignKey:StatusID"`
 }
 
 func (PreviewCardStatus) TableName() string { return "preview_cards_statuses" }
@@ -1513,6 +1464,32 @@ func (FollowRecommendationSuppression) TableName() string {
 	return "follow_recommendation_suppressions"
 }
 
+type FollowRecommendationMute struct {
+	ID              int64     `gorm:"primaryKey;column:id"`
+	AccountID       int64     `gorm:"column:account_id"`
+	TargetAccountID int64     `gorm:"column:target_account_id"`
+	CreatedAt       time.Time `gorm:"column:created_at"`
+	UpdatedAt       time.Time `gorm:"column:updated_at"`
+	Account         Account   `gorm:"foreignKey:AccountID"`
+	TargetAccount   Account   `gorm:"foreignKey:TargetAccountID"`
+}
+
+func (FollowRecommendationMute) TableName() string { return "follow_recommendation_mutes" }
+
+type GeneratedAnnualReport struct {
+	ID            int64        `gorm:"primaryKey;column:id"`
+	AccountID     int64        `gorm:"column:account_id"`
+	Year          int          `gorm:"column:year"`
+	Data          JSONValue    `gorm:"column:data"`
+	SchemaVersion int          `gorm:"column:schema_version"`
+	ViewedAt      sql.NullTime `gorm:"column:viewed_at"`
+	CreatedAt     time.Time    `gorm:"column:created_at"`
+	UpdatedAt     time.Time    `gorm:"column:updated_at"`
+	Account       Account      `gorm:"foreignKey:AccountID"`
+}
+
+func (GeneratedAnnualReport) TableName() string { return "generated_annual_reports" }
+
 type Favourite struct {
 	ID        int64     `gorm:"primaryKey;column:id"`
 	AccountID int64     `gorm:"column:account_id"`
@@ -1592,20 +1569,66 @@ type Bookmark struct {
 func (Bookmark) TableName() string { return "bookmarks" }
 
 type Notification struct {
-	ID            int64          `gorm:"primaryKey;column:id"`
-	ActivityID    int64          `gorm:"column:activity_id"`
-	ActivityType  string         `gorm:"column:activity_type"`
-	CreatedAt     time.Time      `gorm:"column:created_at"`
-	UpdatedAt     time.Time      `gorm:"column:updated_at"`
-	AccountID     int64          `gorm:"column:account_id"`
-	FromAccountID int64          `gorm:"column:from_account_id"`
-	Type          NullSafeString `gorm:"column:type"`
-	FromAccount   Account        `gorm:"foreignKey:FromAccountID"`
-	TargetStatus  *Status        `gorm:"-"`
-	Report        *Report        `gorm:"-"`
+	ID             int64                              `gorm:"primaryKey;column:id"`
+	ActivityID     int64                              `gorm:"column:activity_id"`
+	ActivityType   string                             `gorm:"column:activity_type"`
+	CreatedAt      time.Time                          `gorm:"column:created_at"`
+	UpdatedAt      time.Time                          `gorm:"column:updated_at"`
+	AccountID      int64                              `gorm:"column:account_id"`
+	FromAccountID  int64                              `gorm:"column:from_account_id"`
+	Type           NullSafeString                     `gorm:"column:type"`
+	Filtered       bool                               `gorm:"column:filtered"`
+	GroupKey       sql.NullString                     `gorm:"column:group_key"`
+	FromAccount    Account                            `gorm:"foreignKey:FromAccountID"`
+	TargetStatus   *Status                            `gorm:"-"`
+	Report         *Report                            `gorm:"-"`
+	AccountWarning *AccountWarning                    `gorm:"-"`
+	SeveranceEvent *AccountRelationshipSeveranceEvent `gorm:"-"`
 }
 
 func (Notification) TableName() string { return "notifications" }
+
+type NotificationPolicy struct {
+	ID                 int64     `gorm:"primaryKey;column:id"`
+	AccountID          int64     `gorm:"column:account_id"`
+	CreatedAt          time.Time `gorm:"column:created_at"`
+	UpdatedAt          time.Time `gorm:"column:updated_at"`
+	ForNotFollowing    int       `gorm:"column:for_not_following"`
+	ForNotFollowers    int       `gorm:"column:for_not_followers"`
+	ForNewAccounts     int       `gorm:"column:for_new_accounts"`
+	ForPrivateMentions int       `gorm:"column:for_private_mentions"`
+	ForLimitedAccounts int       `gorm:"column:for_limited_accounts"`
+	Account            Account   `gorm:"foreignKey:AccountID"`
+}
+
+func (NotificationPolicy) TableName() string { return "notification_policies" }
+
+type NotificationPermission struct {
+	ID            int64     `gorm:"primaryKey;column:id"`
+	AccountID     int64     `gorm:"column:account_id"`
+	FromAccountID int64     `gorm:"column:from_account_id"`
+	CreatedAt     time.Time `gorm:"column:created_at"`
+	UpdatedAt     time.Time `gorm:"column:updated_at"`
+	Account       Account   `gorm:"foreignKey:AccountID"`
+	FromAccount   Account   `gorm:"foreignKey:FromAccountID"`
+}
+
+func (NotificationPermission) TableName() string { return "notification_permissions" }
+
+type NotificationRequest struct {
+	ID                 int64         `gorm:"primaryKey;column:id"`
+	AccountID          int64         `gorm:"column:account_id"`
+	FromAccountID      int64         `gorm:"column:from_account_id"`
+	LastStatusID       sql.NullInt64 `gorm:"column:last_status_id"`
+	NotificationsCount int64         `gorm:"column:notifications_count"`
+	CreatedAt          time.Time     `gorm:"column:created_at"`
+	UpdatedAt          time.Time     `gorm:"column:updated_at"`
+	Account            Account       `gorm:"foreignKey:AccountID"`
+	FromAccount        Account       `gorm:"foreignKey:FromAccountID"`
+	LastStatus         *Status       `gorm:"foreignKey:LastStatusID"`
+}
+
+func (NotificationRequest) TableName() string { return "notification_requests" }
 
 func (n Notification) ResolvedType() string {
 	if n.Type != "" {
@@ -1644,6 +1667,7 @@ type Report struct {
 	Category               int            `gorm:"column:category"`
 	ActionTakenAt          sql.NullTime   `gorm:"column:action_taken_at"`
 	RuleIDs                Int64Array     `gorm:"column:rule_ids"`
+	ApplicationID          sql.NullInt64  `gorm:"column:application_id"`
 	Account                Account        `gorm:"foreignKey:AccountID"`
 	TargetAccount          Account        `gorm:"foreignKey:TargetAccountID"`
 	AssignedAccount        Account        `gorm:"foreignKey:AssignedAccountID"`
@@ -1651,6 +1675,51 @@ type Report struct {
 }
 
 func (Report) TableName() string { return "reports" }
+
+type RelationshipSeveranceEvent struct {
+	ID         int64     `gorm:"primaryKey;column:id"`
+	Type       int       `gorm:"column:type"`
+	TargetName string    `gorm:"column:target_name"`
+	Purged     bool      `gorm:"column:purged"`
+	CreatedAt  time.Time `gorm:"column:created_at"`
+	UpdatedAt  time.Time `gorm:"column:updated_at"`
+}
+
+func (RelationshipSeveranceEvent) TableName() string { return "relationship_severance_events" }
+
+type AccountRelationshipSeveranceEvent struct {
+	ID                           int64                      `gorm:"primaryKey;column:id"`
+	AccountID                    int64                      `gorm:"column:account_id"`
+	RelationshipSeveranceEventID int64                      `gorm:"column:relationship_severance_event_id"`
+	FollowersCount               int                        `gorm:"column:followers_count"`
+	FollowingCount               int                        `gorm:"column:following_count"`
+	CreatedAt                    time.Time                  `gorm:"column:created_at"`
+	UpdatedAt                    time.Time                  `gorm:"column:updated_at"`
+	Account                      Account                    `gorm:"foreignKey:AccountID"`
+	RelationshipSeveranceEvent   RelationshipSeveranceEvent `gorm:"foreignKey:RelationshipSeveranceEventID"`
+}
+
+func (AccountRelationshipSeveranceEvent) TableName() string {
+	return "account_relationship_severance_events"
+}
+
+type SeveredRelationship struct {
+	ID                           int64                      `gorm:"primaryKey;column:id"`
+	RelationshipSeveranceEventID int64                      `gorm:"column:relationship_severance_event_id"`
+	LocalAccountID               int64                      `gorm:"column:local_account_id"`
+	RemoteAccountID              int64                      `gorm:"column:remote_account_id"`
+	Direction                    int                        `gorm:"column:direction"`
+	ShowReblogs                  sql.NullBool               `gorm:"column:show_reblogs"`
+	Notify                       sql.NullBool               `gorm:"column:notify"`
+	Languages                    StringArray                `gorm:"column:languages;type:text[]"`
+	CreatedAt                    time.Time                  `gorm:"column:created_at"`
+	UpdatedAt                    time.Time                  `gorm:"column:updated_at"`
+	RelationshipSeveranceEvent   RelationshipSeveranceEvent `gorm:"foreignKey:RelationshipSeveranceEventID"`
+	LocalAccount                 Account                    `gorm:"foreignKey:LocalAccountID"`
+	RemoteAccount                Account                    `gorm:"foreignKey:RemoteAccountID"`
+}
+
+func (SeveredRelationship) TableName() string { return "severed_relationships" }
 
 type ReportNote struct {
 	ID        int64     `gorm:"primaryKey;column:id"`

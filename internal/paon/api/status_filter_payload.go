@@ -77,7 +77,7 @@ func statusListFilterContext(c *echo.Context) string {
 		return "home"
 	case strings.Contains(path, "/api/v1/accounts/") && strings.HasSuffix(path, "/statuses"):
 		return "account"
-	case strings.Contains(path, "/api/v1/timelines/public"), strings.Contains(path, "/api/v1/timelines/tag/"):
+	case strings.Contains(path, "/api/v1/timelines/public"), strings.Contains(path, "/api/v1/timelines/tag/"), strings.Contains(path, "/api/v1/timelines/link"):
 		return "public"
 	case strings.Contains(path, "/api/v1/trends/statuses"), strings.Contains(path, "/api/v2/search"):
 		return "public"

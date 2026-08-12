@@ -64,7 +64,7 @@ func (s *Server) updateAdminSettingsAppearance(c *echo.Context) error {
 
 func (s *Server) adminAppearanceSettings() adminAppearanceSettings {
 	return s.withAdminAppearanceSiteUpload(adminAppearanceSettings{
-		Theme:     adminThemeSetting(s.settingStringValue("theme", "default")),
+		Theme:     adminThemeSetting(s.settingStringValue("theme", "system")),
 		CustomCSS: s.settingValue("custom_css", ""),
 	})
 }
@@ -115,12 +115,12 @@ func adminThemeSetting(value string) string {
 	if adminThemeAllowed(value) {
 		return value
 	}
-	return "default"
+	return "system"
 }
 
 func adminThemeAllowed(value string) bool {
 	switch value {
-	case "default", "contrast", "mastodon-light", "single-column-chat-dark":
+	case "system", "default", "contrast", "mastodon-light", "single-column-chat-dark":
 		return true
 	default:
 		return false
@@ -140,8 +140,9 @@ func adminSettingsAppearanceHTML(settings adminAppearanceSettings, notice string
 	title := adminT(loc, "admin.settings.appearance.title", "Appearance")
 	body := `<p class="lead">` + html.EscapeString(adminT(loc, "admin.settings.appearance.preamble", "Configure the default visual theme, custom CSS, and optional mascot assets.")) + `</p>
 <form class="simple_form" method="post" action="/admin/settings/appearance" enctype="multipart/form-data">
-  <input type="hidden" name="_method" value="patch">
-  <div class="fields-group"><label>` + html.EscapeString(adminSettingsLabel(loc, "theme", "Default theme")) + ` <select name="form_admin_settings[theme]">` +
+	  <input type="hidden" name="_method" value="patch">
+	  <div class="fields-group"><label>` + html.EscapeString(adminSettingsLabel(loc, "theme", "Default theme")) + ` <select name="form_admin_settings[theme]">` +
+		option("system", settingsT(loc, "themes.system", "Automatic (use system theme)")) +
 		option("default", "Default") +
 		option("contrast", "High contrast") +
 		option("mastodon-light", "Mastodon light") +

@@ -170,6 +170,55 @@ func (s *Server) applyStatusQuote(status *models.Status, quote *models.Status) {
 	status.QuoteOriginalURL = sqlNullString(s.quoteStatusURI(*quote))
 }
 
+func statusQuoteTargetStructurallyAllowed(quote *models.Status) bool {
+	if quote == nil || quote.ID == 0 || quote.DeletedAt.Valid || quote.ReblogOfID.Valid {
+		return false
+	}
+	if quote.Visibility != 0 && quote.Visibility != 1 {
+		return false
+	}
+	return quote.Account.ID != 0 && !quote.Account.SuspendedAt.Valid && !quote.Account.MovedToAccountID.Valid
+}
+
+func (s *Server) statusQuoteTargetAllowedForAccount(ctx context.Context, account *models.Account, quote *models.Status) (bool, error) {
+	if s == nil || s.db == nil || account == nil || account.ID == 0 || account.SuspendedAt.Valid || account.MovedToAccountID.Valid || !statusQuoteTargetStructurallyAllowed(quote) {
+		return false, nil
+	}
+	if quote.AccountID == account.ID {
+		return true, nil
+	}
+	database := s.db
+	if ctx != nil {
+		database = database.WithContext(ctx)
+	}
+	var blockCount int64
+	if err := database.Model(&models.Block{}).
+		Where("(account_id = ? AND target_account_id = ?) OR (account_id = ? AND target_account_id = ?)", account.ID, quote.AccountID, quote.AccountID, account.ID).
+		Count(&blockCount).Error; err != nil {
+		return false, err
+	}
+	if blockCount > 0 {
+		return false, nil
+	}
+	var muteCount int64
+	now := time.Now().UTC()
+	if err := database.Model(&models.Mute{}).
+		Where("((account_id = ? AND target_account_id = ?) OR (account_id = ? AND target_account_id = ?)) AND (expires_at IS NULL OR expires_at > ?)", account.ID, quote.AccountID, quote.AccountID, account.ID, now).
+		Count(&muteCount).Error; err != nil {
+		return false, err
+	}
+	if muteCount > 0 {
+		return false, nil
+	}
+	if quote.Account.Domain.Valid {
+		blocked, err := s.accountDomainBlocking(account.ID, quote.Account.Domain.String)
+		if err != nil || blocked {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 func (s *Server) deleteStatusQuoteBestEffort(ctx context.Context, statusID int64) {
 	if s == nil || s.quoteStore == nil || statusID == 0 {
 		return

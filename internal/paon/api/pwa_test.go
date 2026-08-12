@@ -431,7 +431,8 @@ func TestRailsPublicRootAssetsStayServed(t *testing.T) {
 		"robots.txt":          "User-agent: *",
 		"embed.js":            "window.MastodonEmbed=true;",
 		"packs/sw.js":         "self.addEventListener('install',function(){});",
-		"packs/manifest.json": `{"media/icons/android-chrome-192x192.png":"/packs/media/icons/android-chrome-192x192-hash.png","media/icons/apple-touch-icon-180x180.png":"/packs/media/icons/apple-touch-icon-180x180-hash.png","media/icons/apple-touch-icon-120x120.png":"/packs/media/icons/apple-touch-icon-120x120-hash.png"}`,
+		"packs/manifest.json": `{"media/icons/favicon-32x32.png":"/packs/media/icons/favicon-32x32-hash.png","media/icons/android-chrome-192x192.png":"/packs/media/icons/android-chrome-192x192-hash.png","media/icons/apple-touch-icon-180x180.png":"/packs/media/icons/apple-touch-icon-180x180-hash.png","media/icons/apple-touch-icon-120x120.png":"/packs/media/icons/apple-touch-icon-120x120-hash.png"}`,
+		"packs/media/icons/favicon-32x32-hash.png":            "png",
 		"packs/media/icons/android-chrome-192x192-hash.png":   "png",
 		"packs/media/icons/apple-touch-icon-180x180-hash.png": "png",
 		"packs/media/icons/apple-touch-icon-120x120-hash.png": "png",
@@ -460,6 +461,7 @@ func TestRailsPublicRootAssetsStayServed(t *testing.T) {
 	for _, path := range []string{
 		"/badge.png",
 		"/favicon.ico",
+		"/favicon-32x32.png",
 		"/inert.css",
 		"/oops.gif",
 		"/oops.png",
@@ -483,6 +485,12 @@ func TestRailsPublicRootAssetsStayServed(t *testing.T) {
 		s.echo.ServeHTTP(rec, req)
 		if path == "/android-chrome-192x192.png" {
 			if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/packs/media/icons/android-chrome-192x192-hash.png" {
+				t.Fatalf("%s status = %d location = %q", path, rec.Code, rec.Header().Get("Location"))
+			}
+			continue
+		}
+		if path == "/favicon-32x32.png" {
+			if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/packs/media/icons/favicon-32x32-hash.png" {
 				t.Fatalf("%s status = %d location = %q", path, rec.Code, rec.Header().Get("Location"))
 			}
 			continue

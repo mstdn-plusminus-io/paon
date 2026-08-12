@@ -32,7 +32,7 @@ func (s *Server) accountRelationships(c *echo.Context) error {
 		return c.JSON(http.StatusOK, []serializer.Relationship{})
 	}
 
-	relationships, err := s.relationshipsFor(account.ID, ids)
+	relationships, err := s.relationshipsForWithSuspended(account.ID, ids, truthy(c.QueryParam("with_suspended")))
 	if err != nil {
 		return err
 	}
@@ -102,6 +102,7 @@ func (s *Server) followAccount(c *echo.Context) error {
 		return err
 	}
 	s.removePotentialFriendship(c.Request().Context(), account.ID, target.ID)
+	s.invalidateSuggestionCache(c.Request().Context(), account.ID)
 	if existingRelationshipUpdated {
 		s.invalidateFollowRelationshipCaches(c.Request().Context(), *account, target.ID)
 		return s.relationshipResponse(c, account.ID, target)
@@ -563,6 +564,7 @@ func (s *Server) unfollowAccount(c *echo.Context) error {
 		return err
 	}
 	s.invalidateFollowRelationshipCaches(c.Request().Context(), *account, target.ID)
+	s.invalidateSuggestionCache(c.Request().Context(), account.ID)
 	if followDeleted {
 		s.unmergeAfterUnfollowBestEffort(c.Request().Context(), target.ID, *account)
 		s.meiliReindexPrivateStatusesForAccountsBestEffort(c.Request().Context(), target.ID)
@@ -655,6 +657,7 @@ func (s *Server) blockAccount(c *echo.Context) error {
 	s.removePotentialFriendship(c.Request().Context(), account.ID, target.ID)
 	s.applyAccountBlockRelationshipCleanupEffects(c.Request().Context(), *account, *target, cleanup)
 	s.invalidateBlockRelationshipCaches(c.Request().Context(), account.ID, target.ID)
+	s.invalidateSuggestionCache(c.Request().Context(), account.ID, target.ID)
 	s.meiliReindexPrivateStatusesForAccountsBestEffort(c.Request().Context(), account.ID, target.ID)
 	if block != nil {
 		_ = s.deliverActivityPubBlock(*account, *target, block.ID, string(block.URI))
@@ -676,6 +679,7 @@ func (s *Server) unblockAccount(c *echo.Context) error {
 		return err
 	}
 	s.invalidateBlockRelationshipCaches(c.Request().Context(), account.ID, target.ID)
+	s.invalidateSuggestionCache(c.Request().Context(), account.ID, target.ID)
 	if block.ID != 0 {
 		_ = s.deliverActivityPubUndoBlock(*account, *target, block.ID, string(block.URI))
 	}
@@ -730,6 +734,7 @@ func (s *Server) muteAccount(c *echo.Context) error {
 	}
 	s.removePotentialFriendship(c.Request().Context(), account.ID, target.ID)
 	s.invalidateMuteRelationshipCaches(c.Request().Context(), account.ID, target.ID)
+	s.invalidateSuggestionCache(c.Request().Context(), account.ID)
 	return s.relationshipResponse(c, account.ID, target)
 }
 
@@ -780,6 +785,7 @@ func (s *Server) unmuteAccount(c *echo.Context) error {
 	}
 	s.restoreAfterUnmuteFeedCache(c.Request().Context(), account.ID, target.ID)
 	s.invalidateMuteRelationshipCaches(c.Request().Context(), account.ID, target.ID)
+	s.invalidateSuggestionCache(c.Request().Context(), account.ID)
 	return s.relationshipResponse(c, account.ID, target)
 }
 
@@ -997,8 +1003,16 @@ func upsertAccountMute(tx *gorm.DB, accountID int64, targetID int64, hideNotific
 }
 
 func (s *Server) relationshipsFor(accountID int64, ids []int64) ([]serializer.Relationship, error) {
+	return s.relationshipsForWithSuspended(accountID, ids, false)
+}
+
+func (s *Server) relationshipsForWithSuspended(accountID int64, ids []int64, withSuspended bool) ([]serializer.Relationship, error) {
 	var accounts []models.Account
-	if err := s.db.Where("id IN ? AND suspended_at IS NULL", ids).Find(&accounts).Error; err != nil {
+	query := s.db.Where("id IN ?", ids)
+	if !withSuspended {
+		query = query.Where("suspended_at IS NULL")
+	}
+	if err := query.Find(&accounts).Error; err != nil {
 		return nil, err
 	}
 	return s.relationshipsForAccounts(accountID, ids, accounts)
@@ -1268,7 +1282,10 @@ func (s *Server) createRelationshipNotificationRowAndEnqueue(tx *gorm.DB, accoun
 	if err != nil {
 		return nil, err
 	}
-	if notification != nil {
+	if err := s.applyRelationshipNotificationRedisGroupKey(tx, notification); err != nil {
+		return nil, err
+	}
+	if notification != nil && !notification.Filtered {
 		needed, err := s.notificationMailNeededForNotification(context.Background(), tx, *notification)
 		if err != nil {
 			return nil, err
@@ -1299,6 +1316,10 @@ func createRelationshipNotificationRow(tx *gorm.DB, accountID int64, fromAccount
 	if err != nil || blocked {
 		return nil, err
 	}
+	filtered, dropped, err := relationshipNotificationPolicyDecision(tx, accountID, fromAccountID, activityID, activityType, kind, at)
+	if err != nil || dropped {
+		return nil, err
+	}
 	notification := models.Notification{
 		ActivityID:    activityID,
 		ActivityType:  activityType,
@@ -1307,11 +1328,224 @@ func createRelationshipNotificationRow(tx *gorm.DB, accountID int64, fromAccount
 		AccountID:     accountID,
 		FromAccountID: fromAccountID,
 		Type:          models.NullSafeString(kind),
+		Filtered:      filtered,
+	}
+	if err := setRelationshipNotificationGroupKey(tx, &notification); err != nil {
+		return nil, err
 	}
 	if err := tx.Create(&notification).Error; err != nil {
 		return nil, err
 	}
+	if notification.Filtered && kind == "mention" {
+		if err := updateRelationshipNotificationRequest(tx, notification, at); err != nil {
+			return nil, err
+		}
+	}
 	return &notification, nil
+}
+
+func setRelationshipNotificationGroupKey(tx *gorm.DB, notification *models.Notification) error {
+	if tx == nil || notification == nil || notification.Filtered {
+		return nil
+	}
+	kind := notification.ResolvedType()
+	prefix := ""
+	switch kind {
+	case "follow":
+		prefix = kind
+	case "favourite":
+		var favourite models.Favourite
+		if err := tx.Select("status_id").Where("id = ?", notification.ActivityID).First(&favourite).Error; err != nil {
+			return err
+		}
+		prefix = kind + "-" + strconv.FormatInt(favourite.StatusID, 10)
+	case "reblog":
+		var reblog models.Status
+		if err := tx.Select("reblog_of_id").Where("id = ?", notification.ActivityID).First(&reblog).Error; err != nil {
+			return err
+		}
+		if !reblog.ReblogOfID.Valid {
+			return nil
+		}
+		prefix = kind + "-" + strconv.FormatInt(reblog.ReblogOfID.Int64, 10)
+	default:
+		return nil
+	}
+	hourBucket := notification.CreatedAt.UTC().Unix() / int64(time.Hour/time.Second)
+	var previous models.Notification
+	if err := tx.Select("group_key").
+		Where("account_id = ? AND group_key LIKE ? AND created_at >= ?", notification.AccountID, prefix+"-%", notification.CreatedAt.Add(-12*time.Hour)).
+		Order("id DESC").First(&previous).Error; err == nil && previous.GroupKey.Valid {
+		if separator := strings.LastIndexByte(previous.GroupKey.String, '-'); separator >= 0 {
+			if previousBucket, parseErr := strconv.ParseInt(previous.GroupKey.String[separator+1:], 10, 64); parseErr == nil && hourBucket < previousBucket+12 {
+				hourBucket = previousBucket
+			}
+		}
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	notification.GroupKey = sql.NullString{String: prefix + "-" + strconv.FormatInt(hourBucket, 10), Valid: true}
+	return nil
+}
+
+func (s *Server) applyRelationshipNotificationRedisGroupKey(tx *gorm.DB, notification *models.Notification) error {
+	if s == nil || tx == nil || notification == nil || notification.ID == 0 || notification.Filtered || !notification.GroupKey.Valid || !redisEndpointConfigured(s.cfg) {
+		return nil
+	}
+	separator := strings.LastIndexByte(notification.GroupKey.String, '-')
+	if separator <= 0 {
+		return nil
+	}
+	typePrefix := notification.GroupKey.String[:separator]
+	currentBucket := notification.CreatedAt.UTC().Unix() / int64(time.Hour/time.Second)
+	ctx := context.Background()
+	if tx.Statement != nil && tx.Statement.Context != nil {
+		ctx = tx.Statement.Context
+	}
+	redisKey := redisConfig(s.cfg).prefix + "notif-group/" + strconv.FormatInt(notification.AccountID, 10) + "/" + typePrefix
+	previousValue, err := s.redisCommand(ctx, "GET", redisKey)
+	if err != nil {
+		return nil
+	}
+	previousBucket := redisInteger(previousValue)
+	hourBucket := notificationGroupHourBucket(currentBucket, previousBucket)
+	if _, err := s.redisCommand(ctx, "SET", redisKey, strconv.FormatInt(hourBucket, 10), "EX", strconv.FormatInt(int64((12*time.Hour)/time.Second), 10)); err != nil {
+		return nil
+	}
+	groupKey := typePrefix + "-" + strconv.FormatInt(hourBucket, 10)
+	if groupKey == notification.GroupKey.String {
+		return nil
+	}
+	if err := tx.Model(&models.Notification{}).Where("id = ?", notification.ID).Update("group_key", groupKey).Error; err != nil {
+		return err
+	}
+	notification.GroupKey = sql.NullString{String: groupKey, Valid: true}
+	return nil
+}
+
+func notificationGroupHourBucket(currentBucket int64, previousBucket int64) int64 {
+	if previousBucket > 0 && currentBucket < previousBucket+12 {
+		return previousBucket
+	}
+	return currentBucket
+}
+
+func relationshipNotificationPolicyDecision(tx *gorm.DB, accountID int64, fromAccountID int64, activityID int64, activityType string, kind string, at time.Time) (bool, bool, error) {
+	switch kind {
+	case "mention", "reblog", "follow", "follow_request", "favourite":
+	default:
+		return false, false, nil
+	}
+	var permissionCount int64
+	if err := tx.Model(&models.NotificationPermission{}).Where("account_id = ? AND from_account_id = ?", accountID, fromAccountID).Count(&permissionCount).Error; err != nil {
+		return false, false, err
+	}
+	if permissionCount > 0 {
+		return false, false, nil
+	}
+	if kind == "mention" {
+		var recipientUser models.User
+		var senderAccount models.Account
+		if err := tx.Select("role_id").Where("account_id = ?", accountID).First(&recipientUser).Error; err != nil {
+			return false, false, err
+		}
+		if err := tx.Select("id", "domain").Where("id = ?", fromAccountID).First(&senderAccount).Error; err != nil {
+			return false, false, err
+		}
+		fromStaff, err := relationshipNotificationFromStaff(tx, recipientUser, senderAccount)
+		if err != nil {
+			return false, false, err
+		}
+		if fromStaff {
+			return false, false, nil
+		}
+	}
+	var policy models.NotificationPolicy
+	err := tx.Where("account_id = ?", accountID).First(&policy).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		policy = models.NotificationPolicy{ForPrivateMentions: 1, ForLimitedAccounts: 1}
+	} else if err != nil {
+		return false, false, err
+	}
+	following, err := relationshipNotificationSenderFollowed(tx, accountID, fromAccountID)
+	if err != nil {
+		return false, false, err
+	}
+	var sender models.Account
+	if err := tx.Select("id", "created_at", "silenced_at").Where("id = ?", fromAccountID).First(&sender).Error; err != nil {
+		return false, false, err
+	}
+	var senderFollow models.Follow
+	notFollower := true
+	if err := tx.Select("created_at").Where("account_id = ? AND target_account_id = ?", fromAccountID, accountID).First(&senderFollow).Error; err == nil {
+		notFollower = senderFollow.CreatedAt.After(at.Add(-72 * time.Hour))
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, false, err
+	}
+	targetStatus, err := relationshipNotificationTargetStatus(tx, activityID, activityType)
+	if err != nil {
+		return false, false, err
+	}
+	privateMention := kind == "mention" && !following && targetStatus != nil && targetStatus.Visibility == 3
+	if privateMention {
+		responded, responseErr := relationshipNotificationResponseToRecipient(tx, accountID, fromAccountID, targetStatus)
+		if responseErr != nil {
+			return false, false, responseErr
+		}
+		privateMention = !responded
+	}
+	actions := []int{}
+	if !following {
+		actions = append(actions, policy.ForNotFollowing)
+		if sender.CreatedAt.After(at.Add(-30 * 24 * time.Hour)) {
+			actions = append(actions, policy.ForNewAccounts)
+		}
+		if sender.SilencedAt.Valid {
+			actions = append(actions, policy.ForLimitedAccounts)
+		}
+	}
+	if notFollower {
+		actions = append(actions, policy.ForNotFollowers)
+	}
+	if privateMention {
+		actions = append(actions, policy.ForPrivateMentions)
+	}
+	filtered := false
+	for _, action := range actions {
+		if action == 2 {
+			return false, true, nil
+		}
+		filtered = filtered || action == 1
+	}
+	return filtered, false, nil
+}
+
+func updateRelationshipNotificationRequest(tx *gorm.DB, notification models.Notification, at time.Time) error {
+	status, err := relationshipNotificationTargetStatus(tx, notification.ActivityID, notification.ActivityType)
+	if err != nil || status == nil {
+		return err
+	}
+	var request models.NotificationRequest
+	err = tx.Where("account_id = ? AND from_account_id = ?", notification.AccountID, notification.FromAccountID).First(&request).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		request = models.NotificationRequest{
+			AccountID:          notification.AccountID,
+			FromAccountID:      notification.FromAccountID,
+			LastStatusID:       sql.NullInt64{Int64: status.ID, Valid: true},
+			NotificationsCount: 1,
+			CreatedAt:          at,
+			UpdatedAt:          at,
+		}
+		return tx.Create(&request).Error
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Model(&models.NotificationRequest{}).Where("id = ?", request.ID).Updates(map[string]any{
+		"last_status_id":      status.ID,
+		"notifications_count": gorm.Expr("CASE WHEN notifications_count < 100 THEN notifications_count + 1 ELSE 100 END"),
+		"updated_at":          at,
+	}).Error
 }
 
 func relationshipNotificationDuplicateHandled(tx *gorm.DB, accountID int64, activityID int64, activityType string, kind string) (bool, error) {
@@ -1394,12 +1628,6 @@ func relationshipNotificationBlocked(tx *gorm.DB, accountID int64, fromAccountID
 	if err != nil {
 		return false, err
 	}
-	if rawBool(userSettings["interactions.must_be_following"], false) && !following {
-		return true, nil
-	}
-	if !following && sender.SilencedAt.Valid {
-		return true, nil
-	}
 	if !following && sender.Domain.Valid && strings.TrimSpace(sender.Domain.String) != "" {
 		var domainBlockCount int64
 		if err := tx.Model(&models.AccountDomainBlock{}).
@@ -1410,13 +1638,6 @@ func relationshipNotificationBlocked(tx *gorm.DB, accountID int64, fromAccountID
 		if domainBlockCount > 0 {
 			return true, nil
 		}
-	}
-	senderFollowsRecipient, err := relationshipNotificationSenderFollowsRecipient(tx, accountID, fromAccountID)
-	if err != nil {
-		return false, err
-	}
-	if rawBool(userSettings["interactions.must_be_follower"], false) && !senderFollowsRecipient {
-		return true, nil
 	}
 	targetStatus, err := relationshipNotificationTargetStatus(tx, activityID, activityType)
 	if err != nil {
@@ -1430,17 +1651,6 @@ func relationshipNotificationBlocked(tx *gorm.DB, accountID int64, fromAccountID
 			return false, err
 		}
 		if conversationMuteCount > 0 {
-			return true, nil
-		}
-	}
-	if kind == "mention" && targetStatus != nil && targetStatus.Visibility == 3 &&
-		rawBool(userSettings["interactions.must_be_following_dm"], false) &&
-		!following {
-		responded, err := relationshipNotificationResponseToRecipient(tx, accountID, fromAccountID, targetStatus)
-		if err != nil {
-			return false, err
-		}
-		if !responded {
 			return true, nil
 		}
 	}

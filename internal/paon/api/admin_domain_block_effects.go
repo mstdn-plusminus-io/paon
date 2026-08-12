@@ -24,6 +24,10 @@ func (s *Server) applyAdminDomainBlockEffects(database *gorm.DB, block models.Do
 	}
 	switch {
 	case adminDomainBlockSuspendsAccounts(block):
+		notificationIDs, err := s.recordAdminDomainSeverance(database, domain, block.CreatedAt)
+		if err != nil {
+			return err
+		}
 		if err := database.Model(&models.Account{}).
 			Where(domainAndSubdomainsSQL("domain"), domain, "%."+domain).
 			Where("suspended_at IS NULL").
@@ -33,7 +37,11 @@ func (s *Server) applyAdminDomainBlockEffects(database *gorm.DB, block models.Do
 			}).Error; err != nil {
 			return err
 		}
-		return s.purgeAdminDomainSuspendedAccounts(database, domain, block.CreatedAt)
+		if err := s.purgeAdminDomainSuspendedAccounts(database, domain, block.CreatedAt); err != nil {
+			return err
+		}
+		s.publishNotificationIDs(notificationIDs)
+		return nil
 	case adminDomainBlockSilencesAccounts(block):
 		return database.Model(&models.Account{}).
 			Where(domainAndSubdomainsSQL("domain"), domain, "%."+domain).
@@ -631,7 +639,6 @@ func purgeAdminDomainSuspendedAccountAssociations(database *gorm.DB, accountIDs 
 		"account_pins",
 		"account_domain_blocks",
 		"conversation_mutes",
-		"devices",
 		"featured_tags",
 		"list_accounts",
 		"scheduled_statuses",

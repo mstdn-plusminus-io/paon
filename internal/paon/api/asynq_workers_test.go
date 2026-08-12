@@ -200,9 +200,6 @@ func TestAsynqTaskTypesAndQueueMatchRailsSidekiq(t *testing.T) {
 	if asynqTaskPushConversation != "push:conversation" {
 		t.Fatalf("push conversation task type = %q", asynqTaskPushConversation)
 	}
-	if asynqTaskPushEncryptedMessage != "push:encrypted_message" {
-		t.Fatalf("push encrypted message task type = %q", asynqTaskPushEncryptedMessage)
-	}
 	if asynqTaskPushUpdate != "push:update" {
 		t.Fatalf("push update task type = %q", asynqTaskPushUpdate)
 	}
@@ -344,7 +341,6 @@ func TestEnqueueAsynqTasksNilSafeWithoutClient(t *testing.T) {
 	s.enqueueRemovalTask(asynqRemovalPayload{StatusID: 1})
 	s.enqueueRemovalTasksForStatusIDs([]int64{1, 2}, asynqRemovalPayload{})
 	s.enqueuePushConversationTask(1)
-	s.enqueuePushEncryptedMessageTask(1)
 	s.enqueuePushUpdateTask(1, 1, "timeline:1", false)
 	s.enqueueWebPushNotificationTask(1, 1)
 	s.enqueueAuthorizeFollowTask(1, 2)

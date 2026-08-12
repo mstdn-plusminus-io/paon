@@ -311,6 +311,7 @@ func (s *Server) authorizeFollowRequest(c *echo.Context) error {
 		notificationIDs = append(notificationIDs, createdNotificationIDs...)
 		s.publishNotificationIDs(notificationIDs)
 		s.invalidateFollowRelationshipCaches(c.Request().Context(), *requester, account.ID)
+		s.invalidateSuggestionCache(c.Request().Context(), requester.ID)
 		if followChanged {
 			s.meiliReindexPrivateStatusesForAccountsBestEffort(c.Request().Context(), account.ID)
 		}
@@ -351,6 +352,7 @@ func (s *Server) rejectFollowRequest(c *echo.Context) error {
 		_ = s.clearListFeedCacheContext(c.Request().Context(), listID)
 	}
 	s.invalidateRelationshipCaches(c.Request().Context(), account.ID, requester.ID)
+	s.invalidateSuggestionCache(c.Request().Context(), requester.ID)
 	_ = s.deliverActivityPubFollowResponse("Reject", *account, *requester, req.ID, string(req.URI))
 	return s.relationshipResponse(c, account.ID, requester)
 }

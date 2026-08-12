@@ -15,6 +15,7 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/api"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	paondb "github.com/mstdn-plusminus-io/paon/internal/paon/db"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/telemetry"
 )
 
 func main() {
@@ -58,6 +59,17 @@ func main() {
 		if cfg.ShouldLog("warn") {
 			log.Printf("configuration warning: %s", warning)
 		}
+	}
+	if cfg.OpenTelemetryEnabled && !*checkConfig {
+		telemetryRuntime, err := telemetry.Initialize(ctx, telemetry.OptionsFromConfig(cfg, "paon-meili-deploy"))
+		if err != nil {
+			log.Fatalf("initialize OpenTelemetry: %v", err)
+		}
+		defer func() {
+			if err := telemetryRuntime.ShutdownWithTimeout(10 * time.Second); err != nil {
+				log.Printf("shutdown OpenTelemetry: %v", err)
+			}
+		}()
 	}
 	if !cfg.MeiliEnabled || strings.TrimSpace(cfg.MeiliHost) == "" {
 		log.Fatal("check meilisearch configuration: meilisearch disabled")

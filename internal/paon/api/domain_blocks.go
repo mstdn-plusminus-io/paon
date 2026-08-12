@@ -129,6 +129,7 @@ type domainBlockRejectDelivery struct {
 
 type domainBlockCleanupResult struct {
 	Deliveries              []domainBlockRejectDelivery
+	NotificationIDs         []int64
 	PrivateStatusAccountIDs []int64
 	FollowCacheEffects      []followRelationshipCacheEffect
 	RelationshipCaches      []relationshipCacheEffect
@@ -172,6 +173,7 @@ func (s *Server) runAfterAccountDomainBlockEffects(ctx context.Context, accountI
 	}); err != nil {
 		return err
 	}
+	s.publishNotificationIDs(cleanup.NotificationIDs)
 	s.clearDomainBlockFeedCaches(ctx, accountID, []string{domain})
 	s.invalidateAccountDomainBlockCaches(ctx, accountID, []string{domain})
 	for _, effect := range cleanup.FollowCacheEffects {
@@ -200,16 +202,34 @@ func cleanupDomainBlockRecords(tx *gorm.DB, accountID int64, domain string) (dom
 		return result, err
 	}
 
-	var outgoing []struct {
-		TargetAccountID int64 `gorm:"column:target_account_id"`
-	}
+	var outgoing []models.Follow
 	if err := tx.Model(&models.Follow{}).
-		Select("follows.target_account_id").
+		Select("follows.*").
 		Joins("JOIN accounts ON accounts.id = follows.target_account_id").
 		Where("follows.account_id = ? AND lower(accounts.domain) = ?", accountID, domain).
 		Find(&outgoing).Error; err != nil {
 		return result, err
 	}
+
+	var incoming []models.Follow
+	if err := tx.Model(&models.Follow{}).
+		Select("follows.*").
+		Joins("JOIN accounts ON accounts.id = follows.account_id").
+		Where("follows.target_account_id = ? AND lower(accounts.domain) = ?", accountID, domain).
+		Find(&incoming).Error; err != nil {
+		return result, err
+	}
+	// Persist the exact severed-edge snapshot before deleting either direction.
+	// This is intentionally synchronous and inside the same transaction so a
+	// retry cannot observe a partially removed relationship set.
+	severanceNotificationID, err := recordUserDomainSeverance(tx, accountID, domain, outgoing, incoming, time.Now().UTC())
+	if err != nil {
+		return result, err
+	}
+	if severanceNotificationID != 0 {
+		result.NotificationIDs = append(result.NotificationIDs, severanceNotificationID)
+	}
+
 	for _, row := range outgoing {
 		result.PrivateStatusAccountIDs = append(result.PrivateStatusAccountIDs, row.TargetAccountID)
 		result.FollowCacheEffects = append(result.FollowCacheEffects, followRelationshipCacheEffect{Source: models.Account{ID: accountID}, TargetID: row.TargetAccountID})
@@ -217,25 +237,12 @@ func cleanupDomainBlockRecords(tx *gorm.DB, accountID int64, domain string) (dom
 			return result, err
 		}
 	}
-
-	var incoming []struct {
-		AccountID int64  `gorm:"column:account_id"`
-		ID        int64  `gorm:"column:id"`
-		URI       string `gorm:"column:uri"`
-	}
-	if err := tx.Model(&models.Follow{}).
-		Select("follows.account_id, follows.id, follows.uri").
-		Joins("JOIN accounts ON accounts.id = follows.account_id").
-		Where("follows.target_account_id = ? AND lower(accounts.domain) = ?", accountID, domain).
-		Find(&incoming).Error; err != nil {
-		return result, err
-	}
 	for _, row := range incoming {
 		remote, err := domainBlockRemoteAccount(tx, row.AccountID)
 		if err != nil {
 			return result, err
 		}
-		result.Deliveries = append(result.Deliveries, domainBlockRejectDelivery{Remote: remote, FollowID: row.ID, FollowURI: row.URI})
+		result.Deliveries = append(result.Deliveries, domainBlockRejectDelivery{Remote: remote, FollowID: row.ID, FollowURI: string(row.URI)})
 		result.FollowCacheEffects = append(result.FollowCacheEffects, followRelationshipCacheEffect{Source: remote, TargetID: accountID})
 		if err := deleteFollowEdge(tx, row.AccountID, accountID); err != nil {
 			return result, err

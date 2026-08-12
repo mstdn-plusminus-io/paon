@@ -24,6 +24,7 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
 	"gorm.io/gorm"
 )
 
@@ -1288,7 +1289,7 @@ func buildMailMessage(cfg config.Config, message mailMessage) []byte {
 		htmlPart, _ := writer.CreatePart(htmlHeader)
 		htmlBody := message.HTMLBody
 		if strings.TrimSpace(htmlBody) == "" {
-			htmlBody = mailHTMLFromText(message.Body)
+			htmlBody = mailHTMLFromText(cfg, message.Subject, message.Body, message.Headers)
 		}
 		_, _ = htmlPart.Write([]byte(normalizeMailBody(htmlBody)))
 		_ = writer.Close()
@@ -1389,23 +1390,76 @@ func foldMailHeader(key string, value string) string {
 	return b.String()
 }
 
-func mailHTMLFromText(value string) string {
+func mailHTMLFromText(cfg config.Config, subject string, value string, headers []mailHeader) string {
 	value = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(value, "\r\n", "\n"), "\r", "\n"))
 	paragraphs := strings.Split(value, "\n\n")
-	var body strings.Builder
-	body.WriteString(`<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.5;color:#282c37">`)
+	baseURL := cfg.BaseURL()
+	domain := firstNonEmpty(cfg.LocalDomain, cfg.WebDomain, "Mastodon")
+	headerBackground := baseURL + web.ResolvePackAssetPath(cfg, "media/images/mailer-new/common/header-bg-start.png")
+	preferencesURL := baseURL + "/settings/preferences/notifications"
+	unsubscribeURL := mailListUnsubscribeURL(headers)
+	var content strings.Builder
 	for _, paragraph := range paragraphs {
-		escaped := html.EscapeString(strings.TrimSpace(paragraph))
-		if escaped == "" {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph == "" {
 			continue
 		}
-		escaped = strings.ReplaceAll(escaped, "\n", "<br>\n")
-		body.WriteString("<p>")
-		body.WriteString(escaped)
-		body.WriteString("</p>")
+		if target, ok := mailActionURL(paragraph); ok {
+			content.WriteString(`<p style="margin:24px 0"><a style="display:inline-block;border-radius:8px;background:#6364ff;color:#fff;font-weight:700;padding:12px 20px;text-decoration:none" href="`)
+			content.WriteString(html.EscapeString(target))
+			content.WriteString(`">` + html.EscapeString(target) + `</a></p>`)
+			continue
+		}
+		escaped := strings.ReplaceAll(html.EscapeString(paragraph), "\n", "<br>\n")
+		content.WriteString(`<p style="margin:0 0 16px;line-height:1.55">`)
+		content.WriteString(escaped)
+		content.WriteString("</p>")
 	}
-	body.WriteString("</body></html>")
-	return body.String()
+	footerLinks := `<a style="color:#563acc" href="` + html.EscapeString(preferencesURL) + `">Notification preferences</a>`
+	if unsubscribeURL != "" {
+		footerLinks += ` &middot; <a style="color:#563acc" href="` + html.EscapeString(unsubscribeURL) + `">Unsubscribe</a>`
+	}
+	return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no"><meta name="supported-color-schemes" content="light"><title>` + html.EscapeString(subject) + `</title></head>` +
+		`<body style="margin:0;padding:0;background:#f3f2f5;color:#17063b;font-family:Inter,system-ui,-apple-system,'Lucida Grande',sans-serif;word-break:break-word">` +
+		`<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;background:#f3f2f5"><tr><td style="padding:32px 16px">` +
+		`<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:740px;margin:0 auto;border-collapse:separate;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 16px rgba(23,6,59,.04)">` +
+		`<tr><td style="padding:28px 40px;background:#1b001f url('` + html.EscapeString(headerBackground) + `') left top repeat;color:#fff;font-size:24px;font-weight:700">/&#160;` + html.EscapeString(domain) + `</td></tr>` +
+		`<tr><td style="padding:40px"><h1 style="margin:0 0 24px;font-size:28px;line-height:1.2">` + html.EscapeString(subject) + `</h1>` + content.String() + `</td></tr></table>` +
+		`<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:740px;margin:0 auto"><tr><td style="padding:24px;text-align:center;color:#6d617d;font-size:13px">Hosted on ` + html.EscapeString(domain) + `<br>` + footerLinks + `</td></tr></table>` +
+		`</td></tr></table></body></html>`
+}
+
+func mailActionURL(paragraph string) (string, bool) {
+	lines := strings.Split(paragraph, "\n")
+	if len(lines) != 1 {
+		return "", false
+	}
+	value := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[0]), "=>"))
+	if value == strings.TrimSpace(lines[0]) {
+		return "", false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", false
+	}
+	return parsed.String(), true
+}
+
+func mailListUnsubscribeURL(headers []mailHeader) string {
+	for _, header := range headers {
+		if !strings.EqualFold(strings.TrimSpace(header.Key), "List-Unsubscribe") {
+			continue
+		}
+		value := strings.TrimSpace(header.Value)
+		if strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") {
+			value = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "<"), ">"))
+		}
+		parsed, err := url.Parse(value)
+		if err == nil && parsed.Host != "" && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+			return parsed.String()
+		}
+	}
+	return ""
 }
 
 func sanitizeHeader(value string) string {

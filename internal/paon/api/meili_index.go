@@ -207,7 +207,7 @@ func (s *Server) meiliAccountDocument(account models.Account) meiliAccountDocume
 	}
 	return meiliAccountDocument{
 		ID:                 account.ID,
-		Username:           account.Username,
+		Username:           accountSearchableUsername(account),
 		DisplayName:        account.DisplayName,
 		Domain:             stringPtrFromNull(account.Domain),
 		Bot:                account.ActorType.Valid && strings.EqualFold(account.ActorType.String, "Service"),
@@ -221,6 +221,13 @@ func (s *Server) meiliAccountDocument(account models.Account) meiliAccountDocume
 		LastStatusAt:       lastStatusAt,
 		CreatedAtTimestamp: account.CreatedAt.Unix(),
 	}
+}
+
+func accountSearchableUsername(account models.Account) string {
+	if account.Domain.Valid && strings.TrimSpace(account.Domain.String) != "" {
+		return account.Username + "@" + strings.TrimSpace(account.Domain.String)
+	}
+	return account.Username
 }
 
 func (s *Server) meiliStatusDocument(status models.Status) meiliStatusDocument {

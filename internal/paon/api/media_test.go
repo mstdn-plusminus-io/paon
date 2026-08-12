@@ -44,6 +44,9 @@ func TestMediaContentTypeFallback(t *testing.T) {
 	if got := mediaContentType("photo.heic", "application/octet-stream"); got != "image/heic" {
 		t.Fatalf("mediaContentType heic = %q", got)
 	}
+	if got := mediaContentType("photo.jfif", "application/octet-stream"); got != "image/jpeg" {
+		t.Fatalf("mediaContentType jfif = %q", got)
+	}
 	if got := mediaContentType("clip.mov", "application/octet-stream"); got != "video/quicktime" {
 		t.Fatalf("mediaContentType mov = %q", got)
 	}
@@ -81,6 +84,7 @@ func TestMediaContentTypeSupportedMatchesRailsMediaTypes(t *testing.T) {
 		{contentType: "image/avif", mediaType: 0, want: true},
 		{contentType: "video/quicktime", mediaType: 2, want: true},
 		{contentType: "audio/x-m4a", mediaType: 4, want: true},
+		{contentType: "audio/opus", mediaType: 4, want: true},
 		{contentType: "video/x-ms-asf", mediaType: 4, want: true},
 		{contentType: "image/svg+xml", mediaType: 0, want: false},
 		{contentType: "video/x-matroska", mediaType: 2, want: false},

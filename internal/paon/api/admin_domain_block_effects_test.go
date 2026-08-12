@@ -223,7 +223,6 @@ func TestAdminDomainSuspendCleanupKeepsRailsSafeAssociationPurge(t *testing.T) {
 			`"account_pins"`,
 			`"account_domain_blocks"`,
 			`"conversation_mutes"`,
-			`"devices"`,
 			`"featured_tags"`,
 			`"list_accounts"`,
 			`"scheduled_statuses"`,
