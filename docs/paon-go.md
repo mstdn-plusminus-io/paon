@@ -6,11 +6,11 @@ Paon is a Go 1.25 + labstack/echo/v5 drop-in replacement for this Mastodon fork.
 
 `PAON_PROCESS_ROLE` controls the process boundary:
 
-| Value | HTTP | Asynq workers and schedulers |
-|---|---:|---:|
-| `all` (default) | yes | yes |
-| `web` | yes | no |
-| `worker` | no | yes |
+| Value           | HTTP | Asynq workers and schedulers |
+| --------------- | ---: | ---------------------------: |
+| `all` (default) |  yes |                          yes |
+| `web`           |  yes |                           no |
+| `worker`        |   no |                          yes |
 
 The web process serves HTML, REST, ActivityPub, SSE, and WebSocket traffic on the same listener. `PAON_GO_ADDR` is the explicit listen override; otherwise `SOCKET` or `BIND`/`PORT` is used. The default TCP port is `3000`.
 
@@ -43,6 +43,14 @@ operation fails, Paon retries with the Go-native processor and emits a
 `level=WARN event=image_processor_fallback` log entry. The fallback registers
 CGo-free AVIF and HEIC decoders backed by embedded WASM, so those accepted upload
 formats do not require a system codec library.
+
+Unlike Rails, an already-built Go executable cannot switch its linked image
+processor at runtime. `MASTODON_USE_LIBVIPS` is therefore accepted only as a
+deprecated compatibility signal and produces a startup warning instead of being
+a silent no-op. Container builds select the optimized binary by default; use
+`--build-arg PAON_IMAGE_PROCESSOR=native` to deliberately select the native
+fallback. User-provided preview images are limited to 8 MiB in a libvips build
+and 2 MiB in a native build, independently of `IMAGE_SIZE_LIMIT` for originals.
 
 ```bash
 yarn install --frozen-lockfile
@@ -105,7 +113,8 @@ The standard `docker-compose.yml` defines PostgreSQL, Redis, Meilisearch, Go web
 GORM AutoMigrate is disabled. `internal/paon/migrate/schema.sql` is embedded into `paon-migrate`.
 
 - Empty database: the complete compatible schema and seed rows are created atomically.
-- Supported existing version: the full schema guard runs without modifying data.
+- Mastodon 4.3.23 version `20241007071624`: the full schema guard runs without modifying data.
+- Mastodon 4.2.19 version `20230907150100`: `paon-migrate --phase=expand` applies the additive phase without a process fence. After all 4.2 writers are stopped, run `--phase=backfill`, then `--phase=validate`, then `--phase=contract --acknowledge-contract`. A bare `paon-migrate` always defaults to expand; acknowledgment is only a gate and never selects the destructive phase by itself.
 - Partial or unsupported version: startup and migration are refused.
 
 See `docs/paon-go-schema-compatibility.md` for schema change requirements.
@@ -134,6 +143,15 @@ Meilisearch replaces Elasticsearch. Runtime and rebuild commands use `MEILI_ENAB
 ```bash
 task meili-deploy
 ```
+
+## Observability
+
+Paon uses the official OpenTelemetry Go SDK and OTLP HTTP/protobuf exporters
+when an `OTEL_EXPORTER_OTLP*_ENDPOINT` is configured. HTTP, Asynq workers,
+GORM/PostgreSQL, Redis, federation ingress/delivery, and Meilisearch searches
+emit redacted spans and metrics. Service names follow Mastodon 4.3's
+`mastodon/<role>` default. See `docs/paon-go-observability.md` for configuration,
+sampling, propagation, redaction, StatsD coexistence, and release evidence.
 
 ## Operations
 
