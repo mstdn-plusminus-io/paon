@@ -1,3 +1,6 @@
+# web, worker and one-shot Go children receive OTEL_* (including credential
+# headers) through .env.production. They are intentionally not duplicated in
+# environment below, because empty Compose interpolation would shadow env_file.
 services:
   db:
     restart: always
@@ -76,7 +79,11 @@ services:
       meilisearch:
         condition: service_started
     healthcheck:
-      test: ['CMD-SHELL', 'wget -q --spider --proxy=off localhost:3000/health/ready || exit 1']
+      test:
+        [
+          'CMD-SHELL',
+          'wget -q --spider --proxy=off localhost:3000/health/ready || exit 1',
+        ]
     ports:
       - '127.0.0.1:3000:3000'
     volumes:

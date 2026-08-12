@@ -23,6 +23,11 @@
 /.go-buildcache/
 /.go-modcache/
 /.go-tmp/
+/.go-path/
+/.agent-cache-*/
+/.codex-tmp/
+/.tmp-go-cache/
+*.tsbuildinfo
 
 # Ignore IDE files
 .vscode/

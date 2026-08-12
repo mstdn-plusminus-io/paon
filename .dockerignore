@@ -28,6 +28,7 @@ coverage
 build
 .go-buildcache
 .go-modcache
+.go-path
 .go-tmp
 bin/paon
 bin/paon-admin

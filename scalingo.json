@@ -16,6 +16,18 @@
       "description": "One-time password secret",
       "generator": "secret"
     },
+    "ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY": {
+      "description": "Active Record deterministic encryption key",
+      "generator": "secret"
+    },
+    "ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT": {
+      "description": "Active Record encryption key derivation salt",
+      "generator": "secret"
+    },
+    "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY": {
+      "description": "Active Record primary encryption key",
+      "generator": "secret"
+    },
     "SINGLE_USER_MODE": {
       "description": "Should the instance run in single user mode? (Disable registrations, redirect to front page)",
       "value": "false",
@@ -95,7 +107,7 @@
     }
   },
   "scripts": {
-	"postdeploy": "paon-migrate"
+    "postdeploy": "paon-migrate"
   },
   "addons": ["postgresql", "redis"]
 }
