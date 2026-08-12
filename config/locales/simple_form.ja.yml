@@ -56,10 +56,12 @@ ja:
         scopes: アプリの API に許可するアクセス権を選択してください。最上位のスコープを選択する場合、個々のスコープを選択する必要はありません。
         setting_aggregate_reblogs: 最近ブーストされた投稿が新たにブーストされても表示しません (設定後受信したものにのみ影響)
         setting_always_send_emails: 通常、Mastodon からメール通知は行われません。
+        setting_default_quote_policy: この設定はMastodonの次のバージョンで作成される投稿にのみ適用されますが、準備のため今から設定できます。
         setting_default_sensitive: 閲覧注意状態のメディアはデフォルトでは内容が伏せられ、クリックして初めて閲覧できるようになります
         setting_display_media_default: 閲覧注意としてマークされたメディアは隠す
         setting_display_media_hide_all: メディアを常に隠す
         setting_display_media_show_all: メディアを常に表示する
+        setting_system_scrollbars_ui: SafariやChromeをベースにしたデスクトップブラウザにのみ適用されます
         setting_use_blurhash: ぼかしはメディアの色を元に生成されますが、細部は見えにくくなっています
         setting_use_pending_items: 新着があってもタイムラインを自動的にスクロールしないようにします
         username: アルファベット大文字と小文字、数字、アンダーバー「_」が使えます
@@ -74,6 +76,7 @@ ja:
       filters:
         action: 投稿がフィルタに一致したときに実行するアクションを選択
         actions:
+          blur: メディアは警告して非表示にするが、テキストは表示する
           hide: フィルタに一致した投稿を完全に非表示にします
           warn: フィルタに一致した投稿を非表示にし、フィルタのタイトルを含む警告を表示します
       form_admin_settings:
@@ -87,6 +90,7 @@ ja:
         favicon: デフォルトのMastodonのブックマークアイコンを独自のアイコンで上書きします。WEBP、PNG、GIF、JPGが利用可能です。
         mascot: 上級者向けWebインターフェースのイラストを上書きします。
         media_cache_retention_period: リモートユーザーが投稿したメディアファイルは、あなたのサーバーにキャッシュされます。正の値を設定すると、メディアは指定した日数後に削除されます。削除後にメディアデータが要求された場合、ソースコンテンツがまだ利用可能であれば、再ダウンロードされます。リンクプレビューカードがサードパーティのサイトを更新する頻度に制限があるため、この値を少なくとも14日に設定することをお勧めします。
+        min_age: ユーザーはサインアップ中に生年月日を確認するよう求められます
         peers_api_enabled: このサーバーが Fediverse で遭遇したドメイン名のリストです。このサーバーが知っているだけで、特定のサーバーと連合しているかのデータは含まれません。これは一般的に Fediverse に関する統計情報を収集するサービスによって使用されます。
         profile_directory: ディレクトリには、掲載する設定をしたすべてのユーザーが一覧表示されます。
         require_invite_text: アカウント登録が承認制の場合、登録の際の申請事由の入力を必須にします
@@ -121,6 +125,16 @@ ja:
       rule:
         hint: ルールについての具体的な説明を追加できます (任意)
         text: ユーザーのためのルールや要件を記述してください。短くシンプルにしてください。
+      terms_of_service_generator:
+        admin_email: 法的通知とは、異議申し立て通知、裁判所命令、削除要請、法執行機関による要請などをいいます。
+        arbitration_address: 上記住所と同じにすることもできます。またはEメールを使用する場合、空白でも構いません。
+        arbitration_website: Webフォームまたは、Eメールを使用する場合は空白でも構いません。
+        choice_of_law: あらゆる請求には都市、地域、領域、または州において施行されている実体法が適用されます。
+        dmca_address: 米国の運営者の場合は、DMCA指定代理人ディレクトリに登録のある住所を使用してください。
+        dmca_email: 上で使った「法的通知を受け取るアドレス」と同じでも構いません。
+        domain: あなたの提供するこのオンラインサービスの識別名です。
+        jurisdiction: 運営責任者が居住する国と地域を記載します。
+        min_age: お住まいの国や地域の法律によって定められている最低年齢を下回ってはなりません。
       sessions:
         otp: '携帯電話のアプリで生成された二要素認証コードを入力するか、リカバリーコードを使用してください:'
         webauthn: USBキーの場合は、必ず挿入し、必要に応じてタップしてください。
@@ -212,8 +226,10 @@ ja:
         setting_crop_images: 投稿の詳細以外では画像を16:9に切り抜く
         setting_default_language: 投稿する言語
         setting_default_privacy: 投稿の公開範囲
+        setting_default_quote_policy: 引用できるユーザー
         setting_default_sensitive: メディアを常に閲覧注意としてマークする
         setting_delete_modal: 投稿を削除する前に確認ダイアログを表示する
+        setting_missing_alt_text_modal: 代替テキストなしでメディアを投稿する前に確認ダイアログを表示する
         setting_disable_hover_cards: マウスオーバーでプロフィールをポップアップしない
         setting_disable_swiping: スワイプでの切り替えを無効にする
         setting_display_media: メディアの表示
@@ -224,6 +240,7 @@ ja:
         setting_hide_network: 繋がりを隠す
         setting_reduce_motion: アニメーションの動きを減らす
         setting_system_font_ui: システムのデフォルトフォントを使う
+        setting_system_scrollbars_ui: システムのデフォルトスクロールバーを使う
         setting_theme: サイトテーマ
         setting_trends: 本日のトレンドタグを表示する
         setting_unfollow_modal: フォローを解除する前に確認ダイアログを表示する
@@ -242,6 +259,7 @@ ja:
         name: ハッシュタグ
       filters:
         actions:
+          blur: 警告付きでメディアを非表示にする
           hide: 完全に隠す
           warn: 警告付きで隠す
       form_admin_settings:
@@ -311,6 +329,16 @@ ja:
       rule:
         hint: ルールの補足説明
         text: ルール
+      terms_of_service_generator:
+        admin_email: 法的通知を受け取るメールアドレス
+        arbitration_address: 仲裁通知の送付先住所
+        arbitration_website: 仲裁通知の送信用ウェブサイト
+        choice_of_law: 準拠法の選択
+        dmca_address: DMCA/著作権通知の送付先住所
+        dmca_email: DMCA/著作権通知の送付先メールアドレス
+        domain: ドメイン
+        jurisdiction: 裁判管轄
+        min_age: 登録可能な最低年齢
       settings:
         indexable: 検索エンジンからアクセスできるようにする
         show_application: 投稿に使ったアプリを開示する

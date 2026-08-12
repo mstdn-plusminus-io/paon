@@ -192,6 +192,7 @@ en:
         create_domain_block: Create Domain Block
         create_email_domain_block: Create Email Domain Block
         create_ip_block: Create IP rule
+        create_relay: Create Relay
         create_unavailable_domain: Create Unavailable Domain
         create_user_role: Create Role
         demote_user: Demote User
@@ -203,14 +204,17 @@ en:
         destroy_email_domain_block: Delete Email Domain Block
         destroy_instance: Purge Domain
         destroy_ip_block: Delete IP rule
+        destroy_relay: Delete Relay
         destroy_status: Delete Post
         destroy_unavailable_domain: Delete Unavailable Domain
         destroy_user_role: Destroy Role
         disable_2fa_user: Disable 2FA
         disable_custom_emoji: Disable Custom Emoji
+        disable_relay: Disable Relay
         disable_sign_in_token_auth_user: Disable Email Token Authentication for User
         disable_user: Disable User
         enable_custom_emoji: Enable Custom Emoji
+        enable_relay: Enable Relay
         enable_sign_in_token_auth_user: Enable Email Token Authentication for User
         enable_user: Enable User
         memorialize_account: Memorialize Account
@@ -252,6 +256,7 @@ en:
         create_domain_block_html: "%{name} blocked domain %{target}"
         create_email_domain_block_html: "%{name} blocked email domain %{target}"
         create_ip_block_html: "%{name} created rule for IP %{target}"
+        create_relay_html: "%{name} created a relay %{target}"
         create_unavailable_domain_html: "%{name} stopped delivery to domain %{target}"
         create_user_role_html: "%{name} created %{target} role"
         demote_user_html: "%{name} demoted user %{target}"
@@ -263,14 +268,17 @@ en:
         destroy_email_domain_block_html: "%{name} unblocked email domain %{target}"
         destroy_instance_html: "%{name} purged domain %{target}"
         destroy_ip_block_html: "%{name} deleted rule for IP %{target}"
+        destroy_relay_html: "%{name} deleted the relay %{target}"
         destroy_status_html: "%{name} removed post by %{target}"
         destroy_unavailable_domain_html: "%{name} resumed delivery to domain %{target}"
         destroy_user_role_html: "%{name} deleted %{target} role"
         disable_2fa_user_html: "%{name} disabled two factor requirement for user %{target}"
         disable_custom_emoji_html: "%{name} disabled emoji %{target}"
+        disable_relay_html: "%{name} disabled the relay %{target}"
         disable_sign_in_token_auth_user_html: "%{name} disabled email token authentication for %{target}"
         disable_user_html: "%{name} disabled login for user %{target}"
         enable_custom_emoji_html: "%{name} enabled emoji %{target}"
+        enable_relay_html: "%{name} enabled the relay %{target}"
         enable_sign_in_token_auth_user_html: "%{name} enabled email token authentication for %{target}"
         enable_user_html: "%{name} enabled login for user %{target}"
         memorialize_account_html: "%{name} turned %{target}'s account into a memoriam page"
@@ -914,7 +922,9 @@ en:
       title: Roles
     rules:
       add_new: Add rule
+      add_translation: Add translation
       delete: Delete
+      delete_translation: Delete translation
       description_html: While most claim to have read and agree to the terms of service, usually people do not read through until after a problem arises. <strong>Make it easier to see your server's rules at a glance by providing them in a flat bullet point list.</strong> Try to keep individual rules short and simple, but try not to split them up into many separate items either.
       edit: Edit rule
       empty: No server rules have been defined yet.
@@ -923,7 +933,71 @@ en:
         invalid: Rule is invalid
         text_blank: Rule text can't be blank
         text_too_long: Rule text is too long
+        translation_language_blank: Translation language can't be blank
+        translation_language_invalid: Translation language is invalid
+        translation_language_taken: A translation for that language already exists
+        translation_text_blank: Translation text can't be blank
+        translation_text_too_long: Translation text is too long
+      move_down: Move down
+      move_up: Move up
+      preview: Preview in your language
       title: Server rules
+      translation: Translation
+      translation_language: Language
+      translations: Translations
+      translations_explanation: You can optionally add translations for the rules. The default value is shown if no translated version is available. Keep every translation in sync with the default value.
+    terms_of_service:
+      back: Back to terms of service
+      changelog: What's changed
+      create: Use your own
+      current: Current
+      distribution_started: User notification distribution started
+      draft: Draft
+      draft_saved: Draft saved
+      generate: Use template
+      generates:
+        action: Generate
+        chance_to_review_html: "<strong>The generated terms of service will not be published automatically.</strong> You will have a chance to review the results. Please fill in the necessary details to proceed."
+        errors:
+          blank: All fields are required
+        explanation_html: The terms of service template provided is for informational purposes only, and should not be construed as legal advice on any subject matter. Please consult with your own legal counsel on your situation and specific legal questions you have.
+        title: Terms of Service Setup
+      errors:
+        changelog_blank: Changelog can't be blank when publishing
+        database_unavailable: DATABASE_URL is not set
+        effective_date_blank: Effective date can't be blank when publishing
+        effective_date_taken: Effective date has already been taken
+        effective_date_too_soon: Effective date can't be in the past
+        invalid: Terms of service are invalid
+        text_blank: Terms of service text can't be blank
+      fields:
+        changelog: What's changed?
+        effective_date: Effective date
+        text: Terms of Service
+      going_live_on_html: Live, effective %{date}
+      hints:
+        changelog: Can be structured with Markdown syntax.
+        effective_date: A reasonable timeframe can range from 10 to 30 days after notifying users.
+        text: Can be structured with Markdown syntax.
+      history: History
+      live: Live
+      no_history: There are no recorded changes of the terms of service yet.
+      no_terms_of_service_html: You don't currently have any terms of service configured. Terms of service provide clarity and help protect you in disputes with users.
+      notified_on_html: Users notified on %{date}
+      notify_users: Notify users
+      preview:
+        explanation_html: 'The email will be sent to <strong>%{display_count} users</strong> who signed up before %{date}. The following text will be included in the email:'
+        send_preview: Send preview to %{email}
+        send_to_all:
+          one: Send %{display_count} email
+          other: Send %{display_count} emails
+        sent: Preview email sent
+        title: Preview terms of service notification
+      publish: Publish
+      published: Terms of service published
+      published_on_html: Published on %{date}
+      save_draft: Save draft
+      title: Terms of Service
     settings:
       about:
         manage_rules: Manage server rules
@@ -946,6 +1020,9 @@ en:
       default_noindex:
         desc_html: Affects all users who have not changed this setting themselves
         title: Opt users out of search engine indexing by default
+      allow_referrer_origin:
+        desc: When enabled, external sites can see this server as the source of traffic, but never the full page URL.
+        title: Allow origin referrer information for external links
       discovery:
         follow_recommendations: Follow recommendations
         preamble: Surfacing interesting content is instrumental in onboarding new users who may not know anyone Mastodon. Control how various discovery features work on your server.
@@ -983,6 +1060,7 @@ en:
         domain_block_rationale_visibility_invalid: Domain block rationale visibility is invalid
         domain_block_visibility_invalid: Domain block visibility is invalid
         media_cache_retention_period_integer: Media cache retention period must be an integer
+        minimum_age_integer: Minimum age must be an integer
         registration_mode_invalid: Registration mode is invalid
         short_description_too_long: Short description is too long
         site_title_blank: Site title can't be blank
@@ -1305,6 +1383,8 @@ en:
     your_token: Your access token
   auth:
     apply_for_account: Request an account
+    date_of_birth: Date of birth
+    date_of_birth_hint: We have to make sure you're at least %{count} to use %{domain}. We won't store this.
     captcha_confirmation:
       continue: Continue
       help_html: If you have issues solving the CAPTCHA, you can get in touch with us through %{email} and we can assist you.
@@ -1343,6 +1423,8 @@ en:
     migrate_account_html: If you wish to redirect this account to a different one, you can <a href="%{path}">configure it here</a>.
     or_log_in_with: Or log in with
     privacy_policy_agreement_html: I have read and agree to the <a href="%{rules_path}" target="_blank">server rules</a> and <a href="%{privacy_policy_path}" target="_blank">privacy policy</a>
+    user_agreement_html: I have read and agree to the <a href="%{terms_of_service_path}" target="_blank">terms of service</a> and <a href="%{privacy_policy_path}" target="_blank">privacy policy</a>
+    user_privacy_agreement_html: I have read and agree to the <a href="%{privacy_policy_path}" target="_blank">privacy policy</a>
     progress:
       confirm: Confirm email
       details: Your details
@@ -1402,6 +1484,14 @@ en:
       view_strikes: View past strikes against your account
     too_fast: Form submitted too fast, try again.
     use_security_key: Use security key
+  terms_of_service:
+    title: Terms of Service
+  terms_of_service_interstitial:
+    agreement: By continuing to use %{domain}, you agree to the updated terms of service.
+    future_preamble_html: We're making some changes to our terms of service, which will be effective on <strong>%{date}</strong>. We encourage you to review the updated terms.
+    past_preamble_html: We have changed our terms of service since your last visit. We encourage you to review the updated terms.
+    review_link: Review terms of service
+    title: The terms of service of %{domain} are changing
   author_attribution:
     example_title: Sample text
     hint_html: Are you writing news or blog articles outside of Mastodon? Control how you get credited when they are shared on Mastodon.
@@ -2001,6 +2091,10 @@ en:
       limit: You have already pinned the maximum number of posts
       ownership: Someone else's post cannot be pinned
       reblog: A boost cannot be pinned
+    quote_policies:
+      followers: Followers only
+      nobody: Just me
+      public: Anyone
     title: '%{name}: "%{quote}"'
     visibilities:
       direct: Direct
@@ -2113,6 +2207,14 @@ en:
       further_actions_html: If this wasn't you, we recommend that you %{action} immediately and enable two-factor authentication to keep your account secure.
       subject: Your account has been accessed from a new IP address
       title: A new sign-in
+    terms_of_service_changed:
+      agreement: By continuing to use %{domain}, you agree to these terms. If you disagree with the updated terms, you may end your agreement with %{domain} at any time by deleting your account.
+      changelog: 'At a glance, here is what this update means for you:'
+      description: 'You are receiving this email because we are making changes to our terms of service at %{domain}. These updates will become effective on %{date}. We encourage you to review the updated terms in full here:'
+      sign_off: The %{domain} team
+      subject: Updates to our terms of service
+      subtitle: The terms of service of %{domain} are changing
+      title: Important update
     warning:
       appeal: Submit an appeal
       appeal_description: If you believe this is an error, you can submit an appeal to the staff of %{instance}.

@@ -189,6 +189,7 @@ ja:
         create_domain_block: ドメインブロックを作成
         create_email_domain_block: メールドメインブロックを作成
         create_ip_block: IPルールを作成
+        create_relay: リレーの追加
         create_unavailable_domain: 配送できないドメインを作成
         create_user_role: ロールを作成
         demote_user: ユーザーを降格
@@ -200,14 +201,17 @@ ja:
         destroy_email_domain_block: メールドメインブロックを削除
         destroy_instance: ドメインをブロックする
         destroy_ip_block: IPルールを削除
+        destroy_relay: リレーの削除
         destroy_status: 投稿を削除
         destroy_unavailable_domain: 配送できないドメインを削除
         destroy_user_role: ロールを削除
         disable_2fa_user: 二要素認証を無効化
         disable_custom_emoji: カスタム絵文字を無効化
+        disable_relay: リレーの無効化
         disable_sign_in_token_auth_user: ユーザのメールトークン認証を無効化
         disable_user: ユーザーを無効化
         enable_custom_emoji: カスタム絵文字を有効化
+        enable_relay: リレーの有効化
         enable_sign_in_token_auth_user: ユーザのメールトークン認証を有効化
         enable_user: ユーザーを有効化
         memorialize_account: 追悼アカウント化
@@ -249,6 +253,7 @@ ja:
         create_domain_block_html: "%{name}さんがドメイン %{target}をブロックしました"
         create_email_domain_block_html: "%{name} さんがメールドメイン %{target} をブロックしました"
         create_ip_block_html: "%{name}さんがIP %{target}のルールを作成しました"
+        create_relay_html: "%{name} さんがリレー %{target} を追加しました"
         create_unavailable_domain_html: "%{name}がドメイン %{target}への配送を停止しました"
         create_user_role_html: "%{name}さんがロール『%{target}』を作成しました"
         demote_user_html: "%{name}さんが%{target}さんを降格しました"
@@ -260,14 +265,17 @@ ja:
         destroy_email_domain_block_html: "%{name} さんがメールドメイン %{target} のブロックを外しました"
         destroy_instance_html: "%{name}さんがドメイン %{target}をブロックしました"
         destroy_ip_block_html: "%{name}さんが IP %{target}のルールを削除しました"
+        destroy_relay_html: "%{name} さんがリレー %{target} を削除しました"
         destroy_status_html: "%{name}さんが%{target}さんの投稿を削除しました"
         destroy_unavailable_domain_html: "%{name}がドメイン %{target}への配送を再開しました"
         destroy_user_role_html: "%{name}さんがロール『%{target}』を削除しました"
         disable_2fa_user_html: "%{name}さんが%{target}さんの二要素認証を無効化しました"
         disable_custom_emoji_html: "%{name}さんがカスタム絵文字 %{target}を無効化しました"
+        disable_relay_html: "%{name} さんがリレー %{target} を無効にしました"
         disable_sign_in_token_auth_user_html: "%{name} が %{target} のメールトークン認証を無効化しました"
         disable_user_html: "%{name}さんが%{target}さんのログインを無効化しました"
         enable_custom_emoji_html: "%{name}さんがカスタム絵文字 %{target}を有効化しました"
+        enable_relay_html: "%{name} さんがリレー %{target} を有効にしました"
         enable_sign_in_token_auth_user_html: "%{name} が %{target} のメールトークン認証を有効化しました"
         enable_user_html: "%{name}さんが%{target}さんのログインを有効化しました"
         memorialize_account_html: "%{name}さんが%{target}さんを追悼アカウントページに登録しました"
@@ -900,7 +908,9 @@ ja:
       title: ロール
     rules:
       add_new: ルールを追加
+      add_translation: 翻訳を追加
       delete: 削除
+      delete_translation: 翻訳を削除
       description_html: たいていの人が利用規約を読んで同意したと言いますが、普通は問題が発生するまで読みません。<strong>箇条書きにして、サーバーのルールが一目で分かるようにしましょう</strong>。個々のルールは短くシンプルなものにし、多くの項目に分割しないようにしましょう。
       edit: ルールを編集
       empty: サーバーのルールが定義されていません。
@@ -909,7 +919,71 @@ ja:
         invalid: ルールが不正です
         text_blank: ルールの本文を入力してください
         text_too_long: ルールの本文が長すぎます
+        translation_language_blank: 翻訳する言語を選択してください
+        translation_language_invalid: 翻訳する言語が不正です
+        translation_language_taken: この言語の翻訳はすでに存在します
+        translation_text_blank: 翻訳後のルール本文を入力してください
+        translation_text_too_long: 翻訳後のルール本文が長すぎます
+      move_down: 下に移動
+      move_up: 上に移動
+      preview: 選択中の言語でプレビュー
       title: サーバーのルール
+      translation: 翻訳
+      translation_language: 言語
+      translations: 翻訳
+      translations_explanation: ルールには翻訳を追加できます。対応する翻訳がない場合は既定の本文が表示されます。翻訳は常に既定の本文と同じ内容になるようにしてください。
+    terms_of_service:
+      back: 利用規約に戻る
+      changelog: 変更箇所
+      create: 自分のものを使う
+      current: 現在
+      distribution_started: ユーザーへの通知配信を開始しました
+      draft: 下書き
+      draft_saved: 下書きを保存しました
+      generate: テンプレートを使用
+      generates:
+        action: 作成
+        chance_to_review_html: "<strong>生成された利用規約は自動的には公開されません。</strong>結果を確認する機会があります。手続きに必要な詳細を記入してください。"
+        errors:
+          blank: すべての項目を入力してください
+        explanation_html: 提供された利用規約のテンプレートは情報提供のみを目的としており、いかなる主題に関しても法的助言と見なされるべきではありません。ご自身の状況や具体的な法的質問については、必ずご自身の弁護士に相談してください。
+        title: 利用規約の設定
+      errors:
+        changelog_blank: 公開するには変更箇所を入力してください
+        database_unavailable: DATABASE_URL が設定されていません
+        effective_date_blank: 公開するには適用日を入力してください
+        effective_date_taken: この適用日はすでに使用されています
+        effective_date_too_soon: 適用日に過去の日付は指定できません
+        invalid: 利用規約が不正です
+        text_blank: 利用規約を入力してください
+      fields:
+        changelog: 変更箇所
+        effective_date: 適用日
+        text: サービス利用規約
+      going_live_on_html: "%{date}より有効"
+      hints:
+        changelog: Markdown 記法を利用できます。
+        effective_date: ユーザーへの通知から10日以上30日以下にするのが適当でしょう。
+        text: Markdown 記法を利用できます。
+      history: 履歴
+      live: 公開中
+      no_history: 利用規約の変更はまだ記録されていません。
+      no_terms_of_service_html: 現在、利用規約が設定されていません。利用規約はユーザーとの合意を明確にし、トラブル時の責任範囲を示すためのものです。
+      notified_on_html: "%{date}にユーザーへ通知"
+      notify_users: ユーザーに通知
+      preview:
+        explanation_html: メールは、%{date} より前に登録した<strong>%{display_count}人のユーザー</strong>に送信されます。以下のテキストがメールに含まれます：
+        send_preview: "%{email} にプレビューを送信"
+        send_to_all:
+          one: "%{display_count}件のメールを送信"
+          other: "%{display_count}件のメールを送信"
+        sent: プレビューメールを送信しました
+        title: サービス利用規約の通知をプレビュー
+      publish: 公開
+      published: 利用規約を公開しました
+      published_on_html: "%{date}に公開"
+      save_draft: 下書きを保存
+      title: サービス利用規約
     settings:
       about:
         manage_rules: サーバーのルールを管理
@@ -932,6 +1006,9 @@ ja:
       default_noindex:
         desc_html: この設定を自分で変更していない全ユーザーに影響します
         title: デフォルトで検索エンジンによるインデックスを拒否する
+      allow_referrer_origin:
+        desc: 有効にすると、外部サイトには流入元としてこのサーバーのoriginだけが送信され、ページの完全なURLは送信されません。
+        title: 外部リンクにoriginのリファラー情報を送信する
       discovery:
         follow_recommendations: おすすめフォロー
         preamble: Mastodon を知らないユーザーを取り込むには、興味深いコンテンツを浮上させることが重要です。サーバー上で様々なディスカバリー機能がどのように機能するかを制御します。
@@ -969,6 +1046,7 @@ ja:
         domain_block_rationale_visibility_invalid: ドメインブロック理由の公開範囲が不正です
         domain_block_visibility_invalid: ドメインブロックの公開範囲が不正です
         media_cache_retention_period_integer: メディアキャッシュの保持期間は整数で入力してください
+        minimum_age_integer: 登録可能な最低年齢は整数で入力してください
         registration_mode_invalid: アカウント作成モードが不正です
         short_description_too_long: サーバーの説明文が長すぎます
         site_title_blank: サーバー名を入力してください
@@ -1287,6 +1365,8 @@ ja:
     your_token: アクセストークン
   auth:
     apply_for_account: アカウントのリクエスト
+    date_of_birth: 生年月日
+    date_of_birth_hint: "%{domain}を利用するには%{count}歳以上であることを確認する必要があります。この情報は保存されません。"
     captcha_confirmation:
       continue: 続ける
       help_html: CAPTCHAの解決に問題がある場合は、 %{email} までお問い合わせください。お手伝いいたします。
@@ -1325,6 +1405,8 @@ ja:
     migrate_account_html: 引っ越し先を明記したい場合は<a href="%{path}">こちら</a>で設定できます。
     or_log_in_with: または次のサービスでログイン
     privacy_policy_agreement_html: <a href="%{rules_path}" target="_blank">サーバーのルール</a>と<a href="%{privacy_policy_path}" target="_blank">プライバシーポリシー</a>を読み、同意します
+    user_agreement_html: <a href="%{terms_of_service_path}" target="_blank">利用規約</a>と<a href="%{privacy_policy_path}" target="_blank">プライバシーポリシー</a>を読み、同意します
+    user_privacy_agreement_html: <a href="%{privacy_policy_path}" target="_blank">プライバシーポリシー</a>を読み、同意します
     progress:
       confirm: メールアドレスの確認
       details: ユーザー情報
@@ -1384,6 +1466,14 @@ ja:
       view_strikes: 過去のストライクを表示
     too_fast: フォームの送信が速すぎます。もう一度やり直してください。
     use_security_key: セキュリティキーを使用
+  terms_of_service:
+    title: 利用規約
+  terms_of_service_interstitial:
+    agreement: "%{domain}を引き続き利用することで、更新後の利用規約に同意したものとみなされます。"
+    future_preamble_html: 利用規約を変更します。変更は<strong>%{date}</strong>に発効します。更新内容をご確認ください。
+    past_preamble_html: 前回のアクセス以降、利用規約が変更されました。更新内容をご確認ください。
+    review_link: 利用規約を確認する
+    title: "%{domain}の利用規約が変更されます"
   author_attribution:
     example_title: サンプルテキスト
     hint_html: Mastodonの外でニュースやブログなどを執筆しているユーザーは、Mastodonで自分の記事が共有されたときに著者情報を表示させることができます。
@@ -1970,6 +2060,10 @@ ja:
       limit: 固定できる投稿数の上限に達しました
       ownership: 他人の投稿を固定することはできません
       reblog: ブーストを固定することはできません
+    quote_policies:
+      followers: フォロワーのみ
+      nobody: 自分のみ
+      public: 誰でも
     title: '%{name}: "%{quote}"'
     visibilities:
       direct: ダイレクト
@@ -2082,6 +2176,14 @@ ja:
       further_actions_html: あなたがログインしていない場合は、すぐに%{action}し、アカウントを安全に保つために二要素認証を有効にすることをお勧めします。
       subject: 新しいIPアドレスからのアクセスがありました
       title: 新しいサインイン
+    terms_of_service_changed:
+      agreement: "%{domain}を引き続き利用することで、更新後の利用規約に同意したものとみなされます。同意しない場合は、アカウントを削除することでいつでも%{domain}との合意を終了できます。"
+      changelog: '今回の更新による主な変更点:'
+      description: '%{domain}の利用規約を変更するため、このメールをお送りしています。更新後の利用規約は%{date}に発効します。全文をこちらからご確認ください:'
+      sign_off: "%{domain}チーム"
+      subject: 利用規約更新のお知らせ
+      subtitle: "%{domain}の利用規約が変更されます"
+      title: 重要なお知らせ
     warning:
       appeal: 異議申立を送信
       appeal_description: これが間違いだと思われる場合は、%{instance}のスタッフに申し立てすることができます。
