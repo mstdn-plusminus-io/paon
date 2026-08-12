@@ -31,7 +31,7 @@ func (s *Server) activityPubFollowersSynchronization(c *echo.Context) error {
 	}
 	signedAccount, err := s.verifyActivityPubSignature(c, body)
 	if err != nil {
-		return apiError(c, http.StatusUnauthorized, err.Error())
+		return apiError(c, activityPubSignatureErrorStatus(err), err.Error())
 	}
 	origin := accountURIOrigin(signedAccount.URI)
 	if origin == "" {
@@ -373,6 +373,7 @@ func (s *Server) removeUnexpectedActivityPubFollowers(ctx context.Context, accou
 		expected[id] = struct{}{}
 	}
 	removedFollowerIDs := []int64{}
+	removedFollowerListIDs := map[int64][]int64{}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var follows []models.Follow
 		if err := tx.Joins("JOIN accounts ON accounts.id = follows.account_id").
@@ -385,10 +386,12 @@ func (s *Server) removeUnexpectedActivityPubFollowers(ctx context.Context, accou
 			if _, ok := expected[follow.AccountID]; ok {
 				continue
 			}
-			if err := deleteFollow(tx, follow); err != nil {
+			listIDs, err := deleteFollowWithAffectedListIDs(tx, follow)
+			if err != nil {
 				return err
 			}
 			removedFollowerIDs = append(removedFollowerIDs, follow.AccountID)
+			removedFollowerListIDs[follow.AccountID] = append(removedFollowerListIDs[follow.AccountID], listIDs...)
 			s.invalidateFollowRelationshipCaches(ctx, models.Account{ID: follow.AccountID}, account.ID)
 		}
 		return nil
@@ -396,7 +399,7 @@ func (s *Server) removeUnexpectedActivityPubFollowers(ctx context.Context, accou
 	if err != nil {
 		return err
 	}
-	s.afterActivityPubFollowersSynchronization(ctx, account, removedFollowerIDs, nil, nil)
+	s.afterActivityPubFollowersSynchronization(ctx, account, removedFollowerIDs, removedFollowerListIDs, nil, nil)
 	return nil
 }
 
@@ -467,16 +470,17 @@ func (s *Server) applyExpectedActivityPubFollowersSynchronization(ctx context.Co
 	for _, listID := range uniqueInt64s(affectedListIDs) {
 		_ = s.clearListFeedCacheContext(ctx, listID)
 	}
-	s.afterActivityPubFollowersSynchronization(ctx, account, nil, acceptedFollowerIDs, undoFollowerIDs)
+	s.afterActivityPubFollowersSynchronization(ctx, account, nil, nil, acceptedFollowerIDs, undoFollowerIDs)
 	return nil
 }
 
-func (s *Server) afterActivityPubFollowersSynchronization(ctx context.Context, account models.Account, removedFollowerIDs []int64, acceptedFollowerIDs []int64, undoFollowerIDs []int64) {
+func (s *Server) afterActivityPubFollowersSynchronization(ctx context.Context, account models.Account, removedFollowerIDs []int64, removedFollowerListIDs map[int64][]int64, acceptedFollowerIDs []int64, undoFollowerIDs []int64) {
 	for _, id := range removedFollowerIDs {
 		// Followers-synchronization removal drops a follower's follow of `account`; mirror
 		// Rails' follow-destroy path by unmerging `account` from the follower's home feed
 		// (element-level, like UnmergeWorker) instead of dropping the whole cached feed.
 		s.unmergeAfterUnfollowBestEffort(ctx, account.ID, models.Account{ID: id})
+		s.unmergeListFeedsAfterUnfollowBestEffort(ctx, account.ID, removedFollowerListIDs[id])
 	}
 	if len(removedFollowerIDs) > 0 || len(acceptedFollowerIDs) > 0 {
 		s.meiliReindexPrivateStatusesForAccountsBestEffort(ctx, account.ID)

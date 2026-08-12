@@ -76,6 +76,9 @@ func TestReadyChecksMastodonSchema(t *testing.T) {
 	}
 	body := string(src)
 	for _, want := range []string{
+		`paondb.Available(s.db)`,
+		`paondb.RequireSupportedVersion(s.db)`,
+		`database version unsupported`,
 		`paondb.SchemaAvailable(s.db)`,
 		`schema unavailable`,
 		`RedisAvailable(c.Request().Context(), s.cfg)`,

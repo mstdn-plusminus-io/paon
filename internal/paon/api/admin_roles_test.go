@@ -46,6 +46,19 @@ func TestAdminRolePermissionsFromForm(t *testing.T) {
 	}
 }
 
+func TestAdminRolePositionMatchesPostgreSQLIntegerLimit(t *testing.T) {
+	for _, position := range []int{-adminRolePositionLimit, 0, adminRolePositionLimit} {
+		if !validAdminRolePosition(position) {
+			t.Fatalf("position %d should be valid", position)
+		}
+	}
+	for _, position := range []int{-adminRolePositionLimit - 1, adminRolePositionLimit + 1} {
+		if validAdminRolePosition(position) {
+			t.Fatalf("position %d should be invalid", position)
+		}
+	}
+}
+
 func TestAdminRolePermissionKeys(t *testing.T) {
 	keys := strings.Join(adminRolePermissionKeys(rolePermissionManageUsers|rolePermissionManageRoles|rolePermissionInviteUsers), ",")
 	for _, want := range []string{"invite_users", "manage_users", "manage_roles"} {

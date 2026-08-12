@@ -993,6 +993,8 @@ func filterActionValue(value string) (int, bool) {
 	switch strings.TrimSpace(value) {
 	case "hide", "1":
 		return 1, true
+	case "blur", "2":
+		return 2, true
 	case "warn", "0", "":
 		return 0, true
 	default:

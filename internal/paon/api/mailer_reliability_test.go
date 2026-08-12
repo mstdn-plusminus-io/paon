@@ -176,6 +176,26 @@ func TestNotificationMailThreadsStatusByConversation(t *testing.T) {
 	}
 }
 
+func TestMastodon44NotificationMailIncludesLocalNestedQuote(t *testing.T) {
+	status := &models.Status{
+		ID:      3,
+		Text:    "source",
+		Account: models.Account{ID: 2, Username: "bob"},
+		Quote: &models.Quote{
+			QuotedStatus: &models.Status{ID: 4, Text: "quoted\nsecond line"},
+		},
+	}
+	body := notificationStatusTextBlock("en", status, "https://social.example/@bob/3")
+	if !strings.Contains(body, "> source") || !strings.Contains(body, ">> quoted\n>> second line") {
+		t.Fatalf("local quote notification mail body = %q", body)
+	}
+	status.Account.Domain = sql.NullString{String: "remote.example", Valid: true}
+	body = notificationStatusTextBlock("en", status, "https://remote.example/@bob/3")
+	if strings.Contains(body, ">> quoted") {
+		t.Fatalf("remote quote should retain upstream fallback instead of a nested quote block: %q", body)
+	}
+}
+
 func TestGenericMailerDeliveryTaskUsesMailersPayloadContract(t *testing.T) {
 	task, err := newAsynqMailerDeliveryTask(42, "security", mailMessage{To: "alice@example.test", Subject: "Changed", Body: "body"}, "mastodon:mailers")
 	if err != nil {
@@ -202,6 +222,36 @@ func TestGenericMailerDeliveryTaskUsesMailersPayloadContract(t *testing.T) {
 	} {
 		if _, err := newAsynqMailerDeliveryTask(invalid.userID, invalid.eligibility, invalid.message, "mailers"); err == nil {
 			t.Fatalf("invalid mail task succeeded: %#v", invalid)
+		}
+	}
+}
+
+func TestBulkMailerPayloadIsRestrictedToAnnouncementAndTermsOfService(t *testing.T) {
+	for _, eligibility := range []string{"bulk_announcement", "bulk_terms_of_service"} {
+		message := mailMessage{To: "alice@example.test", Subject: "Notice", Body: "body", Bulk: true}
+		task, err := newAsynqMailerDeliveryTask(42, eligibility, message, "mailers")
+		if err != nil {
+			t.Fatalf("%s: %v", eligibility, err)
+		}
+		var payload asynqMailerDeliveryPayload
+		if err := json.Unmarshal(task.Payload(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if !payload.Message.Bulk || payload.Eligibility != eligibility {
+			t.Fatalf("payload = %#v", payload)
+		}
+	}
+	for _, invalid := range []struct {
+		eligibility string
+		bulk        bool
+	}{
+		{eligibility: "security", bulk: true},
+		{eligibility: "bulk_announcement", bulk: false},
+		{eligibility: "bulk_terms_of_service", bulk: false},
+	} {
+		_, err := newAsynqMailerDeliveryTask(42, invalid.eligibility, mailMessage{To: "alice@example.test", Subject: "Notice", Bulk: invalid.bulk}, "mailers")
+		if err == nil {
+			t.Fatalf("invalid bulk transport eligibility accepted: %#v", invalid)
 		}
 	}
 }

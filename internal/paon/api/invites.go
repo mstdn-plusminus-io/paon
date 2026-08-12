@@ -279,10 +279,11 @@ func adminInviteFromRequest(c *echo.Context, userID int64, now time.Time) (model
 		return models.Invite{}, errInviteParamsMissing
 	}
 	invite := models.Invite{
-		UserID:    userID,
-		Uses:      0,
-		CreatedAt: now,
-		UpdatedAt: now,
+		UserID:     userID,
+		Uses:       0,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Autofollow: formBoolValue(c.FormValue("invite[autofollow]")),
 	}
 	if maxUses := strings.TrimSpace(c.FormValue("invite[max_uses]")); maxUses != "" {
 		value := railsToInt64(maxUses)

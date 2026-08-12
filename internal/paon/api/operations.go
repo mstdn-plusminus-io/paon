@@ -445,6 +445,24 @@ func NewOperations(cfg config.Config, database *gorm.DB) *Operations {
 	}}
 }
 
+// CutoverLegacyStatusQuotes is the only supported DynamoDB quote access after
+// the 4.4 upgrade. It reads and revalidates legacy metadata, writes accepted
+// PostgreSQL Quote rows only when dryRun is false, and never mutates DynamoDB.
+func (operations *Operations) CutoverLegacyStatusQuotes(ctx context.Context, dryRun bool) (QuoteCutoverResult, error) {
+	var result QuoteCutoverResult
+	if operations == nil || operations.server == nil || operations.server.db == nil {
+		return result, errors.New("operations database is not configured")
+	}
+	store, err := newStatusQuoteStore(operations.server.cfg, nil)
+	if err != nil {
+		return result, err
+	}
+	if store == nil {
+		return result, errors.New("DYNAMODB_ENABLED=true is required for the one-way quote cutover")
+	}
+	return operations.server.cutoverLegacyDynamoStatusQuotes(ctx, !dryRun, store)
+}
+
 func (operations *Operations) Close() error {
 	if operations == nil || operations.server == nil {
 		return nil
@@ -563,10 +581,7 @@ func (operations *Operations) ModifyAccount(ctx context.Context, username string
 	if options.Disable2FA {
 		updates["otp_required_for_login"] = false
 		updates["otp_secret"] = nil
-		updates["encrypted_otp_secret"] = nil
-		updates["encrypted_otp_secret_iv"] = nil
-		updates["encrypted_otp_secret_salt"] = nil
-		updates["otp_backup_codes"] = nil
+		updates["otp_backup_codes"] = models.StringArray{}
 	}
 	if options.RemoveRole {
 		updates["role_id"] = nil
@@ -590,6 +605,11 @@ func (operations *Operations) ModifyAccount(ctx context.Context, username string
 		return OperationAccountModifyResult{}, errors.New("no account modifications requested")
 	}
 	if err := operations.server.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if options.Disable2FA {
+			if err := tx.Where("user_id = ?", user.ID).Delete(&models.WebauthnCredential{}).Error; err != nil {
+				return err
+			}
+		}
 		if options.ResetPassword {
 			if err := tx.Where("id IN (?)", tx.Model(&models.SessionActivation{}).Select("web_push_subscription_id").Where("user_id = ? AND web_push_subscription_id IS NOT NULL", user.ID)).Delete(&models.WebPushSubscription{}).Error; err != nil {
 				return err
@@ -1021,7 +1041,15 @@ func (operations *Operations) Vacuum(ctx context.Context, family string, now tim
 	return result, nil
 }
 
+type OperationBuildHomeFeedsOptions struct {
+	SkipFilledTimelines bool
+}
+
 func (operations *Operations) BuildHomeFeeds(ctx context.Context, username string, all bool) (int, error) {
+	return operations.BuildHomeFeedsWithOptions(ctx, username, all, OperationBuildHomeFeedsOptions{})
+}
+
+func (operations *Operations) BuildHomeFeedsWithOptions(ctx context.Context, username string, all bool, options OperationBuildHomeFeedsOptions) (int, error) {
 	if operations == nil || operations.server == nil || operations.server.db == nil {
 		return 0, errors.New("operations database is not configured")
 	}
@@ -1049,6 +1077,13 @@ func (operations *Operations) BuildHomeFeeds(ctx context.Context, username strin
 	}
 	built := 0
 	for _, user := range users {
+		if options.SkipFilledTimelines {
+			if err := operations.buildHomeFeedsSkippingFilledTimelines(ctx, user); err != nil {
+				return built, err
+			}
+			built++
+			continue
+		}
 		if err := operations.server.clearHomeFeedCacheContext(ctx, user.AccountID); err != nil {
 			return built, err
 		}
@@ -1067,6 +1102,42 @@ func (operations *Operations) BuildHomeFeeds(ctx context.Context, username strin
 		built++
 	}
 	return built, nil
+}
+
+func (operations *Operations) buildHomeFeedsSkippingFilledTimelines(ctx context.Context, user models.User) error {
+	homeFilled, err := operations.server.feedTimelineMoreThanHalfFull(ctx, "home", user.AccountID)
+	if err != nil {
+		return err
+	}
+	if !homeFilled {
+		if err := operations.server.clearHomeFeedCacheContext(ctx, user.AccountID); err != nil {
+			return err
+		}
+		if err := operations.server.populateHomeFeed(ctx, operations.server.db, user.AccountID, user.Settings); err != nil {
+			return err
+		}
+	}
+
+	var lists []models.List
+	if err := operations.server.db.WithContext(ctx).Where("account_id = ?", user.AccountID).Order("id ASC").Find(&lists).Error; err != nil {
+		return err
+	}
+	for _, list := range lists {
+		filled, err := operations.server.feedTimelineMoreThanHalfFull(ctx, "list", list.ID)
+		if err != nil {
+			return err
+		}
+		if filled {
+			continue
+		}
+		if err := operations.server.clearListFeedCacheContext(ctx, list.ID); err != nil {
+			return err
+		}
+		if err := operations.server.populateListFeed(ctx, list, user.Settings); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (operations *Operations) ClearFeeds(ctx context.Context) (int, error) {

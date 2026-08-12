@@ -45,7 +45,7 @@ func (s *Server) autoCloseRegistrations(ctx context.Context, now time.Time) bool
 			return err
 		}
 		var setting models.Setting
-		err := tx.Where("var = ? AND thing_type IS NULL AND thing_id IS NULL", "registrations_mode").Order("id ASC").First(&setting).Error
+		err := tx.Where("var = ?", "registrations_mode").First(&setting).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}

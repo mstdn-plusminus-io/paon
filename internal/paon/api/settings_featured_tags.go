@@ -130,6 +130,9 @@ func (s *Server) createFeaturedTagForAccount(account *models.Account, name strin
 		}
 		err := tx.Preload("Account.AccountStat").Preload("Account.User.Role").Preload("Tag").Where("account_id = ? AND tag_id = ?", account.ID, tag.ID).First(&featured).Error
 		if err == nil {
+			if force {
+				return nil
+			}
 			return errFeaturedTagDuplicate
 		}
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -194,7 +197,7 @@ func featuredTagsSettingsHTML(tags []models.FeaturedTag, suggestions []models.Ta
 	}
 	suggestionHint := ""
 	if suggestionLinks.Len() > 0 {
-		suggestionHint = " " + suggestionLinks.String()
+		suggestionHint = `<span class="hint">` + html.EscapeString(settingsT(loc, "simple_form.hints.featured_tag.name", "You can feature hashtags that you have used recently.")) + " " + suggestionLinks.String() + `</span>`
 	}
 	var rows strings.Builder
 	for _, tag := range tags {
@@ -217,7 +220,7 @@ func featuredTagsSettingsHTML(tags []models.FeaturedTag, suggestions []models.Ta
       <div class="fields-group">
 	        <div class="input with_block_label string required featured_tag_name field_with_hint">
 	          <label class="string required" for="featured_tag_name">` + html.EscapeString(settingsT(loc, "simple_form.labels.featured_tag.name", settingsT(loc, "featured_tags.name", "Name"))) + filterRequiredMarker(loc) + `</label>
-	          <span class="hint">` + html.EscapeString(settingsT(loc, "simple_form.hints.featured_tag.name", "You can feature hashtags that you have used recently.")) + suggestionHint + `</span>
+	          ` + suggestionHint + `
 	          <div class="label_input"><input class="string required" type="text" name="featured_tag[name]" id="featured_tag_name"></div>
 	        </div>
 	      </div>

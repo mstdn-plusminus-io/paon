@@ -53,6 +53,13 @@ func TestFeaturedTagsSettingsHTMLRendersRowsAndSuggestions(t *testing.T) {
 	}
 }
 
+func TestFeaturedTagsSettingsHTMLHidesRecentHintWithoutSuggestions(t *testing.T) {
+	html := featuredTagsSettingsHTML(nil, nil, "")
+	if strings.Contains(html, `class="hint"`) || strings.Contains(html, "You can feature hashtags that you have used recently.") {
+		t.Fatalf("empty recent tags should not render a misleading hint: %s", html)
+	}
+}
+
 func TestSettingsFeaturedTagsRequireWebAuthentication(t *testing.T) {
 	s := &Server{}
 	req := httptest.NewRequest(http.MethodGet, "/settings/featured_tags", nil)

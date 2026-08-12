@@ -151,6 +151,7 @@ func TestAdminAccountHTMLIncludesModerationNotes(t *testing.T) {
 		`>@mod</a>`,
 		`href="/admin/account_moderation_notes/4"`,
 		`data-method="delete"`,
+		`title="2026-06-19T01:02:03Z"`,
 		`action="/admin/account_moderation_notes"`,
 		`name="account_moderation_note[target_account_id]" value="7"`,
 		`name="account_moderation_note[content]"`,

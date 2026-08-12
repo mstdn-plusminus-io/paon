@@ -253,6 +253,7 @@ var supportedLanguages = []SupportedLanguage{
 	{Code: "ckb", Name: "Sorani (Kurdish)", NativeName: "سۆرانی"},
 	{Code: "cnr", Name: "Montenegrin", NativeName: "crnogorski"},
 	{Code: "csb", Name: "Kashubian", NativeName: "Kaszëbsczi"},
+	{Code: "gsw", Name: "Swiss German", NativeName: "Schwiizertütsch"},
 	{Code: "jbo", Name: "Lojban", NativeName: "la .lojban."},
 	{Code: "kab", Name: "Kabyle", NativeName: "Taqbaylit"},
 	{Code: "ldn", Name: "Láadan", NativeName: "Láadan"},
@@ -375,6 +376,7 @@ type CredentialSource struct {
 	HideCollections     *bool         `json:"hide_collections"`
 	Discoverable        *bool         `json:"discoverable"`
 	Indexable           bool          `json:"indexable"`
+	AttributionDomains  []string      `json:"attribution_domains"`
 }
 
 type SourceField struct {
@@ -461,6 +463,7 @@ type Status struct {
 	Emojis             []CustomEmoji      `json:"emojis"`
 	Card               any                `json:"card"`
 	Poll               any                `json:"poll"`
+	Quote              any                `json:"quote"`
 	Favourited         *bool              `json:"favourited,omitempty"`
 	Reblogged          *bool              `json:"reblogged,omitempty"`
 	Muted              *bool              `json:"muted,omitempty"`
@@ -468,8 +471,20 @@ type Status struct {
 	Pinned             *bool              `json:"pinned,omitempty"`
 	Filtered           []any              `json:"-"`
 	FilteredPresent    bool               `json:"-"`
-	QuoteID            any                `json:"quote_id"`
-	QuoteOriginalURL   any                `json:"quote_original_url"`
+}
+
+// Quote is the full Mastodon 4.4 quote representation used on a top-level
+// status and in edit history. QuotedStatus is deliberately a shallow status to
+// keep quote chains finite.
+type Quote struct {
+	State        string  `json:"state"`
+	QuotedStatus *Status `json:"quoted_status"`
+}
+
+// ShallowQuote is emitted when a status is itself nested inside another quote.
+type ShallowQuote struct {
+	State          string  `json:"state"`
+	QuotedStatusID *string `json:"quoted_status_id"`
 }
 
 type StatusApplication struct {
@@ -552,6 +567,7 @@ type StatusEdit struct {
 	MediaAttachments []MediaAttachment `json:"media_attachments"`
 	Emojis           []CustomEmoji     `json:"emojis"`
 	Poll             *StatusEditPoll   `json:"poll,omitempty"`
+	Quote            *Quote            `json:"quote,omitempty"`
 }
 
 type StatusEditPoll struct {
@@ -698,15 +714,21 @@ type Mention struct {
 }
 
 type Tag struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
-}
-
-type TagDetail struct {
+	ID        string `json:"id"`
 	Name      string `json:"name"`
 	URL       string `json:"url"`
 	History   []any  `json:"history"`
 	Following *bool  `json:"following,omitempty"`
+	Featuring *bool  `json:"featuring,omitempty"`
+}
+
+type TagDetail struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	History   []any  `json:"history"`
+	Following *bool  `json:"following,omitempty"`
+	Featuring *bool  `json:"featuring,omitempty"`
 }
 
 type Search struct {
@@ -994,6 +1016,7 @@ type Preferences struct {
 type WebPushSubscription struct {
 	ID        string         `json:"id"`
 	Endpoint  string         `json:"endpoint"`
+	Standard  bool           `json:"standard"`
 	Alerts    map[string]any `json:"alerts"`
 	ServerKey string         `json:"server_key"`
 	Policy    string         `json:"policy"`
@@ -1110,7 +1133,6 @@ type Instance struct {
 	Languages        []string            `json:"languages"`
 	Configuration    map[string]any      `json:"configuration"`
 	Registrations    map[string]any      `json:"registrations"`
-	FeatureQuote     bool                `json:"-"`
 	Contact          map[string]any      `json:"contact"`
 	Rules            []any               `json:"rules"`
 	APIVersions      map[string]int      `json:"api_versions,omitempty"`
@@ -1133,6 +1155,13 @@ type PrivacyPolicy struct {
 	Content   string  `json:"content"`
 }
 
+type TermsOfService struct {
+	EffectiveDate string  `json:"effective_date"`
+	Effective     bool    `json:"effective"`
+	Content       string  `json:"content"`
+	SucceededBy   *string `json:"succeeded_by"`
+}
+
 type InstanceDomainBlock struct {
 	Domain   string  `json:"domain"`
 	Digest   string  `json:"digest"`
@@ -1141,7 +1170,13 @@ type InstanceDomainBlock struct {
 }
 
 type InstanceRule struct {
-	ID   string `json:"id"`
+	ID           string                             `json:"id"`
+	Text         string                             `json:"text"`
+	Hint         string                             `json:"hint"`
+	Translations map[string]InstanceRuleTranslation `json:"translations"`
+}
+
+type InstanceRuleTranslation struct {
 	Text string `json:"text"`
 	Hint string `json:"hint"`
 }
@@ -1176,6 +1211,7 @@ type InitialStateOptions struct {
 	MovedToAccount         *models.Account
 	PushSubscription       *models.WebPushSubscription
 	CriticalUpdatesPending *bool
+	TermsOfServiceEnabled  bool
 }
 
 var mediaAttachmentFileExtensions = []string{
@@ -1303,6 +1339,7 @@ func WebPushSubscriptionFromModel(cfg config.Config, subscription models.WebPush
 	return WebPushSubscription{
 		ID:        strconv.FormatInt(subscription.ID, 10),
 		Endpoint:  subscription.Endpoint,
+		Standard:  subscription.Standard,
 		Alerts:    data.Alerts,
 		ServerKey: cfg.VapidPublicKey,
 		Policy:    firstNonEmptyString(data.Policy, "all"),
@@ -1344,18 +1381,24 @@ func AnnouncementFromModelWithStatuses(cfg config.Config, announcement models.An
 }
 
 func TagDetailFromModel(cfg config.Config, tag models.Tag, following *bool) TagDetail {
-	return TagDetailFromModelWithHistory(cfg, tag, following, nil)
+	return TagDetailFromModelWithRelationships(cfg, tag, following, nil, nil)
 }
 
 func TagDetailFromModelWithHistory(cfg config.Config, tag models.Tag, following *bool, history []any) TagDetail {
+	return TagDetailFromModelWithRelationships(cfg, tag, following, nil, history)
+}
+
+func TagDetailFromModelWithRelationships(cfg config.Config, tag models.Tag, following *bool, featuring *bool, history []any) TagDetail {
 	if history == nil {
 		history = []any{}
 	}
 	return TagDetail{
+		ID:        strconv.FormatInt(tag.ID, 10),
 		Name:      tag.DisplayNameValue(),
 		URL:       cfg.BaseURL() + "/tags/" + url.PathEscape(tag.Name),
 		History:   history,
 		Following: following,
+		Featuring: featuring,
 	}
 }
 
@@ -1445,6 +1488,30 @@ func PrivacyPolicyFromSetting(cfg config.Config, setting *models.Setting) Privac
 		UpdatedAt: timePtr(updatedAt),
 		Content:   simpleMarkdownHTML(value),
 	}
+}
+
+func TermsOfServiceFromModel(cfg config.Config, terms models.TermsOfService, succeededBy *models.TermsOfService, now time.Time) TermsOfService {
+	effectiveDate := terms.PublishedAt.Time.Format(time.RFC3339)
+	if terms.EffectiveDate.Valid {
+		effectiveDate = terms.EffectiveDate.Time.Format("2006-01-02")
+	}
+	var successor *string
+	if succeededBy != nil && succeededBy.EffectiveDate.Valid {
+		value := succeededBy.EffectiveDate.Time.Format("2006-01-02")
+		successor = &value
+	}
+	content := strings.ReplaceAll(terms.Text, "%{domain}", cfg.LocalDomain)
+	return TermsOfService{
+		EffectiveDate: effectiveDate,
+		Effective:     terms.PublishedAt.Valid && terms.EffectiveDate.Valid && terms.EffectiveDate.Time.Before(startOfUTCDay(now)),
+		Content:       simpleMarkdownHTML(content),
+		SucceededBy:   successor,
+	}
+}
+
+func startOfUTCDay(value time.Time) time.Time {
+	value = value.UTC()
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func InstanceDomainBlockFromModel(block models.DomainBlock, withComment bool) InstanceDomainBlock {
@@ -1627,6 +1694,7 @@ func CredentialAccountFromModelWithRole(cfg config.Config, account models.Accoun
 			HideCollections:     boolPtr(account.HideCollections),
 			Discoverable:        boolPtr(account.Discoverable),
 			Indexable:           account.Indexable,
+			AttributionDomains:  append([]string{}, account.AttributionDomains...),
 		},
 		Role: rolePayload,
 	}
@@ -1678,7 +1746,12 @@ func MutedAccountFromModel(cfg config.Config, account models.Account, expiresAt 
 }
 
 func StatusFromModel(cfg config.Config, status models.Status, currentAccount *models.Account) Status {
+	return statusFromModel(cfg, status, currentAccount, false)
+}
+
+func statusFromModel(cfg config.Config, status models.Status, currentAccount *models.Account, shallow bool) Status {
 	statusURL, statusURLNull := statusURLValue(cfg, status)
+	reblogsCount, favouritesCount := statusInteractionCounts(status)
 	item := Status{
 		ID:                 strconv.FormatInt(status.ID, 10),
 		CreatedAt:          restTimestamp(status.CreatedAt),
@@ -1692,8 +1765,8 @@ func StatusFromModel(cfg config.Config, status models.Status, currentAccount *mo
 		URL:                statusURL,
 		URLNull:            statusURLNull,
 		RepliesCount:       statusStatCount(status.StatusStat.RepliesCount),
-		ReblogsCount:       statusStatCount(status.StatusStat.ReblogsCount),
-		FavouritesCount:    statusStatCount(status.StatusStat.FavouritesCount),
+		ReblogsCount:       reblogsCount,
+		FavouritesCount:    favouritesCount,
 		EditedAt:           timePtr(status.EditedAt),
 		Content:            statusContentHTML(cfg, status),
 		Account:            AccountFromModel(cfg, status.Account),
@@ -1705,12 +1778,11 @@ func StatusFromModel(cfg config.Config, status models.Status, currentAccount *mo
 		Emojis:             customEmojis(cfg, status.CustomEmojis),
 		Card:               previewCardFromStatus(cfg, status),
 		Poll:               PollFromModel(cfg, status.Poll, currentAccount),
-		QuoteID:            nullableStringValue(status.QuoteID),
-		QuoteOriginalURL:   nullableStringValue(status.QuoteOriginalURL),
 	}
+	item.Quote = quoteFromModel(cfg, status.Quote, currentAccount, shallow)
 
 	if status.Reblog != nil && status.Reblog.ID != 0 {
-		reblog := StatusFromModel(cfg, *status.Reblog, currentAccount)
+		reblog := statusFromModel(cfg, *status.Reblog, currentAccount, false)
 		item.Reblog = &reblog
 	}
 
@@ -1732,6 +1804,91 @@ func StatusFromModel(cfg config.Config, status models.Status, currentAccount *mo
 	}
 
 	return item
+}
+
+func statusInteractionCounts(status models.Status) (int64, int64) {
+	reblogs := status.StatusStat.ReblogsCount
+	favourites := status.StatusStat.FavouritesCount
+	if !statusLocal(status) {
+		if status.StatusStat.UntrustedReblogsCount.Valid {
+			reblogs = status.StatusStat.UntrustedReblogsCount.Int64
+		}
+		if status.StatusStat.UntrustedFavouritesCount.Valid {
+			favourites = status.StatusStat.UntrustedFavouritesCount.Int64
+		}
+	}
+	return statusStatCount(reblogs), statusStatCount(favourites)
+}
+
+func quoteFromModel(cfg config.Config, quote *models.Quote, currentAccount *models.Account, shallow bool) any {
+	if quote == nil || (quote.State != models.QuoteStateAccepted && quote.Legacy) {
+		return nil
+	}
+	state := quoteStateName(quote)
+	available := quote.State == models.QuoteStateAccepted && quote.QuotedStatus != nil && quote.QuotedStatus.ID != 0 && !quote.QuotedStatus.DeletedAt.Valid && !quote.QuotedStatus.ReblogOfID.Valid
+	visible := available && quoteStatusVisibleWithoutDatabase(*quote.QuotedStatus, currentAccount)
+	if quote.QuotedStatusVisibilityChecked {
+		visible = quote.QuotedStatusVisible
+	}
+	if available && !visible {
+		state = "unauthorized"
+		available = false
+	}
+	if shallow {
+		var quotedStatusID *string
+		if available {
+			value := strconv.FormatInt(quote.QuotedStatus.ID, 10)
+			quotedStatusID = &value
+		}
+		return ShallowQuote{State: state, QuotedStatusID: quotedStatusID}
+	}
+	var quotedStatus *Status
+	if available {
+		value := statusFromModel(cfg, *quote.QuotedStatus, currentAccount, true)
+		quotedStatus = &value
+	}
+	return Quote{State: state, QuotedStatus: quotedStatus}
+}
+
+func quoteStatusVisibleWithoutDatabase(status models.Status, currentAccount *models.Account) bool {
+	if status.Visibility <= 1 {
+		return true
+	}
+	if currentAccount == nil || currentAccount.ID == 0 {
+		return false
+	}
+	if status.AccountID == currentAccount.ID {
+		return true
+	}
+	for _, mention := range status.Mentions {
+		if mention.AccountID.Valid && mention.AccountID.Int64 == currentAccount.ID {
+			return true
+		}
+	}
+	// Followers-only visibility requires a database relationship check. The
+	// serializer fails closed if the caller did not hydrate an authorized copy.
+	return false
+}
+
+func quoteStateName(quote *models.Quote) string {
+	if quote == nil {
+		return "pending"
+	}
+	if quote.State == models.QuoteStateAccepted && (quote.QuotedStatus == nil || quote.QuotedStatus.ID == 0 || quote.QuotedStatus.DeletedAt.Valid) {
+		return "deleted"
+	}
+	switch quote.State {
+	case models.QuoteStateAccepted:
+		return "accepted"
+	case models.QuoteStateRejected:
+		return "rejected"
+	case models.QuoteStateRevoked:
+		return "revoked"
+	case models.QuoteStateDeleted:
+		return "deleted"
+	default:
+		return "pending"
+	}
 }
 
 func StatusFromModelWithSource(cfg config.Config, status models.Status, currentAccount *models.Account) Status {
@@ -1796,16 +1953,30 @@ func StatusEditFromModel(cfg config.Config, edit models.StatusEdit) StatusEdit {
 		value := AccountFromModel(cfg, edit.Account)
 		account = &value
 	}
-	return StatusEdit{
+	media := edit.OrderedMediaAttachments
+	if edit.Status.DeletedAt.Valid {
+		media = markMediaAttachmentsDiscarded(media)
+	}
+	item := StatusEdit{
 		Content:          statusEditContentHTML(cfg, edit),
 		SpoilerText:      edit.SpoilerText,
 		Sensitive:        sensitive,
 		CreatedAt:        restTimestamp(edit.CreatedAt),
 		Account:          account,
-		MediaAttachments: mediaAttachments(cfg, edit.OrderedMediaAttachments),
+		MediaAttachments: mediaAttachments(cfg, media),
 		Emojis:           customEmojis(cfg, edit.CustomEmojis),
 		Poll:             poll,
 	}
+	if edit.QuoteID.Valid {
+		if edit.Status.Quote != nil && edit.Status.Quote.ID == edit.QuoteID.Int64 {
+			if value, ok := quoteFromModel(cfg, edit.Status.Quote, nil, false).(Quote); ok {
+				item.Quote = &value
+			}
+		} else {
+			item.Quote = &Quote{State: "pending"}
+		}
+	}
+	return item
 }
 
 func statusEditContentHTML(cfg config.Config, edit models.StatusEdit) string {
@@ -1873,25 +2044,28 @@ func PollFromModel(cfg config.Config, poll *models.Poll, currentAccount *models.
 }
 
 type InstanceRegistrationOptions struct {
-	Mode          string
-	ClosedMessage string
-	SignUpURL     string
-	SignUpURLSet  bool
+	Mode           string
+	ClosedMessage  string
+	SignUpURL      string
+	SignUpURLSet   bool
+	ReasonRequired bool
+	MinimumAge     *int
 }
 
 type InstanceMetadata struct {
-	Title            string
-	TitleSet         bool
-	ShortDescription string
-	Description      string
-	ContactEmail     string
-	ContactAccount   *models.Account
-	Thumbnail        *models.SiteUpload
-	AppIcon          *models.SiteUpload
-	AppIconURLs      map[string]string
-	PreviewImageURL  string
-	Rules            []models.Rule
-	StatusPageURL    string
+	Title             string
+	TitleSet          bool
+	ShortDescription  string
+	Description       string
+	ContactEmail      string
+	ContactAccount    *models.Account
+	Thumbnail         *models.SiteUpload
+	AppIcon           *models.SiteUpload
+	AppIconURLs       map[string]string
+	PreviewImageURL   string
+	Rules             []models.Rule
+	StatusPageURL     string
+	TermsOfServiceURL string
 }
 
 func InstanceFromConfig(cfg config.Config, stats map[string]string) Instance {
@@ -1945,12 +2119,20 @@ func InstanceFromConfigWithOptions(cfg config.Config, stats map[string]string, r
 		Languages: []string{cfg.Locale()},
 		Configuration: map[string]any{
 			"urls": map[string]any{
-				"streaming": cfg.StreamingBaseURL(),
-				"status":    optionalStringAny(metadata.StatusPageURL),
+				"streaming":        cfg.StreamingBaseURL(),
+				"status":           optionalStringAny(metadata.StatusPageURL),
+				"about":            cfg.BaseURL() + "/about",
+				"privacy_policy":   cfg.BaseURL() + "/privacy-policy",
+				"terms_of_service": optionalStringAny(metadata.TermsOfServiceURL),
 			},
 			"accounts": map[string]any{
-				"max_featured_tags":   10,
-				"max_pinned_statuses": 5,
+				"max_display_name_length":       40,
+				"max_note_length":               500,
+				"max_avatar_description_length": 150,
+				"max_header_description_length": 150,
+				"max_featured_tags":             10,
+				"max_pinned_statuses":           5,
+				"max_profile_fields":            4,
 			},
 			"vapid": map[string]any{
 				"public_key": optionalStringAny(cfg.VapidPublicKey),
@@ -1962,6 +2144,7 @@ func InstanceFromConfigWithOptions(cfg config.Config, stats map[string]string, r
 			},
 			"media_attachments": map[string]any{
 				"supported_mime_types":   append([]string{}, mediaAttachmentMimeTypes...),
+				"description_limit":      1_500,
 				"image_size_limit":       imageSizeLimit(cfg),
 				"image_matrix_limit":     matrixLimit(cfg),
 				"video_size_limit":       videoSizeLimit(cfg),
@@ -1977,20 +2160,22 @@ func InstanceFromConfigWithOptions(cfg config.Config, stats map[string]string, r
 			"translation": map[string]any{
 				"enabled": translationEnabled(cfg),
 			},
+			"limited_federation": cfg.LimitedFederationMode,
 		},
 		Registrations: map[string]any{
 			"enabled":           enabled,
 			"approval_required": approvalRequired,
+			"reason_required":   approvalRequired && registrations.ReasonRequired,
 			"message":           message,
+			"min_age":           optionalIntAny(registrations.MinimumAge),
 			"url":               signUpURL,
 		},
-		FeatureQuote: cfg.DynamoDBEnabled,
 		Contact: map[string]any{
 			"email":   metadata.ContactEmail,
 			"account": contactAccount,
 		},
 		Rules:       InstanceRulesFromModels(metadata.Rules),
-		APIVersions: map[string]int{"mastodon": 2},
+		APIVersions: map[string]int{"mastodon": 6},
 		Stats:       stats,
 		URI:         cfg.LocalDomain,
 	}
@@ -2057,10 +2242,15 @@ func SiteUploadFileURL(cfg config.Config, upload models.SiteUpload, style string
 func InstanceRulesFromModels(rules []models.Rule) []any {
 	out := make([]any, 0, len(rules))
 	for _, rule := range rules {
+		translations := make(map[string]InstanceRuleTranslation, len(rule.Translations))
+		for _, translation := range rule.Translations {
+			translations[translation.Language] = InstanceRuleTranslation{Text: translation.Text, Hint: translation.Hint}
+		}
 		out = append(out, InstanceRule{
-			ID:   strconv.FormatInt(rule.ID, 10),
-			Text: rule.Text,
-			Hint: rule.Hint,
+			ID:           strconv.FormatInt(rule.ID, 10),
+			Text:         rule.Text,
+			Hint:         rule.Hint,
+			Translations: translations,
 		})
 	}
 	return out
@@ -2101,6 +2291,13 @@ func optionalStringAny(value string) any {
 		return nil
 	}
 	return value
+}
+
+func optionalIntAny(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func translationEnabled(cfg config.Config) bool {
@@ -2363,7 +2560,6 @@ func ScheduledStatusFromModel(cfg config.Config, status models.ScheduledStatus) 
 	if len(status.Params) > 0 {
 		_ = json.Unmarshal(status.Params, &params)
 	}
-	delete(params, "application_id")
 	var scheduledAt *string
 	if status.ScheduledAt.Valid {
 		value := restTimestamp(status.ScheduledAt.Time)
@@ -2694,34 +2890,34 @@ func InitialStateFromConfigWithOptions(cfg config.Config, current *models.Accoun
 	}
 
 	meta := map[string]any{
-		"streaming_api_base_url":  cfg.StreamingBaseURL(),
-		"access_token":            token,
-		"locale":                  cfg.Locale(),
-		"domain":                  unicodeDomain(cfg.LocalDomain),
-		"title":                   siteTitle,
-		"admin":                   nil,
-		"search_enabled":          cfg.MeiliEnabled,
-		"repository":              cfg.Repository,
-		"source_url":              cfg.SourceURL,
-		"version":                 instanceVersion(cfg),
-		"actual_version":          cfg.Version,
-		"limited_federation_mode": cfg.LimitedFederationMode,
-		"mascot":                  optionalStringAny(options.MascotURL),
-		"profile_directory":       serverSettings.ProfileDirectory,
-		"trends_enabled":          serverSettings.TrendsEnabled,
-		"registrations_open":      options.RegistrationsOpen,
-		"timeline_preview":        serverSettings.TimelinePreview,
-		"activity_api_enabled":    serverSettings.ActivityAPIEnabled,
-		"single_user_mode":        cfg.SingleUserMode,
-		"trends_as_landing_page":  serverSettings.TrendsAsLandingPage,
-		"status_page_url":         serverSettings.StatusPageURL,
-		"sso_redirect":            optionalStringAny(cfg.SSORedirect),
-		"feature_quote":           cfg.DynamoDBEnabled,
-		"auto_play_gif":           serverSettings.AutoPlayGIF,
-		"display_media":           serverSettings.DisplayMedia,
-		"reduce_motion":           serverSettings.ReduceMotion,
-		"use_blurhash":            serverSettings.UseBlurhash,
-		"crop_images":             serverSettings.CropImages,
+		"streaming_api_base_url":   cfg.StreamingBaseURL(),
+		"access_token":             token,
+		"locale":                   cfg.Locale(),
+		"domain":                   unicodeDomain(cfg.LocalDomain),
+		"title":                    siteTitle,
+		"admin":                    nil,
+		"search_enabled":           cfg.MeiliEnabled,
+		"repository":               cfg.Repository,
+		"source_url":               cfg.SourceURL,
+		"version":                  instanceVersion(cfg),
+		"actual_version":           cfg.Version,
+		"limited_federation_mode":  cfg.LimitedFederationMode,
+		"mascot":                   optionalStringAny(options.MascotURL),
+		"profile_directory":        serverSettings.ProfileDirectory,
+		"trends_enabled":           serverSettings.TrendsEnabled,
+		"registrations_open":       options.RegistrationsOpen,
+		"timeline_preview":         serverSettings.TimelinePreview,
+		"activity_api_enabled":     serverSettings.ActivityAPIEnabled,
+		"single_user_mode":         cfg.SingleUserMode,
+		"trends_as_landing_page":   serverSettings.TrendsAsLandingPage,
+		"status_page_url":          serverSettings.StatusPageURL,
+		"sso_redirect":             optionalStringAny(cfg.SSORedirect),
+		"terms_of_service_enabled": options.TermsOfServiceEnabled,
+		"auto_play_gif":            serverSettings.AutoPlayGIF,
+		"display_media":            serverSettings.DisplayMedia,
+		"reduce_motion":            serverSettings.ReduceMotion,
+		"use_blurhash":             serverSettings.UseBlurhash,
+		"crop_images":              serverSettings.CropImages,
 	}
 
 	accounts := map[string]Account{}
@@ -2976,6 +3172,7 @@ func applyAuthenticatedMetaSettings(meta map[string]any, settings map[string]any
 	meta["disable_hover_cards"] = boolSetting(settings, "web.disable_hover_cards", metaBoolDefault(meta, "disable_hover_cards", false))
 	meta["boost_modal"] = boolSetting(settings, "web.reblog_modal", metaBoolDefault(meta, "boost_modal", false))
 	meta["delete_modal"] = boolSetting(settings, "web.delete_modal", metaBoolDefault(meta, "delete_modal", true))
+	meta["missing_alt_text_modal"] = boolSetting(settings, "web.missing_alt_text_modal", metaBoolDefault(meta, "missing_alt_text_modal", true))
 	meta["auto_play_gif"] = boolSetting(settings, "web.auto_play", false)
 	meta["display_media"] = stringSetting(settings, "web.display_media", "default")
 	meta["expand_spoilers"] = boolSetting(settings, "web.expand_content_warnings", metaBoolDefault(meta, "expand_spoilers", false))
@@ -2993,6 +3190,7 @@ func applyInitialStateMetaDefaults(meta map[string]any) {
 	meta["disable_hover_cards"] = metaBoolDefault(meta, "disable_hover_cards", false)
 	meta["boost_modal"] = metaBoolDefault(meta, "boost_modal", false)
 	meta["delete_modal"] = metaBoolDefault(meta, "delete_modal", true)
+	meta["missing_alt_text_modal"] = metaBoolDefault(meta, "missing_alt_text_modal", true)
 	meta["expand_spoilers"] = metaBoolDefault(meta, "expand_spoilers", false)
 	meta["disable_swiping"] = metaBoolDefault(meta, "disable_swiping", false)
 	meta["advanced_layout"] = metaBoolDefault(meta, "advanced_layout", false)
@@ -3736,6 +3934,12 @@ func mediaAttachments(cfg config.Config, media []models.MediaAttachment) []Media
 }
 
 func mediaAttachmentOriginalURL(cfg config.Config, attachment models.MediaAttachment) string {
+	if mediaAttachmentDiscarded(attachment) {
+		if attachment.Processing.Valid && attachment.Processing.Int64 != 2 {
+			return ""
+		}
+		return mediaAttachmentProxyURL(cfg, attachment.ID, "original")
+	}
 	if strings.TrimSpace(attachment.RemoteURL) != "" && cfg.DisableRemoteMediaCache {
 		return attachment.RemoteURL
 	}
@@ -3752,6 +3956,9 @@ func mediaAttachmentOriginalURL(cfg config.Config, attachment models.MediaAttach
 }
 
 func mediaAttachmentPreviewURL(cfg config.Config, attachment models.MediaAttachment, _ string) string {
+	if mediaAttachmentDiscarded(attachment) {
+		return mediaAttachmentProxyURL(cfg, attachment.ID, "small")
+	}
 	if strings.TrimSpace(attachment.RemoteURL) != "" && cfg.DisableRemoteMediaCache {
 		return attachment.RemoteURL
 	}
@@ -3769,6 +3976,18 @@ func mediaAttachmentPreviewURL(cfg config.Config, attachment models.MediaAttachm
 
 func mediaAttachmentHasLocalFile(attachment models.MediaAttachment) bool {
 	return attachment.FileFileName.Valid && strings.TrimSpace(attachment.FileFileName.String) != ""
+}
+
+func mediaAttachmentDiscarded(attachment models.MediaAttachment) bool {
+	return attachment.Discarded || (attachment.Status.ID != 0 && attachment.Status.DeletedAt.Valid)
+}
+
+func markMediaAttachmentsDiscarded(attachments []models.MediaAttachment) []models.MediaAttachment {
+	out := append([]models.MediaAttachment(nil), attachments...)
+	for i := range out {
+		out[i].Discarded = true
+	}
+	return out
 }
 
 func mediaAttachmentProcessed(attachment models.MediaAttachment) bool {
@@ -3816,18 +4035,23 @@ func mediaAttachmentUsesCachePrefix(media models.MediaAttachment) bool {
 }
 
 func orderedStatusMediaAttachments(status models.Status) []models.MediaAttachment {
+	var ordered []models.MediaAttachment
 	if status.OrderedMediaAttachmentIDs == nil {
-		return mediaAttachmentsSortedByID(status.MediaAttachments)
-	}
-	byID := make(map[int64]models.MediaAttachment, len(status.MediaAttachments))
-	for _, attachment := range status.MediaAttachments {
-		byID[attachment.ID] = attachment
-	}
-	ordered := make([]models.MediaAttachment, 0, len(status.OrderedMediaAttachmentIDs))
-	for _, id := range status.OrderedMediaAttachmentIDs {
-		if attachment, ok := byID[id]; ok {
-			ordered = append(ordered, attachment)
+		ordered = mediaAttachmentsSortedByID(status.MediaAttachments)
+	} else {
+		byID := make(map[int64]models.MediaAttachment, len(status.MediaAttachments))
+		for _, attachment := range status.MediaAttachments {
+			byID[attachment.ID] = attachment
 		}
+		ordered = make([]models.MediaAttachment, 0, len(status.OrderedMediaAttachmentIDs))
+		for _, id := range status.OrderedMediaAttachmentIDs {
+			if attachment, ok := byID[id]; ok {
+				ordered = append(ordered, attachment)
+			}
+		}
+	}
+	if status.DeletedAt.Valid {
+		ordered = markMediaAttachmentsDiscarded(ordered)
 	}
 	return ordered
 }
@@ -4211,6 +4435,12 @@ func simpleMarkdownHTML(markdown string) string {
 	return simpleMarkdownHTMLWithOptions(markdown, simpleMarkdownOptions{EscapeHTML: true})
 }
 
+// MarkdownHTML renders the same escaped, image-free Markdown subset used by
+// Mastodon's server-authored policy and description surfaces.
+func MarkdownHTML(markdown string) string {
+	return simpleMarkdownHTML(markdown)
+}
+
 type simpleMarkdownOptions struct {
 	EscapeHTML bool
 }
@@ -4544,10 +4774,14 @@ func visibilityName(value int) string {
 }
 
 func filterActionName(value int) string {
-	if value == 1 {
+	switch value {
+	case 1:
 		return "hide"
+	case 2:
+		return "blur"
+	default:
+		return "warn"
 	}
-	return "warn"
 }
 
 func reportCategoryName(value int) string {

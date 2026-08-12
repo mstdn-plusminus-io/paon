@@ -43,10 +43,21 @@ func (s *Server) softwareUpdates() ([]models.SoftwareUpdate, error) {
 	if err := s.db.Find(&updates).Error; err != nil {
 		return nil, err
 	}
+	updates = pendingSoftwareUpdates(updates, s.currentSoftwareUpdateVersion())
 	sort.SliceStable(updates, func(i, j int) bool {
 		return compareSoftwareVersions(updates[i].Version, updates[j].Version) < 0
 	})
 	return updates, nil
+}
+
+func pendingSoftwareUpdates(updates []models.SoftwareUpdate, currentVersion string) []models.SoftwareUpdate {
+	pending := make([]models.SoftwareUpdate, 0, len(updates))
+	for _, update := range updates {
+		if compareSoftwareVersions(update.Version, currentVersion) > 0 {
+			pending = append(pending, update)
+		}
+	}
+	return pending
 }
 
 func (s *Server) criticalSoftwareUpdatesPending() (bool, error) {

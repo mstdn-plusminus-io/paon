@@ -24,6 +24,7 @@ import (
 
 type metricInstruments struct {
 	httpDuration       metric.Float64Histogram
+	httpQueueDuration  metric.Float64Histogram
 	httpRequests       metric.Int64Counter
 	workerDuration     metric.Float64Histogram
 	workerJobs         metric.Int64Counter
@@ -47,6 +48,7 @@ func metrics() metricInstruments {
 	instrumentsOnce.Do(func() {
 		meter := otel.Meter(instrumentationName)
 		instruments.httpDuration, _ = meter.Float64Histogram("paon.http.server.request.duration", metric.WithUnit("s"))
+		instruments.httpQueueDuration, _ = meter.Float64Histogram("paon.http.server.queue.duration", metric.WithUnit("s"))
 		instruments.httpRequests, _ = meter.Int64Counter("paon.http.server.requests")
 		instruments.workerDuration, _ = meter.Float64Histogram("paon.worker.job.duration", metric.WithUnit("s"))
 		instruments.workerJobs, _ = meter.Int64Counter("paon.worker.jobs")
@@ -96,6 +98,7 @@ func HTTPMiddleware() echo.MiddlewareFunc {
 			recorder := &statusResponseWriter{ResponseWriter: original}
 			c.SetResponse(recorder)
 			start := time.Now()
+			queueDuration, queueDurationOK := requestQueueDuration(req, start)
 			err := next(c)
 			c.SetResponse(original)
 
@@ -117,6 +120,9 @@ func HTTPMiddleware() echo.MiddlewareFunc {
 			}
 			m := metrics()
 			m.httpDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attrs...))
+			if queueDurationOK {
+				m.httpQueueDuration.Record(ctx, queueDuration, metric.WithAttributes(attrs...))
+			}
 			m.httpRequests.Add(ctx, 1, metric.WithAttributes(attrs...))
 			span.End()
 			return err
@@ -186,6 +192,24 @@ func StartRedis(ctx context.Context, command string) (context.Context, func(erro
 	if command == "" {
 		command = "UNKNOWN"
 	}
+	// Mastodon 4.4 sets trace_root_spans=false for Redis. Keep command metrics,
+	// but do not create an otherwise-empty trace for cache/queue maintenance.
+	if !trace.SpanContextFromContext(ctx).IsValid() {
+		start := time.Now()
+		return ctx, func(err error) {
+			outcome := "success"
+			if err != nil {
+				outcome = "failure"
+			}
+			attrs := []attribute.KeyValue{
+				attribute.String("db.operation.name", command),
+				attribute.String("paon.outcome", outcome),
+			}
+			m := metrics()
+			m.redisDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attrs...))
+			m.redisOperations.Add(ctx, 1, metric.WithAttributes(attrs...))
+		}
+	}
 	ctx, span := tracer().Start(ctx, "redis "+command,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
@@ -209,6 +233,40 @@ func StartRedis(ctx context.Context, command string) (context.Context, func(erro
 		m.redisOperations.Add(ctx, 1, metric.WithAttributes(attrs...))
 		span.End()
 	}
+}
+
+// TraceIDs returns active span identifiers for structured log correlation, or
+// blanks for a no-span context. Unsampled spans retain their identifiers so
+// logs can still be correlated with an upstream trace decision.
+func TraceIDs(ctx context.Context) (string, string) {
+	span := trace.SpanFromContext(ctx)
+	if span == nil {
+		return "", ""
+	}
+	spanContext := span.SpanContext()
+	if !spanContext.IsValid() {
+		return "", ""
+	}
+	return spanContext.TraceID().String(), spanContext.SpanID().String()
+}
+
+func requestQueueDuration(req *http.Request, now time.Time) (float64, bool) {
+	if req == nil {
+		return 0, false
+	}
+	raw := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(req.Header.Get("X-Request-Start")), "t="))
+	started, err := strconv.ParseFloat(raw, 64)
+	if err != nil || started <= 0 {
+		return 0, false
+	}
+	if started > 1e12 {
+		started /= 1000
+	}
+	queued := float64(now.UnixNano())/float64(time.Second) - started
+	if queued < 0 || queued > 24*60*60 {
+		return 0, false
+	}
+	return queued, true
 }
 
 // StartFederation records only the direction and outcome. Actor IDs, domains,

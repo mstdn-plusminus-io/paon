@@ -329,7 +329,7 @@ func settingsNavigationHTML(path string, locale string, options settingsHTMLOpti
 	adminPermissions := []int64{rolePermissionViewDashboard, rolePermissionManageSettings, rolePermissionManageRules, rolePermissionManageRoles, rolePermissionManageAnnouncements, rolePermissionManageCustomEmojis, rolePermissionManageWebhooks, rolePermissionManageFederation}
 	if hasAny(adminPermissions...) {
 		admin := item("admin", settingsAdminNavigationHref(options.Permissions), "cogs", "admin.title", "Administration")
-		admin.Selected = selected("/admin/dashboard", "/admin/settings", "/admin/rules", "/admin/warning_presets", "/admin/roles", "/admin/announcements", "/admin/custom_emojis", "/admin/webhooks", "/admin/relays")
+		admin.Selected = selected("/admin/dashboard", "/admin/settings", "/admin/terms_of_service", "/admin/rules", "/admin/warning_presets", "/admin/roles", "/admin/announcements", "/admin/custom_emojis", "/admin/webhooks", "/admin/relays")
 		if admin.Selected {
 			admin.Children = settingsAdminNavigationChildren(path, locale, options)
 		}
@@ -485,6 +485,7 @@ func settingsAdminNavigationChildren(path, locale string, options settingsHTMLOp
 	}
 	add(rolePermissionViewDashboard, "dashboard", "/admin/dashboard", "tachometer", "admin.dashboard.title", "Dashboard")
 	add(rolePermissionManageSettings, "settings", "/admin/settings", "cogs", "admin.settings.title", "Server settings")
+	add(rolePermissionManageSettings, "terms_of_service", "/admin/terms_of_service", "file-text", "admin.terms_of_service.title", "Terms of Service")
 	add(rolePermissionManageRules, "rules", "/admin/rules", "gavel", "admin.rules.title", "Server rules")
 	add(rolePermissionManageSettings, "warning_presets", "/admin/warning_presets", "warning", "admin.warning_presets.title", "Warning presets")
 	add(rolePermissionManageRoles, "roles", "/admin/roles", "vcard", "admin.roles.title", "Roles")
@@ -654,6 +655,7 @@ func settingsPreferencesAppearanceHTMLWithMessages(user models.User, settings ma
 		settingsCheckboxInputHTML(settingsT(loc, "simple_form.labels.defaults.setting_reduce_motion", "Reduce motion"), "", settingsPreferenceFieldName("web.reduce_motion"), rawBool(settings["web.reduce_motion"], false), ""),
 		settingsCheckboxInputHTML(settingsT(loc, "simple_form.labels.defaults.setting_disable_swiping", "Disable swiping motions"), "", settingsPreferenceFieldName("web.disable_swiping"), rawBool(settings["web.disable_swiping"], false), ""),
 		settingsCheckboxInputHTML(settingsT(loc, "simple_form.labels.defaults.setting_system_font_ui", "Use system default font"), "", settingsPreferenceFieldName("web.use_system_font"), rawBool(settings["web.use_system_font"], false), ""),
+		settingsCheckboxInputHTML(settingsT(loc, "simple_form.labels.defaults.setting_system_scrollbars_ui", "Use system default scrollbar"), settingsT(loc, "simple_form.hints.defaults.setting_system_scrollbars_ui", "Applies only to desktop browsers based on Safari and Chrome"), settingsPreferenceFieldName("web.use_system_scrollbars"), rawBool(settings["web.use_system_scrollbars"], false), ""),
 	)
 	body += settingsAppearanceSectionHeading(settingsT(loc, "appearance.toot_layout", "Post layout"))
 	body += settingsPreferenceCheckboxField(settingsT(loc, "simple_form.labels.defaults.setting_crop_images", "Crop images in non-expanded posts"), "web.crop_images", rawBool(settings["web.crop_images"], true))
@@ -664,6 +666,7 @@ func settingsPreferencesAppearanceHTMLWithMessages(user models.User, settings ma
 	body += settingsCheckboxGroupHTML(
 		settingsCheckboxInputHTML(settingsT(loc, "simple_form.labels.defaults.setting_boost_modal", "Confirm before boosting"), "", settingsPreferenceFieldName("web.reblog_modal"), rawBool(settings["web.reblog_modal"], false), ""),
 		settingsCheckboxInputHTML(settingsT(loc, "simple_form.labels.defaults.setting_delete_modal", "Confirm before deleting"), "", settingsPreferenceFieldName("web.delete_modal"), rawBool(settings["web.delete_modal"], true), ""),
+		settingsCheckboxInputHTML(settingsT(loc, "simple_form.labels.defaults.setting_missing_alt_text_modal", "Show a confirmation dialog before posting media without alt text"), "", settingsPreferenceFieldName("web.missing_alt_text_modal"), rawBool(settings["web.missing_alt_text_modal"], true), ""),
 	)
 	body += settingsAppearanceSectionHeading(settingsT(loc, "appearance.sensitive_content", "Sensitive content"))
 	body += settingsDisplayMediaField(stringSetting(settings, "web.display_media", "default"), loc)
@@ -771,6 +774,7 @@ func settingsPreferencesOtherHTMLWithMessages(user models.User, account models.A
 		languages = append(languages, language.Code)
 	}
 	body += settingsFieldRowColumn(settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_default_language", "Default post language"), "default_language", stringSetting(settings, "default_language", ""), languages, false, loc)) + `</div>`
+	body += `<div class="fields-row">` + settingsFieldRowColumn(settingsPreferenceSelectFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_default_quote_policy", "Who can quote"), settingsT(loc, "simple_form.hints.defaults.setting_default_quote_policy", "This setting will only take effect for posts created with the next Mastodon version, but you can select your preference in preparation."), "default_quote_policy", stringSetting(settings, "default_quote_policy", "public"), []string{"public", "followers", "nobody"}, false, loc)) + `</div>`
 	body += settingsPreferenceCheckboxFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_default_sensitive", "Mark media as sensitive by default"), settingsT(loc, "simple_form.hints.defaults.setting_default_sensitive", "Sensitive media is hidden by default and can be revealed with a click"), "default_sensitive", rawBool(settings["default_sensitive"], false))
 	body += `<h4>` + html.EscapeString(settingsT(loc, "preferences.public_timelines", "Public timelines")) + `</h4>`
 	body += settingsChosenLanguagesHTML(user.ChosenLanguages, loc)
@@ -1154,6 +1158,11 @@ func settingsNativeLocaleName(locale string) string {
 }
 
 func settingsTimeZoneSelectField(current string, locale string) string {
+	if strings.TrimSpace(current) == "" {
+		// Rails' application default is UTC. Mastodon 4.4 selects that default
+		// in the form for users who have not saved an explicit time zone.
+		current = "Etc/UTC"
+	}
 	id := settingsFieldID("user[time_zone]")
 	label := settingsT(locale, "simple_form.labels.user.time_zone", "Time zone")
 	var out strings.Builder
@@ -1203,13 +1212,21 @@ func settingsSelectField(label string, name string, current string, options []st
 }
 
 func settingsPreferenceSelectField(label string, key string, current string, options []string, required bool, locale string) string {
+	return settingsPreferenceSelectFieldWithHint(label, "", key, current, options, required, locale)
+}
+
+func settingsPreferenceSelectFieldWithHint(label string, hint string, key string, current string, options []string, required bool, locale string) string {
 	name := settingsPreferenceFieldName(key)
 	id := settingsPreferenceFieldID(key)
 	requirement := "optional"
 	if required {
 		requirement = "required"
 	}
-	out := `<div class="fields-group"><div class="input with_label select ` + requirement + ` user_settings_` + html.EscapeString(key) + `"><div class="label_input"><label class="select ` + requirement + `" for="` + id + `">` + html.EscapeString(label)
+	classes := `input with_label select ` + requirement + ` user_settings_` + html.EscapeString(key)
+	if strings.TrimSpace(hint) != "" {
+		classes += ` field_with_hint`
+	}
+	out := `<div class="fields-group"><div class="` + classes + `"><div class="label_input"><label class="select ` + requirement + `" for="` + id + `">` + html.EscapeString(label)
 	if required {
 		out += ` <abbr title="` + html.EscapeString(settingsT(locale, "simple_form.required.text", "required")) + `">*</abbr>`
 	}
@@ -1222,7 +1239,11 @@ func settingsPreferenceSelectField(label string, key string, current string, opt
 		}
 		out += `>` + html.EscapeString(display) + `</option>`
 	}
-	return out + `</select></div></div></div></div>`
+	out += `</select></div></div>`
+	if strings.TrimSpace(hint) != "" {
+		out += `<span class="hint">` + html.EscapeString(hint) + `</span>`
+	}
+	return out + `</div></div>`
 }
 
 func settingsPreferenceFieldID(key string) string {
@@ -1244,6 +1265,8 @@ func settingsOptionLabel(locale string, name string, option string) string {
 			return short
 		}
 		return short + " - " + long
+	case strings.HasSuffix(name, "[default_quote_policy]"):
+		return settingsT(locale, "statuses.quote_policies."+option, option)
 	case strings.HasSuffix(name, "[default_language]"):
 		if option == "" {
 			return settingsT(locale, "statuses.default_language", "Same as interface language")

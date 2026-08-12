@@ -36,7 +36,11 @@ import (
 const (
 	s3HTTPOpenTimeout              = 5 * time.Second
 	s3HTTPReadTimeout              = 5 * time.Second
+	s3BatchDeleteReadTimeout       = 120 * time.Second
 	s3HTTPExpectContinueTimeout    = 10 * time.Second
+	swiftAuthFallbackTTL           = 5 * time.Minute
+	swiftAuthExpirySkew            = 30 * time.Second
+	swiftAuthResponseMaxBytes      = 64 << 10
 	paperclipImmutableCacheControl = "public, max-age=315576000, immutable"
 	azureBlobCopyPollInterval      = 100 * time.Millisecond
 	azureBlobCopyTimeout           = 5 * time.Minute
@@ -511,6 +515,7 @@ func (s *Server) deleteS3ObjectBatch(ctx context.Context, storage *s3SDKStorage,
 	totalAttempts := storageBatchDeleteTotalAttempts(s.cfg)
 	pending := append([]string(nil), keys...)
 	var lastErr error
+	batchHTTPClient := s3BatchDeleteHTTPClient(storage.client.Options().HTTPClient)
 	for attempt := 1; attempt <= totalAttempts && len(pending) > 0; attempt++ {
 		objects := make([]s3types.ObjectIdentifier, 0, len(pending))
 		for _, key := range pending {
@@ -519,6 +524,8 @@ func (s *Server) deleteS3ObjectBatch(ctx context.Context, storage *s3SDKStorage,
 		output, err := storage.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
 			Delete: &s3types.Delete{Objects: objects, Quiet: aws.Bool(true)},
+		}, func(options *s3.Options) {
+			options.HTTPClient = batchHTTPClient
 		})
 		if err != nil {
 			lastErr = err
@@ -550,6 +557,27 @@ func (s *Server) deleteS3ObjectBatch(ctx context.Context, storage *s3SDKStorage,
 		return fmt.Errorf("delete S3 object batch exhausted %d attempts for %d objects: %w", totalAttempts, len(pending), lastErr)
 	}
 	return nil
+}
+
+// s3BatchDeleteHTTPClient gives only DeleteObjects the longer read timeout
+// used by Mastodon 4.4.10 for expensive batch deletions. Cloning avoids racing
+// with other requests and leaves the shared SDK client configuration intact.
+func s3BatchDeleteHTTPClient(base s3.HTTPClient) s3.HTTPClient {
+	client, ok := base.(*http.Client)
+	if !ok || client == nil {
+		return base
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		return base
+	}
+	clonedClient := *client
+	clonedTransport := transport.Clone()
+	if clonedTransport.ResponseHeaderTimeout > 0 && clonedTransport.ResponseHeaderTimeout < s3BatchDeleteReadTimeout {
+		clonedTransport.ResponseHeaderTimeout = s3BatchDeleteReadTimeout
+	}
+	clonedClient.Transport = clonedTransport
+	return &clonedClient
 }
 
 func removeS3KeyPrefix(prefix string, key string) string {
@@ -845,30 +873,59 @@ func (s *Server) putSwiftObjectFile(ctx context.Context, key string, localPath s
 }
 
 func (s *Server) putSwiftObjectReader(ctx context.Context, key string, body io.Reader, size int64, contentType string) error {
-	token, err := s.swiftAuthToken(ctx)
-	if err != nil {
-		return err
+	seeker, replayable := body.(io.ReadSeeker)
+	startOffset := int64(0)
+	if replayable {
+		var err error
+		startOffset, err = seeker.Seek(0, io.SeekCurrent)
+		if err != nil {
+			replayable = false
+		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.swiftObjectURL(key), body)
-	if err != nil {
-		return err
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			if !replayable {
+				break
+			}
+			if _, err := seeker.Seek(startOffset, io.SeekStart); err != nil {
+				return err
+			}
+		}
+		token, err := s.swiftAuthToken(ctx)
+		if err != nil {
+			return err
+		}
+		// Do not let net/http close a caller-owned file between an unauthorized
+		// response and the one safe token-refresh retry.
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.swiftObjectURL(key), io.NopCloser(body))
+		if err != nil {
+			return err
+		}
+		req.ContentLength = size
+		req.Header.Set("X-Auth-Token", token)
+		req.Header.Set("Cache-Control", paperclipImmutableCacheControl)
+		if contentType = strings.TrimSpace(contentType); contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		resp, err := s3HTTPClient.Do(req)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			s.invalidateSwiftAuthToken(token)
+			if attempt == 0 && replayable {
+				_ = resp.Body.Close()
+				continue
+			}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			return s3HTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
+		}
+		return nil
 	}
-	req.ContentLength = size
-	req.Header.Set("X-Auth-Token", token)
-	req.Header.Set("Cache-Control", paperclipImmutableCacheControl)
-	if contentType = strings.TrimSpace(contentType); contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	resp, err := s3HTTPClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return s3HTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
-	}
-	return nil
+	return errors.New("Swift upload body cannot be replayed after token rejection")
 }
 
 // copySwiftObject uses Swift's synchronous server-side COPY operation. The
@@ -878,57 +935,83 @@ func (s *Server) copySwiftObject(ctx context.Context, sourceKey string, destinat
 	if !s.swiftObjectStorageEnabled() || strings.TrimSpace(sourceKey) == "" || strings.TrimSpace(destinationKey) == "" || sourceKey == destinationKey {
 		return nil
 	}
-	token, err := s.swiftAuthToken(ctx)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, "COPY", s.swiftObjectURL(sourceKey), http.NoBody)
-	if err != nil {
-		return err
-	}
 	destination := &url.URL{Path: "/" + path.Join(strings.Trim(s.cfg.SwiftContainer, "/"), strings.Trim(destinationKey, "/"))}
-	req.Header.Set("Destination", destination.EscapedPath())
-	req.Header.Set("X-Auth-Token", token)
-	resp, err := s3HTTPClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	for attempt := 0; attempt < 2; attempt++ {
+		token, err := s.swiftAuthToken(ctx)
+		if err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(ctx, "COPY", s.swiftObjectURL(sourceKey), http.NoBody)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Destination", destination.EscapedPath())
+		req.Header.Set("X-Auth-Token", token)
+		resp, err := s3HTTPClient.Do(req)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			s.invalidateSwiftAuthToken(token)
+			if attempt == 0 {
+				_ = resp.Body.Close()
+				continue
+			}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			return nil
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return s3HTTPError{status: resp.StatusCode}
+		}
 		return nil
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return s3HTTPError{status: resp.StatusCode}
-	}
-	return nil
+	return errors.New("Swift copy authentication retry exhausted")
 }
 
 func (s *Server) deleteSwiftObject(ctx context.Context, key string) error {
-	token, err := s.swiftAuthToken(ctx)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.swiftObjectURL(key), http.NoBody)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("X-Auth-Token", token)
-	resp, err := s3HTTPClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	for attempt := 0; attempt < 2; attempt++ {
+		token, err := s.swiftAuthToken(ctx)
+		if err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.swiftObjectURL(key), http.NoBody)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("X-Auth-Token", token)
+		resp, err := s3HTTPClient.Do(req)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			s.invalidateSwiftAuthToken(token)
+			if attempt == 0 {
+				_ = resp.Body.Close()
+				continue
+			}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			return nil
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			return s3HTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
+		}
 		return nil
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return s3HTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
-	}
-	return nil
+	return errors.New("Swift delete authentication retry exhausted")
 }
 
 func (s *Server) swiftAuthToken(ctx context.Context) (string, error) {
+	s.swiftAuthMu.Lock()
+	defer s.swiftAuthMu.Unlock()
+	now := time.Now().UTC()
+	if s.swiftAuthValue != "" && now.Add(swiftAuthExpirySkew).Before(s.swiftAuthExpires) {
+		return s.swiftAuthValue, nil
+	}
 	body, err := json.Marshal(s.swiftAuthPayload())
 	if err != nil {
 		return "", err
@@ -948,11 +1031,46 @@ func (s *Server) swiftAuthToken(ctx context.Context) (string, error) {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", s3HTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
 	}
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, swiftAuthResponseMaxBytes+1))
+	if err != nil || len(responseBody) > swiftAuthResponseMaxBytes {
+		return "", errors.New("invalid Swift authentication response")
+	}
 	token := strings.TrimSpace(resp.Header.Get("X-Subject-Token"))
 	if token == "" {
 		return "", s3HTTPError{status: resp.StatusCode, body: "missing X-Subject-Token"}
 	}
+	s.swiftAuthValue = token
+	s.swiftAuthExpires = swiftAuthTokenExpiry(responseBody, now)
 	return token, nil
+}
+
+func (s *Server) invalidateSwiftAuthToken(token string) {
+	if s == nil || token == "" {
+		return
+	}
+	s.swiftAuthMu.Lock()
+	defer s.swiftAuthMu.Unlock()
+	if s.swiftAuthValue == token {
+		s.swiftAuthValue = ""
+		s.swiftAuthExpires = time.Time{}
+	}
+}
+
+func swiftAuthTokenExpiry(body []byte, now time.Time) time.Time {
+	fallback := now.Add(swiftAuthFallbackTTL)
+	var response struct {
+		Token struct {
+			ExpiresAt string `json:"expires_at"`
+		} `json:"token"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return fallback
+	}
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(response.Token.ExpiresAt))
+	if err != nil || !expiresAt.After(now) {
+		return fallback
+	}
+	return expiresAt.UTC()
 }
 
 func (s *Server) swiftAuthPayload() map[string]any {

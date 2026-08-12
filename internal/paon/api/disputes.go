@@ -315,7 +315,8 @@ func disputeAppealHTML(strike models.AccountWarning, appeal *models.Appeal, loca
 			accountName = strconv.FormatInt(appeal.AccountID, 10)
 			accountHref = "/admin/accounts/" + accountName
 		}
-		return `<h3>` + html.EscapeString(settingsT(locale, "disputes.strikes.appeal", "Appeal")) + `</h3><div class="report-notes"><div class="report-notes__item"><img src="/avatars/original/missing.png" class="report-notes__item__avatar" alt=""><div class="report-notes__item__header"><span class="username"><a href="` + html.EscapeString(accountHref) + `" class="table-action-link">` + html.EscapeString(accountName) + `</a></span> <time class="relative-formatted" datetime="` + html.EscapeString(appeal.CreatedAt.UTC().Format(time.RFC3339)) + `">` + html.EscapeString(appeal.CreatedAt.UTC().Format("2006-01-02")) + `</time> · <span class="` + stateClass + `">` + html.EscapeString(state) + `</span></div><div class="report-notes__item__content">` + disputeStrikeTextBlock(appeal.Text) + `</div></div></div>`
+		stamp := appeal.CreatedAt.UTC().Format(time.RFC3339)
+		return `<h3>` + html.EscapeString(settingsT(locale, "disputes.strikes.appeal", "Appeal")) + `</h3><div class="report-notes"><div class="report-notes__item"><img src="/avatars/original/missing.png" class="report-notes__item__avatar" alt=""><div class="report-notes__item__header"><span class="username"><a href="` + html.EscapeString(accountHref) + `" class="table-action-link">` + html.EscapeString(accountName) + `</a></span> <time class="relative-formatted" datetime="` + html.EscapeString(stamp) + `" title="` + html.EscapeString(stamp) + `">` + html.EscapeString(appeal.CreatedAt.UTC().Format("2006-01-02")) + `</time> · <span class="` + stateClass + `">` + html.EscapeString(state) + `</span></div><div class="report-notes__item__content">` + disputeStrikeTextBlock(appeal.Text) + `</div></div></div>`
 	}
 	if appealStrikeWithinTimeFrame(strike.CreatedAt, time.Now().UTC()) {
 		value := ""

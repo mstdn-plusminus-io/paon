@@ -78,6 +78,7 @@ func (s *Server) createSettingsAlias(c *echo.Context) error {
 		return err
 	}
 	s.triggerAccountWebhook("account.updated", account.ID)
+	_ = s.enqueueFASPAccountLifecycleByID(c.Request().Context(), account.ID, "update")
 	_ = s.enqueueActivityPubAccountUpdate(*account, 0)
 	return c.Redirect(http.StatusFound, "/settings/aliases?notice="+url.QueryEscape(settingsT(locale, "aliases.created_msg", "Alias added")))
 }
@@ -118,6 +119,7 @@ func (s *Server) destroySettingsAlias(c *echo.Context) error {
 			return err
 		}
 		s.triggerAccountWebhook("account.updated", account.ID)
+		_ = s.enqueueFASPAccountLifecycleByID(c.Request().Context(), account.ID, "update")
 	}
 	return c.Redirect(http.StatusFound, "/settings/aliases?notice="+url.QueryEscape(settingsT(locale, "aliases.deleted_msg", "Alias removed")))
 }

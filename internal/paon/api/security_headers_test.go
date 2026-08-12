@@ -1,12 +1,17 @@
 package api
 
 import (
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 func TestRailsDefaultSecurityHeadersAreApplied(t *testing.T) {
@@ -33,6 +38,51 @@ func TestRailsDefaultSecurityHeadersAreApplied(t *testing.T) {
 	}
 }
 
+func TestWebAppReferrerPolicyScopeKeepsSensitiveSurfacesSameOrigin(t *testing.T) {
+	for _, path := range []string{"/", "/home", "/@alice/123", "/explore", "/tags/golang", "/about", "/privacy-policy", "/terms-of-service/2026-01-01"} {
+		if !webAppReferrerPolicyPath(path) {
+			t.Fatalf("web app path %q was excluded", path)
+		}
+	}
+	for _, path := range []string{"/admin", "/admin/settings", "/api/v1/statuses/1", "/auth/sign_in", "/oauth/authorize", "/settings/profile", "/users/alice", "/.well-known/webfinger", "/share", "/media/1", "/statuses_cleanup"} {
+		if webAppReferrerPolicyPath(path) {
+			t.Fatalf("sensitive/non-web-app path %q was included", path)
+		}
+	}
+}
+
+func TestAllowReferrerOriginSettingOnlyChangesWebAppResponses(t *testing.T) {
+	database, err := gorm.Open(postgres.New(postgres.Config{
+		DSN:                  "host=localhost user=paon dbname=paon",
+		PreferSimpleProtocol: true,
+	}), &gorm.Config{DryRun: true, DisableAutomaticPing: true, SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Callback().Query().Replace("gorm:query", func(tx *gorm.DB) {
+		if setting, ok := tx.Statement.Dest.(*models.Setting); ok {
+			*setting = models.Setting{Var: "allow_referrer_origin", Value: sql.NullString{String: "true", Valid: true}}
+			tx.RowsAffected = 1
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e := echo.New()
+	e.Use(securityHeadersMiddleware(database))
+	e.GET("/home", func(c *echo.Context) error { return c.NoContent(http.StatusOK) })
+	e.GET("/admin", func(c *echo.Context) error { return c.NoContent(http.StatusOK) })
+	for path, want := range map[string]string{
+		"/home":  "strict-origin-when-cross-origin",
+		"/admin": "same-origin",
+	} {
+		recorder := httptest.NewRecorder()
+		e.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if got := recorder.Header().Get("Referrer-Policy"); got != want {
+			t.Fatalf("%s Referrer-Policy = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestContentSecurityPolicyUsesRailsCSPMediaHostBeforeStorageHost(t *testing.T) {
 	policy := railsContentSecurityPolicy(config.Config{
 		RailsEnv:            "production",
@@ -49,6 +99,31 @@ func TestContentSecurityPolicyUsesRailsCSPMediaHostBeforeStorageHost(t *testing.
 	}
 	if strings.Contains(policy, "storage.example.test") {
 		t.Fatalf("CSP leaked Paperclip storage host despite CSPMediaHost: %q", policy)
+	}
+}
+
+func TestContentSecurityPolicyIncludesValidatedExtraMediaHosts(t *testing.T) {
+	policy := railsContentSecurityPolicy(config.Config{
+		RailsEnv:        "production",
+		Scheme:          "https",
+		WebDomain:       "example.com",
+		ExtraMediaHosts: []string{"https://media-one.example.test", "http://media-two.example.test:8080"},
+	})
+	for _, directive := range []string{"img-src", "media-src", "connect-src"} {
+		start := strings.Index(policy, directive+" ")
+		if start < 0 {
+			t.Fatalf("CSP missing %s: %q", directive, policy)
+		}
+		end := strings.Index(policy[start:], ";")
+		value := policy[start:]
+		if end >= 0 {
+			value = value[:end]
+		}
+		for _, host := range []string{"https://media-one.example.test", "http://media-two.example.test:8080"} {
+			if !strings.Contains(value, host) {
+				t.Fatalf("%s missing extra media host %q: %q", directive, host, value)
+			}
+		}
 	}
 }
 

@@ -139,7 +139,7 @@ func (s *Server) featuredTagSuggestions(c *echo.Context) error {
 	out := make([]serializer.TagDetail, 0, len(tags))
 	for _, tag := range tags {
 		following := s.tagFollowing(c, tag.ID)
-		out = append(out, serializer.TagDetailFromModel(s.cfg, tag, following))
+		out = append(out, serializer.TagDetailFromModelWithRelationships(s.cfg, tag, following, s.tagFeaturing(c, tag.ID), nil))
 	}
 	return c.JSON(http.StatusOK, out)
 }

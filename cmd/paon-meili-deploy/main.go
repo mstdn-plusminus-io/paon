@@ -25,6 +25,7 @@ func main() {
 	flag.IntVar(&batchSize, "batch-size", batchSize, "number of records loaded and indexed per batch")
 	flag.BoolVar(&resume, "resume", resume, "resume from the saved Meilisearch deploy progress file")
 	flag.StringVar(&progressPath, "progress-file", progressPath, "path to the Meilisearch deploy progress file")
+	onlyMapping := flag.Bool("only-mapping", false, "update Meilisearch index settings without re-indexing documents")
 	checkConfig := flag.Bool("check-config", false, "validate configuration and database connectivity without deploying Meilisearch indexes")
 	showVersion := flag.Bool("version", false, "print the Paon version and exit")
 	flag.Parse()
@@ -84,6 +85,9 @@ func main() {
 	if err := paondb.Available(database); err != nil {
 		log.Fatalf("check database: %v", err)
 	}
+	if err := paondb.RequireSupportedVersion(database); err != nil {
+		log.Fatalf("check database version: %v", err)
+	}
 	if err := paondb.SchemaAvailable(database); err != nil {
 		log.Fatalf("check database schema: %v", err)
 	}
@@ -95,12 +99,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("create server: %v", err)
 	}
-	stats, err := server.DeployMeiliIndexes(ctx, api.MeiliDeployOptions{BatchSize: batchSize, Resume: resume, ProgressPath: progressPath, Writer: os.Stdout})
+	stats, err := server.DeployMeiliIndexes(ctx, api.MeiliDeployOptions{BatchSize: batchSize, Resume: resume, OnlyMapping: *onlyMapping, ProgressPath: progressPath, Writer: os.Stdout})
 	if err != nil {
 		log.Fatalf("deploy meilisearch indexes: %v", err)
 	}
 	if cfg.ShouldLog("info") {
-		log.Printf("meilisearch deploy complete: accounts=%d statuses=%d tags=%d instances=%d", stats.Accounts, stats.Statuses, stats.Tags, stats.Instances)
+		if *onlyMapping {
+			log.Printf("meilisearch mappings updated")
+		} else {
+			log.Printf("meilisearch deploy complete: accounts=%d statuses=%d tags=%d instances=%d", stats.Accounts, stats.Statuses, stats.Tags, stats.Instances)
+		}
 	}
 }
 

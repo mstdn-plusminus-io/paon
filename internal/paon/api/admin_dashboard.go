@@ -27,6 +27,11 @@ type adminDashboardSystemCheck struct {
 	Critical bool
 }
 
+type adminDashboardPermissions struct {
+	ManageUsers   bool
+	ManageReports bool
+}
+
 func (s *Server) adminDashboardPage(c *echo.Context) error {
 	user, _, handled, err := s.requireFunctionalWebUser(c)
 	if handled || err != nil {
@@ -43,7 +48,11 @@ func (s *Server) adminDashboardPage(c *echo.Context) error {
 	locale := s.webLocale(c, user)
 	theme := settingsWebTheme(decodeUserSettings(user.Settings.String))
 	checks := s.adminDashboardSystemChecks(user)
-	return c.HTML(http.StatusOK, adminDashboardHTMLWithChecks(counts, checks, locale, theme))
+	permissions := adminDashboardPermissions{
+		ManageUsers:   s.userCan(user, rolePermissionManageUsers),
+		ManageReports: s.userCan(user, rolePermissionManageReports),
+	}
+	return c.HTML(http.StatusOK, adminDashboardHTMLWithChecksAndPermissions(counts, checks, permissions, locale, theme))
 }
 
 func (s *Server) adminDashboardCounts() (adminDashboardCounts, error) {
@@ -57,7 +66,10 @@ func (s *Server) adminDashboardCounts() (adminDashboardCounts, error) {
 	if err := s.db.Model(&models.Report{}).Where("action_taken_at IS NULL").Count(&counts.PendingReports).Error; err != nil {
 		return counts, err
 	}
-	if err := s.db.Model(&models.Tag{}).Where("reviewed_at IS NULL AND requested_review_at IS NOT NULL").Count(&counts.PendingTags).Error; err != nil {
+	if err := s.db.Model(&models.Tag{}).
+		Joins("JOIN tag_trends ON tag_trends.tag_id = tags.id").
+		Where("tags.reviewed_at IS NULL AND tags.requested_review_at IS NOT NULL").
+		Count(&counts.PendingTags).Error; err != nil {
 		return counts, err
 	}
 	if err := s.db.Model(&models.Appeal{}).Where("approved_at IS NULL AND rejected_at IS NULL").Count(&counts.PendingAppeals).Error; err != nil {
@@ -151,10 +163,14 @@ func (s *Server) adminDashboardSoftwareVersionCheckFromUpdates(updates []models.
 }
 
 func adminDashboardHTML(counts adminDashboardCounts, localeAndTheme ...string) string {
-	return adminDashboardHTMLWithChecks(counts, nil, localeAndTheme...)
+	return adminDashboardHTMLWithChecksAndPermissions(counts, nil, adminDashboardPermissions{ManageUsers: true, ManageReports: true}, localeAndTheme...)
 }
 
 func adminDashboardHTMLWithChecks(counts adminDashboardCounts, checks []adminDashboardSystemCheck, localeAndTheme ...string) string {
+	return adminDashboardHTMLWithChecksAndPermissions(counts, checks, adminDashboardPermissions{ManageUsers: true, ManageReports: true}, localeAndTheme...)
+}
+
+func adminDashboardHTMLWithChecksAndPermissions(counts adminDashboardCounts, checks []adminDashboardSystemCheck, permissions adminDashboardPermissions, localeAndTheme ...string) string {
 	loc := settingsLocaleArgOrEnglish(localeAndTheme...)
 	theme := settingsThemeArg(localeAndTheme...)
 	title := adminT(loc, "admin.dashboard.title", "Admin dashboard")
@@ -166,11 +182,11 @@ func adminDashboardHTMLWithChecks(counts adminDashboardCounts, checks []adminDas
 	body.WriteString(`<div class="content__heading__actions"><span>` + html.EscapeString(startAt) + ` - ` + html.EscapeString(endAt) + `</span></div>`)
 	body.WriteString(adminDashboardSystemChecksHTML(checks, loc))
 	body.WriteString(`<div class="dashboard">`)
-	body.WriteString(`<div class="dashboard__item">` + adminDashboardReactComponent("counter", map[string]any{"measure": "new_users", "start_at": startAt, "end_at": endAt, "label": adminT(loc, "admin.dashboard.new_users", "new users"), "href": "/admin/accounts?origin=local"}) + `</div>`)
-	body.WriteString(`<div class="dashboard__item">` + adminDashboardReactComponent("counter", map[string]any{"measure": "active_users", "start_at": startAt, "end_at": endAt, "label": adminT(loc, "admin.dashboard.active_users", "active users"), "href": "/admin/accounts?origin=local"}) + `</div>`)
+	body.WriteString(`<div class="dashboard__item">` + adminDashboardReactComponent("counter", adminDashboardCounterProps("new_users", startAt, endAt, adminT(loc, "admin.dashboard.new_users", "new users"), "/admin/accounts?origin=local", permissions.ManageUsers)) + `</div>`)
+	body.WriteString(`<div class="dashboard__item">` + adminDashboardReactComponent("counter", adminDashboardCounterProps("active_users", startAt, endAt, adminT(loc, "admin.dashboard.active_users", "active users"), "/admin/accounts?origin=local", permissions.ManageUsers)) + `</div>`)
 	body.WriteString(`<div class="dashboard__item">` + adminDashboardReactComponent("counter", map[string]any{"measure": "interactions", "start_at": startAt, "end_at": endAt, "label": adminT(loc, "admin.dashboard.interactions", "interactions")}) + `</div>`)
-	body.WriteString(`<div class="dashboard__item">` + adminDashboardReactComponent("counter", map[string]any{"measure": "opened_reports", "start_at": startAt, "end_at": endAt, "label": adminT(loc, "admin.dashboard.opened_reports", "reports opened"), "href": "/admin/reports"}) + `</div>`)
-	body.WriteString(`<div class="dashboard__item">` + adminDashboardReactComponent("counter", map[string]any{"measure": "resolved_reports", "start_at": startAt, "end_at": endAt, "label": adminT(loc, "admin.dashboard.resolved_reports", "reports resolved"), "href": "/admin/reports?resolved=1"}) + `</div>`)
+	body.WriteString(`<div class="dashboard__item">` + adminDashboardReactComponent("counter", adminDashboardCounterProps("opened_reports", startAt, endAt, adminT(loc, "admin.dashboard.opened_reports", "reports opened"), "/admin/reports", permissions.ManageReports)) + `</div>`)
+	body.WriteString(`<div class="dashboard__item">` + adminDashboardReactComponent("counter", adminDashboardCounterProps("resolved_reports", startAt, endAt, adminT(loc, "admin.dashboard.resolved_reports", "reports resolved"), "/admin/reports?resolved=1", permissions.ManageReports)) + `</div>`)
 	body.WriteString(`<div class="dashboard__item">`)
 	body.WriteString(adminDashboardQuickAccess("/admin/reports", adminDashboardPendingHTML(loc, "admin.dashboard.pending_reports_html", counts.PendingReports, "pending reports")))
 	body.WriteString(adminDashboardQuickAccess("/admin/accounts?status=pending", adminDashboardPendingHTML(loc, "admin.dashboard.pending_users_html", counts.PendingUsers, "pending users")))
@@ -186,6 +202,14 @@ func adminDashboardHTMLWithChecks(counts adminDashboardCounts, checks []adminDas
 	body.WriteString(`<div class="dashboard__item">` + adminDashboardReactComponent("dimension", map[string]any{"dimension": "space_usage", "start_at": startAt, "end_at": endAt, "limit": 3, "label": adminT(loc, "admin.dashboard.space", "Space usage")}) + `</div>`)
 	body.WriteString(`</div>`)
 	return adminDashboardShell(title, body.String(), loc, theme)
+}
+
+func adminDashboardCounterProps(measure string, startAt string, endAt string, label string, href string, permitted bool) map[string]any {
+	props := map[string]any{"measure": measure, "start_at": startAt, "end_at": endAt, "label": label}
+	if permitted && href != "" {
+		props["href"] = href
+	}
+	return props
 }
 
 func adminDashboardSystemChecksHTML(checks []adminDashboardSystemCheck, locale string) string {

@@ -105,6 +105,9 @@ func (s *Server) applyPublicStatusHead(options *web.AppOptions, status models.St
 		{Name: "description", Content: description},
 		{Property: "og:description", Content: description},
 	}
+	if status.Language.Valid && strings.TrimSpace(status.Language.String) != "" {
+		options.HeadMeta = append(options.HeadMeta, web.HeadMeta{Property: "og:locale", Content: strings.TrimSpace(status.Language.String)})
+	}
 	if status.Account.User.Settings.Valid && rawBool(decodeUserSettings(status.Account.User.Settings.String)["noindex"], false) {
 		options.HeadMeta = append([]web.HeadMeta{{Name: "robots", Content: "noindex, noarchive"}}, options.HeadMeta...)
 	}

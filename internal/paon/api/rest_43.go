@@ -190,12 +190,48 @@ func (s *Server) annualReports(c *echo.Context) error {
 	})
 }
 
+func (s *Server) annualReport(c *echo.Context) error {
+	account, _, err := s.requireAccountScope(c, "write", "write:accounts")
+	if err != nil {
+		return err
+	}
+	year, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		return apiError(c, http.StatusNotFound, "Record not found")
+	}
+	var report models.GeneratedAnnualReport
+	if err := s.db.Where("account_id = ? AND year = ?", account.ID, year).First(&report).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return apiError(c, http.StatusNotFound, "Record not found")
+		}
+		return err
+	}
+	accountIDs, statusIDs := annualReportReferencedIDs([]models.GeneratedAnnualReport{report})
+	accounts, err := s.annualReportAccounts(accountIDs)
+	if err != nil {
+		return err
+	}
+	statuses, err := s.annualReportStatuses(statusIDs, account)
+	if err != nil {
+		return err
+	}
+	data := json.RawMessage(report.Data)
+	if !json.Valid(data) {
+		data = json.RawMessage(`{}`)
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"annual_reports": []annualReportEntity{{Year: report.Year, Data: data, SchemaVersion: report.SchemaVersion}},
+		"accounts":       accounts,
+		"statuses":       statuses,
+	})
+}
+
 func (s *Server) readAnnualReport(c *echo.Context) error {
 	account, _, err := s.requireAccountScope(c, "write", "write:accounts")
 	if err != nil {
 		return err
 	}
-	year, err := strconv.Atoi(c.Param("year"))
+	year, err := strconv.Atoi(firstNonEmpty(c.Param("id"), c.Param("year")))
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}

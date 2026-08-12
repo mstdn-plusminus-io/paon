@@ -128,6 +128,18 @@ func TestMediaTranscodeMarksSilentVideoAsGifvLikeRailsTypeCorrector(t *testing.T
 	}
 }
 
+func TestMastodon44YUVJ420PVideoIsEligibleForPassthrough(t *testing.T) {
+	metadata := mediaTranscodeMetadata{
+		valid:      true,
+		videoCodec: "h264",
+		audioCodec: "aac",
+		colorspace: "yuvj420p",
+	}
+	if !metadata.eligibleForPassthrough() {
+		t.Fatal("Mastodon 4.4 must not re-encode an otherwise-compatible yuvj420p video")
+	}
+}
+
 func TestMediaAttachmentOriginalExistsUsesPaperclipPath(t *testing.T) {
 	root := t.TempDir()
 	server := &Server{cfg: config.Config{PublicDir: root}}

@@ -277,6 +277,9 @@ func TestNotificationActivityTableMatchesRailsPushWorkerActivities(t *testing.T)
 		{"Poll", "poll", "polls"},
 		{"Report", "admin.report", "reports"},
 		{"Account", "admin.sign_up", "accounts"},
+		{"AccountRelationshipSeveranceEvent", "severed_relationships", "account_relationship_severance_events"},
+		{"AccountWarning", "moderation_warning", "account_warnings"},
+		{"GeneratedAnnualReport", "annual_report", "generated_annual_reports"},
 		{"", "update", "statuses"},
 	}
 	for _, tt := range cases {
@@ -519,6 +522,9 @@ func TestWebPushSubscriptionUpdateRailsMemberRouteIsRegistered(t *testing.T) {
 	}
 	if !strings.Contains(string(src), `e.PUT("/api/web/push_subscriptions/:id", s.apiWebCSRF(s.updateWebPushSubscription))`) {
 		t.Fatal("Rails member update route for api/web push subscriptions is not registered")
+	}
+	if !strings.Contains(string(src), `e.PATCH("/api/web/push_subscriptions/:id", s.apiWebCSRF(s.updateWebPushSubscription))`) {
+		t.Fatal("Rails PATCH member update route for api/web push subscriptions is not registered")
 	}
 	if !strings.Contains(string(src), `e.PUT("/api/web/push_subscriptions/:id/update", s.apiWebCSRF(s.updateWebPushSubscription))`) {
 		t.Fatal("legacy compatibility update route for api/web push subscriptions is not registered")

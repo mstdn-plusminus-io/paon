@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
+	"gorm.io/gorm"
 )
 
 type instanceStats = serializer.InstanceStats
@@ -79,7 +80,9 @@ func (s *Server) instanceRuleModels() ([]models.Rule, error) {
 		return []models.Rule{}, nil
 	}
 	var rules []models.Rule
-	err := s.db.Where("deleted_at IS NULL").Order("priority ASC, id ASC").Find(&rules).Error
+	err := s.db.Preload("Translations", func(db *gorm.DB) *gorm.DB {
+		return db.Order("language ASC")
+	}).Where("deleted_at IS NULL").Order("priority ASC, id ASC").Find(&rules).Error
 	return rules, err
 }
 

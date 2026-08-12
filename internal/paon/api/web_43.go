@@ -17,10 +17,10 @@ func (s *Server) redirectRemoteAccount(c *echo.Context) error {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	var account models.Account
-	if err := s.db.Select("id", "domain", "url").Where("id = ?", c.Param("id")).First(&account).Error; err != nil || account.Local() {
+	if err := s.db.Select("id", "domain", "url", "uri").Where("id = ?", c.Param("id")).First(&account).Error; err != nil || account.Local() {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
-	return s.renderRemoteRedirectConfirmation(c, permalinkRemoteURL(account.URL))
+	return s.renderRemoteRedirectConfirmation(c, permalinkRemoteAccountURL(account))
 }
 
 func (s *Server) redirectRemoteStatus(c *echo.Context) error {
@@ -28,12 +28,12 @@ func (s *Server) redirectRemoteStatus(c *echo.Context) error {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	var status models.Status
-	if err := s.db.Select("id", "account_id", "url", "visibility", "deleted_at", "reblog_of_id").Preload("Account", func(db *gorm.DB) *gorm.DB {
+	if err := s.db.Select("id", "account_id", "url", "uri", "visibility", "deleted_at", "reblog_of_id").Preload("Account", func(db *gorm.DB) *gorm.DB {
 		return db.Select("id", "domain")
 	}).Where("id = ?", c.Param("id")).First(&status).Error; err != nil || status.DeletedAt.Valid || status.Account.Local() || !embeddableStatus(&status) {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
-	return s.renderRemoteRedirectConfirmation(c, permalinkRemoteURL(status.URL))
+	return s.renderRemoteRedirectConfirmation(c, permalinkRemoteStatusURL(status))
 }
 
 func (s *Server) renderRemoteRedirectConfirmation(c *echo.Context, target string) error {
@@ -96,9 +96,9 @@ func (s *Server) remotePermalinkStatusID(rawID string) (int64, bool) {
 		return 0, false
 	}
 	var status models.Status
-	if err := s.db.Select("id", "account_id", "url", "visibility", "deleted_at", "reblog_of_id").Preload("Account", func(db *gorm.DB) *gorm.DB {
+	if err := s.db.Select("id", "account_id", "url", "uri", "visibility", "deleted_at", "reblog_of_id").Preload("Account", func(db *gorm.DB) *gorm.DB {
 		return db.Select("id", "domain")
-	}).Where("id = ?", id).First(&status).Error; err != nil || status.DeletedAt.Valid || status.Account.Local() || !embeddableStatus(&status) || permalinkRemoteURL(status.URL) == "" {
+	}).Where("id = ?", id).First(&status).Error; err != nil || status.DeletedAt.Valid || status.Account.Local() || !embeddableStatus(&status) || permalinkRemoteStatusURL(status) == "" {
 		return 0, false
 	}
 	return status.ID, true
@@ -110,7 +110,7 @@ func (s *Server) remotePermalinkAccountID(rawID string) (int64, bool) {
 		return 0, false
 	}
 	var account models.Account
-	if err := s.db.Select("id", "domain", "url").Where("id = ?", id).First(&account).Error; err != nil || account.Local() || permalinkRemoteURL(account.URL) == "" {
+	if err := s.db.Select("id", "domain", "url", "uri").Where("id = ?", id).First(&account).Error; err != nil || account.Local() || permalinkRemoteAccountURL(account) == "" {
 		return 0, false
 	}
 	return account.ID, true
@@ -121,14 +121,14 @@ func (s *Server) remotePermalinkAccountIDByName(name string) (int64, bool) {
 		return 0, false
 	}
 	username, domain, _ := strings.Cut(strings.TrimPrefix(name, "@"), "@")
-	query := s.db.Select("id", "domain", "url").Where("lower(username) = ?", strings.ToLower(username))
+	query := s.db.Select("id", "domain", "url", "uri").Where("lower(username) = ?", strings.ToLower(username))
 	if domain == "" || webfingerLocalHostRaw(domain, s.cfg.LocalDomain, s.cfg.WebDomain, s.cfg.AlternateDomains) {
 		query = query.Where("domain IS NULL")
 	} else {
 		query = query.Where("lower(domain) = ?", strings.ToLower(domain))
 	}
 	var account models.Account
-	if err := query.First(&account).Error; err != nil || account.Local() || permalinkRemoteURL(account.URL) == "" {
+	if err := query.First(&account).Error; err != nil || account.Local() || permalinkRemoteAccountURL(account) == "" {
 		return 0, false
 	}
 	return account.ID, true

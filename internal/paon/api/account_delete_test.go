@@ -207,6 +207,16 @@ func TestRejectedLocalAccountDeletionDestroysRowsLikeRailsReject(t *testing.T) {
 	}
 }
 
+func TestAccountDeletionRemovesTagFollowsLikeMastodon44(t *testing.T) {
+	src, err := os.ReadFile("account_deletion_worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !functionBodyContains(t, src, "purgeAccountDeletionExtraAssociations", `"tag_follows"`) {
+		t.Fatal("account deletion must remove tag_follows owned by the deleted account")
+	}
+}
+
 func TestStreamingKillPayloadParsesForSystemStreams(t *testing.T) {
 	message, ok := redisPubSubMessage([]any{"message", "mastodon:timeline:system:42", streamingKillPayload()})
 	if !ok {

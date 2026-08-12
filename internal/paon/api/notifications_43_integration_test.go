@@ -150,6 +150,23 @@ func TestNotification43GroupingPolicyRequestsAndWarningsAgainstPostgresAndRedis(
 		}
 	})
 
+	t.Run("admin sign up notifications share the official twelve hour group", func(t *testing.T) {
+		firstSender := createNotificationIntegrationAccount(t, database, "signup-group-first", "", base.Add(-30*24*time.Hour))
+		secondSender := createNotificationIntegrationAccount(t, database, "signup-group-second", "", base.Add(-29*24*time.Hour))
+		first, err := createNotificationIntegrationRow(server, recipient.ID, firstSender.ID, firstSender.ID, "Account", "admin.sign_up", base.Add(30*time.Hour))
+		if err != nil || first == nil {
+			t.Fatalf("create first admin sign-up notification = %#v, %v", first, err)
+		}
+		second, err := createNotificationIntegrationRow(server, recipient.ID, secondSender.ID, secondSender.ID, "Account", "admin.sign_up", base.Add(41*time.Hour))
+		if err != nil || second == nil {
+			t.Fatalf("create second admin sign-up notification = %#v, %v", second, err)
+		}
+		want := "admin.sign_up-" + strconv.FormatInt(base.Add(30*time.Hour).Unix()/int64(time.Hour/time.Second), 10)
+		if !first.GroupKey.Valid || first.GroupKey.String != want || !second.GroupKey.Valid || second.GroupKey.String != want {
+			t.Fatalf("admin sign-up group keys = %#v, %#v; want %q", first.GroupKey, second.GroupKey, want)
+		}
+	})
+
 	t.Run("policy actions permission override and hard drops use durable rows", func(t *testing.T) {
 		policySenders := make([]models.Account, 0, 4)
 		for i := range 4 {

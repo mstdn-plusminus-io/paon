@@ -593,6 +593,7 @@ func filterActionRadios(action int, locale string) string {
 	}{
 		{"warn", action == 0},
 		{"hide", action == 1},
+		{"blur", action == 2},
 	}
 	var out strings.Builder
 	out.WriteString(`<input type="hidden" name="custom_filter[filter_action]" value="">`)
@@ -757,6 +758,8 @@ func filterActionLabel(action string, locale string) string {
 	switch action {
 	case "hide":
 		return settingsT(locale, "simple_form.labels.filters.actions.hide", "Hide")
+	case "blur":
+		return settingsT(locale, "simple_form.labels.filters.actions.blur", "Hide media with a warning")
 	default:
 		return settingsT(locale, "simple_form.labels.filters.actions.warn", "Warn")
 	}

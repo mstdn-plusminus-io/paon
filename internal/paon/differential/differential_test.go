@@ -277,24 +277,12 @@ func TestAuthenticatedManifestCoversReleaseMatrix(t *testing.T) {
 		"NOTIFICATIONS-GROUPED": false,
 		"SEARCH":                false,
 	}
-	wantGoOnlyPointers := map[string]string{
-		"AUTH-STATUS-PUBLIC-001":               "/quote_id,/quote_original_url",
-		"AUTH-STATUS-PRIVATE-OWNER-001":        "/quote_id,/quote_original_url",
-		"AUTH-STATUS-BLOCKED-001":              "/quote_id,/quote_original_url",
-		"AUTH-BATCH-STATUSES-001":              "/*/quote_id,/*/quote_original_url",
-		"AUTH-ACCOUNT-PINNED-PAGINATION-001":   "/*/quote_id,/*/quote_original_url",
-		"AUTH-NOTIFICATIONS-V2-PAGINATION-001": "/statuses/*/quote_id,/statuses/*/quote_original_url",
-	}
 	for _, item := range manifest.Cases {
 		if _, exists := wantContracts[item.Contract]; exists {
 			wantContracts[item.Contract] = true
 		}
-		wantPointers, allowed := wantGoOnlyPointers[item.ID]
-		if len(item.GoOnlyJSONPointers) > 0 && !allowed {
+		if len(item.GoOnlyJSONPointers) > 0 {
 			t.Errorf("authenticated case %s has an undeclared Go-only JSON exception", item.ID)
-		}
-		if allowed && strings.Join(item.GoOnlyJSONPointers, ",") != wantPointers {
-			t.Errorf("authenticated case %s Go-only JSON pointers = %#v, want %q", item.ID, item.GoOnlyJSONPointers, wantPointers)
 		}
 	}
 	for contract, found := range wantContracts {

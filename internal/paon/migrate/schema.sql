@@ -25,7 +25,7 @@ $$ LANGUAGE plpgsql VOLATILE;
 -- paon:statement
 CREATE TABLE "account_aliases" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
+  "account_id" bigint NOT NULL,
   "acct" character varying DEFAULT '' NOT NULL,
   "uri" character varying DEFAULT '' NOT NULL,
   "created_at" timestamp without time zone NOT NULL,
@@ -36,13 +36,10 @@ CREATE TABLE "account_aliases" (
 CREATE UNIQUE INDEX "index_account_aliases_on_account_id_and_uri" ON "account_aliases" ("account_id", "uri");
 
 -- paon:statement
-CREATE INDEX "index_account_aliases_on_account_id" ON "account_aliases" ("account_id");
-
--- paon:statement
 CREATE TABLE "account_conversations" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
-  "conversation_id" bigint,
+  "account_id" bigint NOT NULL,
+  "conversation_id" bigint NOT NULL,
   "participant_account_ids" bigint[] DEFAULT '{}'::bigint[] NOT NULL,
   "status_ids" bigint[] DEFAULT '{}'::bigint[] NOT NULL,
   "last_status_id" bigint,
@@ -59,7 +56,7 @@ CREATE INDEX "index_account_conversations_on_conversation_id" ON "account_conver
 -- paon:statement
 CREATE TABLE "account_deletion_requests" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
+  "account_id" bigint NOT NULL,
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL
 );
@@ -70,10 +67,10 @@ CREATE INDEX "index_account_deletion_requests_on_account_id" ON "account_deletio
 -- paon:statement
 CREATE TABLE "account_domain_blocks" (
   id bigserial PRIMARY KEY,
-  "domain" character varying,
+  "domain" character varying NOT NULL,
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL,
-  "account_id" bigint
+  "account_id" bigint NOT NULL
 );
 
 -- paon:statement
@@ -115,8 +112,8 @@ CREATE INDEX "index_account_moderation_notes_on_target_account_id" ON "account_m
 -- paon:statement
 CREATE TABLE "account_notes" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
-  "target_account_id" bigint,
+  "account_id" bigint NOT NULL,
+  "target_account_id" bigint NOT NULL,
   "comment" text NOT NULL,
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL
@@ -131,8 +128,8 @@ CREATE INDEX "index_account_notes_on_target_account_id" ON "account_notes" ("tar
 -- paon:statement
 CREATE TABLE "account_pins" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
-  "target_account_id" bigint,
+  "account_id" bigint NOT NULL,
+  "target_account_id" bigint NOT NULL,
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL
 );
@@ -156,9 +153,6 @@ CREATE TABLE "account_relationship_severance_events" (
 
 -- paon:statement
 CREATE UNIQUE INDEX "idx_on_account_id_relationship_severance_event_id_7bd82bf20e" ON "account_relationship_severance_events" ("account_id", "relationship_severance_event_id");
-
--- paon:statement
-CREATE INDEX "index_account_relationship_severance_events_on_account_id" ON "account_relationship_severance_events" ("account_id");
 
 -- paon:statement
 CREATE INDEX "idx_on_relationship_severance_event_id_403f53e707" ON "account_relationship_severance_events" ("relationship_severance_event_id");
@@ -316,7 +310,7 @@ CREATE INDEX "index_accounts_tags_on_account_id_and_tag_id" ON "accounts_tags" (
 -- paon:statement
 CREATE TABLE "admin_action_logs" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
+  "account_id" bigint NOT NULL,
   "action" character varying DEFAULT '' NOT NULL,
   "target_type" character varying,
   "target_id" bigint,
@@ -336,8 +330,8 @@ CREATE INDEX "index_admin_action_logs_on_target_type_and_target_id" ON "admin_ac
 -- paon:statement
 CREATE TABLE "announcement_mutes" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
-  "announcement_id" bigint,
+  "account_id" bigint NOT NULL,
+  "announcement_id" bigint NOT NULL,
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL
 );
@@ -351,8 +345,8 @@ CREATE INDEX "index_announcement_mutes_on_announcement_id" ON "announcement_mute
 -- paon:statement
 CREATE TABLE "announcement_reactions" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
-  "announcement_id" bigint,
+  "account_id" bigint NOT NULL,
+  "announcement_id" bigint NOT NULL,
   "name" character varying DEFAULT '' NOT NULL,
   "custom_emoji_id" bigint,
   "created_at" timestamp without time zone NOT NULL,
@@ -380,7 +374,8 @@ CREATE TABLE "announcements" (
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL,
   "published_at" timestamp without time zone,
-  "status_ids" bigint[]
+  "status_ids" bigint[],
+  "notification_sent_at" timestamp without time zone
 );
 
 -- paon:statement
@@ -589,12 +584,9 @@ CREATE INDEX "index_custom_filter_statuses_on_custom_filter_id" ON "custom_filte
 CREATE UNIQUE INDEX "index_custom_filter_statuses_on_status_id_and_custom_filter_id" ON "custom_filter_statuses" ("status_id", "custom_filter_id");
 
 -- paon:statement
-CREATE INDEX "index_custom_filter_statuses_on_status_id" ON "custom_filter_statuses" ("status_id");
-
--- paon:statement
 CREATE TABLE "custom_filters" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
+  "account_id" bigint NOT NULL,
   "expires_at" timestamp without time zone,
   "phrase" text DEFAULT '' NOT NULL,
   "context" character varying[] DEFAULT '{}'::character varying[] NOT NULL,
@@ -776,21 +768,6 @@ CREATE UNIQUE INDEX "index_identities_on_uid_and_provider" ON "identities" ("uid
 CREATE INDEX "index_identities_on_user_id" ON "identities" ("user_id");
 
 -- paon:statement
-CREATE TABLE "imports" (
-  id bigserial PRIMARY KEY,
-  "type" integer NOT NULL,
-  "approved" boolean DEFAULT false NOT NULL,
-  "created_at" timestamp without time zone NOT NULL,
-  "updated_at" timestamp without time zone NOT NULL,
-  "data_file_name" character varying,
-  "data_content_type" character varying,
-  "data_file_size" integer,
-  "data_updated_at" timestamp without time zone,
-  "account_id" bigint NOT NULL,
-  "overwrite" boolean DEFAULT false NOT NULL
-);
-
--- paon:statement
 CREATE TABLE "invites" (
   id bigserial PRIMARY KEY,
   "user_id" bigint NOT NULL,
@@ -878,7 +855,7 @@ CREATE INDEX "index_login_activities_on_user_id" ON "login_activities" ("user_id
 -- paon:statement
 CREATE TABLE "markers" (
   id bigserial PRIMARY KEY,
-  "user_id" bigint,
+  "user_id" bigint NOT NULL,
   "timeline" character varying DEFAULT '' NOT NULL,
   "last_read_id" bigint DEFAULT 0 NOT NULL,
   "lock_version" integer DEFAULT 0 NOT NULL,
@@ -1134,8 +1111,8 @@ CREATE INDEX "index_pghero_space_stats_on_database_and_captured_at" ON "pghero_s
 -- paon:statement
 CREATE TABLE "poll_votes" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
-  "poll_id" bigint,
+  "account_id" bigint NOT NULL,
+  "poll_id" bigint NOT NULL,
   "choice" integer DEFAULT 0 NOT NULL,
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL,
@@ -1151,8 +1128,8 @@ CREATE INDEX "index_poll_votes_on_poll_id" ON "poll_votes" ("poll_id");
 -- paon:statement
 CREATE TABLE "polls" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
-  "status_id" bigint,
+  "account_id" bigint NOT NULL,
+  "status_id" bigint NOT NULL,
   "expires_at" timestamp without time zone,
   "options" character varying[] DEFAULT '{}'::character varying[] NOT NULL,
   "cached_tallies" bigint[] DEFAULT '{}'::bigint[] NOT NULL,
@@ -1334,7 +1311,7 @@ CREATE TABLE "rules" (
 -- paon:statement
 CREATE TABLE "scheduled_statuses" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
+  "account_id" bigint NOT NULL,
   "scheduled_at" timestamp without time zone,
   "params" jsonb
 );
@@ -1372,14 +1349,12 @@ CREATE TABLE "settings" (
   id bigserial PRIMARY KEY,
   "var" character varying NOT NULL,
   "value" text,
-  "thing_type" character varying,
   "created_at" timestamp without time zone,
-  "updated_at" timestamp without time zone,
-  "thing_id" bigint
+  "updated_at" timestamp without time zone
 );
 
 -- paon:statement
-CREATE UNIQUE INDEX "index_settings_on_thing_type_and_thing_id_and_var" ON "settings" ("thing_type", "thing_id", "var");
+CREATE UNIQUE INDEX "index_settings_on_var" ON "settings" ("var");
 
 -- paon:statement
 CREATE TABLE "severed_relationships" (
@@ -1447,7 +1422,8 @@ CREATE TABLE "status_edits" (
   "ordered_media_attachment_ids" bigint[],
   "media_descriptions" text[],
   "poll_options" character varying[],
-  "sensitive" boolean
+  "sensitive" boolean,
+  "quote_id" bigint
 );
 
 -- paon:statement
@@ -1479,7 +1455,9 @@ CREATE TABLE "status_stats" (
   "reblogs_count" bigint DEFAULT 0 NOT NULL,
   "favourites_count" bigint DEFAULT 0 NOT NULL,
   "created_at" timestamp without time zone NOT NULL,
-  "updated_at" timestamp without time zone NOT NULL
+  "updated_at" timestamp without time zone NOT NULL,
+  "untrusted_favourites_count" bigint,
+  "untrusted_reblogs_count" bigint
 );
 
 -- paon:statement
@@ -1529,7 +1507,9 @@ CREATE TABLE "statuses" (
   "deleted_at" timestamp without time zone,
   "edited_at" timestamp without time zone,
   "trendable" boolean,
-  "ordered_media_attachment_ids" bigint[]
+  "ordered_media_attachment_ids" bigint[],
+  "fetched_replies_at" timestamp without time zone,
+  "quote_approval_policy" integer DEFAULT 0 NOT NULL
 );
 
 -- paon:statement
@@ -1545,7 +1525,7 @@ CREATE INDEX "index_statuses_on_deleted_at" ON "statuses" ("deleted_at") WHERE (
 CREATE INDEX "index_statuses_local_20190824" ON "statuses" ("id" DESC, "account_id") WHERE ((local OR (uri IS NULL)) AND (deleted_at IS NULL) AND (visibility = 0) AND (reblog_of_id IS NULL) AND ((NOT reply) OR (in_reply_to_account_id = account_id)));
 
 -- paon:statement
-CREATE INDEX "index_statuses_public_20200119" ON "statuses" ("id" DESC, "account_id") WHERE ((deleted_at IS NULL) AND (visibility = 0) AND (reblog_of_id IS NULL) AND ((NOT reply) OR (in_reply_to_account_id = account_id)));
+CREATE INDEX "index_statuses_public_20250129" ON "statuses" ("id" DESC, "language", "account_id") WHERE ((deleted_at IS NULL) AND (visibility = 0) AND (reblog_of_id IS NULL) AND ((NOT reply) OR (in_reply_to_account_id = account_id)));
 
 -- paon:statement
 CREATE INDEX "index_statuses_on_in_reply_to_account_id" ON "statuses" ("in_reply_to_account_id") WHERE (in_reply_to_account_id IS NOT NULL);
@@ -1607,7 +1587,7 @@ CREATE UNIQUE INDEX "index_tags_on_name_lower_btree" ON "tags" (lower((name)::te
 -- paon:statement
 CREATE TABLE "tombstones" (
   id bigserial PRIMARY KEY,
-  "account_id" bigint,
+  "account_id" bigint NOT NULL,
   "uri" character varying NOT NULL,
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL,
@@ -1634,7 +1614,7 @@ CREATE UNIQUE INDEX "index_unavailable_domains_on_domain" ON "unavailable_domain
 -- paon:statement
 CREATE TABLE "user_invite_requests" (
   id bigserial PRIMARY KEY,
-  "user_id" bigint,
+  "user_id" bigint NOT NULL,
   "text" text,
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL
@@ -1672,9 +1652,6 @@ CREATE TABLE "users" (
   "confirmation_sent_at" timestamp without time zone,
   "unconfirmed_email" character varying,
   "locale" character varying,
-  "encrypted_otp_secret" character varying,
-  "encrypted_otp_secret_iv" character varying,
-  "encrypted_otp_secret_salt" character varying,
   "consumed_timestep" integer,
   "otp_required_for_login" boolean DEFAULT false NOT NULL,
   "last_emailed_at" timestamp without time zone,
@@ -1693,7 +1670,9 @@ CREATE TABLE "users" (
   "role_id" bigint,
   "settings" text,
   "time_zone" character varying,
-  "otp_secret" character varying
+  "otp_secret" character varying,
+  "age_verified_at" timestamp without time zone,
+  "require_tos_interstitial" boolean DEFAULT false NOT NULL
 );
 
 -- paon:statement
@@ -1726,8 +1705,9 @@ CREATE TABLE "web_push_subscriptions" (
   "data" json,
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL,
-  "access_token_id" bigint,
-  "user_id" bigint
+  "access_token_id" bigint NOT NULL,
+  "user_id" bigint NOT NULL,
+  "standard" boolean DEFAULT false NOT NULL
 );
 
 -- paon:statement
@@ -1767,9 +1747,6 @@ CREATE UNIQUE INDEX "index_webauthn_credentials_on_external_id" ON "webauthn_cre
 CREATE UNIQUE INDEX "index_webauthn_credentials_on_user_id_and_nickname" ON "webauthn_credentials" ("user_id", "nickname");
 
 -- paon:statement
-CREATE INDEX "index_webauthn_credentials_on_user_id" ON "webauthn_credentials" ("user_id");
-
--- paon:statement
 CREATE TABLE "webhooks" (
   id bigserial PRIMARY KEY,
   "url" character varying NOT NULL,
@@ -1783,6 +1760,190 @@ CREATE TABLE "webhooks" (
 
 -- paon:statement
 CREATE UNIQUE INDEX "index_webhooks_on_url" ON "webhooks" ("url");
+
+-- paon:statement
+CREATE TABLE "annual_report_statuses_per_account_counts" (
+  id bigserial PRIMARY KEY,
+  "year" integer NOT NULL,
+  "account_id" bigint NOT NULL,
+  "statuses_count" bigint NOT NULL
+);
+
+-- paon:statement
+CREATE UNIQUE INDEX "idx_on_year_account_id_ff3e167cef" ON "annual_report_statuses_per_account_counts" ("year", "account_id");
+
+-- paon:statement
+CREATE TABLE "tag_trends" (
+  id bigserial PRIMARY KEY,
+  "tag_id" bigint NOT NULL,
+  "score" double precision DEFAULT 0.0 NOT NULL,
+  "rank" integer DEFAULT 0 NOT NULL,
+  "allowed" boolean DEFAULT false NOT NULL,
+  "language" character varying DEFAULT '' NOT NULL
+);
+
+-- paon:statement
+CREATE UNIQUE INDEX "index_tag_trends_on_tag_id_and_language" ON "tag_trends" ("tag_id", "language");
+
+-- paon:statement
+CREATE TABLE "terms_of_services" (
+  id bigserial PRIMARY KEY,
+  "text" text DEFAULT '' NOT NULL,
+  "changelog" text DEFAULT '' NOT NULL,
+  "published_at" timestamp without time zone,
+  "notification_sent_at" timestamp without time zone,
+  "created_at" timestamp without time zone NOT NULL,
+  "updated_at" timestamp without time zone NOT NULL,
+  "effective_date" date
+);
+
+-- paon:statement
+CREATE UNIQUE INDEX "index_terms_of_services_on_effective_date" ON "terms_of_services" ("effective_date") WHERE (effective_date IS NOT NULL);
+
+-- paon:statement
+CREATE TABLE "fasp_providers" (
+  id bigserial PRIMARY KEY,
+  "confirmed" boolean DEFAULT false NOT NULL,
+  "name" character varying NOT NULL,
+  "base_url" character varying NOT NULL,
+  "sign_in_url" character varying,
+  "remote_identifier" character varying NOT NULL,
+  "provider_public_key_pem" character varying NOT NULL,
+  "server_private_key_pem" character varying NOT NULL,
+  "capabilities" jsonb DEFAULT '[]'::jsonb NOT NULL,
+  "privacy_policy" jsonb,
+  "contact_email" character varying,
+  "fediverse_account" character varying,
+  "created_at" timestamp without time zone NOT NULL,
+  "updated_at" timestamp without time zone NOT NULL
+);
+
+-- paon:statement
+CREATE UNIQUE INDEX "index_fasp_providers_on_base_url" ON "fasp_providers" ("base_url");
+
+-- paon:statement
+CREATE TABLE "fasp_debug_callbacks" (
+  id bigserial PRIMARY KEY,
+  "fasp_provider_id" bigint NOT NULL,
+  "ip" character varying NOT NULL,
+  "request_body" text NOT NULL,
+  "created_at" timestamp without time zone NOT NULL,
+  "updated_at" timestamp without time zone NOT NULL
+);
+
+-- paon:statement
+CREATE INDEX "index_fasp_debug_callbacks_on_fasp_provider_id" ON "fasp_debug_callbacks" ("fasp_provider_id");
+
+-- paon:statement
+CREATE TABLE "fasp_subscriptions" (
+  id bigserial PRIMARY KEY,
+  "category" character varying NOT NULL,
+  "subscription_type" character varying NOT NULL,
+  "max_batch_size" integer NOT NULL,
+  "threshold_timeframe" integer,
+  "threshold_shares" integer,
+  "threshold_likes" integer,
+  "threshold_replies" integer,
+  "fasp_provider_id" bigint NOT NULL,
+  "created_at" timestamp without time zone NOT NULL,
+  "updated_at" timestamp without time zone NOT NULL
+);
+
+-- paon:statement
+CREATE INDEX "index_fasp_subscriptions_on_fasp_provider_id" ON "fasp_subscriptions" ("fasp_provider_id");
+
+-- paon:statement
+CREATE TABLE "fasp_backfill_requests" (
+  id bigserial PRIMARY KEY,
+  "category" character varying NOT NULL,
+  "max_count" integer DEFAULT 100 NOT NULL,
+  "cursor" character varying,
+  "fulfilled" boolean DEFAULT false NOT NULL,
+  "fasp_provider_id" bigint NOT NULL,
+  "created_at" timestamp without time zone NOT NULL,
+  "updated_at" timestamp without time zone NOT NULL
+);
+
+-- paon:statement
+CREATE INDEX "index_fasp_backfill_requests_on_fasp_provider_id" ON "fasp_backfill_requests" ("fasp_provider_id");
+
+-- paon:statement
+CREATE TABLE "fasp_follow_recommendations" (
+  id bigserial PRIMARY KEY,
+  "requesting_account_id" bigint NOT NULL,
+  "recommended_account_id" bigint NOT NULL,
+  "created_at" timestamp without time zone NOT NULL,
+  "updated_at" timestamp without time zone NOT NULL
+);
+
+-- paon:statement
+CREATE INDEX "index_fasp_follow_recommendations_on_requesting_account_id" ON "fasp_follow_recommendations" ("requesting_account_id");
+
+-- paon:statement
+CREATE INDEX "index_fasp_follow_recommendations_on_recommended_account_id" ON "fasp_follow_recommendations" ("recommended_account_id");
+
+-- paon:statement
+CREATE TABLE "instance_moderation_notes" (
+  id bigserial PRIMARY KEY,
+  "domain" character varying NOT NULL,
+  "account_id" bigint NOT NULL,
+  "content" text,
+  "created_at" timestamp without time zone NOT NULL,
+  "updated_at" timestamp without time zone NOT NULL
+);
+
+-- paon:statement
+CREATE INDEX "index_instance_moderation_notes_on_domain" ON "instance_moderation_notes" ("domain");
+
+-- paon:statement
+CREATE SEQUENCE "quotes_id_seq";
+
+-- paon:statement
+CREATE TABLE "quotes" (
+  id bigint DEFAULT timestamp_id('quotes') NOT NULL PRIMARY KEY,
+  "account_id" bigint NOT NULL,
+  "status_id" bigint NOT NULL,
+  "quoted_status_id" bigint,
+  "quoted_account_id" bigint,
+  "state" integer DEFAULT 0 NOT NULL,
+  "approval_uri" character varying,
+  "activity_uri" character varying,
+  "created_at" timestamp without time zone NOT NULL,
+  "updated_at" timestamp without time zone NOT NULL,
+  "legacy" boolean DEFAULT false NOT NULL
+);
+
+-- paon:statement
+CREATE INDEX "index_quotes_on_account_id_and_quoted_account_id" ON "quotes" ("account_id", "quoted_account_id");
+
+-- paon:statement
+CREATE UNIQUE INDEX "index_quotes_on_activity_uri" ON "quotes" ("activity_uri") WHERE (activity_uri IS NOT NULL);
+
+-- paon:statement
+CREATE INDEX "index_quotes_on_approval_uri" ON "quotes" ("approval_uri") WHERE (approval_uri IS NOT NULL);
+
+-- paon:statement
+CREATE INDEX "index_quotes_on_quoted_account_id" ON "quotes" ("quoted_account_id");
+
+-- paon:statement
+CREATE INDEX "index_quotes_on_quoted_status_id" ON "quotes" ("quoted_status_id");
+
+-- paon:statement
+CREATE UNIQUE INDEX "index_quotes_on_status_id" ON "quotes" ("status_id");
+
+-- paon:statement
+CREATE TABLE "rule_translations" (
+  id bigserial PRIMARY KEY,
+  "text" text DEFAULT '' NOT NULL,
+  "hint" text DEFAULT '' NOT NULL,
+  "language" character varying NOT NULL,
+  "rule_id" bigint NOT NULL,
+  "created_at" timestamp without time zone NOT NULL,
+  "updated_at" timestamp without time zone NOT NULL
+);
+
+-- paon:statement
+CREATE UNIQUE INDEX "index_rule_translations_on_rule_id_and_language" ON "rule_translations" ("rule_id", "language");
 
 -- paon:statement
 ALTER TABLE "account_aliases" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
@@ -1806,10 +1967,10 @@ ALTER TABLE "account_migrations" ADD FOREIGN KEY ("target_account_id") REFERENCE
 ALTER TABLE "account_migrations" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_moderation_notes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id);
+ALTER TABLE "account_moderation_notes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_moderation_notes" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id);
+ALTER TABLE "account_moderation_notes" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
 ALTER TABLE "account_notes" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
@@ -1960,9 +2121,6 @@ ALTER TABLE "generated_annual_reports" ADD FOREIGN KEY ("account_id") REFERENCES
 
 -- paon:statement
 ALTER TABLE "identities" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
-
--- paon:statement
-ALTER TABLE "imports" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
 ALTER TABLE "invites" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
@@ -2178,7 +2336,43 @@ ALTER TABLE "web_push_subscriptions" ADD FOREIGN KEY ("user_id") REFERENCES "use
 ALTER TABLE "web_settings" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "webauthn_credentials" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id);
+ALTER TABLE "webauthn_credentials" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
+
+-- paon:statement
+ALTER TABLE "fasp_backfill_requests" ADD FOREIGN KEY ("fasp_provider_id") REFERENCES "fasp_providers" (id);
+
+-- paon:statement
+ALTER TABLE "fasp_debug_callbacks" ADD FOREIGN KEY ("fasp_provider_id") REFERENCES "fasp_providers" (id);
+
+-- paon:statement
+ALTER TABLE "fasp_subscriptions" ADD FOREIGN KEY ("fasp_provider_id") REFERENCES "fasp_providers" (id);
+
+-- paon:statement
+ALTER TABLE "fasp_follow_recommendations" ADD FOREIGN KEY ("requesting_account_id") REFERENCES "accounts" (id);
+
+-- paon:statement
+ALTER TABLE "fasp_follow_recommendations" ADD FOREIGN KEY ("recommended_account_id") REFERENCES "accounts" (id);
+
+-- paon:statement
+ALTER TABLE "instance_moderation_notes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+
+-- paon:statement
+ALTER TABLE "quotes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+
+-- paon:statement
+ALTER TABLE "quotes" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+
+-- paon:statement
+ALTER TABLE "quotes" ADD FOREIGN KEY ("quoted_status_id") REFERENCES "statuses" (id) ON DELETE SET NULL;
+
+-- paon:statement
+ALTER TABLE "quotes" ADD FOREIGN KEY ("quoted_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+
+-- paon:statement
+ALTER TABLE "rule_translations" ADD FOREIGN KEY ("rule_id") REFERENCES "rules" (id) ON DELETE CASCADE;
+
+-- paon:statement
+ALTER TABLE "tag_trends" ADD FOREIGN KEY ("tag_id") REFERENCES "tags" (id) ON DELETE CASCADE;
 
 -- paon:statement
 CREATE MATERIALIZED VIEW "instances" AS
@@ -3497,7 +3691,77 @@ INSERT INTO schema_migrations (version) VALUES
   ('20241007071624');
 
 -- paon:statement
+INSERT INTO schema_migrations (version) VALUES
+  ('20240918233930'),
+  ('20241014010506'),
+  ('20241022214312'),
+  ('20241104082851'),
+  ('20241111141355'),
+  ('20241123160722'),
+  ('20241123224956'),
+  ('20241205103523'),
+  ('20241205135901'),
+  ('20241205135925'),
+  ('20241205162640'),
+  ('20241205163118'),
+  ('20241206131513'),
+  ('20241210140838'),
+  ('20241212152158'),
+  ('20241212152618'),
+  ('20241212152734'),
+  ('20241212152910'),
+  ('20241212153054'),
+  ('20241212153202'),
+  ('20241212153254'),
+  ('20241212154231'),
+  ('20241212154346'),
+  ('20241213130230'),
+  ('20241213170027'),
+  ('20241213170036'),
+  ('20241213170043'),
+  ('20241213170053'),
+  ('20241216223425'),
+  ('20241216223433'),
+  ('20241216223446'),
+  ('20241216223452'),
+  ('20241216223852'),
+  ('20241216223859'),
+  ('20241216224211'),
+  ('20241216224218'),
+  ('20241216224229'),
+  ('20241216224237'),
+  ('20241216224507'),
+  ('20241216224514'),
+  ('20241216224520'),
+  ('20241216224530'),
+  ('20241216224813'),
+  ('20241216224825'),
+  ('20250103131909'),
+  ('20250108111200'),
+  ('20250129144440'),
+  ('20250129144813'),
+  ('20250221143646'),
+  ('20250224144617'),
+  ('20250305074104'),
+  ('20250313123400'),
+  ('20250328153843'),
+  ('20250410144908'),
+  ('20250411094808'),
+  ('20250411095859'),
+  ('20250422083912'),
+  ('20250422084214'),
+  ('20250422085027'),
+  ('20250422085303'),
+  ('20250425134308'),
+  ('20250428095029'),
+  ('20250428104538'),
+  ('20250520192024'),
+  ('20250520204643'),
+  ('20250605110215'),
+  ('20250627132728');
+
+-- paon:statement
 INSERT INTO ar_internal_metadata (key, value, created_at, updated_at) VALUES ('environment', 'production', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
 -- paon:statement
-INSERT INTO ar_internal_metadata (key, value, created_at, updated_at) VALUES ('schema_sha1', 'd03e3ba56d365d37ac099782d9d80efbce3abb8b', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO ar_internal_metadata (key, value, created_at, updated_at) VALUES ('schema_sha1', 'b53e3b8de778cd1b53158326b97afa9368f3237e', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);

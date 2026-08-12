@@ -14,7 +14,7 @@ func TestDockerfileKeepsRunnableDropInRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(raw)
-	runtimeStageStart := strings.LastIndex(body, "FROM debian:trixie-slim")
+	runtimeStageStart := strings.LastIndex(body, "FROM ${BASE_REGISTRY}/debian:trixie-slim")
 	if runtimeStageStart < 0 {
 		t.Fatal("Dockerfile missing final runtime stage")
 	}
@@ -24,7 +24,8 @@ func TestDockerfileKeepsRunnableDropInRuntime(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`FROM golang:1.25.12-trixie AS go-builder`,
+		`ARG BASE_REGISTRY=docker.io`,
+		`FROM ${BASE_REGISTRY}/golang:1.25.12-trixie AS go-builder`,
 		`apt-get install -y --no-install-recommends libvips-dev pkg-config`,
 		`COPY go.mod go.sum ./`,
 		`RUN go mod download`,
@@ -33,7 +34,7 @@ func TestDockerfileKeepsRunnableDropInRuntime(t *testing.T) {
 		`CGO_ENABLED=0 go build`,
 		`CGO_ENABLED=1 go build -tags=libvips`,
 		`level=WARN event=image_processor_fallback processor=libvips fallback=go-native phase=docker_builder`,
-		`FROM node:22-bookworm-slim AS assets`,
+		`FROM ${BASE_REGISTRY}/node:22-bookworm-slim AS assets`,
 		`COPY package.json yarn.lock ./`,
 		`RUN corepack enable && yarn install --pure-lockfile --production=false`,
 		`RUN rm -rf public/packs public/packs-test && yarn build:production`,
@@ -86,7 +87,7 @@ func TestDockerfileGoBuilderMatchesGoModToolchain(t *testing.T) {
 	if len(goModVersion) != 2 {
 		t.Fatalf("go.mod does not declare a Go toolchain version:\n%s", string(modRaw))
 	}
-	if !strings.Contains(string(dockerRaw), "FROM golang:"+goModVersion[1]) {
+	if !strings.Contains(string(dockerRaw), "FROM ${BASE_REGISTRY}/golang:"+goModVersion[1]) {
 		t.Fatalf("Dockerfile builder does not match go.mod Go %s", goModVersion[1])
 	}
 }

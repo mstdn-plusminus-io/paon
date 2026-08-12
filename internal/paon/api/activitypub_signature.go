@@ -48,6 +48,8 @@ const (
 var (
 	errActivitySignatureDomainNotAllowed = errors.New("domain is not allowed")
 	errActivitySignatureFailed           = errors.New("activitypub signature verification failed")
+	errActivitySignatureMalformed        = errors.New("malformed activitypub signature header")
+	errActivitySignatureTemporary        = errors.New("temporary activitypub signature key resolution failure")
 	errActivityPrivateNetworkAddress     = errors.New("remote host resolves to a private network address")
 )
 
@@ -62,8 +64,8 @@ func activityHTTPPrivateNetworkAllowed(ctx context.Context) bool {
 }
 
 // Keep this list aligned with Mastodon 4.3's private_address_check ranges.
-// Addresses are normalized with Unmap before matching so IPv4-mapped IPv6
-// forms such as ::ffff:0.0.0.1 cannot bypass the IPv4 ranges.
+// Addresses are normalized before matching so IPv4-mapped and IPv4-compatible
+// IPv6 forms such as ::ffff:0.0.0.1 and ::127.0.0.1 cannot bypass IPv4 ranges.
 var activityForbiddenAddressPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("127.0.0.0/8"),
 	netip.MustParsePrefix("0.0.0.0/8"),
@@ -289,6 +291,9 @@ func (s *Server) verifyActivityPubSignature(c *echo.Context, body []byte) (*mode
 	if strings.TrimSpace(rawSignature) == "" {
 		return nil, fmt.Errorf("request not signed")
 	}
+	if s.activityHTTPMessageSignaturesEnabled() && strings.TrimSpace(c.Request().Header.Get("Signature-Input")) != "" {
+		return s.verifyActivityPubHTTPMessageSignature(c, body)
+	}
 	params, err := parseActivitySignature(rawSignature)
 	if err != nil {
 		return nil, err
@@ -312,7 +317,7 @@ func (s *Server) verifyActivityPubSignature(c *echo.Context, body []byte) (*mode
 	}
 	account, err := s.activityPubActorFromKeyIDWithSourceStoplight(c, params["keyId"])
 	if err != nil {
-		return nil, err
+		return nil, activityPubSignatureActorResolutionError(err)
 	}
 	signature, err := decodeActivitySignatureParam(params["signature"])
 	if err != nil {
@@ -329,7 +334,7 @@ func (s *Server) verifyActivityPubSignature(c *echo.Context, body []byte) (*mode
 	}
 	refreshed, err := s.refreshActivityPubActorKeyWithSourceStoplight(c, params["keyId"], account)
 	if err != nil {
-		return nil, err
+		return nil, activityPubSignatureActorResolutionError(err)
 	}
 	if refreshed != nil && refreshed.PublicKey != "" && refreshed.PublicKey != account.PublicKey {
 		publicKey, err = activityPublicKey(refreshed.PublicKey)
@@ -388,6 +393,12 @@ func (s *Server) activityPubSignatureAccountForPublicFetch(c *echo.Context) (*mo
 }
 
 func activityPubSignatureErrorStatus(err error) int {
+	if errors.Is(err, errActivitySignatureMalformed) {
+		return http.StatusBadRequest
+	}
+	if errors.Is(err, errActivitySignatureTemporary) {
+		return http.StatusServiceUnavailable
+	}
 	if errors.Is(err, errActivitySignatureDomainNotAllowed) {
 		return http.StatusForbidden
 	}
@@ -1052,7 +1063,7 @@ func (s *Server) refreshKnownActivityPubActorOnlyKey(account *models.Account) (*
 		updates["indexable"] = actor.Indexable
 		updates["featured_collection_url"] = sql.NullString{String: actor.Featured, Valid: actor.Featured != ""}
 		updates["also_known_as"] = models.StringArray(activityLimitedValueOrIDList(actor.AlsoKnownAs, 256))
-		updates["attribution_domains"] = models.StringArray(activityLimitedValueOrIDList(actor.AttributionDomains, 256))
+		updates["attribution_domains"] = models.StringArray(activityLimitedStringList(actor.AttributionDomains, 256))
 	}
 	if actor.Published != "" {
 		updates["created_at"] = activityActorPublishedAt(actor.Published, account.CreatedAt)
@@ -2110,6 +2121,7 @@ func activityIPAllowed(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
+	ip = normalizeActivityIP(ip)
 	for _, allowed := range activityPrivateAddressExceptions {
 		if allowed.Contains(ip) {
 			return true
@@ -2128,6 +2140,46 @@ func activityIPAllowed(ip net.IP) bool {
 	return true
 }
 
+// normalizeActivityIP handles both IPv4-mapped (::ffff:a.b.c.d) and the
+// deprecated IPv4-compatible (::a.b.c.d) representation before private-address
+// policy is evaluated. net.IP.To4 covers both forms while netip.Addr.Unmap only
+// handles the mapped form.
+func normalizeActivityIP(ip net.IP) net.IP {
+	if ip == nil {
+		return nil
+	}
+	if ipv4 := activityEmbeddedIPv4(ip); ipv4 != nil {
+		return ipv4
+	}
+	return ip
+}
+
+func activityEmbeddedIPv4(ip net.IP) net.IP {
+	address := ip.To16()
+	if address == nil {
+		return nil
+	}
+	compatible := true
+	for _, value := range address[:12] {
+		if value != 0 {
+			compatible = false
+			break
+		}
+	}
+	mapped := true
+	for _, value := range address[:10] {
+		if value != 0 {
+			mapped = false
+			break
+		}
+	}
+	mapped = mapped && address[10] == 0xff && address[11] == 0xff
+	if !compatible && !mapped {
+		return nil
+	}
+	return net.IPv4(address[12], address[13], address[14], address[15])
+}
+
 func parseActivityPrivateAddressExceptions(raw string) []*net.IPNet {
 	var out []*net.IPNet
 	for _, item := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' }) {
@@ -2136,7 +2188,19 @@ func parseActivityPrivateAddressExceptions(raw string) []*net.IPNet {
 			continue
 		}
 		if ip, network, err := net.ParseCIDR(item); err == nil {
-			network.IP = ip
+			if ipv4 := activityEmbeddedIPv4(ip); ipv4 != nil {
+				ones, bits := network.Mask.Size()
+				if bits == net.IPv6len*8 {
+					ones -= (net.IPv6len - net.IPv4len) * 8
+				}
+				if ones < 0 || ones > net.IPv4len*8 {
+					continue
+				}
+				network.IP = ipv4
+				network.Mask = net.CIDRMask(ones, net.IPv4len*8)
+			} else {
+				network.IP = ip
+			}
 			out = append(out, network)
 			continue
 		}
@@ -2252,7 +2316,7 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 		account.Indexable = actor.Indexable
 		account.FeaturedCollectionURL = sql.NullString{String: actor.Featured, Valid: actor.Featured != ""}
 		account.AlsoKnownAs = models.StringArray(activityLimitedValueOrIDList(actor.AlsoKnownAs, 256))
-		account.AttributionDomains = models.StringArray(activityLimitedValueOrIDList(actor.AttributionDomains, 256))
+		account.AttributionDomains = models.StringArray(activityLimitedStringList(actor.AttributionDomains, 256))
 		if movedToSet {
 			account.MovedToAccountID = movedToID
 		}
@@ -2275,6 +2339,7 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 	protocolChanged := false
 	keyChanged := false
 	createdAccount := false
+	var previousAccount *models.Account
 	finalSuspended := newAccountSuspended
 	previousAvatarURL := ""
 	previousHeaderURL := ""
@@ -2291,6 +2356,8 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 			err = tx.Where("lower(username) = lower(?) AND lower(domain) = lower(?)", username, domain).First(&existing).Error
 		}
 		if err == nil {
+			previous := existing
+			previousAccount = &previous
 			previousAvatarURL = existing.AvatarRemoteURL.String
 			hadAvatarFile = existing.AvatarFileName.Valid && existing.AvatarFileName.String != ""
 			previousHeaderURL = existing.HeaderRemoteURL
@@ -2427,6 +2494,17 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 	})
 	if err != nil {
 		return nil, err
+	}
+	if account.ID != 0 {
+		var persisted models.Account
+		if err := database.WithContext(context.Background()).Where("id = ?", account.ID).First(&persisted).Error; err == nil {
+			account = persisted
+			if createdAccount {
+				_ = s.enqueueFASPAccountLifecycle(context.Background(), account, "new")
+			} else if previousAccount != nil {
+				_ = s.enqueueFASPAccountLifecycleUpdate(context.Background(), *previousAccount, account)
+			}
+		}
 	}
 	s.invalidateCustomEmojiEntityCaches(context.Background(), customEmojiChanges)
 	if createdAccount {

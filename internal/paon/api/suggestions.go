@@ -21,6 +21,7 @@ const suggestionSourcePastInteractions = "past_interactions"
 const suggestionSourceStaff = "featured"
 const suggestionSourceFriendsOfFriends = "friends_of_friends"
 const suggestionSourceSimilarProfiles = "similar_to_recently_followed"
+const suggestionSourceFASP = "fasp"
 
 const suggestionSourceBatchSize = 40
 const suggestionCacheTTL = 15 * time.Minute
@@ -45,11 +46,12 @@ type staffSuggestionRef struct {
 }
 
 func (s *Server) suggestionsV2(c *echo.Context) error {
-	account, _, err := s.requireAccountScope(c, "read")
+	account, _, err := s.requireAccountScope(c, "read", "read:accounts")
 	if err != nil {
 		return err
 	}
 	c.Response().Header().Set("Vary", "Authorization")
+	s.scheduleFASPFollowRecommendations(c, account.ID)
 
 	limitValue := limit(c, 40, 80)
 	offsetValue := suggestionOffset(c.QueryParam("offset"))
@@ -74,7 +76,7 @@ func (s *Server) suggestionsV2(c *echo.Context) error {
 }
 
 func (s *Server) suggestionsV1(c *echo.Context) error {
-	account, _, err := s.requireAccountScope(c, "write")
+	account, _, err := s.requireAccountScope(c, "read", "read:accounts")
 	if err != nil {
 		return err
 	}
@@ -92,7 +94,7 @@ func (s *Server) suggestionsV1(c *echo.Context) error {
 }
 
 func (s *Server) deleteSuggestion(c *echo.Context) error {
-	account, _, err := s.requireAccountScope(c, "read")
+	account, _, err := s.requireAccountScope(c, "write", "write:accounts")
 	if err != nil {
 		return err
 	}
@@ -136,6 +138,9 @@ func (s *Server) suggestedAccounts(accountID int64, locale string, limitValue in
 		func() ([]suggestedAccount, error) {
 			return s.suggestedAccountsFromGlobalRecommendations(accountID, map[int64]struct{}{}, locale, suggestionSourceBatchSize)
 		},
+		func() ([]suggestedAccount, error) {
+			return s.suggestedAccountsFromFASPRecommendations(accountID, suggestionSourceBatchSize)
+		},
 	}
 	merged := make([]cachedSuggestedAccount, 0, len(sources)*suggestionSourceBatchSize)
 	positions := map[int64]int{}
@@ -158,14 +163,30 @@ func (s *Server) suggestedAccounts(accountID int64, locale string, limitValue in
 	return s.loadCachedSuggestedAccounts(accountID, merged, limitValue)
 }
 
+func (s *Server) suggestedAccountsFromFASPRecommendations(accountID int64, limitValue int) ([]suggestedAccount, error) {
+	if !s.faspEnabled() || s.db == nil || limitValue <= 0 {
+		return []suggestedAccount{}, nil
+	}
+	var ids []int64
+	if err := s.db.Model(&models.FaspFollowRecommendation{}).
+		Where("requesting_account_id = ?", accountID).
+		Where("created_at >= ?", time.Now().UTC().Add(-24*time.Hour)).
+		Order("created_at DESC").
+		Limit(limitValue*3).
+		Pluck("recommended_account_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return s.suggestedAccountsByOrderedIDs(accountID, ids, suggestionSourceFASP, limitValue)
+}
+
 func suggestionOffset(raw string) int {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || value < 0 {
 		return 0
 	}
-	// Each of the four sources contributes at most 40 cached entries.
-	if value > suggestionSourceBatchSize*4 {
-		return suggestionSourceBatchSize * 4
+	// Each recommendation source contributes at most one source batch.
+	if value > suggestionSourceBatchSize*5 {
+		return suggestionSourceBatchSize * 5
 	}
 	return value
 }

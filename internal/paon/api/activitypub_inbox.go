@@ -40,6 +40,7 @@ type activityPubProcessingOptions struct {
 	OverrideTimestamps   bool
 	RequestID            string
 	DeliveredToAccountID int64
+	QuoteDepth           int
 }
 
 func (s *Server) processActivityPubInbox(body []byte, actor *models.Account) error {
@@ -412,6 +413,8 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 		return s.processActivityPubAccept(payload, actor, options.DeliveredToAccountID)
 	case "Reject":
 		return s.processActivityPubReject(payload, actor, options.DeliveredToAccountID)
+	case "QuoteRequest":
+		return s.processActivityPubQuoteRequest(ctx, payload, actor)
 	case "Block":
 		return s.processActivityPubBlock(payload, actor)
 	case "Flag":
@@ -1002,12 +1005,16 @@ func (s *Server) processActivityPubReject(payload activityPayload, actor *models
 		// A repeated Reject is already in its requested final state.
 		return nil
 	}
+	var affectedListIDs []int64
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		return deleteFollow(tx, *match.Follow)
+		var err error
+		affectedListIDs, err = deleteFollowWithAffectedListIDs(tx, *match.Follow)
+		return err
 	}); err != nil {
 		return err
 	}
 	s.unmergeAfterUnfollowBestEffort(context.Background(), actor.ID, match.Follow.Account)
+	s.unmergeListFeedsAfterUnfollowBestEffort(context.Background(), actor.ID, affectedListIDs)
 	s.invalidateFollowRelationshipCaches(context.Background(), match.Follow.Account, actor.ID)
 	s.meiliReindexPrivateStatusesForAccountsBestEffort(context.Background(), actor.ID)
 	return nil
@@ -1081,6 +1088,7 @@ func (s *Server) processActivityPubBlock(payload activityPayload, actor *models.
 	now := time.Now().UTC()
 	var changed bool
 	var afterBlockCleanup bool
+	var relationshipUnmerges []accountBlockUnmerge
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		var existing models.Block
 		err := tx.Where("account_id = ? AND target_account_id = ?", actor.ID, target.ID).First(&existing).Error
@@ -1101,13 +1109,16 @@ func (s *Server) processActivityPubBlock(payload activityPayload, actor *models.
 			}
 			if deleteArrivedFirst {
 				changed = true
-				return cleanupActivityPubBlockRelationships(tx, actor.ID, target.ID)
+				var cleanupErr error
+				relationshipUnmerges, cleanupErr = cleanupActivityPubBlockRelationships(tx, actor.ID, target.ID)
+				return cleanupErr
 			}
 		}
-		block, err := s.createActivityPubAccountBlock(tx, actor.ID, target.ID, now, activityID, generateBlockURI)
+		block, unmerges, err := s.createActivityPubAccountBlock(tx, actor.ID, target.ID, now, activityID, generateBlockURI)
 		if err != nil {
 			return err
 		}
+		relationshipUnmerges = unmerges
 		if block != nil && activityID != "" && string(block.URI) != activityID {
 			if err := tx.Model(block).Updates(map[string]any{"uri": activityID, "updated_at": now}).Error; err != nil {
 				return err
@@ -1121,6 +1132,10 @@ func (s *Server) processActivityPubBlock(payload activityPayload, actor *models.
 		return err
 	}
 	if changed {
+		for _, effect := range relationshipUnmerges {
+			s.unmergeAfterUnfollowBestEffort(context.Background(), effect.FromAccountID, effect.IntoAccount)
+			s.unmergeListFeedsAfterUnfollowBestEffort(context.Background(), effect.FromAccountID, effect.ListIDs)
+		}
 		if afterBlockCleanup {
 			s.clearAfterBlockFeedCaches(context.Background(), actor.ID, target.ID)
 		}
@@ -1130,47 +1145,56 @@ func (s *Server) processActivityPubBlock(payload activityPayload, actor *models.
 	return nil
 }
 
-func (s *Server) createActivityPubAccountBlock(tx *gorm.DB, accountID int64, targetID int64, now time.Time, uri string, generateURI bool) (*models.Block, error) {
+func (s *Server) createActivityPubAccountBlock(tx *gorm.DB, accountID int64, targetID int64, now time.Time, uri string, generateURI bool) (*models.Block, []accountBlockUnmerge, error) {
 	block := models.Block{CreatedAt: now, UpdatedAt: now, AccountID: accountID, TargetAccountID: targetID, URI: models.NullSafeString(uri)}
 	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&block).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if block.ID == 0 {
 		if err := tx.Where("account_id = ? AND target_account_id = ?", accountID, targetID).First(&block).Error; err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if block.URI == "" && generateURI {
 		block.URI = models.NullSafeString(activityPubGeneratedPayloadURI(s))
 		if err := tx.Model(&block).Updates(map[string]any{"uri": block.URI, "updated_at": now}).Error; err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	if err := cleanupActivityPubBlockRelationships(tx, accountID, targetID); err != nil {
-		return nil, err
+	unmerges, err := cleanupActivityPubBlockRelationships(tx, accountID, targetID)
+	if err != nil {
+		return nil, nil, err
 	}
-	return &block, nil
+	return &block, unmerges, nil
 }
 
-func cleanupActivityPubBlockRelationships(tx *gorm.DB, accountID int64, targetID int64) error {
-	if err := deleteFollowEdge(tx, accountID, targetID); err != nil {
-		return err
+func cleanupActivityPubBlockRelationships(tx *gorm.DB, accountID int64, targetID int64) ([]accountBlockUnmerge, error) {
+	unmerges := []accountBlockUnmerge{}
+	if _, listIDs, deleted, err := deleteFollowEdgeReturningFollow(tx, accountID, targetID); err != nil {
+		return nil, err
+	} else if deleted {
+		unmerges = append(unmerges, accountBlockUnmerge{FromAccountID: targetID, IntoAccount: models.Account{ID: accountID}, ListIDs: listIDs})
 	}
-	if err := deleteFollowEdge(tx, targetID, accountID); err != nil {
-		return err
+	if _, listIDs, deleted, err := deleteFollowEdgeReturningFollow(tx, targetID, accountID); err != nil {
+		return nil, err
+	} else if deleted {
+		unmerges = append(unmerges, accountBlockUnmerge{FromAccountID: accountID, IntoAccount: models.Account{ID: targetID}, ListIDs: listIDs})
 	}
 	var requestIDs []int64
 	if err := tx.Model(&models.FollowRequest{}).
 		Where("account_id = ? AND target_account_id = ?", targetID, accountID).
 		Pluck("id", &requestIDs).Error; err != nil {
-		return err
+		return nil, err
 	}
 	if len(requestIDs) > 0 {
 		if err := tx.Where("activity_type = ? AND activity_id IN ?", "FollowRequest", requestIDs).Delete(&models.Notification{}).Error; err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return tx.Where("account_id = ? AND target_account_id = ?", targetID, accountID).Delete(&models.FollowRequest{}).Error
+	if err := tx.Where("account_id = ? AND target_account_id = ?", targetID, accountID).Delete(&models.FollowRequest{}).Error; err != nil {
+		return nil, err
+	}
+	return unmerges, nil
 }
 
 func (s *Server) processActivityPubUndoBlock(object activityObject, actor *models.Account) error {
@@ -1841,24 +1865,25 @@ func (s *Server) processActivityPubCreateNote(payload activityPayload, actor *mo
 		if err != nil || tombstoneExists {
 			return err
 		}
-		var existing models.Status
-		existingQuery := tx.Where("account_id = ? AND uri = ?", actor.ID, note.ID)
-		if activityPubRailsPresentString(note.AtomURI) {
-			existingQuery = tx.Where("account_id = ? AND (uri = ? OR uri = ?)", actor.ID, note.ID, note.AtomURI)
+		existing, err := findActivityPubExistingCreateStatus(tx, note)
+		if err != nil {
+			return err
 		}
-		err = existingQuery.First(&existing).Error
-		if err == nil {
-			postprocessed, addToHome, err := s.postprocessActivityPubExistingStatusAudience(tx, &existing, actor, deliveredTo, now)
+		if existing != nil {
+			// Mastodon 4.4.21 looks up the object globally before checking its
+			// author. Restricting the lookup by account would turn a known URI
+			// attributed to another actor into a new Create attempt.
+			if !activityPubExistingCreateStatusBelongsToActor(existing, actor) {
+				return activityPubEventNotAppliedf("Create object %q is already attributed to another actor", note.ID)
+			}
+			postprocessed, addToHome, err := s.postprocessActivityPubExistingStatusAudience(tx, existing, actor, deliveredTo, now)
 			if err != nil {
 				return err
 			}
-			deliveredStatus = &existing
+			deliveredStatus = existing
 			postprocessedDeliveredStatus = postprocessed
 			addDeliveredStatusToHomeFeed = addToHome
 			return nil
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
 		}
 		if err := s.ensureActivityPubStatusConversation(tx, &status, note, now); err != nil {
 			return err
@@ -1871,7 +1896,8 @@ func (s *Server) processActivityPubCreateNote(payload activityPayload, actor *mo
 			return err
 		}
 		createdStatusID = status.ID
-		if err := tx.Create(&models.StatusStat{StatusID: status.ID}).Error; err != nil {
+		statusStat := activityPubStatusStatFromObject(status.ID, note)
+		if err := tx.Create(&statusStat).Error; err != nil {
 			return err
 		}
 		notifications, err := s.saveActivityPubStatusMetadata(tx, &status, note, actor, deliveredTo, now, false)
@@ -1918,8 +1944,14 @@ func (s *Server) processActivityPubCreateNote(payload activityPayload, actor *mo
 		s.addActivityPubDeliveredStatusToHomeFeedBestEffort(context.Background(), *deliveredStatus, *deliveredTo)
 	}
 	if createdStatusID != 0 {
+		if faspStatus, err := s.findStatus(strconv.FormatInt(createdStatusID, 10)); err == nil && faspStatus != nil {
+			_ = s.enqueueFASPContentLifecycle(context.Background(), *faspStatus, "new")
+			if faspStatus.InReplyToID.Valid {
+				_ = s.enqueueFASPTrendForStatus(context.Background(), *faspStatus, "reply")
+			}
+		}
 		quoteSigner, _ := s.activityPubSignedFetchAccount(actor, deliveredTo, payload.To, payload.CC)
-		s.processActivityPubQuoteBestEffort(context.Background(), createdStatusID, note, payload.ID, actor, quoteSigner)
+		s.processActivityPubQuoteBestEffort(context.Background(), createdStatusID, note, payload.ID, actor, quoteSigner, true, true, options.QuoteDepth)
 		s.resolveActivityPubThreadBestEffort(status, note, payload.ID)
 		s.fetchActivityPubRepliesBestEffort(status, note, actor)
 		s.meiliIndexStatusBestEffort(context.Background(), createdStatusID)
@@ -1937,6 +1969,28 @@ func (s *Server) processActivityPubCreateNote(payload activityPayload, actor *mo
 		}
 	}
 	return nil
+}
+
+func findActivityPubExistingCreateStatus(tx *gorm.DB, note activityObject) (*models.Status, error) {
+	if tx == nil || strings.TrimSpace(note.ID) == "" {
+		return nil, nil
+	}
+	var existing models.Status
+	query := tx.Where("uri = ?", note.ID)
+	if activityPubRailsPresentString(note.AtomURI) {
+		query = tx.Where("uri = ? OR uri = ?", note.ID, note.AtomURI)
+	}
+	if err := query.First(&existing).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &existing, nil
+}
+
+func activityPubExistingCreateStatusBelongsToActor(status *models.Status, actor *models.Account) bool {
+	return status != nil && actor != nil && status.AccountID != 0 && status.AccountID == actor.ID
 }
 
 func (s *Server) postprocessActivityPubExistingStatusAudience(tx *gorm.DB, status *models.Status, actor *models.Account, deliveredTo *models.Account, now time.Time) (bool, bool, error) {
@@ -2000,34 +2054,86 @@ func (s *Server) addActivityPubDeliveredStatusToHomeFeedBestEffort(ctx context.C
 	_ = s.trimFeedContext(ctx, "home", deliveredTo.ID)
 }
 
-func (s *Server) processActivityPubQuoteBestEffort(ctx context.Context, statusID int64, note activityObject, requestID string, quotingAccount *models.Account, signer *models.Account) {
-	if s == nil || s.db == nil || s.quoteStore == nil || statusID == 0 {
+func (s *Server) processActivityPubQuoteBestEffort(ctx context.Context, statusID int64, note activityObject, requestID string, quotingAccount *models.Account, signer *models.Account, resetOnAnyApprovalChange bool, rejectLocalApproval bool, depth ...int) {
+	if s == nil || s.db == nil || statusID == 0 {
 		return
 	}
 	quoteURL := activityPubQuoteURL(note)
+	if note.QuoteSet && note.QuoteDeleted && resetOnAnyApprovalChange {
+		// Create persists an ID-less Tombstone as deleted. On explicit Update,
+		// Mastodon only uses the deleted state when replacing a resolved target;
+		// reconcileActivityPubQuote handles that replacement before reaching here.
+		if _, err := s.findQuoteByStatusID(ctx, statusID); errors.Is(err, gorm.ErrRecordNotFound) {
+			state := models.QuoteStatePending
+			if rejectLocalApproval {
+				state = models.QuoteStateDeleted
+			}
+			_ = s.persistActivityPubQuote(ctx, statusID, nil, sql.NullString{}, false, state)
+			return
+		}
+	}
 	if quoteURL == "" {
+		// An explicit ID-less Tombstone can still withdraw an approval from an
+		// unresolved quote, even though there is no target URI to verify.
+		if note.QuoteSet && note.QuoteDeleted && resetOnAnyApprovalChange {
+			if existing, err := s.findQuoteByStatusID(ctx, statusID); err == nil && existing != nil && existing.ApprovalURI.Valid {
+				_ = s.persistActivityPubQuote(ctx, statusID, nil, sql.NullString{}, false, models.QuoteStatePending)
+			}
+		}
 		return
 	}
-	quoteActorURI, ok := s.activityPubQuoteObjectAttributedTo(quoteURL, signer)
-	if !ok {
+	legacy := !note.QuoteSet
+	approvalRaw := strings.TrimSpace(firstNonEmpty(note.QuoteAuthorizationRaw, note.QuoteAuthorization))
+	approvalValue := approvalRaw
+	approvalFetchURI := activityPubFetchExpectedID(approvalValue)
+	if approvalValue != "" && (!activityPubHTTPURIAllowedRaw(approvalFetchURI) || rejectLocalApproval && s.localActivityURI(approvalFetchURI)) {
+		approvalValue = ""
+	}
+	approvalURI := sqlNullString(approvalValue)
+	shouldReset := true
+	if existing, err := s.findQuoteByStatusID(ctx, statusID); err == nil && existing != nil {
+		approvalChanged := existing.ApprovalURI.String != approvalRaw
+		shouldReset = approvalChanged && (resetOnAnyApprovalChange || existing.ApprovalURI.Valid)
+	}
+	if shouldReset {
+		if err := s.persistActivityPubQuote(ctx, statusID, nil, sql.NullString{}, legacy, models.QuoteStatePending); err != nil {
+			return
+		}
+	}
+	quoteRecord, err := s.findQuoteByStatusID(ctx, statusID)
+	if err != nil || quoteRecord == nil {
 		return
 	}
-	if !s.fetchActivityPubQuoteActorForRequest(quoteActorURI, requestID) {
-		return
+	quoteDepth := 0
+	if len(depth) > 0 {
+		quoteDepth = depth[0]
 	}
-	quoteLookupURL := activityURIFromBearcap(quoteURL)
-	quote, err := s.statusFromActivityURI(quoteLookupURL)
-	if err != nil || quote == nil {
-		quote, err = s.fetchRemoteStatusFromActivityURIForRequestWithSigner(quoteURL, "", requestID, signer)
+	if embedded := safeEmbeddedActivityPubQuote(s, note, quoteURL, quotingAccount); embedded != nil {
+		_ = s.processFetchedActivityPubStatusObjectForRequestWithQuoteDepth(*embedded, requestID, quoteDepth+1)
 	}
-	if err != nil || quote == nil || quote.ID == 0 || quote.ID == statusID {
-		return
+	_, err = s.verifyActivityPubQuoteDepth(ctx, quoteRecord.ID, quoteURL, approvalURI.String, requestID, signer, quoteDepth)
+	if err != nil {
+		s.enqueueRefetchAndVerifyQuoteTask(quoteRecord.ID, quoteURL, approvalURI.String, requestID)
 	}
-	allowed, err := s.statusQuoteTargetAllowedForAccount(ctx, quotingAccount, quote)
-	if err != nil || !allowed {
-		return
+}
+
+// safeEmbeddedActivityPubQuote applies the same trust boundary as Mastodon's
+// safe_prefetched_embed: only a same-origin object attributed to the activity
+// actor can be imported without an independent fetch.
+func safeEmbeddedActivityPubQuote(s *Server, note activityObject, quoteURL string, quotingAccount *models.Account) *activityObject {
+	if s == nil || note.QuotedObject == nil || quotingAccount == nil || quotingAccount.ID == 0 {
+		return nil
 	}
-	s.putStatusQuoteMetadataBestEffort(ctx, statusID, quote.ID, quoteURL, s.quoteStatusURL(*quote))
+	embedded := note.QuotedObject
+	actorURI := activityPubAccountTagManagerURI(s, *quotingAccount)
+	embeddedActorURI := firstNonEmpty(embedded.AttributedToRaw, embedded.AttributedTo)
+	if actorURI == "" || embeddedActorURI != actorURI || !activityURIHostsMatch(actorURI, embedded.ID) {
+		return nil
+	}
+	if activityPubFetchExpectedID(strings.TrimSpace(quoteURL)) != activityPubFetchExpectedID(strings.TrimSpace(embedded.ID)) {
+		return nil
+	}
+	return embedded
 }
 
 func (s *Server) activityPubQuoteObjectAttributedTo(quoteURL string, signer *models.Account) (string, bool) {
@@ -2071,9 +2177,10 @@ func activityPubQuoteURL(note activityObject) string {
 		normalized string
 		present    bool
 	}{
-		{raw: note.QuoteURIRaw, normalized: note.QuoteURI, present: note.QuoteURISet},
-		{raw: note.QuoteURLRaw, normalized: note.QuoteURL, present: note.QuoteURLSet},
+		{raw: note.QuoteRaw, normalized: note.Quote, present: note.QuoteSet},
 		{raw: note.MisskeyQuoteRaw, normalized: note.MisskeyQuote, present: note.MisskeyQuoteSet},
+		{raw: note.QuoteURLRaw, normalized: note.QuoteURL, present: note.QuoteURLSet},
+		{raw: note.QuoteURIRaw, normalized: note.QuoteURI, present: note.QuoteURISet},
 	} {
 		if !value.present {
 			continue
@@ -2088,6 +2195,14 @@ func activityPubQuoteURL(note activityObject) string {
 		return quoteURL
 	}
 	return ""
+}
+
+func activityPubInlineObjectType(value any) string {
+	typed, ok := activityJSONLDSingle(value).(map[string]any)
+	if !ok {
+		return ""
+	}
+	return activityCompactType(stringValue(activityJSONLDValue(typed, "type")))
 }
 
 const activityPubStatusRealtimeWindow = 6 * time.Hour
@@ -2333,7 +2448,8 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 		}
 		err := statusQuery.First(&status).Error
 		statusMissing := errors.Is(err, gorm.ErrRecordNotFound)
-		if activityPubUpdateShouldIgnoreUnknownObject(statusMissing, object, time.Now().UTC()) {
+		now := time.Now().UTC()
+		if activityPubUpdateShouldIgnoreUnknownStatus(statusMissing, actor, object, now) {
 			return nil
 		}
 		if statusMissing {
@@ -2342,7 +2458,6 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 		if err != nil {
 			return err
 		}
-		now := time.Now().UTC()
 		editedAt := activityPubStatusUpdateEditedAt(object)
 		if activityPubStatusUpdateIsOlder(status, editedAt) {
 			return nil
@@ -2387,11 +2502,12 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 				}
 			}
 			updates := map[string]any{
-				"text":         next.Text,
-				"updated_at":   now,
-				"sensitive":    next.Sensitive,
-				"spoiler_text": next.SpoilerText,
-				"language":     next.Language,
+				"text":                  next.Text,
+				"updated_at":            now,
+				"sensitive":             next.Sensitive,
+				"spoiler_text":          next.SpoilerText,
+				"language":              next.Language,
+				"quote_approval_policy": next.QuoteApprovalPolicy,
 			}
 			if significantChanged {
 				updates["edited_at"] = editedAt
@@ -2440,10 +2556,21 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 					return err
 				}
 			}
-			return nil
+			return updateActivityPubStatusUntrustedCounts(tx, status.ID, object, now)
 		}); err != nil {
 			return err
 		}
+		quoteBefore := s.activityPubQuoteFingerprint(context.Background(), status.ID)
+		preQuoteSnapshot, _ := loadStatusForSnapshot(s.db, status.ID)
+		quoteSigner, _ := s.activityPubSignedFetchAccount(actor, deliveredTo, payload.To, payload.CC)
+		quoteChanged := s.reconcileActivityPubQuote(context.Background(), status.ID, object, options.RequestID, actor, quoteSigner, true)
+		quoteAfter := s.activityPubQuoteFingerprint(context.Background(), status.ID)
+		if quoteEditRelationshipChanged(quoteBefore, quoteAfter) {
+			if err := s.recordActivityPubQuoteEdit(context.Background(), status.ID, actor.ID, preQuoteSnapshot, significantChanged, editedAt, now); err != nil {
+				return err
+			}
+		}
+		significantChanged = significantChanged || quoteChanged
 		s.invalidateCustomEmojiEntityCaches(context.Background(), customEmojiChanges)
 		createdNotificationIDs, err := s.enqueueOrCreateLocalNotifications(context.Background(), notificationPayloads)
 		if err != nil {
@@ -2466,6 +2593,9 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 		if significantChanged {
 			s.fetchLinkCardForStatusDelayed(status.ID)
 		}
+		if updated, err := s.findStatus(strconv.FormatInt(status.ID, 10)); err == nil && updated != nil {
+			_ = s.enqueueFASPContentLifecycle(context.Background(), *updated, "update")
+		}
 		return nil
 	}
 	return activityPubEventNotAppliedf("Update object type %q is unsupported", object.TypeExact)
@@ -2482,6 +2612,19 @@ func activityPubUpdateShouldIgnoreUnknownObject(statusMissing bool, object activ
 	}
 	publishedAt, ok := parseActivityPubTime(object.Published)
 	return ok && publishedAt.Before(now.UTC().Add(-activityPubUpdateUnknownObjectAgeThreshold))
+}
+
+func activityPubUpdateShouldIgnoreUnknownStatus(statusMissing bool, actor *models.Account, object activityObject, now time.Time) bool {
+	if !statusMissing {
+		return false
+	}
+	// Update is allowed while an actor is suspended so the actor document can
+	// communicate an unsuspension. It must not create a previously unknown
+	// status, matching Mastodon 4.4's remote-suspension bypass fix.
+	if actor == nil || actor.SuspendedAt.Valid {
+		return true
+	}
+	return activityPubUpdateShouldIgnoreUnknownObject(true, object, now)
 }
 
 func (s *Server) processActivityPubDereferencedUpdate(payload activityPayload, actor *models.Account, deliveredTo *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
@@ -2669,25 +2812,46 @@ func (s *Server) activityPubCreateRelatedToLocalActivity(note activityObject, ac
 	if actor == nil || actor.ID == 0 || s == nil {
 		return false, nil
 	}
-	if deliveredTo != nil && deliveredTo.ID != 0 && deliveredTo.Local() {
-		return true, nil
-	}
 	if s.db == nil {
 		return false, nil
 	}
-	followed, err := s.activityPubActorOrRelayFollowedByLocalAccount(actor, relayedThrough)
-	if err != nil || followed {
-		return followed, err
+	checks := activityPubCreateRelevancyChecksForVisibility(activityPubVisibility(note.To, note.CC, actor))
+	if checks.Followed {
+		followed, err := s.activityPubActorOrRelayFollowedByLocalAccount(actor, relayedThrough)
+		if err != nil || followed {
+			return followed, err
+		}
 	}
-	relay, err := s.activityPubActorOrRelayRequestedThroughRelay(actor, relayedThrough)
-	if err != nil || relay {
-		return relay, err
+	if checks.Relay {
+		relay, err := s.activityPubActorOrRelayRequestedThroughRelay(actor, relayedThrough)
+		if err != nil || relay {
+			return relay, err
+		}
 	}
-	replyRelated, err := s.activityPubRespondsToFollowedAccount(note)
-	if err != nil || replyRelated {
-		return replyRelated, err
+	if checks.Reply {
+		replyRelated, err := s.activityPubRespondsToFollowedAccount(note)
+		if err != nil || replyRelated {
+			return replyRelated, err
+		}
 	}
 	return s.activityPubAddressesLocalAccounts(note)
+}
+
+type activityPubCreateRelevancyChecks struct {
+	Followed bool
+	Relay    bool
+	Reply    bool
+}
+
+func activityPubCreateRelevancyChecksForVisibility(visibility int) activityPubCreateRelevancyChecks {
+	switch visibility {
+	case 0, 1: // public and unlisted
+		return activityPubCreateRelevancyChecks{Followed: true, Relay: true, Reply: true}
+	case 2: // followers-only
+		return activityPubCreateRelevancyChecks{Followed: true}
+	default: // direct and limited
+		return activityPubCreateRelevancyChecks{}
+	}
 }
 
 func (s *Server) activityPubActorFollowedByLocalAccount(accountID int64) (bool, error) {
@@ -2838,7 +3002,7 @@ func (s *Server) activityPubMediaAttachmentsSignificantChange(tx *gorm.DB, statu
 		if attachment.URL == "" {
 			continue
 		}
-		if accepted > maxAttachments {
+		if accepted >= maxAttachments {
 			break
 		}
 		accepted++
@@ -2923,11 +3087,22 @@ func activityPubStatusUpdateShouldForward(status models.Status, editedAt sql.Nul
 
 func (s *Server) processActivityPubImplicitStatusUpdate(status *models.Status, object activityObject, actor *models.Account, now time.Time) error {
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		return s.syncActivityPubPollAllowSignificantChange(tx, status, object, actor, now, false)
+		if err := tx.Model(&models.Status{}).Where("id = ?", status.ID).Updates(map[string]any{"quote_approval_policy": activityPubQuoteApprovalPolicy(object, actor), "updated_at": now}).Error; err != nil {
+			return err
+		}
+		if err := s.syncActivityPubPollAllowSignificantChange(tx, status, object, actor, now, false); err != nil {
+			return err
+		}
+		return updateActivityPubStatusUntrustedCounts(tx, status.ID, object, now)
 	}); err != nil {
 		return err
 	}
+	if s.reconcileActivityPubQuote(context.Background(), status.ID, object, "", actor, nil, false) {
+		s.publishQuoteStateUpdate(context.Background(), status.ID)
+	}
 	s.invalidateStatusCache(context.Background(), status.ID)
+	status.Account = *actor
+	_ = s.enqueueFASPContentLifecycle(context.Background(), *status, "update")
 	return nil
 }
 
@@ -2985,6 +3160,7 @@ func (s *Server) processActivityPubDeleteWithContext(ctx context.Context, payloa
 	var affectedTagIDs []int64
 	var forwardPlan *activityPubForwardingPlan
 	deleted := false
+	deleteObjectType := activityCompactType(payload.Object.Type)
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if activityPubURIHostsMatch(actor.URI, target) {
 			acquiredCreate, releaseCreateLock, err := s.acquireActivityPubRedisLock(ctx, "create:"+target, activityPubRedisLockDefaultTTL)
@@ -2998,6 +3174,9 @@ func (s *Server) processActivityPubDeleteWithContext(ctx context.Context, payloa
 			if err := createActivityPubTombstone(tx, actor.ID, target, now); err != nil {
 				return err
 			}
+		}
+		if deleteObjectType == "QuoteAuthorization" {
+			return nil
 		}
 		statusQuery := tx.Where("account_id = ? AND uri = ?", actor.ID, target)
 		if activityPubRailsPresentString(payload.Object.AtomURI) {
@@ -3078,6 +3257,8 @@ func (s *Server) processActivityPubDeleteWithContext(ctx context.Context, payloa
 		return err
 	}
 	if deleted {
+		status.Account = *actor
+		_ = s.enqueueFASPContentLifecycle(ctx, status, "delete")
 		if forwardPlan != nil {
 			_ = s.deliverForwardedActivityPubStatusActivity(*forwardPlan, payload.RawBody)
 		}
@@ -3086,6 +3267,7 @@ func (s *Server) processActivityPubDeleteWithContext(ctx context.Context, payloa
 		s.deleteStatusQuoteBestEffort(context.Background(), status.ID)
 		s.meiliDeleteStatusBestEffort(context.Background(), status.ID)
 		for _, reblog := range deletedReblogs {
+			_ = s.enqueueFASPContentLifecycle(ctx, reblog, "delete")
 			_ = s.removeStatusFromRailsFeeds(context.Background(), s.db, reblog)
 			s.publishStatusDelete(reblog)
 			s.deleteStatusQuoteBestEffort(context.Background(), reblog.ID)
@@ -3102,6 +3284,10 @@ func (s *Server) processActivityPubDeleteWithContext(ctx context.Context, payloa
 		}
 		s.meiliIndexTagsBestEffort(context.Background(), affectedTagIDs)
 	}
+	if !deleted && deleteObjectType != "Note" && deleteObjectType != "Question" {
+		_, err = s.revokeQuoteAuthorization(ctx, target, actor, payload.RawBody)
+		return err
+	}
 	return nil
 }
 
@@ -3110,8 +3296,7 @@ func deleteActivityPubReblogsForRemovedStatus(tx *gorm.DB, statusID int64, now t
 		return nil, nil, nil, nil, nil
 	}
 	var reblogs []models.Status
-	if err := tx.Select("id, account_id, visibility").
-		Where("reblog_of_id = ? AND deleted_at IS NULL", statusID).
+	if err := tx.Where("reblog_of_id = ? AND deleted_at IS NULL", statusID).
 		Find(&reblogs).Error; err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -3236,21 +3421,22 @@ func (s *Server) activityStatusFromNote(note activityObject, actor *models.Accou
 		spoilerText = ""
 	}
 	status := models.Status{
-		URI:                sql.NullString{String: note.ID, Valid: note.ID != ""},
-		URL:                sql.NullString{String: firstNonEmpty(note.URL, note.ID), Valid: firstNonEmpty(note.URL, note.ID) != ""},
-		Text:               statusText,
-		CreatedAt:          createdAt,
-		UpdatedAt:          now,
-		EditedAt:           editedAt,
-		Sensitive:          note.Sensitive || (actor != nil && actor.SensitizedAt.Valid),
-		Visibility:         activityPubVisibility(note.To, note.CC, actor),
-		SpoilerText:        spoilerText,
-		Reply:              note.InReplyToPresent,
-		Language:           sql.NullString{String: language, Valid: language != ""},
-		Local:              sql.NullBool{Bool: false, Valid: true},
-		AccountID:          actor.ID,
-		InReplyToID:        sql.NullInt64{},
-		InReplyToAccountID: sql.NullInt64{},
+		URI:                 sql.NullString{String: note.ID, Valid: note.ID != ""},
+		URL:                 sql.NullString{String: firstNonEmpty(note.URL, note.ID), Valid: firstNonEmpty(note.URL, note.ID) != ""},
+		Text:                statusText,
+		CreatedAt:           createdAt,
+		UpdatedAt:           now,
+		EditedAt:            editedAt,
+		Sensitive:           note.Sensitive || (actor != nil && actor.SensitizedAt.Valid),
+		Visibility:          activityPubVisibility(note.To, note.CC, actor),
+		SpoilerText:         spoilerText,
+		Reply:               note.InReplyToPresent,
+		Language:            sql.NullString{String: language, Valid: language != ""},
+		Local:               sql.NullBool{Bool: false, Valid: true},
+		AccountID:           actor.ID,
+		InReplyToID:         sql.NullInt64{},
+		InReplyToAccountID:  sql.NullInt64{},
+		QuoteApprovalPolicy: activityPubQuoteApprovalPolicy(note, actor),
 	}
 	if activityPubReplyURI(note) != "" && s != nil && s.db != nil {
 		reply, err := s.statusFromActivityURI(activityPubReplyURI(note))
@@ -3723,7 +3909,7 @@ func activityPubPollExpirationShouldSchedule(previousExpiresAt sql.NullTime, now
 	return !previousExpiresAt.Valid || !previousExpiresAt.Time.Before(now)
 }
 
-func (s *Server) saveActivityPubMediaAttachments(tx *gorm.DB, status *models.Status, attachments []activityAttachment, actor *models.Account, now time.Time, updateEmptyOrder bool, railsUpdateLimit bool) error {
+func (s *Server) saveActivityPubMediaAttachments(tx *gorm.DB, status *models.Status, attachments []activityAttachment, actor *models.Account, now time.Time, updateEmptyOrder bool, _ bool) error {
 	orderedIDs := make(models.Int64Array, 0, len(attachments))
 	accepted := 0
 	maxAttachments := s.maxMediaAttachments()
@@ -3735,11 +3921,7 @@ func (s *Server) saveActivityPubMediaAttachments(tx *gorm.DB, status *models.Sta
 		if attachment.URL == "" {
 			continue
 		}
-		if railsUpdateLimit {
-			if accepted > maxAttachments {
-				break
-			}
-		} else if accepted >= maxAttachments {
+		if accepted >= maxAttachments {
 			break
 		}
 		accepted++
@@ -4212,7 +4394,10 @@ func activityPubConvertedURLPrefix(link string) string {
 
 func activityPubConvertedURLDisplay(rest string) (string, string, bool) {
 	runes := []rune(rest)
-	if len(runes) <= 30 {
+	// The ellipsis itself takes visual space. Mastodon 4.4 therefore leaves a
+	// 31-character URL intact instead of hiding one character behind an
+	// ellipsis; only suffixes of at least two characters are truncated.
+	if len(runes) <= 31 {
 		return rest, "", false
 	}
 	return string(runes[:30]), string(runes[30:]), true
@@ -4488,6 +4673,7 @@ func updateReplyCountersAfterChange(tx *gorm.DB, oldReply sql.NullInt64, nextRep
 }
 
 func (s *Server) updateActivityPubActor(actor *models.Account, object activityObject, requestID string) error {
+	previousActor := *actor
 	acquired, releaseAccountLock, err := s.acquireActivityPubRedisLock(context.Background(), "process_account:"+object.ID, activityPubRedisLockDefaultTTL)
 	if err != nil {
 		return err
@@ -4535,7 +4721,7 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 		updates["indexable"] = object.Indexable
 		updates["memorial"] = object.Memorial
 		updates["also_known_as"] = models.StringArray(activityLimitedValueOrIDList(object.AlsoKnownAs, 256))
-		updates["attribution_domains"] = models.StringArray(activityLimitedValueOrIDList(object.AttributionDomains, 256))
+		updates["attribution_domains"] = models.StringArray(activityLimitedStringList(object.AttributionDomains, 256))
 		movedToID, movedToSet := s.remoteActorMovedToAccountID(object.MovedTo, requestID)
 		if movedToSet {
 			updates["moved_to_account_id"] = movedToID
@@ -4596,6 +4782,11 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 		return clearActivityPubActorTombstonesOnKeyChange(tx, actor.ID, actor.PublicKey, object.PublicKey)
 	}); err != nil {
 		return err
+	}
+	var persistedActor models.Account
+	if err := s.db.Where("id = ?", actor.ID).First(&persistedActor).Error; err == nil {
+		_ = s.enqueueFASPAccountLifecycleUpdate(context.Background(), previousActor, persistedActor)
+		*actor = persistedActor
 	}
 	s.invalidateCustomEmojiEntityCaches(context.Background(), customEmojiChanges)
 	if err := s.applyActivityActorSuspensionTransitionEffects(context.Background(), s.db, actor.ID, suspensionTransition); err != nil {
@@ -4927,6 +5118,7 @@ func (s *Server) processActivityPubLike(payload activityPayload, actor *models.A
 	notificationIDs = append(notificationIDs, createdNotificationIDs...)
 	if favouriteCreated {
 		s.recordStatusTrendUse(context.Background(), status.ID, now)
+		_ = s.enqueueFASPTrend(context.Background(), joinStatus.ID, "favourite")
 	}
 	s.publishNotificationIDs(notificationIDs)
 	return nil
@@ -5102,6 +5294,9 @@ func (s *Server) processActivityPubAnnounce(payload activityPayload, actor *mode
 	}
 	notificationIDs = append(notificationIDs, createdNotificationIDs...)
 	if reblog.ID != 0 {
+		reblog.Account = *actor
+		_ = s.enqueueFASPContentLifecycle(context.Background(), reblog, "new")
+		_ = s.enqueueFASPTrendForStatus(context.Background(), reblog, "reblog")
 		s.recordStatusTrendUse(context.Background(), target.ID, reblog.CreatedAt)
 		s.recordPreviewCardTrendUseForStatus(context.Background(), actor.ID, target.ID, reblog.Visibility, reblog.CreatedAt)
 	}
@@ -5588,6 +5783,8 @@ type activityPayload struct {
 	ObjectIDs       []string
 	ObjectIDRaws    []string
 	Target          string
+	Instrument      string
+	Result          string
 	To              []string
 	CC              []string
 	Items           []activityPayload
@@ -5605,89 +5802,100 @@ type activityLinkedDataSignature struct {
 }
 
 type activityObject struct {
-	ID                 string
-	IDPresent          bool
-	Reference          bool
-	Type               string
-	TypeExact          string
-	TypePresent        bool
-	Types              []string
-	AtomURI            string
-	Featured           string
-	FeaturedCollection *activityCollection
-	FeaturedTags       string
-	Inbox              string
-	Outbox             string
-	Following          string
-	Followers          string
-	SharedInbox        string
-	Actor              string
-	ActorRaw           string
-	ObjectID           string
-	ObjectIDRaw        string
-	ObjectIDPresent    bool
-	AttributedTo       string
-	AttributedToRaw    string
-	URL                string
-	Name               string
-	NameMap            map[string]string
-	NameMapFirstKey    string
-	NameMapFirst       string
-	Content            string
-	ContentMap         map[string]string
-	ContentMapFirstKey string
-	ContentMapFirst    string
-	Summary            string
-	SummaryMap         map[string]string
-	SummaryMapFirstKey string
-	SummaryMapFirst    string
-	InReplyTo          string
-	InReplyToPresent   bool
-	InReplyToAtomURI   string
-	Conversation       string
-	ConversationSet    bool
-	Published          string
-	Updated            string
-	Language           string
-	Sensitive          bool
-	Locked             bool
-	Discoverable       bool
-	Indexable          bool
-	Memorial           bool
-	Suspended          bool
-	Closed             any
-	EndTime            string
-	OneOf              []activityPollOption
-	OneOfSet           bool
-	OneOfArray         bool
-	AnyOf              []activityPollOption
-	AnyOfSet           bool
-	AnyOfArray         bool
-	VotersCount        sql.NullInt64
-	To                 []string
-	ToSet              bool
-	CC                 []string
-	CCSet              bool
-	Tags               []activityTag
-	Attachments        []activityAttachment
-	Replies            activityCollection
-	ProfileFields      []profileField
-	ProfileFieldsSet   bool
-	PublicKey          string
-	AvatarRemoteURL    string
-	HeaderRemoteURL    string
-	QuoteURI           string
-	QuoteURL           string
-	MisskeyQuote       string
-	QuoteURIRaw        string
-	QuoteURLRaw        string
-	MisskeyQuoteRaw    string
-	QuoteURISet        bool
-	QuoteURLSet        bool
-	MisskeyQuoteSet    bool
-	AlsoKnownAs        any
-	AttributionDomains any
-	MovedTo            any
+	ID                    string
+	IDPresent             bool
+	Reference             bool
+	Type                  string
+	TypeExact             string
+	TypePresent           bool
+	Types                 []string
+	AtomURI               string
+	Featured              string
+	FeaturedCollection    *activityCollection
+	FeaturedTags          string
+	Inbox                 string
+	Outbox                string
+	Following             string
+	Followers             string
+	SharedInbox           string
+	Actor                 string
+	ActorRaw              string
+	ObjectID              string
+	ObjectIDRaw           string
+	ObjectIDPresent       bool
+	AttributedTo          string
+	AttributedToRaw       string
+	URL                   string
+	Name                  string
+	NameMap               map[string]string
+	NameMapFirstKey       string
+	NameMapFirst          string
+	Content               string
+	ContentMap            map[string]string
+	ContentMapFirstKey    string
+	ContentMapFirst       string
+	Summary               string
+	SummaryMap            map[string]string
+	SummaryMapFirstKey    string
+	SummaryMapFirst       string
+	InReplyTo             string
+	InReplyToPresent      bool
+	InReplyToAtomURI      string
+	Conversation          string
+	ConversationSet       bool
+	Published             string
+	Updated               string
+	Language              string
+	Sensitive             bool
+	Locked                bool
+	Discoverable          bool
+	Indexable             bool
+	Memorial              bool
+	Suspended             bool
+	Closed                any
+	EndTime               string
+	OneOf                 []activityPollOption
+	OneOfSet              bool
+	OneOfArray            bool
+	AnyOf                 []activityPollOption
+	AnyOfSet              bool
+	AnyOfArray            bool
+	VotersCount           sql.NullInt64
+	LikesTotalItems       sql.NullInt64
+	SharesTotalItems      sql.NullInt64
+	To                    []string
+	ToSet                 bool
+	CC                    []string
+	CCSet                 bool
+	Tags                  []activityTag
+	Attachments           []activityAttachment
+	Replies               activityCollection
+	ProfileFields         []profileField
+	ProfileFieldsSet      bool
+	PublicKey             string
+	AvatarRemoteURL       string
+	HeaderRemoteURL       string
+	Quote                 string
+	QuoteURI              string
+	QuoteURL              string
+	MisskeyQuote          string
+	QuoteAuthorization    string
+	QuoteRaw              string
+	QuoteURIRaw           string
+	QuoteURLRaw           string
+	MisskeyQuoteRaw       string
+	QuoteAuthorizationRaw string
+	QuoteSet              bool
+	QuoteURISet           bool
+	QuoteURLSet           bool
+	MisskeyQuoteSet       bool
+	QuoteAuthorizationSet bool
+	QuoteDeleted          bool
+	QuotedObject          *activityObject
+	InteractionPolicy     any
+	AlsoKnownAs           any
+	AttributionDomains    any
+	MovedTo               any
 }
 
 type activityPollOption struct {
@@ -5939,6 +6147,8 @@ func parseActivityPayload(body []byte) (activityPayload, error) {
 		ObjectIDs:       activityPubObjectIDs(rawObject),
 		ObjectIDRaws:    objectIDRaws,
 		Target:          activityRailsValueOrID(activityJSONLDValue(raw, "target")),
+		Instrument:      activityRailsValueOrID(activityJSONLDValue(raw, "instrument")),
+		Result:          activityRailsValueOrID(activityJSONLDValue(raw, "result")),
 		To:              to,
 		CC:              cc,
 		RawBody:         append([]byte(nil), body...),
@@ -6427,6 +6637,10 @@ func activityFirstCollectionURIValue(value any) any {
 }
 
 func parseActivityObject(value any) activityObject {
+	return parseActivityObjectDepth(value, 0)
+}
+
+func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 	switch object := value.(type) {
 	case string:
 		return activityObject{ID: activityURIFromBearcapRaw(object), IDPresent: true, Reference: true}
@@ -6434,17 +6648,17 @@ func parseActivityObject(value any) activityObject {
 		if len(object) == 0 {
 			return activityObject{}
 		}
-		return parseActivityObject(object[0])
+		return parseActivityObjectDepth(object[0], quoteDepth)
 	case map[string]any:
 		if graphObject := activityJSONLDGraphObject(object); graphObject != nil {
-			return parseActivityObject(graphObject)
+			return parseActivityObjectDepth(graphObject, quoteDepth)
 		}
 		if _, ok := object["@list"]; ok {
 			items := activityJSONLDListItems(object)
 			if len(items) == 0 {
 				return activityObject{}
 			}
-			return parseActivityObject(items[0])
+			return parseActivityObjectDepth(items[0], quoteDepth)
 		}
 		id := activityURIFromBearcapRaw(activityJSONLDIDRaw(object))
 		objectIDValue := activityJSONLDValue(object, "object")
@@ -6454,81 +6668,99 @@ func parseActivityObject(value any) activityObject {
 		toValue := activityJSONLDValue(object, "to")
 		ccValue := activityJSONLDValue(object, "cc")
 		out := activityObject{
-			ID:                 id,
-			IDPresent:          activityJSONLDValue(object, "id") != nil || activityJSONLDValue(object, "@id") != nil,
-			Type:               activityJSONLDType(object),
-			TypeExact:          activityJSONLDActivityType(object),
-			TypePresent:        activityJSONLDValue(object, "type") != nil || activityJSONLDValue(object, "@type") != nil,
-			Types:              activityJSONLDTypes(object),
-			AtomURI:            activityJSONLDString(object, "atomUri"),
-			Featured:           activityCollectionURI(featuredValue),
-			FeaturedTags:       activityCollectionURI(activityJSONLDValue(object, "featuredTags")),
-			Inbox:              activityActorCollectionURI(activityJSONLDValue(object, "inbox")),
-			Outbox:             activityActorCollectionURI(activityJSONLDValue(object, "outbox")),
-			Following:          activityActorCollectionURI(activityJSONLDValue(object, "following")),
-			Followers:          activityActorCollectionURI(activityJSONLDValue(object, "followers")),
-			SharedInbox:        activityActorSharedInboxURLFromObject(object),
-			Actor:              activityJSONLDObjectID(object, "actor"),
-			ActorRaw:           activityJSONLDValueOrID(activityJSONLDValue(object, "actor")),
-			ObjectID:           activityJSONLDObjectID(object, "object"),
-			ObjectIDRaw:        activityJSONLDValueOrID(objectIDValue),
-			ObjectIDPresent:    objectIDValue != nil,
-			AttributedTo:       activityJSONLDObjectIDFirst(object, "attributedTo"),
-			AttributedToRaw:    activityJSONLDValueOrID(activityJSONLDValue(object, "attributedTo")),
-			URL:                activityActorOrStatusURL(activityJSONLDValue(object, "url"), id, activityJSONLDType(object), activityJSONLDTypes(object)),
-			Name:               activityJSONLDString(object, "name"),
-			NameMap:            activityJSONLDStringMap(object, "nameMap"),
-			Content:            sanitizeRemoteNoteContent(activityJSONLDString(object, "content")),
-			ContentMap:         activityJSONLDStringMap(object, "contentMap"),
-			Summary:            activityJSONLDString(object, "summary"),
-			SummaryMap:         activityJSONLDStringMap(object, "summaryMap"),
-			InReplyTo:          activityJSONLDValueOrID(activityJSONLDValue(object, "inReplyTo")),
-			InReplyToPresent:   activityPubJSONLDPresent(activityJSONLDValue(object, "inReplyTo")),
-			InReplyToAtomURI:   activityJSONLDString(object, "inReplyToAtomUri"),
-			Conversation:       activityJSONLDValueOrID(activityJSONLDValue(object, "conversation")),
-			ConversationSet:    activityJSONLDValue(object, "conversation") != nil,
-			Published:          activityJSONLDString(object, "published"),
-			Updated:            activityJSONLDString(object, "updated"),
-			Language:           activityJSONLDString(object, "language"),
-			Sensitive:          activityBoolValue(activityJSONLDValue(object, "sensitive")),
-			Locked:             activityBoolValue(activityJSONLDValue(object, "manuallyApprovesFollowers")),
-			Discoverable:       activityBoolValue(activityJSONLDValue(object, "discoverable")),
-			Indexable:          activityBoolValue(activityJSONLDValue(object, "indexable")),
-			Memorial:           activityBoolValue(activityJSONLDValue(object, "memorial")),
-			Suspended:          activityRailsSuspendedTruthy(activityJSONLDValue(object, "suspended")),
-			Closed:             activityJSONLDValue(object, "closed"),
-			EndTime:            activityJSONLDString(object, "endTime"),
-			OneOf:              oneOfPollOptions.Options,
-			OneOfSet:           oneOfPollOptions.Set,
-			OneOfArray:         oneOfPollOptions.Array,
-			AnyOf:              anyOfPollOptions.Options,
-			AnyOfSet:           anyOfPollOptions.Set,
-			AnyOfArray:         anyOfPollOptions.Array,
-			VotersCount:        activityOptionalInt64(activityJSONLDValue(object, "votersCount")),
-			To:                 activityStringList(toValue),
-			ToSet:              activityRubyTruthy(toValue),
-			CC:                 activityStringList(ccValue),
-			CCSet:              activityRubyTruthy(ccValue),
-			Tags:               activityRailsTagList(activityJSONLDValue(object, "tag")),
-			Attachments:        activityAttachmentList(activityJSONLDValue(object, "attachment")),
-			Replies:            activityCollectionValue(activityJSONLDValue(object, "replies")),
-			ProfileFields:      activityProfileFields(activityJSONLDValue(object, "attachment")),
-			ProfileFieldsSet:   activityAttachmentPresent(activityJSONLDValue(object, "attachment")),
-			PublicKey:          activityPublicKeyPEM(activityJSONLDValue(object, "publicKey")),
-			AvatarRemoteURL:    activityActorImageURL(activityJSONLDValue(object, "icon")),
-			HeaderRemoteURL:    activityActorImageURL(activityJSONLDValue(object, "image")),
-			QuoteURI:           activityJSONLDObjectID(object, "quoteUri"),
-			QuoteURL:           activityJSONLDObjectID(object, "quoteUrl"),
-			MisskeyQuote:       activityJSONLDObjectID(object, "_misskey_quote"),
-			QuoteURIRaw:        activityJSONLDObjectIDPreserveBearcap(object, "quoteUri"),
-			QuoteURLRaw:        activityJSONLDObjectIDPreserveBearcap(object, "quoteUrl"),
-			MisskeyQuoteRaw:    activityJSONLDObjectIDPreserveBearcap(object, "_misskey_quote"),
-			QuoteURISet:        activityJSONLDValue(object, "quoteUri") != nil,
-			QuoteURLSet:        activityJSONLDValue(object, "quoteUrl") != nil,
-			MisskeyQuoteSet:    activityJSONLDValue(object, "_misskey_quote") != nil,
-			AlsoKnownAs:        activityJSONLDValue(object, "alsoKnownAs"),
-			AttributionDomains: activityJSONLDValue(object, "attributionDomains"),
-			MovedTo:            activityJSONLDValue(object, "movedTo"),
+			ID:                    id,
+			IDPresent:             activityJSONLDValue(object, "id") != nil || activityJSONLDValue(object, "@id") != nil,
+			Type:                  activityJSONLDType(object),
+			TypeExact:             activityJSONLDActivityType(object),
+			TypePresent:           activityJSONLDValue(object, "type") != nil || activityJSONLDValue(object, "@type") != nil,
+			Types:                 activityJSONLDTypes(object),
+			AtomURI:               activityJSONLDString(object, "atomUri"),
+			Featured:              activityCollectionURI(featuredValue),
+			FeaturedTags:          activityCollectionURI(activityJSONLDValue(object, "featuredTags")),
+			Inbox:                 activityActorCollectionURI(activityJSONLDValue(object, "inbox")),
+			Outbox:                activityActorCollectionURI(activityJSONLDValue(object, "outbox")),
+			Following:             activityActorCollectionURI(activityJSONLDValue(object, "following")),
+			Followers:             activityActorCollectionURI(activityJSONLDValue(object, "followers")),
+			SharedInbox:           activityActorSharedInboxURLFromObject(object),
+			Actor:                 activityJSONLDObjectID(object, "actor"),
+			ActorRaw:              activityJSONLDValueOrID(activityJSONLDValue(object, "actor")),
+			ObjectID:              activityJSONLDObjectID(object, "object"),
+			ObjectIDRaw:           activityJSONLDValueOrID(objectIDValue),
+			ObjectIDPresent:       objectIDValue != nil,
+			AttributedTo:          activityJSONLDObjectIDFirst(object, "attributedTo"),
+			AttributedToRaw:       activityJSONLDValueOrID(activityJSONLDValue(object, "attributedTo")),
+			URL:                   activityActorOrStatusURL(activityJSONLDValue(object, "url"), id, activityJSONLDType(object), activityJSONLDTypes(object)),
+			Name:                  activityJSONLDString(object, "name"),
+			NameMap:               activityJSONLDStringMap(object, "nameMap"),
+			Content:               sanitizeRemoteNoteContent(activityJSONLDString(object, "content")),
+			ContentMap:            activityJSONLDStringMap(object, "contentMap"),
+			Summary:               activityJSONLDString(object, "summary"),
+			SummaryMap:            activityJSONLDStringMap(object, "summaryMap"),
+			InReplyTo:             activityJSONLDValueOrID(activityJSONLDValue(object, "inReplyTo")),
+			InReplyToPresent:      activityPubJSONLDPresent(activityJSONLDValue(object, "inReplyTo")),
+			InReplyToAtomURI:      activityJSONLDString(object, "inReplyToAtomUri"),
+			Conversation:          activityJSONLDValueOrID(activityJSONLDValue(object, "conversation")),
+			ConversationSet:       activityJSONLDValue(object, "conversation") != nil,
+			Published:             activityJSONLDString(object, "published"),
+			Updated:               activityJSONLDString(object, "updated"),
+			Language:              activityJSONLDString(object, "language"),
+			Sensitive:             activityBoolValue(activityJSONLDValue(object, "sensitive")),
+			Locked:                activityBoolValue(activityJSONLDValue(object, "manuallyApprovesFollowers")),
+			Discoverable:          activityBoolValue(activityJSONLDValue(object, "discoverable")),
+			Indexable:             activityBoolValue(activityJSONLDValue(object, "indexable")),
+			Memorial:              activityBoolValue(activityJSONLDValue(object, "memorial")),
+			Suspended:             activityRailsSuspendedTruthy(activityJSONLDValue(object, "suspended")),
+			Closed:                activityJSONLDValue(object, "closed"),
+			EndTime:               activityJSONLDString(object, "endTime"),
+			OneOf:                 oneOfPollOptions.Options,
+			OneOfSet:              oneOfPollOptions.Set,
+			OneOfArray:            oneOfPollOptions.Array,
+			AnyOf:                 anyOfPollOptions.Options,
+			AnyOfSet:              anyOfPollOptions.Set,
+			AnyOfArray:            anyOfPollOptions.Array,
+			VotersCount:           activityOptionalInt64(activityJSONLDValue(object, "votersCount")),
+			LikesTotalItems:       activityOptionalInt64(nestedActivityJSONLDValue(object, "likes", "totalItems")),
+			SharesTotalItems:      activityOptionalInt64(nestedActivityJSONLDValue(object, "shares", "totalItems")),
+			To:                    activityStringList(toValue),
+			ToSet:                 activityRubyTruthy(toValue),
+			CC:                    activityStringList(ccValue),
+			CCSet:                 activityRubyTruthy(ccValue),
+			Tags:                  activityRailsTagList(activityJSONLDValue(object, "tag")),
+			Attachments:           activityAttachmentList(activityJSONLDValue(object, "attachment")),
+			Replies:               activityCollectionValue(activityJSONLDValue(object, "replies")),
+			ProfileFields:         activityProfileFields(activityJSONLDValue(object, "attachment")),
+			ProfileFieldsSet:      activityAttachmentPresent(activityJSONLDValue(object, "attachment")),
+			PublicKey:             activityPublicKeyPEM(activityJSONLDValue(object, "publicKey")),
+			AvatarRemoteURL:       activityActorImageURL(activityJSONLDValue(object, "icon")),
+			HeaderRemoteURL:       activityActorImageURL(activityJSONLDValue(object, "image")),
+			Quote:                 activityJSONLDObjectID(object, "quote"),
+			QuoteURI:              activityJSONLDObjectID(object, "quoteUri"),
+			QuoteURL:              activityJSONLDObjectID(object, "quoteUrl"),
+			MisskeyQuote:          activityJSONLDObjectID(object, "_misskey_quote"),
+			QuoteAuthorization:    activityJSONLDObjectID(object, "quoteAuthorization"),
+			QuoteRaw:              activityJSONLDObjectIDPreserveBearcap(object, "quote"),
+			QuoteURIRaw:           activityJSONLDObjectIDPreserveBearcap(object, "quoteUri"),
+			QuoteURLRaw:           activityJSONLDObjectIDPreserveBearcap(object, "quoteUrl"),
+			MisskeyQuoteRaw:       activityJSONLDObjectIDPreserveBearcap(object, "_misskey_quote"),
+			QuoteAuthorizationRaw: activityJSONLDObjectIDPreserveBearcap(object, "quoteAuthorization"),
+			QuoteSet:              activityJSONLDValue(object, "quote") != nil,
+			QuoteURISet:           activityJSONLDValue(object, "quoteUri") != nil,
+			QuoteURLSet:           activityJSONLDValue(object, "quoteUrl") != nil,
+			MisskeyQuoteSet:       activityJSONLDValue(object, "_misskey_quote") != nil,
+			QuoteAuthorizationSet: activityJSONLDValue(object, "quoteAuthorization") != nil,
+			QuoteDeleted:          activityPubInlineObjectType(activityJSONLDValue(object, "quote")) == "Tombstone",
+			InteractionPolicy:     activityJSONLDValue(object, "interactionPolicy"),
+			AlsoKnownAs:           activityJSONLDValue(object, "alsoKnownAs"),
+			AttributionDomains:    activityJSONLDValue(object, "attributionDomains"),
+			MovedTo:               activityJSONLDValue(object, "movedTo"),
+		}
+		if quoteDepth < 1 {
+			if inline, ok := activityJSONLDSingle(activityJSONLDValue(object, "quote")).(map[string]any); ok {
+				quoted := parseActivityObjectDepth(inline, quoteDepth+1)
+				if activityObjectIsStatus(quoted) {
+					out.QuotedObject = &quoted
+				}
+			}
 		}
 		out.FeaturedCollection = activityCollectionInlinePage(featuredValue)
 		return out
@@ -7362,7 +7594,7 @@ func activityJSONLDGraphMaps(object map[string]any) []map[string]any {
 
 func activityJSONLDTypeIsActivity(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Block", "Create", "Delete", "Flag", "Follow", "Like", "Move", "Reject", "Remove", "Undo", "Update":
+	case "Accept", "Add", "Announce", "Block", "Create", "Delete", "Flag", "Follow", "Like", "Move", "QuoteRequest", "Reject", "Remove", "Undo", "Update":
 		return true
 	default:
 		return false
@@ -7462,12 +7694,16 @@ func activityJSONLDTermIRIs(key string) []string {
 	case "href":
 		return []string{"https://www.w3.org/ns/activitystreams#href", "http://www.w3.org/ns/activitystreams#href", "as:href"}
 	case "quoteUri":
-		return []string{"https://www.w3.org/ns/activitystreams#quoteUri", "http://www.w3.org/ns/activitystreams#quoteUri", "as:quoteUri", "http://joinmastodon.org/ns#quoteUri", "https://joinmastodon.org/ns#quoteUri", "toot:quoteUri", "https://w3id.org/fep/044f#quote", "fep:quote", "quote"}
+		return []string{"http://fedibird.com/ns#quoteUri", "https://fedibird.com/ns#quoteUri", "fedibird:quoteUri", "https://www.w3.org/ns/activitystreams#quoteUri", "http://www.w3.org/ns/activitystreams#quoteUri", "as:quoteUri", "http://joinmastodon.org/ns#quoteUri", "https://joinmastodon.org/ns#quoteUri", "toot:quoteUri", "https://w3id.org/fep/044f#quote", "fep:quote", "quote"}
 	case "quoteUrl":
 		return []string{"https://www.w3.org/ns/activitystreams#quoteUrl", "http://www.w3.org/ns/activitystreams#quoteUrl", "as:quoteUrl", "http://joinmastodon.org/ns#quoteUrl", "https://joinmastodon.org/ns#quoteUrl", "toot:quoteUrl", "https://w3id.org/fep/044f#quote", "fep:quote", "quote"}
+	case "quote":
+		return []string{"https://w3id.org/fep/044f#quote", "fep:quote"}
+	case "quoteAuthorization":
+		return []string{"https://w3id.org/fep/044f#quoteAuthorization", "fep:quoteAuthorization"}
 	case "_misskey_quote":
 		return []string{"https://misskey-hub.net/ns#_misskey_quote", "misskey:_misskey_quote"}
-	case "interactionPolicy", "canQuote", "automaticApproval", "manualApproval":
+	case "interactionPolicy", "canQuote", "automaticApproval", "manualApproval", "interactingObject", "interactionTarget":
 		return []string{"https://gotosocial.org/ns#" + key, "gts:" + key}
 	case "id", "type":
 		return nil
@@ -7832,7 +8068,10 @@ func activityCompactType(value string) string {
 	if strings.HasPrefix(value, "http://w3id.org/security/v1#") {
 		return strings.TrimPrefix(value, "http://w3id.org/security/v1#")
 	}
-	for _, prefix := range []string{"as:", "toot:", "schema:", "misskey:", "gts:", "sec:", "security:"} {
+	if strings.HasPrefix(value, "https://w3id.org/fep/044f#") {
+		return strings.TrimPrefix(value, "https://w3id.org/fep/044f#")
+	}
+	for _, prefix := range []string{"as:", "toot:", "schema:", "misskey:", "gts:", "fep:", "sec:", "security:"} {
 		if strings.HasPrefix(value, prefix) {
 			return strings.TrimPrefix(value, prefix)
 		}
@@ -7842,7 +8081,7 @@ func activityCompactType(value string) string {
 
 func activityKnownType(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "Collection", "CollectionPage", "Create", "Delete", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Question", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video":
+	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "Collection", "CollectionPage", "Create", "Delete", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Question", "QuoteAuthorization", "QuoteRequest", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video":
 		return true
 	default:
 		return false
@@ -7954,6 +8193,33 @@ func activityLimitedValueOrIDList(value any, limit int) []string {
 		items = items[:limit]
 	}
 	return items
+}
+
+// activityLimitedStringList mirrors Mastodon's grep(String) handling for
+// attributionDomains. In particular, URI objects must not be interpreted as
+// strings: doing so would let a remote actor smuggle domains through an @id.
+// Expanded JSON-LD literal values remain accepted because Paon supports both
+// compact and expanded ActivityPub documents.
+func activityLimitedStringList(value any, limit int) []string {
+	items := activityJSONLDListItems(value)
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		var text string
+		switch typed := item.(type) {
+		case string:
+			text = typed
+		case map[string]any:
+			text = stringValue(typed["@value"])
+		}
+		if text == "" {
+			continue
+		}
+		out = append(out, text)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out
 }
 
 func normalizeActivityAttributionDomain(value string) string {

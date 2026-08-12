@@ -19,7 +19,7 @@ func (s *Server) bustMediaAttachmentCache(attachment models.MediaAttachment) {
 		return
 	}
 	for _, object := range s.mediaAttachmentStoredObjects(attachment) {
-		s.bustCacheURL(s.cacheBusterMediaAttachmentURL(attachment.ID, object.attachment, object.style, object.filename))
+		s.bustCacheURL(s.cacheBusterAssetURL(object.key))
 	}
 }
 

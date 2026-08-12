@@ -29,6 +29,7 @@ type meiliStatusDocument struct {
 	HasPoll            bool     `json:"has_poll"`
 	HasLink            bool     `json:"has_link"`
 	HasEmbed           bool     `json:"has_embed"`
+	HasQuote           bool     `json:"has_quote"`
 	IsReply            bool     `json:"is_reply"`
 	CreatedAtTimestamp int64    `json:"created_at_timestamp"`
 	FavouritesCount    int64    `json:"favourites_count"`
@@ -286,6 +287,7 @@ func (s *Server) meiliStatusDocument(status models.Status) meiliStatusDocument {
 		HasPoll:            status.Poll != nil || status.PollID.Valid,
 		HasLink:            len(status.PreviewCards) > 0,
 		HasEmbed:           hasEmbed,
+		HasQuote:           status.Quote != nil && status.Quote.ID != 0,
 		IsReply:            status.InReplyToID.Valid,
 		CreatedAtTimestamp: status.CreatedAt.Unix(),
 		FavouritesCount:    status.StatusStat.FavouritesCount,

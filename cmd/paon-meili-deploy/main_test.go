@@ -28,12 +28,13 @@ func TestMainValidatesDatabaseBeforeDeploy(t *testing.T) {
 	meiliAvailabilityCheck := strings.Index(body, `api.WaitForMeiliAvailable(ctx, cfg, 30*time.Second)`)
 	databaseOpen := strings.Index(body, `paondb.Open(cfg)`)
 	availabilityCheck := strings.Index(body, `paondb.Available(database)`)
+	versionCheck := strings.Index(body, `paondb.RequireSupportedVersion(database)`)
 	schemaCheck := strings.Index(body, `paondb.SchemaAvailable(database)`)
 	checkConfigBranch := strings.Index(body, `if *checkConfig {`)
 	serverCreate := strings.Index(body, `api.NewServer(cfg, database)`)
 	deploy := strings.Index(body, `server.DeployMeiliIndexes`)
 	infoLogGate := strings.Index(body, `cfg.ShouldLog("info")`)
-	if checkConfigFlag < 0 || versionFlag < 0 || flagParse < 0 || batchSizeSet < 0 || resumeSet < 0 || dotenvLoad < 0 || batchSizeEnv < 0 || resumeEnv < 0 || fromEnv < 0 || runtimeCheck < 0 || runtimeWarnings < 0 || warnLogGate < 0 || meiliCheck < 0 || meiliAvailabilityCheck < 0 || databaseOpen < 0 || availabilityCheck < 0 || schemaCheck < 0 || checkConfigBranch < 0 || serverCreate < 0 || deploy < 0 || infoLogGate < 0 {
+	if checkConfigFlag < 0 || versionFlag < 0 || flagParse < 0 || batchSizeSet < 0 || resumeSet < 0 || dotenvLoad < 0 || batchSizeEnv < 0 || resumeEnv < 0 || fromEnv < 0 || runtimeCheck < 0 || runtimeWarnings < 0 || warnLogGate < 0 || meiliCheck < 0 || meiliAvailabilityCheck < 0 || databaseOpen < 0 || availabilityCheck < 0 || versionCheck < 0 || schemaCheck < 0 || checkConfigBranch < 0 || serverCreate < 0 || deploy < 0 || infoLogGate < 0 {
 		t.Fatal("main.go missing runtime validation, database validation, server creation, or deploy call")
 	}
 	if flagParse > dotenvLoad {
@@ -66,14 +67,34 @@ func TestMainValidatesDatabaseBeforeDeploy(t *testing.T) {
 	if availabilityCheck > serverCreate || availabilityCheck > deploy {
 		t.Fatal("main.go must validate database availability before creating the server or deploying indexes")
 	}
-	if schemaCheck < availabilityCheck || schemaCheck > serverCreate || schemaCheck > deploy {
-		t.Fatal("main.go must validate Mastodon schema after database availability and before deploying indexes")
+	if versionCheck < availabilityCheck || versionCheck > schemaCheck {
+		t.Fatal("main.go must validate the PostgreSQL version after availability and before the schema")
+	}
+	if schemaCheck < versionCheck || schemaCheck > serverCreate || schemaCheck > deploy {
+		t.Fatal("main.go must validate Mastodon schema after the database version and before deploying indexes")
 	}
 	if checkConfigBranch < schemaCheck || checkConfigBranch > serverCreate || checkConfigBranch > deploy {
 		t.Fatal("--check-config must return after schema validation and before server creation or deploy")
 	}
 	if infoLogGate < deploy {
 		t.Fatal("main.go must gate successful deploy summary logging through the Rails log level after deploy")
+	}
+}
+
+func TestMainSupportsMastodon44OnlyMappingFlag(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		`flag.Bool("only-mapping", false`,
+		`OnlyMapping: *onlyMapping`,
+		`log.Printf("meilisearch mappings updated")`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("main.go missing only-mapping behavior %q", want)
+		}
 	}
 }
 

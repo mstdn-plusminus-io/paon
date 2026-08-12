@@ -197,6 +197,10 @@ func statusSnapshotEdit(status models.Status) models.StatusEdit {
 		mediaIDs = append(mediaIDs, attachment.ID)
 		mediaDescriptions = append(mediaDescriptions, attachment.Description.String)
 	}
+	quoteID := sql.NullInt64{}
+	if status.Quote != nil && status.Quote.ID != 0 {
+		quoteID = sql.NullInt64{Int64: status.Quote.ID, Valid: true}
+	}
 	return models.StatusEdit{
 		StatusID:                  status.ID,
 		AccountID:                 sql.NullInt64{Int64: status.AccountID, Valid: true},
@@ -208,6 +212,7 @@ func statusSnapshotEdit(status models.Status) models.StatusEdit {
 		MediaDescriptions:         mediaDescriptions,
 		PollOptions:               pollOptions,
 		Sensitive:                 sensitive,
+		QuoteID:                   quoteID,
 		Status:                    status,
 		Account:                   status.Account,
 	}

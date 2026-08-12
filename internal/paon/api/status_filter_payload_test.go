@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http/httptest"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
 )
 
 func TestSerializeStatusesWithFilterContextAddsMatchingFilters(t *testing.T) {
@@ -62,6 +64,51 @@ func TestSerializeStatusesWithFilterContextCopiesReblogFilters(t *testing.T) {
 	)
 	if len(items) != 1 || len(items[0].Filtered) != 2 || items[0].Reblog == nil || len(items[0].Reblog.Filtered) != 2 {
 		t.Fatalf("items = %#v", items)
+	}
+}
+
+func TestSerializeStatusesWithFilterContextHydratesQuotedStatusFilters(t *testing.T) {
+	now := time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)
+	quoted := statusFilterFixtureStatus(now)
+	quoted.ID = 300
+	status := models.Status{
+		ID:        200,
+		AccountID: 8,
+		Text:      "outer post",
+		CreatedAt: now,
+		Account:   models.Account{ID: 8, Username: "bob", CreatedAt: now},
+		Quote: &models.Quote{
+			ID:                            1,
+			StatusID:                      200,
+			State:                         models.QuoteStateAccepted,
+			QuotedStatusID:                sql.NullInt64{Int64: quoted.ID, Valid: true},
+			QuotedStatus:                  &quoted,
+			QuotedStatusVisible:           true,
+			QuotedStatusVisibilityChecked: true,
+		},
+	}
+
+	items := serializeStatusesWithFilterContext(
+		config.Config{LocalDomain: "example.test"},
+		[]models.Status{status},
+		&models.Account{ID: 9},
+		statusFilterFixtureFilters(),
+		"public",
+	)
+	if len(items) != 1 || len(items[0].Filtered) != 0 {
+		t.Fatalf("outer filtered = %#v", items)
+	}
+	quote, ok := items[0].Quote.(serializer.Quote)
+	if !ok || quote.QuotedStatus == nil || len(quote.QuotedStatus.Filtered) != 2 {
+		t.Fatalf("quote filters = %#v", items[0].Quote)
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := string(data)
+	if !strings.Contains(payload, `"quoted_status":{"id":"300"`) || !strings.Contains(payload, `"filtered":[{"filter":{"id":"9"`) {
+		t.Fatalf("payload = %s", payload)
 	}
 }
 

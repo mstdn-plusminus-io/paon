@@ -256,3 +256,18 @@ func TestAdminInstanceHTMLIncludesRailsMetricsDashboardForAuthorizedViewer(t *te
 		}
 	}
 }
+
+func TestAdminInstanceDashboardLinksRespectExtraPermissions(t *testing.T) {
+	permissions := adminDashboardPermissions{}
+	html := adminInstanceDashboardHTMLWithPermissions("remote.example", "en", &permissions)
+	for _, forbidden := range []string{"origin=remote", "by_target_domain"} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("permission-restricted dashboard contains %q: %s", forbidden, html)
+		}
+	}
+	for _, measure := range []string{"instance_accounts", "instance_reports"} {
+		if !strings.Contains(html, measure) {
+			t.Fatalf("dashboard counter %q must remain visible without a link", measure)
+		}
+	}
+}

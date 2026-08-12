@@ -347,6 +347,7 @@ func (s *Server) applyRelationshipBatch(ctx context.Context, accountID int64, ta
 	// remove_domains_from_followers mirror Rails RemoveFromFollowersService, which does
 	// NOT enqueue an UnmergeWorker, so they perform no feed cleanup here.
 	unmergeTargets := []int64{}
+	listUnmerges := []accountBlockUnmerge{}
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		for _, target := range targets {
 			if target.ID == accountID {
@@ -361,13 +362,14 @@ func (s *Server) applyRelationshipBatch(ctx context.Context, accountID int64, ta
 				deliveries = appendRelationshipBatchDelivery(deliveries, delivery)
 				notificationPayloads = appendRelationshipBatchNotificationPayload(notificationPayloads, notificationPayload)
 			case "unfollow":
-				delivery, deleted, err := s.deleteRelationshipFollowForBatch(tx, current, target)
+				delivery, affectedListIDs, deleted, err := s.deleteRelationshipFollowForBatch(tx, current, target)
 				if err != nil {
 					return err
 				}
 				deliveries = appendRelationshipBatchDelivery(deliveries, delivery)
 				if deleted {
 					unmergeTargets = append(unmergeTargets, target.ID)
+					listUnmerges = append(listUnmerges, accountBlockUnmerge{FromAccountID: target.ID, ListIDs: affectedListIDs})
 					followCacheEffects = append(followCacheEffects, followRelationshipCacheEffect{Source: current, TargetID: target.ID})
 				}
 			case "remove_from_followers":
@@ -395,6 +397,9 @@ func (s *Server) applyRelationshipBatch(ctx context.Context, accountID int64, ta
 	}
 	for _, targetID := range uniqueInt64s(unmergeTargets) {
 		s.unmergeAfterUnfollowBestEffort(ctx, targetID, current)
+	}
+	for _, effect := range listUnmerges {
+		s.unmergeListFeedsAfterUnfollowBestEffort(ctx, effect.FromAccountID, effect.ListIDs)
 	}
 	for _, effect := range followCacheEffects {
 		s.invalidateFollowRelationshipCaches(ctx, effect.Source, effect.TargetID)
@@ -509,7 +514,7 @@ func (s *Server) deliverRelationshipBatchDeliveries(deliveries []relationshipBat
 	}
 }
 
-func (s *Server) deleteRelationshipFollowForBatch(tx *gorm.DB, current models.Account, target models.Account) (*relationshipBatchDelivery, bool, error) {
+func (s *Server) deleteRelationshipFollowForBatch(tx *gorm.DB, current models.Account, target models.Account) (*relationshipBatchDelivery, []int64, bool, error) {
 	var follow models.Follow
 	err := tx.Where("account_id = ? AND target_account_id = ?", current.ID, target.ID).First(&follow).Error
 	if err == nil {
@@ -517,42 +522,43 @@ func (s *Server) deleteRelationshipFollowForBatch(tx *gorm.DB, current models.Ac
 		if uri == "" && !target.Local() {
 			uri = activityPubFollowURI(s, current, follow.ID)
 		}
-		if err := deleteFollow(tx, follow); err != nil {
-			return nil, false, err
+		listIDs, err := deleteFollowWithAffectedListIDs(tx, follow)
+		if err != nil {
+			return nil, nil, false, err
 		}
 		if !target.Local() {
-			return &relationshipBatchDelivery{Kind: "undo_follow", Local: current, Remote: target, ID: follow.ID, URI: uri}, true, nil
+			return &relationshipBatchDelivery{Kind: "undo_follow", Local: current, Remote: target, ID: follow.ID, URI: uri}, listIDs, true, nil
 		}
-		return nil, true, nil
+		return nil, listIDs, true, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	var req models.FollowRequest
 	err = tx.Where("account_id = ? AND target_account_id = ?", current.ID, target.ID).First(&req).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	uri := string(req.URI)
 	if uri == "" && !target.Local() {
 		uri = activityPubFollowURI(s, current, req.ID)
 	}
 	if err := tx.Where("activity_type = ? AND activity_id = ?", "FollowRequest", req.ID).Delete(&models.Notification{}).Error; err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	if _, err := deleteListAccountsForRejectedFollowRequest(tx, req.ID); err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	if err := tx.Delete(&req).Error; err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	if !target.Local() {
-		return &relationshipBatchDelivery{Kind: "undo_follow", Local: current, Remote: target, ID: req.ID, URI: uri}, false, nil
+		return &relationshipBatchDelivery{Kind: "undo_follow", Local: current, Remote: target, ID: req.ID, URI: uri}, nil, false, nil
 	}
-	return nil, false, nil
+	return nil, nil, false, nil
 }
 
 func removeFollowerForBatch(tx *gorm.DB, current models.Account, follower models.Account) (*relationshipBatchDelivery, *followRelationshipCacheEffect, error) {

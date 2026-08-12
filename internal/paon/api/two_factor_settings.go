@@ -204,18 +204,13 @@ func disableTwoFactorForUserTx(tx *gorm.DB, userID int64, now time.Time) error {
 		return err
 	}
 	return tx.Model(&models.User{}).Where("id = ?", userID).Updates(map[string]any{
-		"otp_required_for_login":    false,
-		"otp_secret":                nil,
-		"encrypted_otp_secret":      nil,
-		"encrypted_otp_secret_iv":   nil,
-		"encrypted_otp_secret_salt": nil,
-		"consumed_timestep":         nil,
-		"otp_backup_codes":          models.StringArray{},
-		"updated_at":                now,
+		"otp_required_for_login": false,
+		"otp_secret":             nil,
+		"consumed_timestep":      nil,
+		"otp_backup_codes":       models.StringArray{},
+		"updated_at":             now,
 	}).Error
 }
-
-const goOTPSecretPrefix = paonotp.LegacyPaonPrefix
 
 func (s *Server) enableGoOTPForUser(userID int64, secret string) error {
 	if s.db == nil {
@@ -272,9 +267,9 @@ func (s *Server) activeRecordEncryptionCredentials() paonotp.Credentials {
 	}
 }
 
-// otpSecretFromUser implements the 4.3 mixed-version read path. The new
-// Active Record encrypted column always wins; a malformed value must never be
-// reinterpreted through a legacy column.
+// otpSecretFromUser reads only Mastodon 4.4's Active Record encrypted column.
+// The 4.4 contract migration validates this value before dropping the legacy
+// attr_encrypted columns, so runtime fallback would hide an incomplete cutover.
 func (s *Server) otpSecretFromUser(user *models.User) (string, bool, error) {
 	if user == nil {
 		return "", false, nil
@@ -290,63 +285,7 @@ func (s *Server) otpSecretFromUser(user *models.User) (string, bool, error) {
 		}
 		return secret, true, nil
 	}
-	if user.EncryptedOTPSecret.Valid && strings.HasPrefix(strings.TrimSpace(user.EncryptedOTPSecret.String), goOTPSecretPrefix) {
-		secret, ok := goOTPSecretFromUser(user)
-		if !ok {
-			return "", false, errors.New("invalid legacy Paon otp secret")
-		}
-		return secret, true, nil
-	}
-	if user.EncryptedOTPSecret.Valid || user.EncryptedOTPSecretIV.Valid || user.EncryptedOTPSecretSalt.Valid {
-		secret, err := paonotp.DecryptLegacyMastodon(
-			user.EncryptedOTPSecret.String,
-			user.EncryptedOTPSecretIV.String,
-			user.EncryptedOTPSecretSalt.String,
-			s.cfg.OTPSecret,
-		)
-		if err != nil {
-			return "", false, err
-		}
-		secret = normalizeOTPSecret(secret)
-		if secret == "" {
-			return "", false, errors.New("empty legacy Mastodon otp secret")
-		}
-		return secret, true, nil
-	}
 	return "", false, nil
-}
-
-func goOTPSecretFromUser(user *models.User) (string, bool) {
-	if user == nil || !user.EncryptedOTPSecret.Valid {
-		return "", false
-	}
-	secret, ok := paonotp.ParseLegacyPaon(user.EncryptedOTPSecret.String)
-	if !ok {
-		return "", false
-	}
-	secret = normalizeOTPSecret(secret)
-	return secret, secret != ""
-}
-
-func (s *Server) legacyOTPSecretFromUser(user *models.User) (string, bool) {
-	if user == nil || strings.TrimSpace(s.cfg.OTPSecret) == "" {
-		return "", false
-	}
-	secret, err := paonotp.DecryptLegacyMastodon(
-		user.EncryptedOTPSecret.String,
-		user.EncryptedOTPSecretIV.String,
-		user.EncryptedOTPSecretSalt.String,
-		s.cfg.OTPSecret,
-	)
-	if err != nil {
-		return "", false
-	}
-	secret = normalizeOTPSecret(secret)
-	return secret, secret != ""
-}
-
-func decryptLegacyOTPSecret(encryptedValue string, encodedIV string, encodedSalt string, otpSecretKey string) (string, error) {
-	return paonotp.DecryptLegacyMastodon(encryptedValue, encodedIV, encodedSalt, otpSecretKey)
 }
 
 func normalizeOTPSecret(secret string) string {

@@ -27,6 +27,23 @@ func TestDeployMeiliIndexesRequiresDatabase(t *testing.T) {
 	}
 }
 
+func TestMeiliDeployOnlyMappingStopsAfterIndexSettings(t *testing.T) {
+	src, err := os.ReadFile("meili_deploy.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	syncIndex := strings.Index(body, `if err := s.syncMeiliIndexes(ctx); err != nil {`)
+	onlyMappingIndex := strings.Index(body, `if options.OnlyMapping {`)
+	accountDeployIndex := strings.Index(body, `s.deployMeiliAccounts(`)
+	if syncIndex < 0 || onlyMappingIndex < 0 || accountDeployIndex < 0 || !(syncIndex < onlyMappingIndex && onlyMappingIndex < accountDeployIndex) {
+		t.Fatal("OnlyMapping must update index settings and return before document imports")
+	}
+	if !strings.Contains(body[onlyMappingIndex:accountDeployIndex], `return MeiliDeployStats{}, nil`) {
+		t.Fatal("OnlyMapping branch must return successful zero import stats")
+	}
+}
+
 func TestMeiliDeployLogWritesCount(t *testing.T) {
 	var out bytes.Buffer
 	meiliDeployLog(&out, "statuses", 42)

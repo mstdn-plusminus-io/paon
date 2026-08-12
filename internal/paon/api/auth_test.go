@@ -26,6 +26,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/beevik/etree"
 	"github.com/labstack/echo/v5"
@@ -279,6 +280,10 @@ func TestOpenIDConnectOmniAuthInfoHelpersMatchRailsEmailAndNameSemantics(t *test
 	name := omniauthDisplayName(omniauthAuthInfo{FirstName: "Alice", LastName: "Example"})
 	if name != "Alice Example" {
 		t.Fatalf("display name = %q", name)
+	}
+	multibyteName := strings.Repeat("象", 29) + "🐘" + "末"
+	if got, want := omniauthDisplayName(omniauthAuthInfo{Name: multibyteName}), strings.Repeat("象", 29)+"🐘"; got != want || !utf8.ValidString(got) {
+		t.Fatalf("multibyte display name = %q, want valid UTF-8 %q", got, want)
 	}
 	if supportedOmniAuthImageURL("javascript:alert(1)") || supportedOmniAuthImageURL("https:avatar") || !supportedOmniAuthImageURL("https://cdn.example.test/avatar.png") {
 		t.Fatal("OmniAuth avatar URL validation should accept only host-qualified HTTP(S) URLs")
@@ -1455,6 +1460,17 @@ func TestOAuthApplicationFromOptionalTokenRequestAllowsMissingClient(t *testing.
 	}
 	if ok || app != nil {
 		t.Fatalf("app = %#v, ok = %v", app, ok)
+	}
+}
+
+func TestOAuthTokenNoLongerImplementsPasswordGrant(t *testing.T) {
+	src, err := os.ReadFile("auth.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if functionBodyContains(t, src, "oauthToken", `case "password":`) ||
+		functionBodyContains(t, src, "oauthToken", `authenticateUserPassword`) {
+		t.Fatal("Mastodon 4.4 removed the OAuth resource-owner password grant")
 	}
 }
 

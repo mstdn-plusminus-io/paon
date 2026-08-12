@@ -253,10 +253,7 @@ func (s *Server) updateAdminBrandingSettings(settings adminBrandingSettings) err
 func upsertGlobalSetting(tx *gorm.DB, name string, value string) error {
 	now := time.Now().UTC()
 	var existing models.Setting
-	err := tx.Where("var = ?", name).
-		Where("thing_type IS NULL").
-		Where("thing_id IS NULL").
-		First(&existing).Error
+	err := tx.Where("var = ?", name).First(&existing).Error
 	if err == nil {
 		return tx.Model(&models.Setting{}).
 			Where("id = ?", existing.ID).
@@ -326,6 +323,7 @@ func adminSettingErrorText(locale string, err error) string {
 		"Domain block rationale visibility is invalid":      "domain_block_rationale_visibility_invalid",
 		"Domain block visibility is invalid":                "domain_block_visibility_invalid",
 		"Media cache retention period must be an integer":   "media_cache_retention_period_integer",
+		"Minimum age must be an integer":                    "minimum_age_integer",
 		"Registration mode is invalid":                      "registration_mode_invalid",
 		"Short description is too long":                     "short_description_too_long",
 		"Site title can't be blank":                         "site_title_blank",

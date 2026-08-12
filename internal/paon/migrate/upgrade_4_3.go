@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	paondb "github.com/mstdn-plusminus-io/paon/internal/paon/db"
 	paonschema "github.com/mstdn-plusminus-io/paon/internal/paon/schema"
 	"gorm.io/gorm"
 )
@@ -120,9 +119,10 @@ func runMastodon43Phase(ctx context.Context, database *gorm.DB, phase UpgradePha
 			if err := applyMastodon43Contract(tx, options); err != nil {
 				return err
 			}
-			if err := paondb.SchemaAvailable(tx); err != nil {
-				return fmt.Errorf("validate contracted Mastodon 4.3 schema before commit: %w", err)
-			}
+			// SchemaAvailable validates the current Paon target (4.4). A direct
+			// 4.2 upgrade first commits a fully reviewed 4.3 marker here; the outer
+			// runner then applies the separately fenced 4.4 phases and performs the
+			// final current-schema validation.
 		default:
 			return fmt.Errorf("unsupported Mastodon 4.3 migration phase %q", phase)
 		}
@@ -140,7 +140,7 @@ func runMastodon43Phase(ctx context.Context, database *gorm.DB, phase UpgradePha
 }
 
 func applyMastodon43Expand(tx *gorm.DB, options Options) error {
-	logMigration(options, "Mastodon 4.3 migration phase=expand from=%s to=%s", LegacySchemaVersion, CurrentSchemaVersion)
+	logMigration(options, "Mastodon 4.3 migration phase=expand from=%s to=%s", LegacySchemaVersion, Mastodon4323SchemaVersion)
 	for _, step := range mastodon43ExpandSteps() {
 		if err := applyUpgradeStep(tx, step); err != nil {
 			return err
@@ -205,7 +205,7 @@ func applyMastodon43Contract(tx *gorm.DB, options Options) error {
 	if err := validateMastodon43ContractData(tx); err != nil {
 		return err
 	}
-	logMigration(options, "Mastodon 4.3 migration complete version=%s", CurrentSchemaVersion)
+	logMigration(options, "Mastodon 4.3 migration complete version=%s", Mastodon4323SchemaVersion)
 	return nil
 }
 

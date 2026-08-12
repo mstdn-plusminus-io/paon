@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,22 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
+
+func TestFindVisibleStatusHydratesSQLQuoteAndVisibility(t *testing.T) {
+	src, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`s.hydrateStatusQuote(&status)`,
+		`s.hydrateQuoteVisibility(visibilityStatuses, account)`,
+		`status = visibilityStatuses[0]`,
+	} {
+		if !functionBodyContains(t, src, "findVisibleStatusForAccount", want) {
+			t.Fatalf("findVisibleStatusForAccount does not contain %q", want)
+		}
+	}
+}
 
 type statusQuoteRoundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -22,13 +40,6 @@ func (f statusQuoteRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, 
 type fakeStatusQuoteStore struct {
 	quotes     map[string]statusQuote
 	getManyIDs []string
-	puts       []statusQuote
-	deletes    []string
-}
-
-func (f *fakeStatusQuoteStore) Get(_ context.Context, statusID string) (statusQuote, bool, error) {
-	quote, ok := f.quotes[statusID]
-	return quote, ok, nil
 }
 
 func (f *fakeStatusQuoteStore) GetMany(_ context.Context, statusIDs []string) (map[string]statusQuote, error) {
@@ -40,16 +51,6 @@ func (f *fakeStatusQuoteStore) GetMany(_ context.Context, statusIDs []string) (m
 		}
 	}
 	return quotes, nil
-}
-
-func (f *fakeStatusQuoteStore) Put(_ context.Context, quote statusQuote) error {
-	f.puts = append(f.puts, quote)
-	return nil
-}
-
-func (f *fakeStatusQuoteStore) Delete(_ context.Context, statusID string) error {
-	f.deletes = append(f.deletes, statusID)
-	return nil
 }
 
 func TestNewStatusQuoteStoreUsesDynamoidTableName(t *testing.T) {
@@ -77,7 +78,7 @@ func TestNewStatusQuoteStoreUsesDynamoidTableName(t *testing.T) {
 	if dynamo.tableName != "paon-prod_status_quotes" {
 		t.Fatalf("tableName = %q", dynamo.tableName)
 	}
-	if err := dynamo.Put(context.Background(), statusQuote{StatusID: "1", QuoteID: "2"}); err != nil {
+	if _, err := dynamo.GetMany(context.Background(), []string{"1"}); err != nil {
 		t.Fatal(err)
 	}
 	if gotHost != "dynamodb.us-west-2.amazonaws.com" || gotPath != "/" {
@@ -101,7 +102,7 @@ func TestNewStatusQuoteStoreUsesDynamoidTableName(t *testing.T) {
 	if !ok {
 		t.Fatalf("store = %#v", store)
 	}
-	if err := dynamo.Put(context.Background(), statusQuote{StatusID: "1", QuoteID: "2"}); err != nil {
+	if _, err := dynamo.GetMany(context.Background(), []string{"1"}); err != nil {
 		t.Fatal(err)
 	}
 	if gotHost != "dynamodb.test" || gotPath != "/" {
@@ -154,7 +155,7 @@ func TestDynamoDBStatusQuoteStoreDefaultsBlankRegion(t *testing.T) {
 	if !ok {
 		t.Fatalf("store = %#v", store)
 	}
-	if err := dynamo.Put(context.Background(), statusQuote{StatusID: "1", QuoteID: "2"}); err != nil {
+	if _, err := dynamo.GetMany(context.Background(), []string{"1"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -185,9 +186,6 @@ func TestDynamoDBStatusQuoteStoreUsesRailsCompatibleItems(t *testing.T) {
 		}
 		requests = append(requests, req.Header.Get("X-Amz-Target")+" "+string(body))
 		response := `{}`
-		if strings.HasSuffix(req.Header.Get("X-Amz-Target"), ".GetItem") {
-			response = `{"Item":{"status_id":{"S":"100"},"quote_id":{"S":"99"},"original_url":{"S":"https://social.example/users/bob/statuses/99"},"local_url":{"S":"https://social.example/users/bob/statuses/99"}}}`
-		}
 		if strings.HasSuffix(req.Header.Get("X-Amz-Target"), ".BatchGetItem") {
 			response = `{"Responses":{"paon-prod_status_quotes":[{"status_id":{"S":"100"},"quote_id":{"S":"99"},"original_url":{"S":"https://social.example/users/bob/statuses/99"},"local_url":{"S":"https://social.example/users/bob/statuses/99"}},{"status_id":{"S":"101"},"quote_id":{"S":"98"},"original_url":{"S":"https://social.example/users/alice/statuses/98"},"local_url":{"S":"https://social.example/users/alice/statuses/98"}}]}}`
 		}
@@ -211,13 +209,6 @@ func TestDynamoDBStatusQuoteStoreUsesRailsCompatibleItems(t *testing.T) {
 	}
 	store := quoteStore.(*dynamoDBStatusQuoteStore)
 
-	quote, ok, err := store.Get(context.Background(), "100")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || quote.QuoteID != "99" || quote.OriginalURL != "https://social.example/users/bob/statuses/99" {
-		t.Fatalf("quote = %#v ok=%v", quote, ok)
-	}
 	quotes, err := store.GetMany(context.Background(), []string{"100", "101", "100", ""})
 	if err != nil {
 		t.Fatal(err)
@@ -225,24 +216,13 @@ func TestDynamoDBStatusQuoteStoreUsesRailsCompatibleItems(t *testing.T) {
 	if len(quotes) != 2 || quotes["101"].QuoteID != "98" {
 		t.Fatalf("quotes = %#v", quotes)
 	}
-	if err := store.Put(context.Background(), statusQuote{StatusID: "100", QuoteID: "99", OriginalURL: "https://social.example/users/bob/statuses/99"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Delete(context.Background(), "100"); err != nil {
-		t.Fatal(err)
-	}
-	if len(requests) != 4 {
+	if len(requests) != 1 {
 		t.Fatalf("requests = %#v", requests)
 	}
 	for _, want := range []string{
-		`DynamoDB_20120810.GetItem`,
-		`"TableName":"paon-prod_status_quotes"`,
 		`"status_id":{"S":"100"}`,
 		`DynamoDB_20120810.BatchGetItem`,
 		`"RequestItems":{"paon-prod_status_quotes":{"Keys":[{"status_id":{"S":"100"}},{"status_id":{"S":"101"}}]}}`,
-		`DynamoDB_20120810.PutItem`,
-		`"quote_id":{"S":"99"}`,
-		`DynamoDB_20120810.DeleteItem`,
 	} {
 		if !strings.Contains(strings.Join(requests, "\n"), want) {
 			t.Fatalf("requests missing %q: %#v", want, requests)
@@ -264,73 +244,174 @@ func TestNewStatusQuoteStoreAllowsAWSDefaultCredentialChain(t *testing.T) {
 	}
 }
 
-func TestHydrateStatusQuoteSetsVirtualFields(t *testing.T) {
-	store := &fakeStatusQuoteStore{quotes: map[string]statusQuote{
-		"100": {StatusID: "100", QuoteID: "99", OriginalURL: "https://social.example/users/bob/statuses/99"},
-	}}
-	server := &Server{quoteStore: store}
-	status := models.Status{ID: 100, Text: "hello\n\nRE: https://social.example/@bob/99"}
-
-	server.hydrateStatusQuote(&status)
-	if !status.QuoteID.Valid || status.QuoteID.String != "99" {
-		t.Fatalf("QuoteID = %#v", status.QuoteID)
+func TestDynamoStatusQuoteStoreIsReadOnlyCutoverSource(t *testing.T) {
+	var store any = &dynamoDBStatusQuoteStore{}
+	type writer interface {
+		Put(context.Context, statusQuote) error
 	}
-	if !status.QuoteOriginalURL.Valid || status.QuoteOriginalURL.String != "https://social.example/users/bob/statuses/99" {
-		t.Fatalf("QuoteOriginalURL = %#v", status.QuoteOriginalURL)
+	type deleter interface {
+		Delete(context.Context, string) error
 	}
-}
-
-func TestHydrateStatusesQuoteUsesBatchLookup(t *testing.T) {
-	store := &fakeStatusQuoteStore{quotes: map[string]statusQuote{
-		"101": {StatusID: "101", QuoteID: "99", OriginalURL: "https://social.example/users/bob/statuses/99"},
-		"201": {StatusID: "201", QuoteID: "98", OriginalURL: "https://social.example/users/alice/statuses/98"},
-	}}
-	server := &Server{quoteStore: store}
-	statuses := []models.Status{
-		{ID: 100, Text: "plain"},
-		{ID: 101, Text: "hello\n\nRE: https://social.example/@bob/99"},
-		{ID: 200, Text: "plain reblog wrapper", Reblog: &models.Status{ID: 201, Text: "QT: https://social.example/@alice/98"}},
-		{ID: 101, Text: "duplicate\n\nRE: https://social.example/@bob/99"},
+	if _, ok := store.(writer); ok {
+		t.Fatal("legacy DynamoDB quote store must not expose Put")
 	}
-
-	server.hydrateStatusesQuote(statuses)
-	if got := strings.Join(store.getManyIDs, ","); got != "101,201" {
-		t.Fatalf("GetMany IDs = %q", got)
-	}
-	if statuses[0].QuoteID.Valid || statuses[0].QuoteOriginalURL.Valid {
-		t.Fatalf("statuses[0].QuoteID = %#v", statuses[0].QuoteID)
-	}
-	if !statuses[2].Reblog.QuoteID.Valid || statuses[2].Reblog.QuoteID.String != "98" {
-		t.Fatalf("reblog QuoteID = %#v", statuses[2].Reblog.QuoteID)
-	}
-	if !statuses[1].QuoteID.Valid || statuses[1].QuoteID.String != "99" {
-		t.Fatalf("statuses[1].QuoteID = %#v", statuses[1].QuoteID)
-	}
-	if !statuses[3].QuoteID.Valid || statuses[3].QuoteID.String != "99" {
-		t.Fatalf("statuses[3].QuoteID = %#v", statuses[3].QuoteID)
+	if _, ok := store.(deleter); ok {
+		t.Fatal("legacy DynamoDB quote store must not expose Delete")
 	}
 }
 
-func TestPutAndDeleteStatusQuoteBestEffortUseStore(t *testing.T) {
-	store := &fakeStatusQuoteStore{}
-	server := &Server{
-		cfg:        config.Config{LocalDomain: "social.example", WebDomain: "social.example", Scheme: "https"},
-		quoteStore: store,
+func TestDynamoStatusQuoteStoreIsNotUsedByWebOrWorkerRuntime(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
 	}
-	quote := &models.Status{ID: 99, URI: sqlNullString("https://social.example/users/bob/statuses/99"), Account: models.Account{ID: 9, Username: "bob"}}
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") || name == "operations.go" || name == "status_quotes.go" {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), "newStatusQuoteStore(") || strings.Contains(string(src), ".quoteStore") {
+			t.Fatalf("normal runtime file %s accesses the legacy DynamoDB quote cutover source", name)
+		}
+	}
+	serverSource, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(serverSource), "quoteStore") {
+		t.Fatal("normal web/worker Server must not retain a legacy DynamoDB quote store")
+	}
+}
 
-	server.putStatusQuoteBestEffort(context.Background(), 100, quote)
-	status := &models.Status{ID: 100}
-	server.applyStatusQuote(status, quote)
-	server.deleteStatusQuoteBestEffort(context.Background(), 100)
-	if len(store.puts) != 1 || store.puts[0].StatusID != "100" || store.puts[0].QuoteID != "99" || store.puts[0].OriginalURL != "https://social.example/users/bob/statuses/99" {
-		t.Fatalf("puts = %#v", store.puts)
+func TestLegacyDynamoCutoverHasOneValidatedAcceptedSQLImportPath(t *testing.T) {
+	source, err := os.ReadFile("status_quotes.go")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !status.QuoteID.Valid || status.QuoteID.String != "99" || !status.QuoteOriginalURL.Valid || status.QuoteOriginalURL.String != "https://social.example/users/bob/statuses/99" {
-		t.Fatalf("status quote = %#v/%#v", status.QuoteID, status.QuoteOriginalURL)
+	body := functionBody(t, source, "cutoverLegacyDynamoStatusQuotes")
+	if !strings.Contains(body, "statusQuoteTargetAllowedForAccount(") || !strings.Contains(body, "legacyQuoteMarkerMatchesRow(") || !strings.Contains(body, "models.QuoteStateAccepted") {
+		t.Fatalf("legacy cutover must revalidate source, marker and target before importing an accepted SQL Quote: %s", body)
 	}
-	if len(store.deletes) != 1 || store.deletes[0] != "100" {
-		t.Fatalf("deletes = %#v", store.deletes)
+	migrationSource, err := os.ReadFile("../migrate/upgrade_4_4.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(migrationSource), "ImportLegacyQuoteRows") {
+		t.Fatal("legacy cutover must not have an unvalidated second SQL import path in the schema migrator")
+	}
+}
+
+func TestMastodon44DoesNotExposeLaterQuotesCollectionRoute(t *testing.T) {
+	src, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "/api/v1/statuses/:id/quotes") || strings.Contains(string(src), "statusQuotes") {
+		t.Fatal("Mastodon 4.4 must not expose the later quotes collection endpoint")
+	}
+}
+
+func TestMastodon44StatusReachIncludesBothQuoteRelationships(t *testing.T) {
+	source, err := os.ReadFile("activitypub_delivery.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, source, "activityPubStatusReachedAccountInboxes")
+	for _, want := range []string{
+		`Where("status_id = ? AND quoted_account_id IS NOT NULL", status.ID)`,
+		`Pluck("quoted_account_id", &quotedAccountIDs)`,
+		`Where("quoted_status_id = ?", status.ID)`,
+		`Pluck("account_id", &interacted)`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("Mastodon 4.4 StatusReachFinder quote relationship is missing %q: %s", want, body)
+		}
+	}
+	quoteOf := strings.Index(body, `Where("status_id = ? AND quoted_account_id IS NOT NULL", status.ID)`)
+	unsafeReach := strings.Index(body, `if distributable || unsafe`)
+	quotesOf := strings.Index(body, `Where("quoted_status_id = ?", status.ID)`)
+	if quoteOf < 0 || unsafeReach < 0 || quotesOf < unsafeReach || quoteOf > unsafeReach {
+		t.Fatalf("quoted author must always be reached, while quoting accounts require distributable/unsafe reach: %s", body)
+	}
+}
+
+func TestMastodon44QuoteStatusDoesNotFetchLinkCard(t *testing.T) {
+	source, err := os.ReadFile("link_cards.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, source, "fetchLinkCardForStatus")
+	preload := strings.Index(body, `Preload("Quote")`)
+	guard := strings.Index(body, `if status.Quote != nil`)
+	fetch := strings.Index(body, `s.findOrFetchPreviewCard(`)
+	if preload < 0 || guard < preload || fetch < guard {
+		t.Fatalf("Mastodon 4.4 quote status must stop before fetching a link card: %s", body)
+	}
+}
+
+func TestQuoteWorkerDelaysStayWithinMastodon44Bounds(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		if delay := quoteRefetchDelay(); delay < 30*time.Second || delay > 600*time.Second {
+			t.Fatalf("refetch delay = %s", delay)
+		}
+		if delay := quoteRefreshDelay(); delay < 0 || delay >= 6*time.Hour {
+			t.Fatalf("refresh delay = %s", delay)
+		}
+	}
+}
+
+func TestQuoteRelationshipChangeDetectionIgnoresApprovalOnlyUpdates(t *testing.T) {
+	base := quoteFingerprint{ID: 1, QuotedStatusID: sql.NullInt64{Int64: 2, Valid: true}, State: models.QuoteStatePending}
+	approval := base
+	approval.State = models.QuoteStateAccepted
+	approval.ApprovalURI = sqlNullString("https://remote.example/approval/1")
+	if quoteEditRelationshipChanged(base, approval) {
+		t.Fatal("approval-only state transition must not create a status edit")
+	}
+	target := approval
+	target.ID = 3
+	target.QuotedStatusID = sql.NullInt64{Int64: 4, Valid: true}
+	if !quoteEditRelationshipChanged(approval, target) {
+		t.Fatal("quote target replacement must create a status edit")
+	}
+}
+
+func TestMastodon44QuoteUpdateTargetReconciliationModes(t *testing.T) {
+	server := &Server{cfg: config.Config{Scheme: "https", LocalDomain: "local.example", WebDomain: "local.example"}}
+	target := &models.Status{
+		ID:  2,
+		URI: sqlNullString("https://quoted.example/users/bob/statuses/2"),
+	}
+	existing := &models.Quote{ID: 1, QuotedStatus: target}
+
+	if action := activityPubQuoteTargetReconcileAction(server, existing, target.URI.String, false); action != activityPubQuoteTargetProcess {
+		t.Fatalf("matching implicit target action = %v", action)
+	}
+	if action := activityPubQuoteTargetReconcileAction(server, existing, "https://quoted.example/users/bob/statuses/3", false); action != activityPubQuoteTargetIgnore {
+		t.Fatalf("mismatching implicit target action = %v", action)
+	}
+	if action := activityPubQuoteTargetReconcileAction(server, existing, "https://quoted.example/users/bob/statuses/3", true); action != activityPubQuoteTargetReplace {
+		t.Fatalf("mismatching explicit target action = %v", action)
+	}
+	if action := activityPubQuoteTargetReconcileAction(server, existing, "", true); action != activityPubQuoteTargetReplace {
+		t.Fatalf("ID-less Tombstone replacement action = %v", action)
+	}
+	if action := activityPubQuoteTargetReconcileAction(server, &models.Quote{ID: 2}, "https://quoted.example/users/bob/statuses/3", true); action != activityPubQuoteTargetProcess {
+		t.Fatalf("unresolved explicit target action = %v", action)
+	}
+}
+
+func TestMastodon44ImplicitQuoteUpdateRequiresExistingQuote(t *testing.T) {
+	source, err := os.ReadFile("activitypub_quotes.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, source, "reconcileActivityPubQuote")
+	if !strings.Contains(body, "if !removeWhenAbsent && before.ID == 0") {
+		t.Fatalf("implicit quote update must not create a new Quote relationship: %s", body)
 	}
 }
 
@@ -368,4 +449,91 @@ func TestStatusQuoteTargetStructuralAuthorization(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMastodon44QuoteAuthorizationBindings(t *testing.T) {
+	server := &Server{cfg: config.Config{Scheme: "https", LocalDomain: "local.example", WebDomain: "local.example"}}
+	sourceURI := "https://quoting.example/users/alice/statuses/1"
+	targetURI := "https://quoted.example/users/bob/statuses/2"
+	quotedAccountURI := "https://quoted.example/users/bob"
+	quote := models.Quote{
+		StatusID: 1,
+		Status: models.Status{
+			ID:        1,
+			URI:       sqlNullString(sourceURI),
+			AccountID: 10,
+			Account:   models.Account{ID: 10, Username: "alice", Domain: sqlNullString("quoting.example"), URI: "https://quoting.example/users/alice"},
+		},
+		QuotedStatus: &models.Status{
+			ID:        2,
+			URI:       sqlNullString(targetURI),
+			AccountID: 20,
+			Account:   models.Account{ID: 20, Username: "bob", Domain: sqlNullString("quoted.example"), URI: quotedAccountURI},
+		},
+		QuotedAccount: &models.Account{ID: 20, Username: "bob", Domain: sqlNullString("quoted.example"), URI: quotedAccountURI},
+	}
+	approval := map[string]any{
+		"@context":          []any{activityPubActivityStreamsContext(), map[string]any{"QuoteAuthorization": "https://w3id.org/fep/044f#QuoteAuthorization"}},
+		"type":              "QuoteAuthorization",
+		"attributedTo":      quotedAccountURI,
+		"interactingObject": sourceURI,
+		"interactionTarget": targetURI,
+	}
+	if !activityPubQuoteApprovalEnvelopeMatches(server, &quote, approval) || !activityPubQuoteApprovalTargetMatches(server, &quote, approval) {
+		t.Fatalf("valid quote authorization was rejected: %#v", approval)
+	}
+
+	wrongType := cloneAnyMap(approval)
+	wrongType["type"] = "Like"
+	if activityPubQuoteApprovalEnvelopeMatches(server, &quote, wrongType) {
+		t.Fatal("wrong authorization type matched")
+	}
+	wrongQuote := cloneAnyMap(approval)
+	wrongQuote["interactingObject"] = "https://quoting.example/users/alice/statuses/other"
+	if activityPubQuoteApprovalEnvelopeMatches(server, &quote, wrongQuote) {
+		t.Fatal("authorization for another quote matched")
+	}
+	wrongTarget := cloneAnyMap(approval)
+	wrongTarget["interactionTarget"] = "https://quoted.example/users/bob/statuses/other"
+	if activityPubQuoteApprovalTargetMatches(server, &quote, wrongTarget) {
+		t.Fatal("authorization for another target matched")
+	}
+	wrongAuthor := cloneAnyMap(approval)
+	wrongAuthor["attributedTo"] = "https://quoted.example/users/mallory"
+	if activityPubQuoteApprovalTargetMatches(server, &quote, wrongAuthor) {
+		t.Fatal("authorization from another author matched")
+	}
+}
+
+func TestMastodon44RejectQuoteRequestPayload(t *testing.T) {
+	server := &Server{cfg: config.Config{Scheme: "https", LocalDomain: "local.example", WebDomain: "local.example"}}
+	actor := &models.Account{ID: 10, Username: "alice", Domain: sqlNullString("remote.example"), URI: "https://remote.example/users/alice"}
+	quoted := &models.Status{ID: 2, AccountID: 20, Account: models.Account{ID: 20, Username: "bob"}}
+	payload := activityPayload{
+		ID:         "https://remote.example/quote-requests/1",
+		Instrument: "https://remote.example/users/alice/statuses/1",
+	}
+	activity := server.rejectQuoteRequestActivity(payload, actor, quoted)
+	if activity["type"] != "Reject" || activity["id"] != "https://local.example/users/bob#rejects/quote_requests/" || activity["actor"] != "https://local.example/users/bob" {
+		t.Fatalf("reject envelope = %#v", activity)
+	}
+	request, ok := activity["object"].(map[string]any)
+	if !ok || request["id"] != payload.ID || request["type"] != "QuoteRequest" || request["actor"] != actor.URI || request["object"] != "https://local.example/users/bob/statuses/2" || request["instrument"] != payload.Instrument {
+		t.Fatalf("embedded request = %#v", activity["object"])
+	}
+
+	payload.Instrument = ""
+	activity = server.rejectQuoteRequestActivity(payload, actor, quoted)
+	request = activity["object"].(map[string]any)
+	if request["instrument"] != nil {
+		t.Fatalf("missing instrument = %#v", request["instrument"])
+	}
+}
+
+func cloneAnyMap(value map[string]any) map[string]any {
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
 }

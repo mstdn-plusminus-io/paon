@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
@@ -33,6 +34,8 @@ type Options struct {
 	ServiceNameSeparator string
 	Role                 string
 	ServiceVersion       string
+	SourceCommit         string
+	SourceURL            string
 	Sampler              string
 	SamplerArg           string
 	Propagators          []string
@@ -70,10 +73,7 @@ func Initialize(ctx context.Context, options Options) (*Runtime, error) {
 
 	res, err := resource.New(ctx,
 		resource.WithTelemetrySDK(),
-		resource.WithAttributes(
-			semconv.ServiceName(ServiceName(options.ServiceNamePrefix, options.ServiceNameSeparator, options.Role)),
-			semconv.ServiceVersion(strings.TrimSpace(options.ServiceVersion)),
-		),
+		resource.WithAttributes(telemetryResourceAttributes(options)...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create OpenTelemetry resource: %w", err)
@@ -116,6 +116,20 @@ func Initialize(ctx context.Context, options Options) (*Runtime, error) {
 	otel.SetTextMapPropagator(textMapPropagator(options.Propagators))
 	runtimeEnabled.Store(true)
 	return runtime, nil
+}
+
+func telemetryResourceAttributes(options Options) []attribute.KeyValue {
+	attributes := []attribute.KeyValue{
+		semconv.ServiceName(ServiceName(options.ServiceNamePrefix, options.ServiceNameSeparator, options.Role)),
+		semconv.ServiceVersion(strings.TrimSpace(options.ServiceVersion)),
+	}
+	if revision := strings.TrimSpace(options.SourceCommit); revision != "" {
+		attributes = append(attributes,
+			attribute.String("vcs.repository.ref.revision", revision),
+			attribute.String("vcs.repository.url.full", strings.TrimSpace(options.SourceURL)),
+		)
+	}
+	return attributes
 }
 
 func traceSampler(name string, rawArg string) sdktrace.Sampler {

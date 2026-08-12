@@ -74,6 +74,8 @@ const (
 	asynqTaskActivityPubDelivery         = "activitypub:delivery"
 	asynqTaskActivityPubDistribution     = "activitypub:distribution"
 	asynqTaskStatusUpdateDistribution    = "activitypub:status_update_distribution"
+	asynqTaskQuoteRefresh                = "activitypub:quote_refresh"
+	asynqTaskQuoteRefetchVerify          = "activitypub:quote_refetch_verify"
 	asynqTaskCacheBuster                 = "cache_buster"
 	asynqTaskAnnouncementReaction        = "announcement:reaction"
 	asynqTaskRemoval                     = "removal"
@@ -105,6 +107,7 @@ const (
 	asynqQueuePush                       = "push"
 	asynqQueueMailers                    = "mailers"
 	asynqQueueIngress                    = "ingress"
+	asynqQueueFASP                       = "fasp"
 	railsSidekiqUniqueDefaultLockTTL     = 50 * 24 * time.Hour
 )
 
@@ -144,6 +147,13 @@ type asynqFetchRepliesPayload struct {
 	ParentStatusID int64  `json:"parent_status_id"`
 	CollectionURI  string `json:"collection_uri"`
 	RequestID      string `json:"request_id,omitempty"`
+}
+
+type asynqQuotePayload struct {
+	QuoteID     int64  `json:"quote_id"`
+	QuotedURI   string `json:"quoted_uri,omitempty"`
+	ApprovalURI string `json:"approval_uri,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
 }
 
 // asynqThreadResolvePayload mirrors ThreadResolveWorker.perform(child_status_id,
@@ -462,8 +472,9 @@ type asynqAuthorizeFollowPayload struct {
 // asynqRelationshipPayload mirrors simple relationship workers such as BlockWorker and
 // MuteWorker, which receive account_id and target_account_id.
 type asynqRelationshipPayload struct {
-	AccountID       int64 `json:"account_id"`
-	TargetAccountID int64 `json:"target_account_id"`
+	AccountID       int64  `json:"account_id"`
+	TargetAccountID int64  `json:"target_account_id"`
+	FeedType        string `json:"feed_type,omitempty"`
 }
 
 type asynqMutePayload struct {
@@ -598,6 +609,44 @@ func (s *Server) enqueueAsynqAccountTaskWithDelay(typ string, accountID int64, r
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, _ = s.asynqClient.EnqueueContext(ctx, task)
+}
+
+func (s *Server) enqueueRefetchAndVerifyQuoteTask(quoteID int64, quotedURI string, approvalURI string, requestID string) bool {
+	return s.enqueueQuoteTask(asynqTaskQuoteRefetchVerify, asynqQuotePayload{QuoteID: quoteID, QuotedURI: quotedURI, ApprovalURI: approvalURI, RequestID: requestID}, quoteRefetchDelay(), 0)
+}
+
+func (s *Server) enqueueQuoteRefreshTask(quoteID int64) bool {
+	return s.enqueueQuoteTask(asynqTaskQuoteRefresh, asynqQuotePayload{QuoteID: quoteID}, quoteRefreshDelay(), 24*time.Hour)
+}
+
+func (s *Server) enqueueQuoteTask(taskType string, value asynqQuotePayload, delay time.Duration, unique time.Duration) bool {
+	if s == nil || s.asynqClient == nil || value.QuoteID == 0 {
+		return false
+	}
+	payload, err := marshalAsynqTaskPayload(value)
+	if err != nil {
+		return false
+	}
+	options := []asynq.Option{asynq.Queue(s.asynqQueue(asynqQueuePull)), asynq.MaxRetry(3)}
+	if delay > 0 {
+		options = append(options, asynq.ProcessIn(delay))
+	}
+	if unique > 0 {
+		options = append(options, asynq.Unique(unique))
+	}
+	task := asynq.NewTask(taskType, payload, options...)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = s.asynqClient.EnqueueContext(ctx, task)
+	return asynqEnqueueAccepted(err)
+}
+
+func quoteRefetchDelay() time.Duration {
+	return time.Duration(30+rand.Int63n(571)) * time.Second
+}
+
+func quoteRefreshDelay() time.Duration {
+	return time.Duration(rand.Int63n(int64(6 * time.Hour)))
 }
 
 // enqueueRedownloadAvatarTask mirrors RedownloadAvatarWorker.perform_in(rand(30..600).seconds, id).
@@ -875,9 +924,13 @@ func newAsynqMailerDeliveryTask(userID int64, eligibility string, message mailMe
 		return nil, fmt.Errorf("mailer delivery: user, recipient, and subject are required")
 	}
 	switch eligibility {
-	case "present", "security", "functional":
+	case "present", "security", "functional", "bulk_announcement", "bulk_terms_of_service":
 	default:
 		return nil, fmt.Errorf("mailer delivery: unsupported eligibility %q", eligibility)
+	}
+	bulkEligibility := eligibility == "bulk_announcement" || eligibility == "bulk_terms_of_service"
+	if message.Bulk != bulkEligibility {
+		return nil, fmt.Errorf("mailer delivery: bulk transport must be used only with announcement or terms-of-service eligibility")
 	}
 	payload, err := marshalAsynqTaskPayload(asynqMailerDeliveryPayload{UserID: userID, Eligibility: eligibility, Message: message})
 	if err != nil {
@@ -1544,10 +1597,18 @@ func (s *Server) enqueueMergeTask(fromAccountID int64, intoAccountID int64) bool
 // enqueueUnmergeTask mirrors UnmergeWorker.perform_async(from_account_id, into_account_id)
 // on Rails' pull queue.
 func (s *Server) enqueueUnmergeTask(fromAccountID int64, intoAccountID int64) bool {
-	if s == nil || s.asynqClient == nil || fromAccountID == 0 || intoAccountID == 0 {
+	return s.enqueueUnmergeFeedTask(fromAccountID, intoAccountID, "home")
+}
+
+func (s *Server) enqueueListUnmergeTask(fromAccountID int64, listID int64) bool {
+	return s.enqueueUnmergeFeedTask(fromAccountID, listID, "list")
+}
+
+func (s *Server) enqueueUnmergeFeedTask(fromAccountID int64, feedID int64, feedType string) bool {
+	if s == nil || s.asynqClient == nil || fromAccountID == 0 || feedID == 0 {
 		return false
 	}
-	payload, err := marshalAsynqTaskPayload(asynqRelationshipPayload{AccountID: fromAccountID, TargetAccountID: intoAccountID})
+	payload, err := marshalAsynqTaskPayload(asynqRelationshipPayload{AccountID: fromAccountID, TargetAccountID: feedID, FeedType: feedType})
 	if err != nil {
 		return false
 	}
@@ -1980,6 +2041,7 @@ func railsExponentialBackoffAsynqTask(task *asynq.Task) bool {
 		asynqTaskRedownloadMedia,
 		asynqTaskFetchReply,
 		asynqTaskFetchReplies,
+		asynqTaskFetchAllReplies,
 		asynqTaskThreadResolve,
 		asynqTaskMentionResolve,
 		asynqTaskRemoteAccountRefresh:
@@ -2005,6 +2067,7 @@ func (s *Server) newAsynqServeMux() *asynq.ServeMux {
 	mux.HandleFunc(asynqTaskRefollow, s.handleAsynqRefollow)
 	mux.HandleFunc(asynqTaskFetchReply, s.handleAsynqFetchReply)
 	mux.HandleFunc(asynqTaskFetchReplies, s.handleAsynqFetchReplies)
+	mux.HandleFunc(asynqTaskFetchAllReplies, s.handleAsynqFetchAllReplies)
 	mux.HandleFunc(asynqTaskThreadResolve, s.handleAsynqThreadResolve)
 	mux.HandleFunc(asynqTaskMentionResolve, s.handleAsynqMentionResolve)
 	mux.HandleFunc(asynqTaskFeedInsert, s.handleAsynqFeedInsert)
@@ -2015,6 +2078,8 @@ func (s *Server) newAsynqServeMux() *asynq.ServeMux {
 	mux.HandleFunc(asynqTaskNotificationMail, s.handleAsynqNotificationMail)
 	mux.HandleFunc(asynqTaskConfirmationMail, s.handleAsynqConfirmationMail)
 	mux.HandleFunc(asynqTaskMailerDelivery, s.handleAsynqMailerDelivery)
+	mux.HandleFunc(asynqTaskDistributeTermsOfService, s.handleAsynqDistributeTermsOfService)
+	mux.HandleFunc(asynqTaskDistributeAnnouncement, s.handleAsynqDistributeAnnouncement)
 	mux.HandleFunc(asynqTaskBackup, railsDeadFalseAsynqHandler(asynqTaskBackup, s.handleAsynqBackup))
 	mux.HandleFunc(asynqTaskBulkImport, s.handleAsynqBulkImport)
 	mux.HandleFunc(asynqTaskLegacyImport, s.handleAsynqLegacyImport)
@@ -2047,6 +2112,8 @@ func (s *Server) newAsynqServeMux() *asynq.ServeMux {
 	mux.HandleFunc(asynqTaskSelfDestructDelivery, s.handleAsynqSelfDestructDelivery)
 	mux.HandleFunc(asynqTaskActivityPubDistribution, s.handleAsynqActivityPubDistribution)
 	mux.HandleFunc(asynqTaskStatusUpdateDistribution, s.handleAsynqStatusUpdateDistribution)
+	mux.HandleFunc(asynqTaskQuoteRefresh, s.handleAsynqQuoteRefresh)
+	mux.HandleFunc(asynqTaskQuoteRefetchVerify, s.handleAsynqQuoteRefetchVerify)
 	mux.HandleFunc(asynqTaskCacheBuster, s.handleAsynqCacheBuster)
 	mux.HandleFunc(asynqTaskAnnouncementReaction, s.handleAsynqAnnouncementReaction)
 	mux.HandleFunc(asynqTaskRemoval, s.handleAsynqRemoval)
@@ -2074,6 +2141,7 @@ func (s *Server) newAsynqServeMux() *asynq.ServeMux {
 	mux.HandleFunc(asynqTaskUnfavourite, s.handleAsynqUnfavourite)
 	mux.HandleFunc(asynqTaskAfterAccountDomainBlock, s.handleAsynqAfterAccountDomainBlock)
 	mux.HandleFunc(asynqTaskAfterUnallowDomain, s.handleAsynqAfterUnallowDomain)
+	s.registerFASPAsynqHandlers(mux)
 	return mux
 }
 
@@ -2114,6 +2182,7 @@ func paonGoAsynqQueueWeights() map[string]int {
 		asynqQueueIngress: 4,
 		asynqQueueMailers: 2,
 		asynqQueuePull:    1,
+		asynqQueueFASP:    1,
 	}
 }
 
@@ -2983,7 +3052,7 @@ func (s *Server) handleAsynqMailerDelivery(ctx context.Context, t *asynq.Task) e
 		eligible = userReceivesSecurityMail(user)
 	case "functional":
 		eligible = userReceivesNotificationMail(user)
-	case "present":
+	case "present", "bulk_announcement", "bulk_terms_of_service":
 	default:
 		return nil
 	}
@@ -3683,14 +3752,17 @@ func (s *Server) handleAsynqDomainBlock(ctx context.Context, t *asynq.Task) erro
 	if err := s.applyAdminDomainBlockEffects(s.db.WithContext(ctx), block, p.Update); err != nil {
 		return err
 	}
-	if block.RejectMedia && !s.enqueueDomainClearMediaTask(block.ID) {
-		return s.clearDomainMediaCache(s.db.WithContext(ctx), block.Domain)
+	if adminDomainBlockSuspendsAccounts(block) || block.RejectMedia {
+		if !s.enqueueDomainClearMediaTask(block.ID) {
+			return s.applyAdminDomainBlockMediaEffects(s.db.WithContext(ctx), block)
+		}
 	}
 	return nil
 }
 
-// handleAsynqDomainClearMedia mirrors DomainClearMediaWorker: ignore missing blocks and
-// clear only when the current DomainBlock still has reject_media enabled.
+// handleAsynqDomainClearMedia mirrors DomainClearMediaWorker and the 4.4
+// PurgeCustomEmojiWorker: ignore missing blocks, clear all cached media for
+// reject_media, and always purge custom emoji for a suspended domain.
 func (s *Server) handleAsynqDomainClearMedia(ctx context.Context, t *asynq.Task) error {
 	var p asynqDomainBlockPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
@@ -3703,10 +3775,10 @@ func (s *Server) handleAsynqDomainClearMedia(ctx context.Context, t *asynq.Task)
 	if err := s.db.WithContext(ctx).Where("id = ?", p.DomainBlockID).First(&block).Error; err != nil {
 		return workerLookupError("domain clear media block lookup", err)
 	}
-	if !block.RejectMedia {
+	if !block.RejectMedia && !adminDomainBlockSuspendsAccounts(block) {
 		return nil
 	}
-	return s.clearDomainMediaCache(s.db.WithContext(ctx), block.Domain)
+	return s.applyAdminDomainBlockMediaEffects(s.db.WithContext(ctx), block)
 }
 
 // handleAsynqAdminDomainPurge mirrors Admin::DomainPurgeWorker: purge all remote
@@ -3849,6 +3921,16 @@ func (s *Server) handleAsynqUnmerge(ctx context.Context, t *asynq.Task) error {
 	if err := s.db.WithContext(ctx).Select("id").Where("id = ?", p.AccountID).First(&fromAccount).Error; err != nil {
 		return workerLookupError("unmerge source account lookup", err)
 	}
+	if p.FeedType == "list" {
+		var list models.List
+		if err := s.db.WithContext(ctx).Where("id = ?", p.TargetAccountID).First(&list).Error; err != nil {
+			return workerLookupError("unmerge list lookup", err)
+		}
+		return s.unmergeAccountFromListFeed(ctx, s.db.WithContext(ctx), p.AccountID, list)
+	}
+	if p.FeedType != "" && p.FeedType != "home" {
+		return fmt.Errorf("unmerge: unknown feed type %q", p.FeedType)
+	}
 	var intoAccount models.Account
 	if err := s.db.WithContext(ctx).Where("id = ?", p.TargetAccountID).First(&intoAccount).Error; err != nil {
 		return workerLookupError("unmerge target account lookup", err)
@@ -3969,6 +4051,9 @@ func (s *Server) handleAsynqRemoval(ctx context.Context, t *asynq.Task) error {
 	if err := s.deleteStatusRecord(ctx, p.StatusID, now); err != nil {
 		return err
 	}
+	if !p.Redraft && !status.ReblogOfID.Valid {
+		s.removeDeletedStatusMedia(ctx, status, p)
+	}
 	if !p.SkipStreaming {
 		s.publishStatusAndReblogDeletesForIDs(ctx, s.db, []int64{p.StatusID})
 	}
@@ -3983,8 +4068,12 @@ func (s *Server) applyDeletedStatusRemovalSideEffects(ctx context.Context, statu
 		return
 	}
 	_ = s.removeStatusFromRailsFeeds(ctx, s.db, status)
+	_ = s.enqueueFASPContentLifecycle(ctx, status, "delete")
 	s.meiliDeleteStatusBestEffort(ctx, status.ID)
 	s.deleteStatusQuoteBestEffort(ctx, status.ID)
+	if !p.Redraft && !status.ReblogOfID.Valid {
+		s.removeDeletedStatusMedia(ctx, status, p)
+	}
 	if !p.SkipStreaming {
 		s.publishStatusDelete(status)
 	}
@@ -3993,6 +4082,57 @@ func (s *Server) applyDeletedStatusRemovalSideEffects(ctx context.Context, statu
 	}
 	if !status.ReblogOfID.Valid {
 		s.applyDeletedReblogRemovalSideEffects(ctx, status.ID, p)
+	}
+}
+
+func (s *Server) removeDeletedStatusMedia(ctx context.Context, status models.Status, options asynqRemovalPayload) {
+	if s == nil || s.db == nil || status.ID == 0 {
+		return
+	}
+	var attachments []models.MediaAttachment
+	if err := s.db.WithContext(ctx).Where("status_id = ?", status.ID).Find(&attachments).Error; err != nil || len(attachments) == 0 {
+		return
+	}
+	reported, err := statusUnresolvedReported(s.db.WithContext(ctx), status.ID, status.AccountID)
+	if err != nil {
+		return
+	}
+	permanently := statusRemovalPermanently(options, reported)
+	if !permanently {
+		for _, attachment := range attachments {
+			_ = s.applyMediaAttachmentVisibility(ctx, attachment, true)
+		}
+		return
+	}
+	ids := make([]int64, 0, len(attachments))
+	for _, attachment := range attachments {
+		ids = append(ids, attachment.ID)
+	}
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&models.MediaAttachment{}).Error; err != nil {
+		return
+	}
+	for _, attachment := range attachments {
+		s.removeMediaAttachmentLocalFiles(attachment)
+	}
+}
+
+func statusRemovalPermanently(options asynqRemovalPayload, reported bool) bool {
+	return options.Immediate || !(options.Preserve || reported)
+}
+
+func (s *Server) applyDeletedStatusMediaForIDs(ctx context.Context, statusIDs []int64, options asynqRemovalPayload) {
+	if s == nil || s.db == nil || len(statusIDs) == 0 || options.Redraft {
+		return
+	}
+	var statuses []models.Status
+	if err := s.db.WithContext(ctx).
+		Select("id", "account_id", "reblog_of_id").
+		Where("id IN ? AND reblog_of_id IS NULL", uniqueInt64s(statusIDs)).
+		Find(&statuses).Error; err != nil {
+		return
+	}
+	for _, status := range statuses {
+		s.removeDeletedStatusMedia(ctx, status, options)
 	}
 }
 
@@ -4006,6 +4146,7 @@ func (s *Server) applyDeletedReblogRemovalSideEffects(ctx context.Context, statu
 		reblogPayload.StatusID = reblog.ID
 		reblogPayload.OriginalRemoved = true
 		_ = s.removeStatusFromRailsFeeds(ctx, s.db, reblog)
+		_ = s.enqueueFASPContentLifecycle(ctx, reblog, "delete")
 		s.meiliDeleteStatusBestEffort(ctx, reblog.ID)
 		s.deleteStatusQuoteBestEffort(ctx, reblog.ID)
 		if !reblogPayload.SkipStreaming {
@@ -4187,9 +4328,10 @@ func (s *Server) notificationActivityStatus(ctx context.Context, notification mo
 		return nil
 	}
 	var status models.Status
-	if err := s.db.WithContext(ctx).Where("id = ?", statusID).First(&status).Error; err != nil {
+	if err := s.statusQuery().WithContext(ctx).Where("statuses.id = ?", statusID).First(&status).Error; err != nil {
 		return nil
 	}
+	s.hydrateStatusQuote(&status)
 	return &status
 }
 
@@ -4241,4 +4383,53 @@ func (s *Server) notificationStatusID(ctx context.Context, notification models.N
 	default:
 		return 0
 	}
+}
+
+func (s *Server) handleAsynqQuoteRefetchVerify(ctx context.Context, task *asynq.Task) error {
+	var payload asynqQuotePayload
+	if err := json.Unmarshal(task.Payload(), &payload); err != nil || payload.QuoteID == 0 {
+		return fmt.Errorf("invalid quote verification payload")
+	}
+	changed, err := s.verifyActivityPubQuote(ctx, payload.QuoteID, payload.QuotedURI, payload.ApprovalURI, payload.RequestID, nil)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if changed {
+		var quote models.Quote
+		if err := s.db.WithContext(ctx).Select("status_id").Where("id = ?", payload.QuoteID).First(&quote).Error; err == nil {
+			s.publishQuoteStateUpdate(ctx, quote.StatusID)
+		}
+	}
+	return nil
+}
+
+func (s *Server) handleAsynqQuoteRefresh(ctx context.Context, task *asynq.Task) error {
+	var payload asynqQuotePayload
+	if err := json.Unmarshal(task.Payload(), &payload); err != nil || payload.QuoteID == 0 {
+		return fmt.Errorf("invalid quote refresh payload")
+	}
+	var quote models.Quote
+	if err := s.db.WithContext(ctx).Where("id = ?", payload.QuoteID).First(&quote).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return workerLookupError("quote refresh lookup", err)
+	}
+	if quote.UpdatedAt.After(time.Now().UTC().Add(-quoteBackgroundRefreshInterval)) || !quote.ApprovalURI.Valid || !quote.QuotedStatusID.Valid {
+		return nil
+	}
+	if err := s.db.WithContext(ctx).Model(&models.Quote{}).Where("id = ?", quote.ID).Update("updated_at", time.Now().UTC()).Error; err != nil {
+		return err
+	}
+	changed, err := s.verifyActivityPubQuote(ctx, quote.ID, "", quote.ApprovalURI.String, "", nil)
+	if err != nil {
+		return err
+	}
+	if changed {
+		s.publishQuoteStateUpdate(ctx, quote.StatusID)
+	}
+	return nil
 }

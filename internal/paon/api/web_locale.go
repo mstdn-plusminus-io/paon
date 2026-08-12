@@ -73,7 +73,9 @@ func webT(locale, key string, vars ...map[string]string) string {
 }
 
 // webLocale resolves the request locale: params[:lang], else the logged-in user's `locale`
-// setting, else Accept-Language, else the configured default (cfg.Locale). Rails precedence.
+// setting, else Accept-Language, else the configured default (cfg.Locale). Since Mastodon 4.4,
+// setting DEFAULT_LOCALE alone no longer suppresses browser language negotiation; operators can
+// opt back into that legacy behavior with FORCE_DEFAULT_LOCALE=true.
 func (s *Server) webLocale(c *echo.Context, user *models.User) string {
 	if c != nil {
 		if locale := i18n.RailsAvailableLocale(c.QueryParam("lang")); locale != "" {
@@ -88,7 +90,7 @@ func (s *Server) webLocale(c *echo.Context, user *models.User) string {
 		}
 	}
 	accept := ""
-	if !s.cfg.DefaultLocaleSet && c != nil && c.Request() != nil {
+	if !s.cfg.ForceDefaultLocale && c != nil && c.Request() != nil {
 		accept = c.Request().Header.Get("Accept-Language")
 	}
 	return i18n.Resolve(userLocale, accept, s.cfg.Locale())

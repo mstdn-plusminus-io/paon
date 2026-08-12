@@ -1,7 +1,12 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +16,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
+	"golang.org/x/crypto/pbkdf2"
 	"gorm.io/gorm"
 )
 
@@ -20,8 +26,37 @@ type webPushPayload struct {
 }
 
 type webPushSubscriptionPayload struct {
-	Endpoint string             `json:"endpoint"`
-	Keys     webPushKeysPayload `json:"keys"`
+	Endpoint string              `json:"endpoint"`
+	Keys     webPushKeysPayload  `json:"keys"`
+	Standard webPushBooleanValue `json:"standard"`
+}
+
+// webPushBooleanValue follows ActiveModel::Type::Boolean for the scalar values
+// accepted by Mastodon's subscription endpoint. In particular, form and JSON
+// clients may send either true/false or "1"/"0".
+type webPushBooleanValue bool
+
+func (value *webPushBooleanValue) UnmarshalJSON(raw []byte) error {
+	var boolean bool
+	if err := json.Unmarshal(raw, &boolean); err == nil {
+		*value = webPushBooleanValue(boolean)
+		return nil
+	}
+	var stringValue string
+	if err := json.Unmarshal(raw, &stringValue); err == nil {
+		*value = webPushBooleanValue(formBoolValue(stringValue))
+		return nil
+	}
+	var numberValue float64
+	if err := json.Unmarshal(raw, &numberValue); err == nil {
+		*value = webPushBooleanValue(numberValue != 0)
+		return nil
+	}
+	if string(raw) == "null" {
+		*value = false
+		return nil
+	}
+	return errors.New("invalid boolean")
 }
 
 type webPushKeysPayload struct {
@@ -38,6 +73,9 @@ var webPushAlertTypeList = []string{
 	"favourite",
 	"poll",
 	"update",
+	"severed_relationships",
+	"moderation_warning",
+	"annual_report",
 	"admin.sign_up",
 	"admin.report",
 }
@@ -84,6 +122,7 @@ func (s *Server) createWebPushSubscription(c *echo.Context) error {
 		Data:          data,
 		UserID:        sql.NullInt64{Int64: user.ID, Valid: true},
 		AccessTokenID: sql.NullInt64{Int64: accessToken.ID, Valid: true},
+		Standard:      bool(payload.Subscription.Standard),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -155,6 +194,7 @@ func (s *Server) createPushSubscription(c *echo.Context) error {
 		Data:          normalizeWebPushData(payload.Data),
 		UserID:        sql.NullInt64{Int64: user.ID, Valid: true},
 		AccessTokenID: sql.NullInt64{Int64: accessToken.ID, Valid: true},
+		Standard:      bool(payload.Subscription.Standard),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -212,6 +252,20 @@ func (s *Server) deletePushSubscription(c *echo.Context) error {
 		return s.unlinkWebPushSubscriptionFromSession(tx, accessToken.ID)
 	}); err != nil {
 		return err
+	}
+	return renderEmpty(c)
+}
+
+// destroyWebPushSubscriptionByToken is the unauthenticated endpoint used by
+// the Unsubscribe-URL Web Push header. The signed, short-lived token is the
+// authority for exactly one subscription; invalid and expired tokens are
+// intentionally idempotent and return 200 like Mastodon.
+func (s *Server) destroyWebPushSubscriptionByToken(c *echo.Context) error {
+	subscriptionID, ok := verifyWebPushUnsubscribeToken(c.Param("id"), s.cfg.SecretKeyBase, time.Now().UTC())
+	if ok && s.db != nil {
+		if err := s.db.Where("id = ?", subscriptionID).Delete(&models.WebPushSubscription{}).Error; err != nil {
+			return err
+		}
 	}
 	return renderEmpty(c)
 }
@@ -367,6 +421,7 @@ func parseWebPushFormPayload(c *echo.Context) (webPushPayload, error) {
 	payload.Subscription.Endpoint = strings.TrimSpace(lastFormValue(values, "subscription[endpoint]"))
 	payload.Subscription.Keys.Auth = strings.TrimSpace(lastFormValue(values, "subscription[keys][auth]"))
 	payload.Subscription.Keys.P256dh = strings.TrimSpace(lastFormValue(values, "subscription[keys][p256dh]"))
+	payload.Subscription.Standard = webPushBooleanValue(formBoolValue(lastFormValue(values, "subscription[standard]")))
 
 	data, err := webPushDataFromForm(values)
 	if err != nil {
@@ -374,6 +429,74 @@ func parseWebPushFormPayload(c *echo.Context) (webPushPayload, error) {
 	}
 	payload.Data = data
 	return normalizeWebPushPayload(payload)
+}
+
+const (
+	// Rails 8 backs generates_token_for with the application's
+	// "active_record/token_for" MessageVerifier. Keep the exact salt and full
+	// purpose so unsubscribe URLs issued by Mastodon remain valid in Paon.
+	webPushUnsubscribeTokenSalt    = "active_record/token_for"
+	webPushUnsubscribeTokenPurpose = "Web::PushSubscription\nunsubscribe\n172800"
+)
+
+type webPushUnsubscribeTokenEnvelope struct {
+	Rails struct {
+		Data      []int64 `json:"data"`
+		ExpiresAt string  `json:"exp"`
+		Purpose   string  `json:"pur"`
+	} `json:"_rails"`
+}
+
+func webPushUnsubscribeToken(subscriptionID int64, secret string, now time.Time) (string, error) {
+	if subscriptionID == 0 || strings.TrimSpace(secret) == "" {
+		return "", errors.New("web push unsubscribe token cannot be signed")
+	}
+	envelope := webPushUnsubscribeTokenEnvelope{}
+	envelope.Rails.Data = []int64{subscriptionID}
+	envelope.Rails.ExpiresAt = now.UTC().Add(time.Duration(webPushTTL) * time.Second).Format("2006-01-02T15:04:05.000Z")
+	envelope.Rails.Purpose = webPushUnsubscribeTokenPurpose
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		return "", err
+	}
+	encodedPayload := base64.StdEncoding.EncodeToString(payload)
+	signature := webPushUnsubscribeTokenSignature(encodedPayload, secret)
+	return encodedPayload + "--" + hex.EncodeToString(signature), nil
+}
+
+func verifyWebPushUnsubscribeToken(token string, secret string, now time.Time) (int64, bool) {
+	if strings.TrimSpace(secret) == "" {
+		return 0, false
+	}
+	separator := strings.LastIndex(token, "--")
+	if separator <= 0 || separator+2 >= len(token) {
+		return 0, false
+	}
+	encodedPayload := token[:separator]
+	signature, err := hex.DecodeString(token[separator+2:])
+	if err != nil || len(signature) != sha1.Size || !hmac.Equal(signature, webPushUnsubscribeTokenSignature(encodedPayload, secret)) {
+		return 0, false
+	}
+	payloadJSON, err := decodeSelfDestructMessage(encodedPayload)
+	if err != nil {
+		return 0, false
+	}
+	var envelope webPushUnsubscribeTokenEnvelope
+	if err := json.Unmarshal(payloadJSON, &envelope); err != nil || len(envelope.Rails.Data) != 1 || envelope.Rails.Data[0] <= 0 || envelope.Rails.Purpose != webPushUnsubscribeTokenPurpose {
+		return 0, false
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, envelope.Rails.ExpiresAt)
+	if err != nil || !now.UTC().Before(expiresAt.UTC()) {
+		return 0, false
+	}
+	return envelope.Rails.Data[0], true
+}
+
+func webPushUnsubscribeTokenSignature(encodedPayload string, secret string) []byte {
+	key := pbkdf2.Key([]byte(secret), []byte(webPushUnsubscribeTokenSalt), 1000, 64, sha256.New)
+	mac := hmac.New(sha1.New, key)
+	_, _ = mac.Write([]byte(encodedPayload))
+	return mac.Sum(nil)
 }
 
 func normalizeWebPushPayload(payload webPushPayload) (webPushPayload, error) {

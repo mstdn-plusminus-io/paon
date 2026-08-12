@@ -422,7 +422,14 @@ func activityPubFullJSONLDContextExtensions() map[string]any {
 		"canQuote":                  map[string]any{"@id": "gts:canQuote", "@type": "@id"},
 		"automaticApproval":         map[string]any{"@id": "gts:automaticApproval", "@type": "@id"},
 		"manualApproval":            map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
+		"interactingObject":         map[string]any{"@id": "gts:interactingObject", "@type": "@id"},
+		"interactionTarget":         map[string]any{"@id": "gts:interactionTarget", "@type": "@id"},
 		"quoteUrl":                  "as:quoteUrl",
+		"fep":                       "https://w3id.org/fep/044f#",
+		"quote":                     map[string]any{"@id": "fep:quote", "@type": "@id"},
+		"quoteAuthorization":        map[string]any{"@id": "fep:quoteAuthorization", "@type": "@id"},
+		"QuoteAuthorization":        "fep:QuoteAuthorization",
+		"QuoteRequest":              "fep:QuoteRequest",
 		"misskey":                   "https://misskey-hub.net/ns#",
 		"_misskey_quote":            "misskey:_misskey_quote",
 	}
@@ -625,8 +632,11 @@ func activityPubJSONLDContextCacheStore(uri string, documentURL string, body []b
 
 func activityPubFEP044FJSONLDContext() map[string]any {
 	return map[string]any{
-		"fep":   "https://w3id.org/fep/044f#",
-		"quote": map[string]any{"@id": "fep:quote", "@type": "@id"},
+		"fep":                "https://w3id.org/fep/044f#",
+		"quote":              map[string]any{"@id": "fep:quote", "@type": "@id"},
+		"quoteAuthorization": map[string]any{"@id": "fep:quoteAuthorization", "@type": "@id"},
+		"QuoteAuthorization": "fep:QuoteAuthorization",
+		"QuoteRequest":       "fep:QuoteRequest",
 	}
 }
 
@@ -642,7 +652,8 @@ func activityPubTootJSONLDContext() map[string]any {
 		"indexable":       "toot:indexable",
 		"memorial":        "toot:memorial",
 		"suspended":       "toot:suspended",
-		"quoteUri":        map[string]any{"@id": "toot:quoteUri", "@type": "@id"},
+		"fedibird":        "http://fedibird.com/ns#",
+		"quoteUri":        "fedibird:quoteUri",
 		"Emoji":           "toot:Emoji",
 		"Digest":          "as:Digest",
 		"digestAlgorithm": "as:digestAlgorithm",
@@ -657,6 +668,8 @@ func activityPubGTSJSONLDContext() map[string]any {
 		"canQuote":          map[string]any{"@id": "gts:canQuote", "@type": "@id"},
 		"automaticApproval": map[string]any{"@id": "gts:automaticApproval", "@type": "@id"},
 		"manualApproval":    map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
+		"interactingObject": map[string]any{"@id": "gts:interactingObject", "@type": "@id"},
+		"interactionTarget": map[string]any{"@id": "gts:interactionTarget", "@type": "@id"},
 	}
 }
 
@@ -693,6 +706,7 @@ func activityPubActivityStreamsJSONLDContext() map[string]any {
 		"schema":                    "http://schema.org#",
 		"toot":                      "http://joinmastodon.org/ns#",
 		"misskey":                   "https://misskey-hub.net/ns#",
+		"fedibird":                  "http://fedibird.com/ns#",
 		"gts":                       "https://gotosocial.org/ns#",
 		"fep":                       "https://w3id.org/fep/044f#",
 		"id":                        "@id",
@@ -727,13 +741,18 @@ func activityPubActivityStreamsJSONLDContext() map[string]any {
 		"memorial":                  "toot:memorial",
 		"suspended":                 "toot:suspended",
 		"quoteUrl":                  as + "quoteUrl",
-		"quoteUri":                  "toot:quoteUri",
+		"quoteUri":                  "fedibird:quoteUri",
 		"quote":                     map[string]any{"@id": "fep:quote", "@type": "@id"},
+		"quoteAuthorization":        map[string]any{"@id": "fep:quoteAuthorization", "@type": "@id"},
+		"QuoteAuthorization":        "fep:QuoteAuthorization",
+		"QuoteRequest":              "fep:QuoteRequest",
 		"_misskey_quote":            "misskey:_misskey_quote",
 		"interactionPolicy":         "gts:interactionPolicy",
 		"canQuote":                  map[string]any{"@id": "gts:canQuote", "@type": "@id"},
 		"automaticApproval":         map[string]any{"@id": "gts:automaticApproval", "@type": "@id"},
 		"manualApproval":            map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
+		"interactingObject":         map[string]any{"@id": "gts:interactingObject", "@type": "@id"},
+		"interactionTarget":         map[string]any{"@id": "gts:interactionTarget", "@type": "@id"},
 		"PropertyValue":             "schema:PropertyValue",
 		"value":                     "schema:value",
 		"Emoji":                     "toot:Emoji",

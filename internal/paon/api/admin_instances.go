@@ -50,9 +50,19 @@ func (s *Server) showAdminInstancePage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
+	notes, err := s.adminInstanceModerationNotes(row.Instance.Domain)
+	if err != nil {
+		return err
+	}
 	return c.HTML(http.StatusOK, adminInstanceHTMLWithOptions(row, s.cfg.LimitedFederationMode, c.QueryParam("notice"), c.QueryParam("error"), adminInstanceHTMLOptions{
 		Locale:        s.webLocale(c, user),
 		ShowDashboard: s.userCan(user, rolePermissionViewDashboard),
+		DashboardPermissions: &adminDashboardPermissions{
+			ManageUsers:   s.userCan(user, rolePermissionManageUsers),
+			ManageReports: s.userCan(user, rolePermissionManageReports),
+		},
+		ModerationNotes:  notes,
+		CurrentAccountID: user.AccountID,
 	}))
 }
 
@@ -204,6 +214,12 @@ func (s *Server) runPurgeAdminInstanceDomain(ctx context.Context, domain string,
 	if domain == "" || s.db == nil {
 		return echo.NewHTTPError(http.StatusNotFound, "instance not found")
 	}
+	faspAccounts := []models.Account{}
+	if s.faspEnabled() {
+		if err := s.db.WithContext(ctx).Where("domain = ?", domain).Find(&faspAccounts).Error; err != nil {
+			return err
+		}
+	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.RelationshipSeveranceEvent{}).
 			Where("type IN ? AND lower(target_name) = ?", []int{0, 1}, domain).
@@ -231,6 +247,10 @@ WHERE account_id IN (SELECT id FROM accounts WHERE domain = ?)
 		if err := tx.Where("domain = ?", domain).Delete(&models.CustomEmoji{}).Error; err != nil {
 			return err
 		}
+		accountIDs := tx.Model(&models.Account{}).Select("id").Where("domain = ?", domain)
+		if err := tx.Exec("DELETE FROM fasp_follow_recommendations WHERE requesting_account_id IN (?) OR recommended_account_id IN (?)", accountIDs, accountIDs).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("domain = ?", domain).Delete(&models.Account{}).Error; err != nil {
 			return err
 		}
@@ -246,6 +266,9 @@ WHERE account_id IN (SELECT id FROM accounts WHERE domain = ?)
 	}
 	if err := s.refreshInstancesMaterializedView(); err != nil {
 		return err
+	}
+	for _, account := range faspAccounts {
+		_ = s.enqueueFASPAccountLifecycle(ctx, account, "delete")
 	}
 	_ = s.meiliDeleteDocumentByID(ctx, "instances", domain)
 	return nil
@@ -649,8 +672,11 @@ func adminInstanceHTML(row adminInstanceRow, limitedFederation bool, notice stri
 }
 
 type adminInstanceHTMLOptions struct {
-	Locale        string
-	ShowDashboard bool
+	Locale               string
+	ShowDashboard        bool
+	DashboardPermissions *adminDashboardPermissions
+	ModerationNotes      []models.InstanceModerationNote
+	CurrentAccountID     int64
 }
 
 func adminInstanceHTMLWithOptions(row adminInstanceRow, limitedFederation bool, notice string, errorText string, options adminInstanceHTMLOptions) string {
@@ -658,8 +684,9 @@ func adminInstanceHTMLWithOptions(row adminInstanceRow, limitedFederation bool, 
 	domain := row.Instance.Domain
 	var body strings.Builder
 	if options.ShowDashboard {
-		body.WriteString(adminInstanceDashboardHTML(domain, loc))
+		body.WriteString(adminInstanceDashboardHTMLWithPermissions(domain, loc, options.DashboardPermissions))
 	}
+	body.WriteString(adminInstanceModerationNotesHTML(domain, options.ModerationNotes, options.CurrentAccountID, loc))
 	body.WriteString(`<hr class="spacer"><h3>` + html.EscapeString(adminT(loc, "admin.instances.content_policies.title", "Content policies")) + `</h3>`)
 	confirm := html.EscapeString(adminT(loc, "admin.accounts.are_you_sure", "Are you sure?"))
 	if limitedFederation {
@@ -688,7 +715,35 @@ func adminInstanceHTMLWithOptions(row adminInstanceRow, limitedFederation bool, 
 	return authPageHTML(domain, notice, errorText, body.String(), loc)
 }
 
+func adminInstanceModerationNotesHTML(domain string, notes []models.InstanceModerationNote, currentAccountID int64, locale string) string {
+	var body strings.Builder
+	body.WriteString(`<hr class="spacer"><h3 id="instance-notes">` + html.EscapeString(adminT(locale, "admin.instances.moderation_notes.title", "Moderation notes")) + `</h3>`)
+	body.WriteString(`<p>` + html.EscapeString(adminT(locale, "admin.instances.moderation_notes.description", "Keep private notes about this server for other moderators.")) + `</p><div class="report-notes">`)
+	for _, note := range notes {
+		author := note.Account.Acct()
+		if strings.TrimSpace(author) == "" {
+			author = strconv.FormatInt(note.AccountID, 10)
+		}
+		body.WriteString(`<div class="report-notes__item" id="instance_moderation_note_` + strconv.FormatInt(note.ID, 10) + `"><div class="report-notes__item__header"><strong>@` + html.EscapeString(author) + `</strong> <time datetime="` + html.EscapeString(note.CreatedAt.UTC().Format(time.RFC3339)) + `">` + html.EscapeString(note.CreatedAt.UTC().Format("2006-01-02 15:04 UTC")) + `</time></div><div class="report-notes__item__content"><p>` + html.EscapeString(note.Content.String) + `</p></div>`)
+		// The server enforces the owner/role-override policy. Showing the action to
+		// federation moderators keeps the existing Paon admin UI compact while a
+		// stale page can never bypass that policy.
+		body.WriteString(`<div class="report-notes__item__actions"><a class="table-action-link" data-method="delete" data-confirm="` + html.EscapeString(adminT(locale, "admin.accounts.are_you_sure", "Are you sure?")) + `" href="/admin/instances/` + url.PathEscape(domain) + `/moderation_notes/` + strconv.FormatInt(note.ID, 10) + `"><i class="fa fa-trash fa-fw"></i> ` + html.EscapeString(adminT(locale, "generic.delete", "Delete")) + `</a></div></div>`)
+	}
+	body.WriteString(`</div><form class="simple_form new_instance_moderation_note" method="post" action="/admin/instances/` + url.PathEscape(domain) + `/moderation_notes"><div class="fields-group"><div class="input text optional"><div class="label_input"><textarea name="instance_moderation_note[content]" rows="6" maxlength="2000" required placeholder="` + html.EscapeString(adminT(locale, "admin.instances.moderation_notes.placeholder", "Leave a moderation note")) + `"></textarea></div></div></div><div class="actions"><button class="button" type="submit">` + html.EscapeString(adminT(locale, "admin.instances.moderation_notes.create", "Create note")) + `</button></div></form>`)
+	_ = currentAccountID
+	return body.String()
+}
+
 func adminInstanceDashboardHTML(domain string, locale string) string {
+	return adminInstanceDashboardHTMLWithPermissions(domain, locale, nil)
+}
+
+func adminInstanceDashboardHTMLWithPermissions(domain string, locale string, permissionOverride *adminDashboardPermissions) string {
+	permissions := adminDashboardPermissions{ManageUsers: true, ManageReports: true}
+	if permissionOverride != nil {
+		permissions = *permissionOverride
+	}
 	now := time.Now().UTC()
 	startAt := now.AddDate(0, 0, -6).Format("2006-01-02")
 	endAt := now.AddDate(0, 0, -1).Format("2006-01-02")
@@ -707,6 +762,12 @@ func adminInstanceDashboardHTML(domain string, locale string) string {
 		{"instance_followers", adminT(locale, "admin.instances.dashboard.instance_followers_measure", "Followers"), ""},
 		{"instance_reports", adminT(locale, "admin.instances.dashboard.instance_reports_measure", "Reports"), "/admin/reports?by_target_domain=" + url.QueryEscape(domain)},
 	} {
+		if item.measure == "instance_accounts" && !permissions.ManageUsers {
+			item.href = ""
+		}
+		if item.measure == "instance_reports" && !permissions.ManageReports {
+			item.href = ""
+		}
 		props := map[string]any{"measure": item.measure, "start_at": startAt, "end_at": endAt, "params": params, "label": item.label}
 		if item.href != "" {
 			props["href"] = item.href

@@ -735,16 +735,17 @@ func TestCredentialAccountFromModelIncludesSourceSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	account := models.Account{
-		ID:              42,
-		Username:        "alice",
-		DisplayName:     "Alice",
-		Note:            "raw note",
-		CreatedAt:       time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC),
-		Discoverable:    sql.NullBool{Bool: true, Valid: true},
-		HideCollections: sql.NullBool{Bool: true, Valid: true},
-		Indexable:       true,
-		Fields:          rawFields,
-		AccountStat:     models.AccountStat{},
+		ID:                 42,
+		Username:           "alice",
+		DisplayName:        "Alice",
+		Note:               "raw note",
+		CreatedAt:          time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC),
+		Discoverable:       sql.NullBool{Bool: true, Valid: true},
+		HideCollections:    sql.NullBool{Bool: true, Valid: true},
+		Indexable:          true,
+		AttributionDomains: models.StringArray{"example.org"},
+		Fields:             rawFields,
+		AccountStat:        models.AccountStat{},
 	}
 	user := models.User{Settings: sql.NullString{String: `{"default_privacy":"unlisted","default_sensitive":true,"default_language":"ja"}`, Valid: true}}
 
@@ -763,6 +764,9 @@ func TestCredentialAccountFromModelIncludesSourceSettings(t *testing.T) {
 	}
 	if out.Source.Note != "raw note" || out.Source.FollowRequestsCount != 3 {
 		t.Fatalf("source = %#v", out.Source)
+	}
+	if len(out.Source.AttributionDomains) != 1 || out.Source.AttributionDomains[0] != "example.org" {
+		t.Fatalf("attribution_domains = %#v", out.Source.AttributionDomains)
 	}
 	if len(out.Source.Fields) != 2 || out.Source.Fields[0].Name != "Website" || out.Source.Fields[0].Value != "https://example.test" {
 		t.Fatalf("fields = %#v", out.Source.Fields)
@@ -851,11 +855,15 @@ func TestWebPushSubscriptionFromModelUsesMastodonKeys(t *testing.T) {
 	out := WebPushSubscriptionFromModel(cfg, models.WebPushSubscription{
 		ID:       9,
 		Endpoint: "https://push.example/1",
+		Standard: true,
 		Data:     models.JSONValue(`{"policy":"followed","alerts":{"mention":"true","reblog":0,"status":"no","follow":"f","poll":"","update":null}}`),
 	})
 
 	if out.ID != "9" || out.Endpoint != "https://push.example/1" {
 		t.Fatalf("subscription = %#v", out)
+	}
+	if !out.Standard {
+		t.Fatalf("standard = %v", out.Standard)
 	}
 	if out.ServerKey != "server-key" || out.Policy != "followed" {
 		t.Fatalf("subscription = %#v", out)
@@ -871,7 +879,7 @@ func TestWebPushSubscriptionFromModelUsesMastodonKeys(t *testing.T) {
 	}
 }
 
-func TestScheduledStatusFromModelOmitsApplicationID(t *testing.T) {
+func TestScheduledStatusFromModelRestoresApplicationIDLikeMastodon44(t *testing.T) {
 	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
 	out := ScheduledStatusFromModel(cfg, models.ScheduledStatus{
 		ID:          7,
@@ -885,8 +893,8 @@ func TestScheduledStatusFromModelOmitsApplicationID(t *testing.T) {
 	if out.Params["text"] != "hello" {
 		t.Fatalf("params = %#v", out.Params)
 	}
-	if _, ok := out.Params["application_id"]; ok {
-		t.Fatalf("application_id leaked: %#v", out.Params)
+	if out.Params["application_id"] != float64(42) {
+		t.Fatalf("application_id = %#v", out.Params["application_id"])
 	}
 }
 
@@ -1015,6 +1023,13 @@ func TestInstanceFromConfigMarksTranslationDisabled(t *testing.T) {
 	}
 }
 
+func TestInstanceFromConfigAdvertisesMastodon44APIVersion(t *testing.T) {
+	out := InstanceFromConfig(config.Config{}, nil)
+	if got := out.APIVersions["mastodon"]; got != 6 {
+		t.Fatalf("api_versions.mastodon = %d, want 6 for Mastodon 4.4", got)
+	}
+}
+
 func TestInstanceFromConfigUsesMastodonCompatibleVersionAndRetainsPaonVersionInternally(t *testing.T) {
 	cfg := config.Config{
 		LocalDomain:     "example.test",
@@ -1059,13 +1074,9 @@ func TestInstanceFromConfigIncludesMastodonConfigurationLimits(t *testing.T) {
 		ImageSizeLimit:      50 * 1024 * 1024,
 		VideoSizeLimit:      120 * 1024 * 1024,
 		MatrixLimit:         123456,
-		DynamoDBEnabled:     true,
 		StreamingAPIBaseURL: "wss://streaming.example.test",
 	}
 	out := InstanceFromConfig(cfg, nil)
-	if !out.FeatureQuote {
-		t.Fatal("feature_quote was not enabled from config")
-	}
 
 	urls, ok := out.Configuration["urls"].(map[string]any)
 	if !ok || urls["streaming"] != "wss://streaming.example.test" || urls["status"] != nil {
@@ -1108,6 +1119,9 @@ func TestInstanceFromConfigIncludesMastodonConfigurationLimits(t *testing.T) {
 	media, ok := out.Configuration["media_attachments"].(map[string]any)
 	if !ok {
 		t.Fatalf("media config missing: %#v", out.Configuration)
+	}
+	if media["description_limit"] != 1_500 {
+		t.Fatalf("media description limit = %#v, want Mastodon local limit 1500", media["description_limit"])
 	}
 	supported, ok := media["supported_mime_types"].([]string)
 	if !ok {
@@ -1241,7 +1255,7 @@ func TestInstanceFromConfigWithOptionsUsesMetadata(t *testing.T) {
 		},
 		PreviewImageURL: "https://assets.example.test/preview.png",
 		Rules: []models.Rule{
-			{ID: 2, Text: "Be kind"},
+			{ID: 2, Text: "Be kind", Translations: []models.RuleTranslation{{Language: "ja", Text: "親切に", Hint: "互いを尊重してください"}}},
 		},
 		StatusPageURL: "https://status.example.test",
 	})
@@ -1286,7 +1300,7 @@ func TestInstanceFromConfigWithOptionsUsesMetadata(t *testing.T) {
 		t.Fatalf("rules = %#v", out.Rules)
 	}
 	rule, ok := out.Rules[0].(InstanceRule)
-	if !ok || rule.ID != "2" || rule.Text != "Be kind" {
+	if !ok || rule.ID != "2" || rule.Text != "Be kind" || rule.Translations["ja"].Text != "親切に" {
 		t.Fatalf("rule = %#v", out.Rules[0])
 	}
 }
@@ -1458,14 +1472,20 @@ func TestSupportedLanguageRowsMatchRailsShape(t *testing.T) {
 		t.Fatalf("first language row = %#v", rows[0])
 	}
 	var ja []string
+	var gsw []string
 	for _, row := range rows {
 		if row[0] == "ja" {
 			ja = row
-			break
+		}
+		if row[0] == "gsw" {
+			gsw = row
 		}
 	}
 	if ja == nil || ja[1] != "Japanese" || ja[2] != "日本語" {
 		t.Fatalf("Japanese language row = %#v", ja)
+	}
+	if gsw == nil || gsw[1] != "Swiss German" || gsw[2] != "Schwiizertütsch" {
+		t.Fatalf("Swiss German language row = %#v", gsw)
 	}
 }
 
@@ -1479,17 +1499,16 @@ func TestLanguageRESTPayloadOmitsNativeNameLikeRailsSerializer(t *testing.T) {
 	}
 }
 
-func TestInitialStateFromConfigIncludesQuoteAndSSOMeta(t *testing.T) {
+func TestInitialStateFromConfigIncludesSSOMetaWithoutLegacyQuoteFeatureFlag(t *testing.T) {
 	cfg := config.Config{
-		LocalDomain:     "example.test",
-		WebDomain:       "example.test",
-		Scheme:          "https",
-		DynamoDBEnabled: true,
-		SSORedirect:     "/auth/auth/openid_connect",
+		LocalDomain: "example.test",
+		WebDomain:   "example.test",
+		Scheme:      "https",
+		SSORedirect: "/auth/auth/openid_connect",
 	}
 	out := InitialStateFromConfig(cfg, nil, "")
-	if out.Meta["feature_quote"] != true {
-		t.Fatalf("feature_quote = %#v", out.Meta["feature_quote"])
+	if _, ok := out.Meta["feature_quote"]; ok {
+		t.Fatalf("legacy DynamoDB quote feature flag leaked into official Mastodon 4.4 state: %#v", out.Meta["feature_quote"])
 	}
 	if out.Meta["sso_redirect"] != "/auth/auth/openid_connect" {
 		t.Fatalf("sso_redirect = %#v", out.Meta["sso_redirect"])
@@ -1960,6 +1979,25 @@ func TestPrivacyPolicyMarkdownEscapesHTMLAndImages(t *testing.T) {
 	}
 }
 
+func TestTermsOfServiceSerializationMatchesMastodon44(t *testing.T) {
+	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
+	effectiveDate := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	successorDate := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
+	terms := models.TermsOfService{
+		Text:          "# Terms for %{domain}\n\nNo <script>.",
+		PublishedAt:   sql.NullTime{Time: now.Add(-24 * time.Hour), Valid: true},
+		EffectiveDate: sql.NullTime{Time: effectiveDate, Valid: true},
+	}
+	successor := models.TermsOfService{EffectiveDate: sql.NullTime{Time: successorDate, Valid: true}}
+	out := TermsOfServiceFromModel(config.Config{LocalDomain: "example.test"}, terms, &successor, now)
+	if out.EffectiveDate != "2026-08-01" || !out.Effective || out.SucceededBy == nil || *out.SucceededBy != "2026-09-01" {
+		t.Fatalf("terms metadata = %#v", out)
+	}
+	if !strings.Contains(out.Content, "<h1>Terms for example.test</h1>") || strings.Contains(out.Content, "<script>") {
+		t.Fatalf("terms content = %s", out.Content)
+	}
+}
+
 func TestInitialStateFromConfigIncludesComposeDefaults(t *testing.T) {
 	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
 	user := models.User{
@@ -1992,6 +2030,7 @@ func TestInitialStateFromConfigIncludesAuthenticatedMetaSettings(t *testing.T) {
 			"web.disable_hover_cards":true,
 			"web.reblog_modal":true,
 			"web.delete_modal":false,
+			"web.missing_alt_text_modal":false,
 			"web.auto_play":true,
 			"web.display_media":"show_all",
 			"web.expand_content_warnings":true,
@@ -2008,19 +2047,20 @@ func TestInitialStateFromConfigIncludesAuthenticatedMetaSettings(t *testing.T) {
 	out := InitialStateFromConfigWithOptions(cfg, &account, "token", InitialStateOptions{User: &user})
 
 	for key, want := range map[string]any{
-		"disable_hover_cards": true,
-		"boost_modal":         true,
-		"delete_modal":        false,
-		"auto_play_gif":       true,
-		"display_media":       "show_all",
-		"expand_spoilers":     true,
-		"reduce_motion":       true,
-		"disable_swiping":     true,
-		"advanced_layout":     true,
-		"use_blurhash":        false,
-		"use_pending_items":   true,
-		"show_trends":         false,
-		"crop_images":         false,
+		"disable_hover_cards":    true,
+		"boost_modal":            true,
+		"delete_modal":           false,
+		"missing_alt_text_modal": false,
+		"auto_play_gif":          true,
+		"display_media":          "show_all",
+		"expand_spoilers":        true,
+		"reduce_motion":          true,
+		"disable_swiping":        true,
+		"advanced_layout":        true,
+		"use_blurhash":           false,
+		"use_pending_items":      true,
+		"show_trends":            false,
+		"crop_images":            false,
 	} {
 		if out.Meta[key] != want {
 			t.Fatalf("meta[%s] = %#v, want %#v", key, out.Meta[key], want)
@@ -2035,19 +2075,20 @@ func TestInitialStateFromConfigUsesAuthenticatedMetaDefaults(t *testing.T) {
 	out := InitialStateFromConfigWithOptions(cfg, &account, "token", InitialStateOptions{User: &user})
 
 	for key, want := range map[string]any{
-		"disable_hover_cards": false,
-		"boost_modal":         false,
-		"delete_modal":        true,
-		"auto_play_gif":       false,
-		"display_media":       "default",
-		"expand_spoilers":     false,
-		"reduce_motion":       false,
-		"disable_swiping":     false,
-		"advanced_layout":     false,
-		"use_blurhash":        true,
-		"use_pending_items":   false,
-		"show_trends":         true,
-		"crop_images":         true,
+		"disable_hover_cards":    false,
+		"boost_modal":            false,
+		"delete_modal":           true,
+		"missing_alt_text_modal": true,
+		"auto_play_gif":          false,
+		"display_media":          "default",
+		"expand_spoilers":        false,
+		"reduce_motion":          false,
+		"disable_swiping":        false,
+		"advanced_layout":        false,
+		"use_blurhash":           true,
+		"use_pending_items":      false,
+		"show_trends":            true,
+		"crop_images":            true,
 	} {
 		if out.Meta[key] != want {
 			t.Fatalf("meta[%s] = %#v, want %#v", key, out.Meta[key], want)
@@ -3052,8 +3093,11 @@ func TestStatusFromModelUsesMastodonKeys(t *testing.T) {
 	if payload["content"] != "<p>hello<br />world</p>" {
 		t.Fatalf("content JSON = %#v", payload["content"])
 	}
-	if payload["quote_id"] != nil || payload["quote_original_url"] != nil {
-		t.Fatalf("quote JSON = %#v/%#v", payload["quote_id"], payload["quote_original_url"])
+	if _, ok := payload["quote_id"]; ok {
+		t.Fatalf("retired quote_id leaked: %s", string(body))
+	}
+	if _, ok := payload["quote_original_url"]; ok {
+		t.Fatalf("retired quote_original_url leaked: %s", string(body))
 	}
 	if out.URL != "https://example.test/@alice/100" {
 		t.Fatalf("URL = %q", out.URL)
@@ -3082,6 +3126,41 @@ func TestStatusFromModelClampsNegativeStatusStats(t *testing.T) {
 	out := StatusFromModel(cfg, status, nil)
 	if out.RepliesCount != 0 || out.ReblogsCount != 0 || out.FavouritesCount != 0 {
 		t.Fatalf("counts = replies:%d reblogs:%d favourites:%d", out.RepliesCount, out.ReblogsCount, out.FavouritesCount)
+	}
+}
+
+func TestStatusFromModelUsesRemoteUntrustedInteractionCounts(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	status := models.Status{
+		ID:         100,
+		Text:       "hello",
+		CreatedAt:  time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC),
+		Local:      sql.NullBool{Bool: false, Valid: true},
+		URI:        sql.NullString{String: "https://remote.example/statuses/100", Valid: true},
+		Visibility: 0,
+		Account: models.Account{
+			ID:        42,
+			Username:  "alice",
+			Domain:    sql.NullString{String: "remote.example", Valid: true},
+			CreatedAt: time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC),
+		},
+		StatusStat: models.StatusStat{
+			ReblogsCount:             2,
+			FavouritesCount:          3,
+			UntrustedReblogsCount:    sql.NullInt64{Int64: 20, Valid: true},
+			UntrustedFavouritesCount: sql.NullInt64{Int64: 30, Valid: true},
+		},
+	}
+
+	out := StatusFromModel(cfg, status, nil)
+	if out.ReblogsCount != 20 || out.FavouritesCount != 30 {
+		t.Fatalf("remote counts = reblogs:%d favourites:%d", out.ReblogsCount, out.FavouritesCount)
+	}
+
+	status.Local = sql.NullBool{Bool: true, Valid: true}
+	out = StatusFromModel(cfg, status, nil)
+	if out.ReblogsCount != 2 || out.FavouritesCount != 3 {
+		t.Fatalf("local counts must ignore untrusted values: reblogs:%d favourites:%d", out.ReblogsCount, out.FavouritesCount)
 	}
 }
 
@@ -3301,25 +3380,23 @@ func TestStatusFromModelUsesFullURLForKomifloLikeRailsFork(t *testing.T) {
 	}
 }
 
-func TestStatusFromModelIncludesHydratedQuoteFields(t *testing.T) {
+func TestStatusFromModelNeverEmitsRetiredDynamoQuoteFields(t *testing.T) {
 	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	quoted := &models.Status{
+		ID: 99, Text: "quoted", CreatedAt: now, AccountID: 9, Visibility: 0,
+		Account: models.Account{ID: 9, Username: "bob", CreatedAt: now},
+	}
 	status := models.Status{
-		ID:        100,
-		Text:      "hello\n\nRE: https://example.test/@bob/99",
-		CreatedAt: time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC),
-		AccountID: 42,
-		Account:   models.Account{ID: 42, Username: "alice", CreatedAt: time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)},
-		QuoteID:   sql.NullString{String: "99", Valid: true},
-		QuoteOriginalURL: sql.NullString{
-			String: "https://example.test/users/bob/statuses/99",
-			Valid:  true,
+		ID: 100, Text: "hello", CreatedAt: now, AccountID: 42, Visibility: 0,
+		Account: models.Account{ID: 42, Username: "alice", CreatedAt: now},
+		Quote: &models.Quote{
+			ID: 1, StatusID: 100, State: models.QuoteStateAccepted, Legacy: true,
+			QuotedStatusID: sql.NullInt64{Int64: 99, Valid: true}, QuotedStatus: quoted,
 		},
 	}
 
 	out := StatusFromModel(cfg, status, nil)
-	if out.QuoteID != "99" || out.QuoteOriginalURL != "https://example.test/users/bob/statuses/99" {
-		t.Fatalf("quote fields = %#v/%#v", out.QuoteID, out.QuoteOriginalURL)
-	}
 	body, err := json.Marshal(out)
 	if err != nil {
 		t.Fatal(err)
@@ -3328,8 +3405,97 @@ func TestStatusFromModelIncludesHydratedQuoteFields(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["quote_id"] != "99" || payload["quote_original_url"] != "https://example.test/users/bob/statuses/99" {
-		t.Fatalf("quote JSON = %s", string(body))
+	if _, ok := payload["quote_id"]; ok {
+		t.Fatalf("retired quote_id leaked: %s", string(body))
+	}
+	if _, ok := payload["quote_original_url"]; ok {
+		t.Fatalf("retired quote_original_url leaked: %s", string(body))
+	}
+	if quote, ok := payload["quote"].(map[string]any); !ok || quote["state"] != "accepted" {
+		t.Fatalf("official quote missing: %s", string(body))
+	}
+}
+
+func TestStatusFromModelSerializesMastodon44FullAndShallowQuotes(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	quoted := &models.Status{
+		ID:         99,
+		Text:       "quoted",
+		CreatedAt:  now,
+		AccountID:  9,
+		Visibility: 0,
+		Account:    models.Account{ID: 9, Username: "bob", CreatedAt: now},
+		Quote: &models.Quote{
+			ID:             8,
+			StatusID:       99,
+			State:          models.QuoteStateAccepted,
+			QuotedStatusID: sql.NullInt64{Int64: 77, Valid: true},
+			QuotedStatus: &models.Status{
+				ID: 77, Text: "nested", CreatedAt: now, AccountID: 7, Visibility: 0,
+				Account: models.Account{ID: 7, Username: "carol", CreatedAt: now},
+			},
+		},
+	}
+	status := models.Status{
+		ID: 100, Text: "quoting", CreatedAt: now, AccountID: 10, Visibility: 0,
+		Account: models.Account{ID: 10, Username: "alice", CreatedAt: now},
+		Quote: &models.Quote{
+			ID:             10,
+			StatusID:       100,
+			State:          models.QuoteStateAccepted,
+			QuotedStatusID: sql.NullInt64{Int64: 99, Valid: true},
+			QuotedStatus:   quoted,
+		},
+	}
+
+	body, err := json.Marshal(StatusFromModel(cfg, status, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	quote := payload["quote"].(map[string]any)
+	if quote["state"] != "accepted" {
+		t.Fatalf("quote = %#v", quote)
+	}
+	quotedJSON := quote["quoted_status"].(map[string]any)
+	shallow := quotedJSON["quote"].(map[string]any)
+	if shallow["state"] != "accepted" || shallow["quoted_status_id"] != "77" {
+		t.Fatalf("shallow quote = %#v", shallow)
+	}
+	if _, recursive := shallow["quoted_status"]; recursive {
+		t.Fatalf("shallow quote recursed: %#v", shallow)
+	}
+}
+
+func TestStatusFromModelQuoteAvailabilityStates(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	base := models.Status{ID: 100, CreatedAt: now, AccountID: 10, Account: models.Account{ID: 10, Username: "alice", CreatedAt: now}}
+	tests := []struct {
+		name  string
+		quote *models.Quote
+		want  string
+	}{
+		{name: "pending", quote: &models.Quote{ID: 1, StatusID: 100, State: models.QuoteStatePending}, want: "pending"},
+		{name: "rejected", quote: &models.Quote{ID: 1, StatusID: 100, State: models.QuoteStateRejected}, want: "rejected"},
+		{name: "revoked", quote: &models.Quote{ID: 1, StatusID: 100, State: models.QuoteStateRevoked}, want: "revoked"},
+		{name: "deleted", quote: &models.Quote{ID: 1, StatusID: 100, State: models.QuoteStateAccepted}, want: "deleted"},
+		{name: "unauthorized", quote: &models.Quote{ID: 1, StatusID: 100, State: models.QuoteStateAccepted, QuotedStatus: &models.Status{ID: 99, Visibility: 2}, QuotedStatusVisibilityChecked: true}, want: "unauthorized"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := base
+			status.Quote = tt.quote
+			item := StatusFromModel(cfg, status, nil)
+			quote, ok := item.Quote.(Quote)
+			if !ok || quote.State != tt.want || quote.QuotedStatus != nil {
+				t.Fatalf("quote = %#v, want state=%q", item.Quote, tt.want)
+			}
+		})
 	}
 }
 
@@ -3526,6 +3692,23 @@ func TestMediaAttachmentFromModelUsesProxyForUncachedRemoteMedia(t *testing.T) {
 	}
 	if out.PreviewRemoteURL != "https://remote.example/thumb.jpg" {
 		t.Fatalf("PreviewRemoteURL = %q", out.PreviewRemoteURL)
+	}
+}
+
+func TestMediaAttachmentFromModelUsesProxyForDiscardedMedia(t *testing.T) {
+	cfg := config.Config{WebDomain: "example.test", Scheme: "https"}
+	out := MediaAttachmentFromModel(cfg, models.MediaAttachment{
+		ID:                127,
+		Discarded:         true,
+		FileFileName:      sql.NullString{String: "retained.png", Valid: true},
+		ThumbnailFileName: sql.NullString{String: "retained-small.png", Valid: true},
+		Processing:        sql.NullInt64{Int64: 2, Valid: true},
+	})
+	if out.URL != "https://example.test/media_proxy/127/original" {
+		t.Fatalf("discarded URL = %q", out.URL)
+	}
+	if out.PreviewURL != "https://example.test/media_proxy/127/small" {
+		t.Fatalf("discarded preview URL = %q", out.PreviewURL)
 	}
 }
 

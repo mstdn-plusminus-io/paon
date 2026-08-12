@@ -215,6 +215,14 @@ func userRoleAuditLogTarget(role models.UserRole) adminAuditLogTarget {
 	}
 }
 
+func relayAuditLogTarget(relay models.Relay) adminAuditLogTarget {
+	return adminAuditLogTarget{
+		Type:            "Relay",
+		ID:              relay.ID,
+		HumanIdentifier: relay.InboxURL,
+	}
+}
+
 func announcementAuditLogTarget(announcement models.Announcement) adminAuditLogTarget {
 	return adminAuditLogTarget{
 		Type:            "Announcement",

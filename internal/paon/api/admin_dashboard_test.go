@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
@@ -79,6 +80,21 @@ func TestAdminDashboardCountsNilDB(t *testing.T) {
 	}
 }
 
+func TestAdminDashboardPendingTagsOnlyCountsTrendRecords(t *testing.T) {
+	src, err := os.ReadFile("admin_dashboard.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`Joins("JOIN tag_trends ON tag_trends.tag_id = tags.id")`,
+		`Where("tags.reviewed_at IS NULL AND tags.requested_review_at IS NOT NULL")`,
+	} {
+		if !functionBodyContains(t, src, "adminDashboardCounts", want) {
+			t.Fatalf("adminDashboardCounts does not contain %q", want)
+		}
+	}
+}
+
 func TestAdminDashboardHTMLIncludesPendingCountsAndLinks(t *testing.T) {
 	html := adminDashboardHTML(adminDashboardCounts{PendingUsers: 2, PendingReports: 3, PendingTags: 5, PendingAppeals: 7}, "en")
 	for _, want := range []string{
@@ -106,6 +122,25 @@ func TestAdminDashboardHTMLIncludesPendingCountsAndLinks(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard html missing %q: %s", want, html)
 		}
+	}
+}
+
+func TestAdminDashboardCounterLinksRespectPermissions(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		permitted bool
+		wantHref  bool
+	}{
+		{name: "permitted", permitted: true, wantHref: true},
+		{name: "not permitted", permitted: false, wantHref: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			props := adminDashboardCounterProps("new_users", "2026-01-01", "2026-01-02", "New users", "/admin/accounts", tt.permitted)
+			_, hasHref := props["href"]
+			if hasHref != tt.wantHref {
+				t.Fatalf("href present = %v, want %v; props=%#v", hasHref, tt.wantHref, props)
+			}
+		})
 	}
 }
 

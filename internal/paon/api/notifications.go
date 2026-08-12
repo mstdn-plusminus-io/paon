@@ -27,6 +27,7 @@ var notificationTypes = map[string]struct{}{
 	"admin.report":          {},
 	"severed_relationships": {},
 	"moderation_warning":    {},
+	"annual_report":         {},
 }
 
 func (s *Server) notifications(c *echo.Context) error {
@@ -265,12 +266,15 @@ func (s *Server) hydrateNotificationReports(notifications []models.Notification)
 func (s *Server) hydrateNotificationSpecialEvents(notifications []models.Notification) error {
 	warningIndexes := map[int64][]int{}
 	severanceIndexes := map[int64][]int{}
+	annualReportIndexes := map[int64][]int{}
 	for i := range notifications {
 		switch notifications[i].ResolvedType() {
 		case "moderation_warning":
 			warningIndexes[notifications[i].ActivityID] = append(warningIndexes[notifications[i].ActivityID], i)
 		case "severed_relationships":
 			severanceIndexes[notifications[i].ActivityID] = append(severanceIndexes[notifications[i].ActivityID], i)
+		case "annual_report":
+			annualReportIndexes[notifications[i].ActivityID] = append(annualReportIndexes[notifications[i].ActivityID], i)
 		}
 	}
 	if len(warningIndexes) > 0 {
@@ -305,6 +309,23 @@ func (s *Server) hydrateNotificationSpecialEvents(notifications []models.Notific
 			for _, index := range severanceIndexes[events[i].ID] {
 				if events[i].AccountID == notifications[index].AccountID {
 					notifications[index].SeveranceEvent = &events[i]
+				}
+			}
+		}
+	}
+	if len(annualReportIndexes) > 0 {
+		ids := make([]int64, 0, len(annualReportIndexes))
+		for id := range annualReportIndexes {
+			ids = append(ids, id)
+		}
+		var reports []models.GeneratedAnnualReport
+		if err := s.db.Where("id IN ?", ids).Find(&reports).Error; err != nil {
+			return err
+		}
+		for i := range reports {
+			for _, index := range annualReportIndexes[reports[i].ID] {
+				if reports[i].AccountID == notifications[index].AccountID {
+					notifications[index].AnnualReport = &reports[i]
 				}
 			}
 		}

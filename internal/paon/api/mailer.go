@@ -34,7 +34,10 @@ type mailMessage struct {
 	Body     string
 	HTMLBody string
 	TextOnly bool
-	Headers  []mailHeader
+	// Bulk selects Mastodon 4.4's optional BULK_SMTP_* transport. Only
+	// announcement and terms-of-service distribution builders may set it.
+	Bulk    bool
+	Headers []mailHeader
 }
 
 type mailHeader struct {
@@ -960,6 +963,14 @@ func (s *Server) enqueueOrDeliverMail(user models.User, eligibility string, mess
 	return sendMail(s.cfg, message)
 }
 
+func (s *Server) enqueueOrDeliverBulkMail(user models.User, kind string, message mailMessage) error {
+	if kind != "announcement" && kind != "terms_of_service" {
+		return fmt.Errorf("bulk mail delivery: unsupported kind %q", kind)
+	}
+	message.Bulk = true
+	return s.enqueueOrDeliverMail(user, "bulk_"+kind, message)
+}
+
 func mailerRecipientStillBelongsToUser(user models.User, recipient string) bool {
 	address := strings.ToLower(strings.TrimSpace(envelopeMailAddress(recipient)))
 	if address == "" {
@@ -1051,6 +1062,9 @@ func accountWarningMailExplanation(action string, instance string) string {
 }
 
 func sendMail(cfg config.Config, message mailMessage) error {
+	if message.Bulk {
+		cfg = cfg.BulkMailSMTPConfig()
+	}
 	if !smtpDeliveryEnabled(cfg) {
 		captureDevelopmentMailPreview(cfg, message)
 		return nil
@@ -1659,6 +1673,13 @@ func notificationStatusTextBlock(locale string, status *models.Status, statusURL
 			body.WriteString("> ")
 			body.WriteString(strings.ReplaceAll(text, "\n", "\n> "))
 			body.WriteString("\n\n")
+		}
+		if status.Account.Local() && status.Quote != nil && status.Quote.QuotedStatus != nil {
+			if text := strings.TrimSpace(stripHTML(status.Quote.QuotedStatus.Text)); text != "" {
+				body.WriteString(">\n>> ")
+				body.WriteString(strings.ReplaceAll(text, "\n", "\n>> "))
+				body.WriteString("\n\n")
+			}
 		}
 	}
 	if strings.TrimSpace(statusURL) != "" {

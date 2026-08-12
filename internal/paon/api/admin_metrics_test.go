@@ -101,6 +101,60 @@ func TestAdminMetricsRangeIncludesEndDay(t *testing.T) {
 	}
 }
 
+func TestAdminMetricsMastodon4421RequiredParameters(t *testing.T) {
+	tests := []struct {
+		name        string
+		payload     adminMetricsPayload
+		requireKeys bool
+		want        string
+	}{
+		{name: "measures keys first", payload: adminMetricsPayload{}, requireKeys: true, want: "keys"},
+		{name: "measures start", payload: adminMetricsPayload{Keys: []string{"new_users"}}, requireKeys: true, want: "start_at"},
+		{name: "measures end", payload: adminMetricsPayload{Keys: []string{"new_users"}, StartAt: "2026-01-01"}, requireKeys: true, want: "end_at"},
+		{name: "measures complete", payload: adminMetricsPayload{Keys: []string{"new_users"}, StartAt: "2026-01-01", EndAt: "2026-07-01"}, requireKeys: true},
+		{name: "retention does not require keys", payload: adminMetricsPayload{StartAt: "2026-01-01", EndAt: "2026-07-01"}, want: ""},
+		{name: "retention start", payload: adminMetricsPayload{EndAt: "2026-07-01"}, want: "start_at"},
+		{name: "retention blank end", payload: adminMetricsPayload{StartAt: "2026-01-01", EndAt: "  "}, want: "end_at"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := adminMetricsMissingRequiredParameter(test.payload, test.requireKeys); got != test.want {
+				t.Fatalf("missing parameter = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/measures", nil)
+	rec := httptest.NewRecorder()
+	c := echo.NewContext(req, rec, echo.New())
+	err := adminMetricsRequiredParameterError(c, "keys")
+	apiErr, ok := err.(apiHTTPError)
+	if !ok || apiErr.status != http.StatusBadRequest || apiErr.message != "param is missing or the value is empty: keys" {
+		t.Fatalf("required parameter error = %#v", err)
+	}
+}
+
+func TestAdminMetricsMastodon4421RangeLimits(t *testing.T) {
+	start, end := adminMetricsRange("2020-01-01", "2026-06-18")
+	wantTwoYears := time.Date(2024, 6, 18, 0, 0, 0, 0, time.UTC)
+	if got := adminMetricsTwoYearStart(start, end); !got.Equal(wantTwoYears) {
+		t.Fatalf("two-year measure start = %s, want %s", got, wantTwoYears)
+	}
+	recent := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if got := adminMetricsTwoYearStart(recent, end); !got.Equal(recent) {
+		t.Fatalf("recent measure start = %s, want unchanged %s", got, recent)
+	}
+
+	wantDaily := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
+	if got := adminRetentionMaximumStart(start, end, "day"); !got.Equal(wantDaily) {
+		t.Fatalf("daily retention start = %s, want %s", got, wantDaily)
+	}
+	wantMonthly := time.Date(2025, 6, 18, 0, 0, 0, 0, time.UTC)
+	if got := adminRetentionMaximumStart(start, end, "month"); !got.Equal(wantMonthly) {
+		t.Fatalf("monthly retention start = %s, want %s", got, wantMonthly)
+	}
+}
+
 func TestAdminRedisMeasuresReturnReactCompatibleZeroSeriesWithoutDB(t *testing.T) {
 	start, end := adminMetricsRange("2026-06-01", "2026-06-02")
 	for _, key := range []string{"active_users", "interactions"} {

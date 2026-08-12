@@ -45,6 +45,39 @@ func (s *Server) endorsements(c *echo.Context) error {
 	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
 }
 
+func (s *Server) accountEndorsements(c *echo.Context) error {
+	c.Response().Header().Set("Vary", "Authorization")
+	publicRESTCacheIfUnauthenticated(c, 60)
+	account, err := s.findAccountByID(c.Param("id"))
+	if err != nil {
+		return apiError(c, http.StatusNotFound, "Record not found")
+	}
+	if account.SuspendedAt.Valid {
+		return c.JSON(http.StatusOK, []serializer.Account{})
+	}
+	query := s.db.Model(&models.Account{}).
+		Joins("JOIN account_pins ON account_pins.target_account_id = accounts.id").
+		Preload("AccountStat").
+		Preload("User.Role").
+		Where("account_pins.account_id = ?", account.ID).
+		Where("accounts.suspended_at IS NULL")
+	if maxID := c.QueryParam("max_id"); queryParamValuePresent(c, "max_id") {
+		query = query.Where("accounts.id < ?", maxID)
+	}
+	if sinceID := c.QueryParam("since_id"); queryParamValuePresent(c, "since_id") {
+		query = query.Where("accounts.id > ?", sinceID)
+	}
+	limitValue := limit(c, 40, 80)
+	var accounts []models.Account
+	if err := query.Order("accounts.id DESC").Limit(limitValue).Find(&accounts).Error; err != nil {
+		return err
+	}
+	if len(accounts) > 0 {
+		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, accounts[0].ID, accounts[len(accounts)-1].ID, "since_id", len(accounts) == limitValue))
+	}
+	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
+}
+
 func (s *Server) identityProofs(c *echo.Context) error {
 	c.Response().Header().Set("Vary", "Authorization")
 	if _, _, err := s.requireUser(c); err != nil {

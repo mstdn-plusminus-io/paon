@@ -117,6 +117,30 @@ func TestPreviewCardExtractsCreatorAndNormalizedHTMLLanguage(t *testing.T) {
 	}
 }
 
+func TestPreviewCardHTMLMetadataMatchesMastodon44HeadAndCaseRules(t *testing.T) {
+	fetched, ok := previewCardFromHTML("https://news.example/original", `<html lang="en"><head>
+<title>Head title</title>
+<meta name="descripTION" content="Head description">
+<meta property="OG:title" content="OpenGraph title">
+<meta property="og:title" content="Later duplicate">
+<link rel="alternate CANONICAL" href="/canonical">
+</head><body>
+<title>Body poison</title>
+<meta property="og:title" content="Body poison">
+<meta name="description" content="Body poison">
+<link rel="canonical" href="/body-poison">
+</body></html>`, time.Now().UTC())
+	if !ok {
+		t.Fatal("preview card was not extracted")
+	}
+	if fetched.card.Title != "OpenGraph title" || fetched.card.Description != "Head description" {
+		t.Fatalf("head metadata = title:%q description:%q", fetched.card.Title, fetched.card.Description)
+	}
+	if fetched.card.URL != "https://news.example/canonical" {
+		t.Fatalf("canonical URL = %q", fetched.card.URL)
+	}
+}
+
 func TestPreviewCardAccountAttributionAllowsConfiguredParentDomainOnly(t *testing.T) {
 	account := models.Account{AttributionDomains: models.StringArray{"example.com"}}
 	if !previewCardAccountAllowsAttribution(account, "news.example.com") {

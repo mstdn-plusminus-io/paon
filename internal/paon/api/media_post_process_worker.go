@@ -577,7 +577,7 @@ func mediaTranscodeMetadataFromFFProbeJSON(raw []byte) mediaTranscodeMetadata {
 }
 
 func (metadata mediaTranscodeMetadata) eligibleForPassthrough() bool {
-	return metadata.valid && metadata.videoCodec == "h264" && (metadata.audioCodec == "aac" || metadata.audioCodec == "") && metadata.colorspace == "yuv420p"
+	return metadata.valid && metadata.videoCodec == "h264" && (metadata.audioCodec == "aac" || metadata.audioCodec == "") && (metadata.colorspace == "yuv420p" || metadata.colorspace == "yuvj420p")
 }
 
 func (metadata mediaTranscodeMetadata) highVariableFrameRate() bool {

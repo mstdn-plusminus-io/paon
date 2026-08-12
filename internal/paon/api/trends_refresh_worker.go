@@ -90,12 +90,25 @@ func (s *Server) refreshTrends(ctx context.Context, now time.Time) int {
 }
 
 func (s *Server) recordTagTrendUse(ctx context.Context, accountID int64, visibility int, tagIDs []int64, now time.Time) {
-	if s == nil || accountID == 0 || visibility != 0 || len(tagIDs) == 0 {
+	if s == nil || s.db == nil || accountID == 0 || visibility != 0 || len(tagIDs) == 0 {
+		return
+	}
+	var accountCount int64
+	if err := s.db.WithContext(ctx).Model(&models.Account{}).
+		Where("id = ? AND silenced_at IS NULL", accountID).
+		Count(&accountCount).Error; err != nil || accountCount == 0 {
+		return
+	}
+	var usableTagIDs []int64
+	if err := s.db.WithContext(ctx).Model(&models.Tag{}).
+		Where("id IN ?", uniqueInt64s(tagIDs)).
+		Where("usable IS NULL OR usable = ?", true).
+		Pluck("id", &usableTagIDs).Error; err != nil {
 		return
 	}
 	day := truncateMetricTime(now, "day")
 	usedKey := trendUsedKey(s.cfg.RedisNamespace, "trending_tags", now)
-	for _, tagID := range uniqueInt64s(tagIDs) {
+	for _, tagID := range usableTagIDs {
 		if tagID <= 0 {
 			continue
 		}
@@ -163,31 +176,49 @@ func (s *Server) recordPreviewCardTrendUseForStatus(ctx context.Context, account
 
 func (s *Server) refreshTagTrends(ctx context.Context, now time.Time) int {
 	ids := s.tagTrendCandidateIDs(ctx, now)
-	if len(ids) == 0 {
-		_ = s.replaceTrendZSets(ctx, "trending_tags", nil, nil)
-		return 0
+	refreshed := 0
+	for _, batch := range int64Batches(ids, trendBatchSize) {
+		var tags []models.Tag
+		if err := s.db.WithContext(ctx).Where("id IN ?", batch).Find(&tags).Error; err != nil {
+			continue
+		}
+		refreshed += s.calculateTagTrendScores(ctx, tags, now)
 	}
-	var tags []models.Tag
-	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&tags).Error; err != nil {
-		return 0
-	}
-	items := make([]trendZSetItem, 0, len(tags))
-	allowed := make([]trendZSetItem, 0, len(tags))
+	_ = s.recalculateTagTrendRanks(ctx)
+	return refreshed
+}
+
+func (s *Server) calculateTagTrendScores(ctx context.Context, tags []models.Tag, now time.Time) int {
+	upserts := make([]models.TagTrend, 0, len(tags))
+	deleteIDs := make([]int64, 0, len(tags))
 	for _, tag := range tags {
 		score := s.tagTrendScore(ctx, tag, now)
 		if score < trendTagDecayThreshold {
+			deleteIDs = append(deleteIDs, tag.ID)
 			continue
 		}
-		item := trendZSetItem{ID: tag.ID, Score: score}
-		items = append(items, item)
-		if s.tagTrendAllowed(tag) {
-			allowed = append(allowed, item)
+		upserts = append(upserts, models.TagTrend{
+			TagID:    tag.ID,
+			Score:    score,
+			Allowed:  s.tagTrendAllowed(tag),
+			Language: "",
+		})
+	}
+	refreshed := 0
+	if len(upserts) > 0 {
+		if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "tag_id"}, {Name: "language"}},
+			DoUpdates: clause.AssignmentColumns([]string{"score", "allowed"}),
+		}).Create(&upserts).Error; err == nil {
+			refreshed += len(upserts)
 		}
 	}
-	if err := s.replaceTrendZSets(ctx, "trending_tags", items, allowed); err != nil {
-		return 0
+	if len(deleteIDs) > 0 {
+		if err := s.db.WithContext(ctx).Where("tag_id IN ?", deleteIDs).Delete(&models.TagTrend{}).Error; err == nil {
+			refreshed += len(deleteIDs)
+		}
 	}
-	return len(items)
+	return refreshed
 }
 
 func (s *Server) tagTrendCandidateIDs(ctx context.Context, now time.Time) []int64 {
@@ -219,24 +250,9 @@ func (s *Server) tagTrendCandidateIDs(ctx context.Context, now time.Time) []int6
 			addText(members)
 		}
 	}
-	if value, err := s.redisCommand(ctx, "ZREVRANGE", s.cfg.RedisNamespace+"trending_tags:all", "0", "-1"); err == nil {
-		if members, ok := redisStringArray(value); ok {
-			addText(members)
-		}
-	}
-	var fallback []int64
-	_ = s.db.WithContext(ctx).
-		Model(&models.Tag{}).
-		Select("tags.id").
-		Joins("JOIN statuses_tags ON statuses_tags.tag_id = tags.id").
-		Joins("JOIN statuses ON statuses.id = statuses_tags.status_id").
-		Where("statuses.deleted_at IS NULL AND statuses.visibility = ?", 0).
-		Where("statuses.created_at >= ?", now.Add(-24*time.Hour)).
-		Group("tags.id").
-		Having("COUNT(DISTINCT statuses.account_id) >= ?", trendTagThreshold).
-		Limit(1000).
-		Pluck("tags.id", &fallback).Error
-	addInt64(fallback)
+	var existing []int64
+	_ = s.db.WithContext(ctx).Model(&models.TagTrend{}).Pluck("tag_id", &existing).Error
+	addInt64(existing)
 	return out
 }
 
@@ -298,67 +314,6 @@ func (s *Server) tagTrendAllowed(tag models.Tag) bool {
 	return s.settingBoolValue("trendable_by_default", false)
 }
 
-type trendZSetItem struct {
-	ID    int64
-	Score float64
-}
-
-func (s *Server) trendZSetMembersWithScores(ctx context.Context, key string, start int, stop int) ([]trendZSetItem, error) {
-	value, err := s.redisCommand(ctx, "ZREVRANGE", s.cfg.RedisNamespace+key, strconv.Itoa(start), strconv.Itoa(stop), "WITHSCORES")
-	if err != nil {
-		return nil, err
-	}
-	items, ok := value.([]any)
-	if !ok {
-		return nil, nil
-	}
-	out := make([]trendZSetItem, 0, len(items)/2)
-	for i := 0; i+1 < len(items); i += 2 {
-		member, ok := items[i].(string)
-		if !ok {
-			continue
-		}
-		id, err := strconv.ParseInt(strings.TrimSpace(member), 10, 64)
-		if err != nil || id <= 0 {
-			continue
-		}
-		score := 0.0
-		switch value := items[i+1].(type) {
-		case string:
-			score, _ = strconv.ParseFloat(strings.TrimSpace(value), 64)
-		case int64:
-			score = float64(value)
-		}
-		out = append(out, trendZSetItem{ID: id, Score: score})
-	}
-	return out, nil
-}
-
-func (s *Server) replaceTrendZSets(ctx context.Context, prefix string, all []trendZSetItem, allowed []trendZSetItem) error {
-	if _, err := s.redisCommand(ctx, "DEL", s.cfg.RedisNamespace+prefix+":all", s.cfg.RedisNamespace+prefix+":allowed"); err != nil {
-		return err
-	}
-	if len(all) > 0 {
-		args := []string{"ZADD", s.cfg.RedisNamespace + prefix + ":all"}
-		for _, item := range all {
-			args = append(args, strconv.FormatFloat(item.Score, 'f', -1, 64), strconv.FormatInt(item.ID, 10))
-		}
-		if _, err := s.redisCommand(ctx, args...); err != nil {
-			return err
-		}
-	}
-	if len(allowed) > 0 {
-		args := []string{"ZADD", s.cfg.RedisNamespace + prefix + ":allowed"}
-		for _, item := range allowed {
-			args = append(args, strconv.FormatFloat(item.Score, 'f', -1, 64), strconv.FormatInt(item.ID, 10))
-		}
-		if _, err := s.redisCommand(ctx, args...); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func trendUsedKey(redisPrefix string, prefix string, at time.Time) string {
 	return redisPrefix + prefix + ":used:" + strconv.FormatInt(truncateMetricTime(at, "day").Unix(), 10)
 }
@@ -390,6 +345,7 @@ func (s *Server) refreshStatusTrends(ctx context.Context, now time.Time) int {
 		if err := s.db.WithContext(ctx).
 			Preload("StatusStat").
 			Preload("Account").
+			Preload("Quote.QuotedStatus.Account").
 			Where("id IN ?", batch).
 			Find(&statuses).Error; err != nil {
 			continue
@@ -501,7 +457,24 @@ func statusTrendEligible(status models.Status) bool {
 		validTrendLocale(status.Language.String) &&
 		status.Account.Discoverable.Valid && status.Account.Discoverable.Bool &&
 		!status.Account.SilencedAt.Valid &&
-		!status.Account.SensitizedAt.Valid
+		!status.Account.SensitizedAt.Valid &&
+		statusTrendQuoteEligible(status.Quote)
+}
+
+func statusTrendQuoteEligible(quote *models.Quote) bool {
+	if quote == nil {
+		return true
+	}
+	if !statusQuoteAcceptable(quote) || quote.QuotedStatus == nil {
+		return false
+	}
+	quoted := quote.QuotedStatus
+	return quoted.Visibility == 0 &&
+		quoted.Account.Discoverable.Valid && quoted.Account.Discoverable.Bool &&
+		!quoted.Account.SilencedAt.Valid &&
+		!quoted.Account.SensitizedAt.Valid &&
+		!quoted.Sensitive &&
+		strings.TrimSpace(quoted.SpoilerText) == ""
 }
 
 func statusTrendAllowed(status models.Status) bool {
@@ -678,6 +651,10 @@ func (s *Server) recalculateStatusTrendRanks(ctx context.Context) error {
 	return s.db.WithContext(ctx).Exec(`UPDATE status_trends SET rank = t0.calculated_rank FROM (SELECT id, row_number() OVER w AS calculated_rank FROM status_trends WINDOW w AS (PARTITION BY language ORDER BY score DESC)) t0 WHERE status_trends.id = t0.id`).Error
 }
 
+func (s *Server) recalculateTagTrendRanks(ctx context.Context) error {
+	return s.db.WithContext(ctx).Exec(`UPDATE tag_trends SET rank = t0.calculated_rank FROM (SELECT id, row_number() OVER w AS calculated_rank FROM tag_trends WINDOW w AS (PARTITION BY language ORDER BY score DESC)) t0 WHERE tag_trends.id = t0.id`).Error
+}
+
 func (s *Server) recalculatePreviewCardTrendRanks(ctx context.Context) error {
 	return s.db.WithContext(ctx).Exec(`UPDATE preview_card_trends SET rank = t0.calculated_rank FROM (SELECT id, row_number() OVER w AS calculated_rank FROM preview_card_trends WINDOW w AS (PARTITION BY language ORDER BY score DESC)) t0 WHERE preview_card_trends.id = t0.id`).Error
 }
@@ -718,29 +695,18 @@ func (s *Server) requestTrendsReview(ctx context.Context, now time.Time) int {
 }
 
 func (s *Server) requestTagTrendReviews(ctx context.Context, now time.Time) []trendsReviewTag {
-	all, err := s.trendZSetMembersWithScores(ctx, "trending_tags:all", 0, -1)
-	if err != nil || len(all) == 0 {
-		return nil
-	}
 	threshold := s.tagTrendReviewScore(ctx)
-	ids := make([]int64, 0, len(all))
-	scores := make(map[int64]float64, len(all))
-	for _, item := range all {
-		if item.Score > threshold {
-			ids = append(ids, item.ID)
-			scores[item.ID] = item.Score
-		}
-	}
-	if len(ids) == 0 {
+	var trends []models.TagTrend
+	if err := s.db.WithContext(ctx).
+		Preload("Tag").
+		Where("allowed = ? AND score > ?", false, threshold).
+		Find(&trends).Error; err != nil {
 		return nil
 	}
-	var tags []models.Tag
-	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&tags).Error; err != nil {
-		return nil
-	}
-	reviewTags := make([]trendsReviewTag, 0, len(tags))
-	for _, tag := range tags {
-		if scores[tag.ID] <= threshold || s.tagTrendAllowed(tag) || tag.ReviewedAt.Valid || tag.RequestedReviewAt.Valid {
+	reviewTags := make([]trendsReviewTag, 0, len(trends))
+	for _, trend := range trends {
+		tag := trend.Tag
+		if s.tagTrendAllowed(tag) || tag.ReviewedAt.Valid || tag.RequestedReviewAt.Valid {
 			continue
 		}
 		err := s.db.WithContext(ctx).Model(&models.Tag{}).Where("id = ?", tag.ID).Updates(map[string]any{
@@ -748,18 +714,22 @@ func (s *Server) requestTagTrendReviews(ctx context.Context, now time.Time) []tr
 			"updated_at":          now,
 		}).Error
 		if err == nil {
-			reviewTags = append(reviewTags, trendsReviewTag{Name: trendReviewTagName(tag), Score: scores[tag.ID]})
+			reviewTags = append(reviewTags, trendsReviewTag{Name: trendReviewTagName(tag), Score: trend.Score})
 		}
 	}
 	return reviewTags
 }
 
 func (s *Server) tagTrendReviewScore(ctx context.Context) float64 {
-	items, err := s.trendZSetMembersWithScores(ctx, "trending_tags:allowed", 0, trendReviewThresholdRank-1)
-	if err != nil || len(items) == 0 {
+	var trend models.TagTrend
+	err := s.db.WithContext(ctx).
+		Where("allowed = ? AND rank <= ?", true, trendReviewThresholdRank).
+		Order("rank DESC").
+		First(&trend).Error
+	if err != nil {
 		return 0
 	}
-	return items[len(items)-1].Score
+	return trend.Score
 }
 
 func (s *Server) requestStatusTrendReviews(ctx context.Context, now time.Time) []trendsReviewStatus {

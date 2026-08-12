@@ -156,6 +156,8 @@ func TestDomainBlockCreationClearsRailsFeedCaches(t *testing.T) {
 	}{
 		{"domain_blocks.go", "createDomainBlock", `s.enqueueAfterAccountDomainBlockOrRun(c.Request().Context(), account.ID, domain)`},
 		{"domain_blocks.go", "runAfterAccountDomainBlockEffects", `s.clearDomainBlockFeedCaches(ctx, accountID, []string{domain})`},
+		{"domain_blocks.go", "runAfterAccountDomainBlockEffects", `s.unmergeListFeedsAfterUnfollowBestEffort(ctx, effect.FromAccountID, effect.ListIDs)`},
+		{"domain_blocks.go", "cleanupDomainBlockRecords", `deleteFollowWithAffectedListIDs(tx, row)`},
 		{"imports.go", "processDomainBlockImport", `s.clearDomainBlockFeedCaches(context.Background(), bulkImport.AccountID, invalidateDomains)`},
 		{"domain_blocks.go", "clearDomainBlockFeedCaches", `s.clearHomeFeedCacheContext(ctx, accountID)`},
 		{"domain_blocks.go", "clearDomainBlockFeedCaches", `JOIN list_accounts ON list_accounts.list_id = lists.id`},

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/labstack/echo/v5"
@@ -15,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -68,16 +70,18 @@ func TestWorkerRedisFederationAndSearchSpansExcludePayloadsAndArguments(t *testi
 		t.Fatalf("worker middleware: %v", err)
 	}
 
-	_, finishRedis := StartRedis(context.Background(), "GET")
+	redisCtx, redisParent := tracer().Start(context.Background(), "redis-parent")
+	_, finishRedis := StartRedis(redisCtx, "GET")
 	finishRedis(nil)
+	redisParent.End()
 	_, finishFederation := StartFederation(context.Background(), "inbox")
 	finishFederation(http.StatusAccepted, nil)
 	_, finishSearch := StartSearch(context.Background(), 7, 20)
 	finishSearch(3, nil)
 
 	spans := recorder.Ended()
-	if len(spans) != 4 {
-		t.Fatalf("ended spans = %d, want 4", len(spans))
+	if len(spans) != 5 {
+		t.Fatalf("ended spans = %d, want 5", len(spans))
 	}
 	for _, span := range spans {
 		assertNoSensitiveTelemetry(t, span.Name(), span.Attributes(), "worker-secret", "token", "private-search")
@@ -86,6 +90,50 @@ func TestWorkerRedisFederationAndSearchSpansExcludePayloadsAndArguments(t *testi
 		}
 		if span.Name() == "redis GET" {
 			assertAttributeKeys(t, span.Attributes(), "db.operation.name", "db.system.name")
+		}
+	}
+}
+
+func TestRedisMetricsDoNotCreateRootTrace(t *testing.T) {
+	recorder := installSpanRecorder(t)
+	_, finish := StartRedis(context.Background(), "GET")
+	finish(nil)
+	if spans := recorder.Ended(); len(spans) != 0 {
+		t.Fatalf("rootless Redis command created %d spans", len(spans))
+	}
+}
+
+func TestTraceIDsRetainUnsampledUpstreamCorrelation(t *testing.T) {
+	traceID, err := oteltrace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanID, err := oteltrace.SpanIDFromHex("0102030405060708")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := oteltrace.ContextWithRemoteSpanContext(context.Background(), oteltrace.NewSpanContext(oteltrace.SpanContextConfig{TraceID: traceID, SpanID: spanID, Remote: true}))
+	gotTrace, gotSpan := TraceIDs(ctx)
+	if gotTrace != traceID.String() || gotSpan != spanID.String() {
+		t.Fatalf("TraceIDs = %q/%q, want %q/%q", gotTrace, gotSpan, traceID, spanID)
+	}
+}
+
+func TestRequestQueueDurationAcceptsSecondsAndMilliseconds(t *testing.T) {
+	now := time.Unix(1_750_000_000, 500_000_000)
+	for _, value := range []string{"t=1749999999.25", "1749999999250"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Request-Start", value)
+		got, ok := requestQueueDuration(req, now)
+		if !ok || got < 1.24 || got > 1.26 {
+			t.Fatalf("queue duration for %q = %f, %t", value, got, ok)
+		}
+	}
+	for _, value := range []string{"", "secret", "t=9999999999999999"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("X-Request-Start", value)
+		if _, ok := requestQueueDuration(req, now); ok {
+			t.Fatalf("invalid queue start %q was accepted", value)
 		}
 	}
 }

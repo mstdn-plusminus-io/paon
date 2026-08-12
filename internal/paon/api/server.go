@@ -53,8 +53,10 @@ type Server struct {
 	pgHeroOtherDB     *gorm.DB
 	renderer          *web.Renderer
 	webPushDeliverer  webPushDeliverFunc
-	quoteStore        statusQuoteStore
 	s3Storage         *s3SDKStorage
+	swiftAuthMu       sync.Mutex
+	swiftAuthValue    string
+	swiftAuthExpires  time.Time
 	asynqClient       *asynq.Client
 	asynqInspector    asynqInspectorClient
 	asynqTaskRetryer  asynqTaskRetryer
@@ -116,7 +118,6 @@ type statusCreatePayload struct {
 	Visibility         string
 	InReplyToID        string
 	ScheduledAt        string
-	QuoteID            string
 	AllowedMentions    []string
 	HasAllowedMentions bool
 	ApplicationID      sql.NullInt64
@@ -229,17 +230,13 @@ func NewServer(cfg config.Config, database *gorm.DB) (*Server, error) {
 	e.Use(hostAuthorizationMiddleware(cfg))
 	e.Use(forceSSLMiddleware(cfg))
 	e.Use(apiRateLimitHeadersMiddleware)
-	e.Use(securityHeadersMiddleware)
+	e.Use(securityHeadersMiddleware(database))
 	e.Use(contentSecurityPolicyMiddleware(cfg))
 	e.Use(staticFileServerHeadersMiddleware(cfg))
 	e.Use(statsDMiddleware(cfg))
 	e.Use(privateNoStoreWebMiddleware(cfg))
 	e.Use(encodedAtMiddleware)
 
-	quoteStore, err := newStatusQuoteStore(cfg, nil)
-	if err != nil {
-		return nil, err
-	}
 	pgHeroStatsDB, err := paondb.OpenPgHeroStats(cfg)
 	if err != nil {
 		return nil, err
@@ -256,7 +253,7 @@ func NewServer(cfg config.Config, database *gorm.DB) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	server := &Server{echo: e, cfg: cfg, browserSessionKey: browserSessionKey, db: database, pgHeroStatsDB: pgHeroStatsDB, pgHeroOtherDB: pgHeroOtherDB, renderer: renderer, quoteStore: quoteStore, s3Storage: s3Storage, asynqClient: asynq.NewClient(asynqRedisOpt(cfg)), asynqInspector: asynq.NewInspector(asynqRedisOpt(cfg)), asynqTaskRetryer: asynqTaskRetryer}
+	server := &Server{echo: e, cfg: cfg, browserSessionKey: browserSessionKey, db: database, pgHeroStatsDB: pgHeroStatsDB, pgHeroOtherDB: pgHeroOtherDB, renderer: renderer, s3Storage: s3Storage, asynqClient: asynq.NewClient(asynqRedisOpt(cfg)), asynqInspector: asynq.NewInspector(asynqRedisOpt(cfg)), asynqTaskRetryer: asynqTaskRetryer}
 	e.HTTPErrorHandler = server.handleHTTPError
 	setAppAssets(renderer)
 	i18nStore := i18n.NewStore(localesDirFor(cfg.PublicDir))
@@ -754,16 +751,53 @@ func requestIsHTTPS(req *http.Request) bool {
 	return req != nil && (req.TLS != nil || strings.EqualFold(req.Header.Get("X-Forwarded-Proto"), "https"))
 }
 
-func securityHeadersMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c *echo.Context) error {
-		header := c.Response().Header()
-		setHeaderIfAbsent(header, "Server", "Mastodon")
-		setHeaderIfAbsent(header, "X-Frame-Options", "DENY")
-		setHeaderIfAbsent(header, "X-Content-Type-Options", "nosniff")
-		setHeaderIfAbsent(header, "X-XSS-Protection", "0")
-		setHeaderIfAbsent(header, "Referrer-Policy", "same-origin")
-		return next(c)
+func securityHeadersMiddleware(databases ...*gorm.DB) echo.MiddlewareFunc {
+	var database *gorm.DB
+	if len(databases) > 0 {
+		database = databases[0]
 	}
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			header := c.Response().Header()
+			setHeaderIfAbsent(header, "Server", "Mastodon")
+			setHeaderIfAbsent(header, "X-Frame-Options", "DENY")
+			setHeaderIfAbsent(header, "X-Content-Type-Options", "nosniff")
+			setHeaderIfAbsent(header, "X-XSS-Protection", "0")
+			referrerPolicy := "same-origin"
+			if webAppReferrerPolicyPath(c.Request().URL.Path) && database != nil && (&Server{db: database}).settingBoolValue("allow_referrer_origin", false) {
+				referrerPolicy = "strict-origin-when-cross-origin"
+			}
+			setHeaderIfAbsent(header, "Referrer-Policy", referrerPolicy)
+			return next(c)
+		}
+	}
+}
+
+func webAppReferrerPolicyPath(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "/" || strings.HasPrefix(path, "/@") {
+		return true
+	}
+	for _, route := range []string{"/about", "/privacy-policy", "/terms-of-service", "/tags"} {
+		if path == route || strings.HasPrefix(path, route+"/") || strings.HasPrefix(path, route+".") {
+			return true
+		}
+	}
+	// These are the paths from Mastodon's web_app route set. Match whole path
+	// segments so similarly named settings pages (for example
+	// /statuses_cleanup) keep the global same-origin policy.
+	for _, route := range []string{
+		"/blocks", "/bookmarks", "/conversations", "/deck", "/directory",
+		"/domain_blocks", "/explore", "/favourites", "/follow_requests",
+		"/followed_tags", "/getting-started", "/home", "/keyboard-shortcuts",
+		"/links", "/lists", "/mutes", "/notifications", "/notifications_v2",
+		"/pinned", "/public", "/publish", "/search", "/start", "/statuses",
+	} {
+		if path == route || strings.HasPrefix(path, route+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func contentSecurityPolicyMiddleware(cfg config.Config) echo.MiddlewareFunc {
@@ -793,7 +827,8 @@ func railsContentSecurityPolicy(cfg config.Config) string {
 	assetsHost := firstNonEmptyString(cfg.CDNHost, cfg.BaseURL())
 	mediaHost := firstNonEmptyString(strings.TrimRight(cfg.CSPMediaHost, "/"), strings.TrimRight(cfg.StorageHost, "/"), assetsHost)
 	streamingHost := cfg.StreamingBaseURL()
-	connectHosts := []string{assetsHost, mediaHost, streamingHost}
+	mediaHosts := uniqueNonEmptyStrings(append([]string{assetsHost, mediaHost}, cfg.ExtraMediaHosts...))
+	connectHosts := append(append([]string(nil), mediaHosts...), streamingHost)
 	connectHosts = append(connectHosts, railsShakapackerDevServerURLs(cfg)...)
 	formAction := "form-action 'self'"
 	if ssoFormActionURL := strings.TrimSpace(cfg.SSOFormActionURL); ssoFormActionURL != "" {
@@ -808,9 +843,9 @@ func railsContentSecurityPolicy(cfg config.Config) string {
 		"default-src 'none'",
 		"frame-ancestors 'none'",
 		"font-src 'self' " + assetsHost,
-		"img-src 'self' https: data: blob: " + assetsHost,
+		"img-src 'self' https: data: blob: " + strings.Join(mediaHosts, " "),
 		"style-src 'self' 'unsafe-inline' " + assetsHost,
-		"media-src 'self' https: data: " + assetsHost,
+		"media-src 'self' https: data: " + strings.Join(mediaHosts, " "),
 		"frame-src 'self' https:",
 		"manifest-src 'self' " + assetsHost,
 		formAction,
@@ -1614,6 +1649,7 @@ func (s *Server) apiAuthenticationGateMiddleware(next echo.HandlerFunc) echo.Han
 
 func (s *Server) routes() {
 	e := s.echo
+	s.registerFASPRoutes()
 
 	e.GET("/health", s.health)
 	e.GET("/health.:format", s.health)
@@ -1629,6 +1665,8 @@ func (s *Server) routes() {
 	e.GET("/intent.:format", s.intent)
 	e.GET("/privacy-policy.:format", s.privacyPolicy)
 	e.GET("/privacy-policy", s.privacyPolicy)
+	e.GET("/terms-of-service/:date", s.termsOfServicePage)
+	e.GET("/terms-of-service", s.termsOfServicePage)
 	e.GET("/api/oembed", s.oEmbed)
 	e.GET("/.well-known/nodeinfo", s.nodeInfoDiscovery)
 	e.GET("/.well-known/nodeinfo.json", s.nodeInfoDiscovery)
@@ -1652,6 +1690,8 @@ func (s *Server) routes() {
 	e.GET("/nodeinfo/2.0.:format", s.nodeInfo)
 	e.GET("/custom.css.:format", s.customCSS)
 	e.GET("/custom.css", s.customCSS)
+	e.GET("/css/:id.:format", optionalFormatPathParam("id", s.customCSSImmutable))
+	e.GET("/css/:id", s.customCSSImmutable)
 	e.GET("/media/:id/player.:format", s.publicMediaPlayer)
 	e.GET("/media/:id/player", s.publicMediaPlayer)
 	e.GET("/media/:id.:format", s.publicMedia)
@@ -1771,6 +1811,8 @@ func (s *Server) routes() {
 	e.POST("/oauth/authorize", s.oauthAuthorizeDecision)
 	e.DELETE("/oauth/authorize", s.oauthAuthorizeDecision)
 	e.POST("/oauth/token", s.oauthToken)
+	e.GET("/oauth/userinfo", s.oauthUserInfo)
+	e.POST("/oauth/userinfo", s.oauthUserInfo)
 	e.POST("/oauth/introspect", s.oauthIntrospect)
 	e.GET("/oauth/token/info", s.oauthTokenInfo)
 	e.POST("/oauth/revoke", s.oauthRevoke)
@@ -1807,9 +1849,9 @@ func (s *Server) routes() {
 	e.StaticFS("/assets", os.DirFS(filepath.Join(s.cfg.PublicDir, "assets")))
 	e.StaticFS("/emoji", os.DirFS(filepath.Join(s.cfg.PublicDir, "emoji")))
 	systemFS := os.DirFS(s.cfg.SystemAssetPath())
-	e.StaticFS("/system", systemFS)
+	e.GET("/system*", s.mediaPrivacyStaticHandler(systemFS))
 	if rootURL := strings.TrimRight(strings.TrimSpace(s.cfg.PaperclipRootURL), "/"); rootURL != "" && rootURL != "/system" && !strings.HasPrefix(rootURL, "http://") && !strings.HasPrefix(rootURL, "https://") {
-		e.StaticFS("/"+strings.Trim(rootURL, "/"), systemFS)
+		e.GET("/"+strings.Trim(rootURL, "/")+"*", s.mediaPrivacyStaticHandler(systemFS))
 	}
 	e.StaticFS("/avatars", os.DirFS(filepath.Join(s.cfg.PublicDir, "avatars")))
 	e.StaticFS("/headers", os.DirFS(filepath.Join(s.cfg.PublicDir, "headers")))
@@ -1847,6 +1889,9 @@ func (s *Server) routes() {
 	e.GET("/api/v1/instance/translation_languages", s.translationLanguages)
 	e.GET("/api/v1/instance/extended_description", s.instanceExtendedDescription)
 	e.GET("/api/v1/instance/privacy_policy", s.instancePrivacyPolicy)
+	e.GET("/api/v1/instance/terms_of_service", s.instanceTermsOfService)
+	e.GET("/api/v1/instance/terms_of_service/:date", s.instanceTermsOfServiceVersion)
+	e.GET("/api/v1_alpha/async_refreshes/:id", s.showAsyncRefresh)
 	e.GET("/api/v1/instance/domain_blocks", s.instanceDomainBlocks)
 	e.GET("/api/v1/instance/peers", s.instancePeers)
 	e.GET("/api/v1/instance/rules", s.instanceRules)
@@ -1927,12 +1972,12 @@ func (s *Server) routes() {
 	e.PUT("/api/v1/announcements/:id/reactions/:name", s.addAnnouncementReaction)
 	e.PATCH("/api/v1/announcements/:id/reactions/:name", s.addAnnouncementReaction)
 	e.DELETE("/api/v1/announcements/:id/reactions/:name", s.removeAnnouncementReaction)
-	e.GET("/api/v1/trends", s.trendingTags)
+	e.GET("/api/v1/trends", deprecatedAPIHandler("@1648598400", s.trendingTags))
 	e.GET("/api/v1/trends/tags", s.trendingTags)
 	e.GET("/api/v1/trends/links", s.trendingLinks)
 	e.GET("/api/v1/trends/statuses", s.trendingStatuses)
 	e.GET("/api/v2/suggestions", s.suggestionsV2)
-	e.GET("/api/v1/suggestions", s.suggestionsV1)
+	e.GET("/api/v1/suggestions", deprecatedAPIHandler("@1621123200", s.suggestionsV1))
 	e.DELETE("/api/v1/suggestions/:id", s.deleteSuggestion)
 	e.GET("/api/v1/scheduled_statuses", s.scheduledStatuses)
 	e.GET("/api/v1/scheduled_statuses/:id", s.showScheduledStatus)
@@ -1996,8 +2041,9 @@ func (s *Server) routes() {
 	e.GET("/api/v1/accounts/relationships", s.accountRelationships)
 	e.GET("/api/v1/accounts/familiar_followers", s.familiarFollowers)
 	e.GET("/api/v1/accounts/:id/lists", s.accountLists)
-	e.GET("/api/v1/accounts/:id/identity_proofs", s.identityProofs)
+	e.GET("/api/v1/accounts/:id/identity_proofs", deprecatedAPIHandler("@1648598400", s.identityProofs))
 	e.GET("/api/v1/accounts/:id/featured_tags", s.accountFeaturedTags)
+	e.GET("/api/v1/accounts/:id/endorsements", s.accountEndorsements)
 	e.GET("/api/v1/accounts/:id", s.getAccount)
 	e.GET("/api/v1/accounts/:id/statuses", s.accountStatuses)
 	e.GET("/api/v1/accounts/:id/followers", s.accountFollowers)
@@ -2011,7 +2057,9 @@ func (s *Server) routes() {
 	e.POST("/api/v1/accounts/:id/unmute", s.unmuteAccount)
 	e.POST("/api/v1/accounts/:id/note", s.noteAccount)
 	e.POST("/api/v1/accounts/:id/pin", s.pinAccount)
+	e.POST("/api/v1/accounts/:id/endorse", s.pinAccount)
 	e.POST("/api/v1/accounts/:id/unpin", s.unpinAccount)
+	e.POST("/api/v1/accounts/:id/unendorse", s.unpinAccount)
 
 	e.GET("/api/v1/statuses", s.statusesByID)
 	e.GET("/api/v1/statuses/:id", s.getStatus)
@@ -2035,7 +2083,6 @@ func (s *Server) routes() {
 	e.POST("/api/v1/statuses/:id/translate", s.translateStatus)
 	e.POST("/api/v1/statuses/:id/reblog", s.reblogStatus)
 	e.POST("/api/v1/statuses/:id/unreblog", s.unreblogStatus)
-	e.POST("/api/v1/polls", s.createPoll)
 	e.GET("/api/v1/polls/:id", s.getPoll)
 	e.POST("/api/v1/polls/:id/votes", s.votePoll)
 	e.GET("/api/v1/push/subscription", s.showPushSubscription)
@@ -2048,6 +2095,7 @@ func (s *Server) routes() {
 	e.GET("/api/v1/media/:id", s.showMedia)
 	e.PUT("/api/v1/media/:id", s.updateMedia)
 	e.PATCH("/api/v1/media/:id", s.updateMedia)
+	e.DELETE("/api/v1/media/:id", s.deleteMedia)
 
 	e.GET("/api/v1/timelines/public", s.publicTimeline)
 	e.GET("/api/v1/timelines/link", s.linkTimeline)
@@ -2057,6 +2105,8 @@ func (s *Server) routes() {
 	e.GET("/api/v1/tags/:name", s.showTag)
 	e.POST("/api/v1/tags/:name/follow", s.followTag)
 	e.POST("/api/v1/tags/:name/unfollow", s.unfollowTag)
+	e.POST("/api/v1/tags/:name/feature", s.featureTag)
+	e.POST("/api/v1/tags/:name/unfeature", s.unfeatureTag)
 	e.GET("/api/v1/followed_tags", s.followedTags)
 	e.GET("/api/v1/featured_tags", s.featuredTags)
 	e.POST("/api/v1/featured_tags", s.createFeaturedTag)
@@ -2066,13 +2116,14 @@ func (s *Server) routes() {
 	e.GET("/api/v1/bookmarks", s.bookmarks)
 	e.GET("/api/v1/domain_blocks/preview", s.domainBlockPreview)
 	e.GET("/api/v1/annual_reports", s.annualReports)
-	e.POST("/api/v1/annual_reports/:year/read", s.readAnnualReport)
-	e.GET("/api/v1/filters", s.v1Filters)
-	e.POST("/api/v1/filters", s.createV1Filter)
-	e.GET("/api/v1/filters/:id", s.showV1Filter)
-	e.PUT("/api/v1/filters/:id", s.updateV1Filter)
-	e.PATCH("/api/v1/filters/:id", s.updateV1Filter)
-	e.DELETE("/api/v1/filters/:id", s.deleteV1Filter)
+	e.GET("/api/v1/annual_reports/:id", s.annualReport)
+	e.POST("/api/v1/annual_reports/:id/read", s.readAnnualReport)
+	e.GET("/api/v1/filters", deprecatedAPIHandler("@1668384000", s.v1Filters))
+	e.POST("/api/v1/filters", deprecatedAPIHandler("@1668384000", s.createV1Filter))
+	e.GET("/api/v1/filters/:id", deprecatedAPIHandler("@1668384000", s.showV1Filter))
+	e.PUT("/api/v1/filters/:id", deprecatedAPIHandler("@1668384000", s.updateV1Filter))
+	e.PATCH("/api/v1/filters/:id", deprecatedAPIHandler("@1668384000", s.updateV1Filter))
+	e.DELETE("/api/v1/filters/:id", deprecatedAPIHandler("@1668384000", s.deleteV1Filter))
 	e.GET("/api/v2/search", s.search)
 	e.GET("/api/v2/filters", s.filters)
 	e.POST("/api/v2/filters", s.createFilter)
@@ -2102,7 +2153,9 @@ func (s *Server) routes() {
 	e.GET("/api/web/embeds/:id", s.webEmbed)
 	e.POST("/api/web/push_subscriptions", s.apiWebCSRF(s.createWebPushSubscription))
 	e.PUT("/api/web/push_subscriptions/:id", s.apiWebCSRF(s.updateWebPushSubscription))
+	e.PATCH("/api/web/push_subscriptions/:id", s.apiWebCSRF(s.updateWebPushSubscription))
 	e.PUT("/api/web/push_subscriptions/:id/update", s.apiWebCSRF(s.updateWebPushSubscription))
+	e.DELETE("/api/web/push_subscriptions/:id", s.destroyWebPushSubscriptionByToken)
 	e.PUT("/api/web/settings", s.apiWebCSRF(s.updateWebSettings))
 	e.PATCH("/api/web/settings", s.apiWebCSRF(s.updateWebSettings))
 
@@ -2142,6 +2195,7 @@ func (s *Server) routes() {
 		"/mutes",
 		"/followed_tags",
 		"/statuses/*",
+		"/accounts/:id/featured",
 	)
 	e.GET("/statuses_cleanup.:format", s.statusesCleanupPage)
 	e.GET("/statuses_cleanup", s.statusesCleanupPage)
@@ -2253,8 +2307,30 @@ func (s *Server) routes() {
 	e.DELETE("/admin/invites/:id.:format", optionalFormatPathParam("id", s.destroyAdminInvite))
 	e.DELETE("/admin/invites/:id", s.destroyAdminInvite)
 	e.POST("/admin/invites/:id", s.notFound)
+	e.GET("/admin/terms_of_service.:format", s.adminTermsOfServicePage)
+	e.GET("/admin/terms_of_service", s.adminTermsOfServicePage)
+	e.GET("/admin/terms_of_service/generate.:format", s.adminTermsOfServiceGeneratePage)
+	e.GET("/admin/terms_of_service/generate", s.adminTermsOfServiceGeneratePage)
+	e.POST("/admin/terms_of_service/generate.:format", s.generateAdminTermsOfService)
+	e.POST("/admin/terms_of_service/generate", s.generateAdminTermsOfService)
+	e.GET("/admin/terms_of_service/draft.:format", s.adminTermsOfServiceDraftPage)
+	e.GET("/admin/terms_of_service/draft", s.adminTermsOfServiceDraftPage)
+	e.PUT("/admin/terms_of_service/draft.:format", s.updateAdminTermsOfServiceDraft)
+	e.PUT("/admin/terms_of_service/draft", s.updateAdminTermsOfServiceDraft)
+	e.PATCH("/admin/terms_of_service/draft.:format", s.updateAdminTermsOfServiceDraft)
+	e.PATCH("/admin/terms_of_service/draft", s.updateAdminTermsOfServiceDraft)
+	e.GET("/admin/terms_of_service/history.:format", s.adminTermsOfServiceHistoryPage)
+	e.GET("/admin/terms_of_service/history", s.adminTermsOfServiceHistoryPage)
+	e.GET("/admin/terms_of_service/:id/preview.:format", s.adminTermsOfServicePreviewPage)
+	e.GET("/admin/terms_of_service/:id/preview", s.adminTermsOfServicePreviewPage)
+	e.POST("/admin/terms_of_service/:id/test.:format", s.testAdminTermsOfServiceDistribution)
+	e.POST("/admin/terms_of_service/:id/test", s.testAdminTermsOfServiceDistribution)
+	e.POST("/admin/terms_of_service/:id/distribution.:format", s.distributeAdminTermsOfService)
+	e.POST("/admin/terms_of_service/:id/distribution", s.distributeAdminTermsOfService)
 	e.GET("/admin/rules.:format", s.adminRulesPage)
 	e.GET("/admin/rules", s.adminRulesPage)
+	e.GET("/admin/rules/new.:format", s.newAdminRulePage)
+	e.GET("/admin/rules/new", s.newAdminRulePage)
 	e.POST("/admin/rules.:format", s.createAdminRule)
 	e.POST("/admin/rules", s.createAdminRule)
 	e.GET("/admin/rules/:id/edit.:format", optionalFormatPathParam("id", s.editAdminRulePage))
@@ -2263,6 +2339,10 @@ func (s *Server) routes() {
 	e.PUT("/admin/rules/:id", s.updateAdminRule)
 	e.PATCH("/admin/rules/:id.:format", optionalFormatPathParam("id", s.updateAdminRule))
 	e.PATCH("/admin/rules/:id", s.updateAdminRule)
+	e.POST("/admin/rules/:id/move_up.:format", optionalFormatPathParam("id", s.moveAdminRuleUp))
+	e.POST("/admin/rules/:id/move_up", s.moveAdminRuleUp)
+	e.POST("/admin/rules/:id/move_down.:format", optionalFormatPathParam("id", s.moveAdminRuleDown))
+	e.POST("/admin/rules/:id/move_down", s.moveAdminRuleDown)
 	e.DELETE("/admin/rules/:id.:format", optionalFormatPathParam("id", s.destroyAdminRule))
 	e.DELETE("/admin/rules/:id", s.destroyAdminRule)
 	e.POST("/admin/rules/:id", s.notFound)
@@ -2355,6 +2435,12 @@ func (s *Server) routes() {
 	e.POST("/admin/announcements/:id/publish", s.publishAdminAnnouncement)
 	e.POST("/admin/announcements/:id/unpublish.:format", s.unpublishAdminAnnouncement)
 	e.POST("/admin/announcements/:id/unpublish", s.unpublishAdminAnnouncement)
+	e.GET("/admin/announcements/:id/preview", s.adminAnnouncementPreviewPage)
+	e.GET("/admin/announcements/:id/preview.:format", optionalFormatPathParam("id", s.adminAnnouncementPreviewPage))
+	e.POST("/admin/announcements/:id/test", s.testAdminAnnouncementDistribution)
+	e.POST("/admin/announcements/:id/test.:format", optionalFormatPathParam("id", s.testAdminAnnouncementDistribution))
+	e.POST("/admin/announcements/:id/distribution", s.distributeAdminAnnouncement)
+	e.POST("/admin/announcements/:id/distribution.:format", optionalFormatPathParam("id", s.distributeAdminAnnouncement))
 	e.DELETE("/admin/announcements/:id.:format", optionalFormatPathParam("id", s.destroyAdminAnnouncement))
 	e.DELETE("/admin/announcements/:id", s.destroyAdminAnnouncement)
 	e.POST("/admin/announcements/:id", s.notFound)
@@ -2525,6 +2611,9 @@ func (s *Server) routes() {
 	e.POST("/admin/instances/:id/restart_delivery", s.restartAdminInstanceDelivery)
 	e.POST("/admin/instances/:id/stop_delivery.html", s.stopAdminInstanceDelivery)
 	e.POST("/admin/instances/:id/stop_delivery", s.stopAdminInstanceDelivery)
+	e.POST("/admin/instances/:instance_id/moderation_notes", s.createAdminInstanceModerationNote)
+	e.DELETE("/admin/instances/:instance_id/moderation_notes/:id", s.destroyAdminInstanceModerationNote)
+	e.POST("/admin/instances/:instance_id/moderation_notes/:id", s.destroyAdminInstanceModerationNote)
 	e.GET("/admin/reports.:format", s.adminReportsPage)
 	e.GET("/admin/reports", s.adminReportsPage)
 	e.GET("/admin/reports/:id.:format", optionalFormatPathParam("id", s.adminReportPage))
@@ -2744,9 +2833,9 @@ func (s *Server) routes() {
 	e.DELETE("/settings/security_keys/:id", s.destroySettingsSecurityKey)
 	e.POST("/settings/security_keys/:id.:format", s.notFound)
 	e.POST("/settings/security_keys/:id", s.notFound)
-	e.GET("/terms", redirectTo("/privacy-policy", http.StatusMovedPermanently))
-	e.GET("/terms.json", redirectTo("/privacy-policy", http.StatusMovedPermanently))
-	e.GET("/terms.:format", redirectTo("/privacy-policy", http.StatusMovedPermanently))
+	e.GET("/terms", redirectTo("/terms-of-service", http.StatusMovedPermanently))
+	e.GET("/terms.json", redirectTo("/terms-of-service", http.StatusMovedPermanently))
+	e.GET("/terms.:format", redirectTo("/terms-of-service", http.StatusMovedPermanently))
 	e.GET("/about/more", redirectTo("/about", http.StatusMovedPermanently))
 	e.GET("/about/more.json", redirectTo("/about", http.StatusMovedPermanently))
 	e.GET("/about/more.:format", redirectTo("/about", http.StatusMovedPermanently))
@@ -2762,6 +2851,8 @@ func (s *Server) routes() {
 	)
 	e.GET("/@:username", s.publicAccount)
 	e.GET("/@:username.:format", s.publicAccount)
+	e.GET("/@:username/featured", s.publicAccount)
+	e.GET("/@:username/featured.:format", s.publicAccount)
 	e.GET("/@:username/with_replies", s.publicAccountWithReplies)
 	e.GET("/@:username/with_replies.json", s.publicAccountWithReplies)
 	e.GET("/@:username/with_replies.rss", s.publicAccountWithReplies)
@@ -2806,12 +2897,11 @@ func (s *Server) ready(c *echo.Context) error {
 	if s == nil || s.db == nil {
 		return c.String(http.StatusServiceUnavailable, "database unavailable")
 	}
-	sqlDB, err := s.db.DB()
-	if err != nil {
+	if err := paondb.Available(s.db); err != nil {
 		return c.String(http.StatusServiceUnavailable, "database unavailable")
 	}
-	if err := sqlDB.Ping(); err != nil {
-		return c.String(http.StatusServiceUnavailable, "database unavailable")
+	if err := paondb.RequireSupportedVersion(s.db); err != nil {
+		return c.String(http.StatusServiceUnavailable, "database version unsupported")
 	}
 	if err := paondb.SchemaAvailable(s.db); err != nil {
 		return c.String(http.StatusServiceUnavailable, "schema unavailable")
@@ -2841,6 +2931,9 @@ func (s *Server) webAppWithOptions(c *echo.Context, configure func(*web.AppOptio
 	c.Response().Header().Set("Vary", "Accept, Accept-Language, Cookie")
 	setPublicRESTCacheIfDefault(c, 15)
 	account, token, user, _ := s.currentAccountForWeb(c)
+	if rendered, err := s.renderTermsOfServiceInterstitialIfRequired(c, user); rendered || err != nil {
+		return err
+	}
 	options := s.webAppOptions(c)
 	if user != nil && s.userCanUseAPI(*user) {
 		s.applyWebAppUserOptions(&options, user)
@@ -2939,7 +3032,7 @@ func (s *Server) permalinkStatusURL(rawID string) string {
 	if status.Account.Local() {
 		return ""
 	}
-	return permalinkRemoteURL(status.URL)
+	return permalinkRemoteStatusURL(status)
 }
 
 func (s *Server) permalinkAccountURLByID(rawID string) string {
@@ -2954,7 +3047,7 @@ func (s *Server) permalinkAccountURLByID(rawID string) string {
 	if account.Local() {
 		return ""
 	}
-	return permalinkRemoteURL(account.URL)
+	return permalinkRemoteAccountURL(account)
 }
 
 func (s *Server) permalinkAccountURLByName(name string) string {
@@ -2975,7 +3068,7 @@ func (s *Server) permalinkAccountURLByName(name string) string {
 	if account.Local() {
 		return ""
 	}
-	return permalinkRemoteURL(account.URL)
+	return permalinkRemoteAccountURL(account)
 }
 
 func permalinkRemoteURL(value sql.NullString) string {
@@ -2983,6 +3076,24 @@ func permalinkRemoteURL(value sql.NullString) string {
 		return ""
 	}
 	return safeExternalHTTPURL(value.String)
+}
+
+func permalinkRemoteURLOrURI(urlValue sql.NullString, uriValue sql.NullString) string {
+	if target := permalinkRemoteURL(urlValue); target != "" {
+		return target
+	}
+	return permalinkRemoteURL(uriValue)
+}
+
+func permalinkRemoteStatusURL(status models.Status) string {
+	return permalinkRemoteURLOrURI(status.URL, status.URI)
+}
+
+func permalinkRemoteAccountURL(account models.Account) string {
+	return permalinkRemoteURLOrURI(account.URL, sql.NullString{
+		String: account.URI,
+		Valid:  strings.TrimSpace(account.URI) != "",
+	})
 }
 
 func (s *Server) privacyPolicy(c *echo.Context) error {
@@ -3222,12 +3333,15 @@ func (s *Server) share(c *echo.Context) error {
 }
 
 func (s *Server) webAppOptions(c *echo.Context) web.AppOptions {
+	_, currentTermsErr := s.currentTermsOfService(time.Now().UTC())
 	options := web.AppOptions{
-		SiteTitle:         s.settingRawValue("site_title", s.cfg.Title),
-		SiteTitleSet:      true,
-		RegistrationsOpen: s.registrationsOpen(),
-		ServerSettings:    s.initialStateServerSettings(),
-		IncludeCSRFMeta:   s.cfg.SSORedirect != "",
+		SiteTitle:             s.settingRawValue("site_title", s.cfg.Title),
+		SiteTitleSet:          true,
+		RegistrationsOpen:     s.registrationsOpen(),
+		ServerSettings:        s.initialStateServerSettings(),
+		IncludeCSRFMeta:       s.cfg.SSORedirect != "",
+		TermsOfServiceEnabled: currentTermsErr == nil,
+		CustomCSSPath:         s.customCSSPath(),
 	}
 	if mascot, _ := s.instanceSiteUpload("mascot"); mascot != nil {
 		options.MascotURL = serializer.SiteUploadFileURL(s.cfg, *mascot, "original")
@@ -3631,10 +3745,15 @@ func requestRawQueryParamValue(req *http.Request, key string) string {
 	return lastValue(req.URL.Query()[key])
 }
 
-func (s *Server) instanceV1(c *echo.Context) error {
-	if err := s.requireAuthenticatedAPIInLimitedFederation(c); err != nil {
-		return err
+func deprecatedAPIHandler(timestamp string, next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		c.Response().Header().Set("Deprecation", timestamp)
+		return next(c)
 	}
+}
+
+func (s *Server) instanceV1(c *echo.Context) error {
+	c.Response().Header().Set("Deprecation", "@1668384000")
 	s.publicRESTCacheEvenIfAuthenticated(c, 300)
 	stats := s.instanceStats()
 	metadata := s.instanceMetadata()
@@ -3708,13 +3827,14 @@ func (s *Server) instanceInvitesEnabled() (bool, error) {
 }
 
 func (s *Server) instanceV2(c *echo.Context) error {
-	if err := s.requireAuthenticatedAPIInLimitedFederation(c); err != nil {
-		return err
-	}
 	s.publicRESTCacheEvenIfAuthenticated(c, 300)
-	activeMonth, err := s.instanceActiveMonthUsers(c.Request().Context(), time.Now().UTC())
-	if err != nil {
-		return err
+	activeMonth := int64(0)
+	var err error
+	if !s.cfg.LimitedFederationMode {
+		activeMonth, err = s.instanceActiveMonthUsers(c.Request().Context(), time.Now().UTC())
+		if err != nil {
+			return err
+		}
 	}
 	metadata := s.instanceMetadata()
 	rules, err := s.instanceRuleModels()
@@ -3729,18 +3849,23 @@ func (s *Server) instanceMetadata() serializer.InstanceMetadata {
 	contactAccount, _ := s.instanceContactAccount()
 	thumbnail, _ := s.instanceSiteUpload("thumbnail")
 	appIcon, _ := s.instanceSiteUpload("app_icon")
+	termsOfServiceURL := ""
+	if terms, err := s.currentTermsOfService(time.Now().UTC()); err == nil && terms != nil {
+		termsOfServiceURL = s.cfg.BaseURL() + "/terms-of-service"
+	}
 	return serializer.InstanceMetadata{
-		Title:            s.settingRawValue("site_title", s.cfg.Title),
-		TitleSet:         true,
-		ShortDescription: s.settingRawValue("site_short_description", ""),
-		Description:      s.settingRawValue("site_description", ""),
-		ContactEmail:     s.settingRawValue("site_contact_email", ""),
-		ContactAccount:   contactAccount,
-		Thumbnail:        thumbnail,
-		AppIcon:          appIcon,
-		AppIconURLs:      s.instanceAppIconURLs(),
-		PreviewImageURL:  s.packAssetURL("media/images/preview.png"),
-		StatusPageURL:    s.settingRawValue("status_page_url", ""),
+		Title:             s.settingRawValue("site_title", s.cfg.Title),
+		TitleSet:          true,
+		ShortDescription:  s.settingRawValue("site_short_description", ""),
+		Description:       s.settingRawValue("site_description", ""),
+		ContactEmail:      s.settingRawValue("site_contact_email", ""),
+		ContactAccount:    contactAccount,
+		Thumbnail:         thumbnail,
+		AppIcon:           appIcon,
+		AppIconURLs:       s.instanceAppIconURLs(),
+		PreviewImageURL:   s.packAssetURL("media/images/preview.png"),
+		StatusPageURL:     s.settingRawValue("status_page_url", ""),
+		TermsOfServiceURL: termsOfServiceURL,
 	}
 }
 
@@ -3855,11 +3980,18 @@ func (s *Server) instanceContactAccount() (*models.Account, error) {
 }
 
 func (s *Server) instanceRegistrationOptions() serializer.InstanceRegistrationOptions {
+	minimumAge, ageVerificationEnabled := s.registrationMinimumAge()
+	var minimumAgeValue *int
+	if ageVerificationEnabled {
+		minimumAgeValue = &minimumAge
+	}
 	return serializer.InstanceRegistrationOptions{
-		Mode:          normalizeRegistrationsMode(s.settingValue("registrations_mode", "none")),
-		ClosedMessage: s.settingValue("closed_registrations_message", ""),
-		SignUpURL:     s.cfg.SSOAccountSignUpURL,
-		SignUpURLSet:  s.cfg.SSOAccountSignUpURLSet,
+		Mode:           normalizeRegistrationsMode(s.settingValue("registrations_mode", "none")),
+		ClosedMessage:  s.settingValue("closed_registrations_message", ""),
+		SignUpURL:      s.cfg.SSOAccountSignUpURL,
+		SignUpURLSet:   s.cfg.SSOAccountSignUpURLSet,
+		ReasonRequired: s.settingBoolValue("require_invite_text", false),
+		MinimumAge:     minimumAgeValue,
 	}
 }
 
@@ -4726,7 +4858,12 @@ func (s *Server) statusContext(c *echo.Context) error {
 		Ancestors:   serializeStatusesWithFilterContext(s.cfg, ancestors, account, s.accountFilters(account), "thread"),
 		Descendants: serializeStatusesWithFilterContext(s.cfg, descendants, account, s.accountFilters(account), "thread"),
 	}
-	return c.JSON(http.StatusOK, out)
+	if err := c.JSON(http.StatusOK, out); err != nil {
+		return err
+	}
+	requestID, _ := c.Get("request_id").(string)
+	s.maybeEnqueueContextReplyFetch(status, account, requestID)
+	return nil
 }
 
 func (s *Server) statusAncestors(status models.Status, limitValue int, account *models.Account) ([]models.Status, error) {
@@ -4873,14 +5010,6 @@ func (s *Server) createStatus(c *echo.Context) error {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Too many media attachments")
 	}
 	hasPoll := payload.HasPoll && payload.Poll != nil
-	var quote *models.Status
-	if strings.TrimSpace(payload.QuoteID) != "" {
-		quote, err = s.findQuoteStatusForAccount(account, payload.QuoteID)
-		if err != nil {
-			return apiError(c, http.StatusNotFound, "Record not found")
-		}
-		text = statusTextWithQuoteURL(text, s.quoteStatusURL(*quote))
-	}
 	normalizeStatusContents(&text, &payload.SpoilerText)
 	if strings.TrimSpace(text) == "" && len(mediaIDs) == 0 && !hasPoll {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Text can't be blank")
@@ -5049,7 +5178,6 @@ func (s *Server) createStatus(c *echo.Context) error {
 		created.Account.AccountStat.StatusesCount++
 		created.Account.AccountStat.LastStatusAt = sql.NullTime{Time: created.CreatedAt, Valid: true}
 	}
-	s.applyStatusQuote(created, quote)
 	response := statusWithFilterContext(s.cfg, *created, account, s.accountFilters(account), "public")
 	requestID, _ := c.Get("request_id").(string)
 	responseErr := c.JSON(http.StatusOK, response)
@@ -5058,7 +5186,6 @@ func (s *Server) createStatus(c *echo.Context) error {
 		Status:               *created,
 		Account:              *account,
 		ReplyTo:              replyTo,
-		Quote:                quote,
 		NotificationIDs:      notificationIDs,
 		NotificationPayloads: notificationPayloads,
 		ConversationIDs:      conversationIDs,
@@ -5067,37 +5194,6 @@ func (s *Server) createStatus(c *echo.Context) error {
 		CreatedAt:            now,
 	})
 	return responseErr
-}
-
-func (s *Server) findQuoteStatusForAccount(account *models.Account, quoteID string) (*models.Status, error) {
-	quoteID = strings.TrimSpace(quoteID)
-	if quoteID == "" {
-		return nil, gorm.ErrRecordNotFound
-	}
-	quote, err := s.findVisibleStatusForAccount(account, quoteID)
-	if err != nil {
-		return nil, err
-	}
-	allowed, err := s.statusQuoteTargetAllowedForAccount(context.Background(), account, quote)
-	if err != nil {
-		return nil, err
-	}
-	if !allowed {
-		return nil, gorm.ErrRecordNotFound
-	}
-	return quote, nil
-}
-
-func statusTextWithQuoteURL(text string, quoteURL string) string {
-	return strings.TrimRight(text, "\r\n") + "\n\nRE: " + quoteURL
-}
-
-func statusTextWithExistingQuoteURL(text string, quoteURL string) string {
-	quoteURL = strings.TrimSpace(quoteURL)
-	if quoteURL == "" || strings.HasSuffix(text, quoteURL) {
-		return text
-	}
-	return statusTextWithQuoteURL(text, quoteURL)
 }
 
 func normalizeStatusContents(text *string, spoilerText *string) {
@@ -5250,7 +5346,7 @@ func (s *Server) updateStatus(c *echo.Context) error {
 	applyUpdateSpoilerTextFallback(&payload)
 	nextText := status.Text
 	if payload.HasStatus {
-		nextText = statusTextWithExistingQuoteURL(payload.Status, status.QuoteOriginalURL.String)
+		nextText = payload.Status
 		nextText = strings.TrimSpace(nextText)
 	}
 	nextSpoilerText := status.SpoilerText
@@ -5415,6 +5511,7 @@ func (s *Server) updateStatus(c *echo.Context) error {
 	s.fetchLinkCardForStatusAsync(updated.ID)
 	_ = s.enqueueOrDeliverStatusUpdateDistribution(*updated)
 	s.triggerStatusWebhook("status.updated", updated.ID)
+	_ = s.enqueueFASPContentLifecycle(c.Request().Context(), *updated, "update")
 	return c.JSON(http.StatusOK, statusWithFilterContext(s.cfg, *updated, account, s.accountFilters(account), "public"))
 }
 
@@ -5441,14 +5538,17 @@ func (s *Server) deleteStatus(c *echo.Context) error {
 		return apiError(c, http.StatusServiceUnavailable, "There was a temporary problem serving your request, please try again")
 	}
 	defer releaseDistributionLock()
-	discardedRows, err := s.discardStatusRowsForRemoval(c.Request().Context(), status.ID, time.Now().UTC())
+	deletedAt := time.Now().UTC()
+	discardedRows, err := s.discardStatusRowsForRemoval(c.Request().Context(), status.ID, deletedAt)
 	if err != nil {
 		return err
 	}
+	status.DeletedAt = sql.NullTime{Time: deletedAt, Valid: true}
 	decrementDeletedStatusAccountCountForResponse(status)
-	if !s.enqueueRemovalTask(asynqRemovalPayload{StatusID: status.ID, Redraft: true}) {
+	redraft := !formBoolValue(c.QueryParam("delete_media"))
+	if !s.enqueueRemovalTask(asynqRemovalPayload{StatusID: status.ID, Redraft: redraft}) {
 		s.applyDiscardedStatusRowSideEffects(c.Request().Context(), discardedRows)
-		s.applyDeletedStatusRemovalSideEffects(c.Request().Context(), *status, asynqRemovalPayload{StatusID: status.ID, Redraft: true})
+		s.applyDeletedStatusRemovalSideEffects(c.Request().Context(), *status, asynqRemovalPayload{StatusID: status.ID, Redraft: redraft})
 	}
 	return c.JSON(http.StatusOK, statusWithSourceAndFilterContext(s.cfg, *status, account, s.accountFilters(account), "public"))
 }
@@ -5637,9 +5737,7 @@ func (s *Server) unfavouriteStatus(c *echo.Context) error {
 			return err
 		}
 		status.FavouritedByCurrent = false
-		if status.StatusStat.FavouritesCount > 0 {
-			status.StatusStat.FavouritesCount--
-		}
+		decrementLoadedStatusStatCounter(status, statusStatCounterFavourites, 1)
 	} else if err := s.hydrateStatusRelationship(status, account); err != nil {
 		return err
 	}
@@ -5750,6 +5848,8 @@ func (s *Server) reblogStatus(c *echo.Context) error {
 	if reblogCreated {
 		s.activityTrackerIncrementBasic(c.Request().Context(), "activity:interactions", createdStatus.CreatedAt, 1)
 		s.recordStatusTrendUse(c.Request().Context(), target.ID, createdStatus.CreatedAt)
+		_ = s.enqueueFASPContentLifecycle(c.Request().Context(), *createdStatus, "new")
+		_ = s.enqueueFASPTrendForStatus(c.Request().Context(), *createdStatus, "reblog")
 		s.recordPreviewCardTrendUseForStatus(c.Request().Context(), account.ID, target.ID, createdStatus.Visibility, createdStatus.CreatedAt)
 		s.recordPotentialFriendship(c.Request().Context(), account.ID, target.AccountID, "reblog")
 		s.meiliIndexStatusBestEffort(c.Request().Context(), target.ID)
@@ -5816,6 +5916,7 @@ func (s *Server) unreblogStatus(c *echo.Context) error {
 		return err
 	}
 	if reblog.ID != 0 {
+		decrementLoadedStatusStatCounter(target, statusStatCounterReblogs, 1)
 		s.meiliIndexStatusBestEffort(c.Request().Context(), target.ID)
 		if !s.enqueueRemovalTask(asynqRemovalPayload{StatusID: reblog.ID}) {
 			s.applyDeletedStatusRemovalSideEffects(c.Request().Context(), reblog, asynqRemovalPayload{StatusID: reblog.ID})
@@ -5942,6 +6043,7 @@ func (s *Server) toggleStatusJoin(c *echo.Context, table string, create bool, sc
 		if create {
 			s.activityTrackerIncrementBasic(c.Request().Context(), "activity:interactions", favourite.CreatedAt, 1)
 			s.recordStatusTrendUse(c.Request().Context(), status.ID, favourite.CreatedAt)
+			_ = s.enqueueFASPTrend(c.Request().Context(), status.ID, "favourite")
 			s.recordPotentialFriendship(c.Request().Context(), account.ID, joinStatus.AccountID, "favourite")
 			_ = s.deliverActivityPubActivityToStatusAuthor(*account, *joinStatus, activityPubLike(s, *account, *joinStatus, favourite.ID))
 		} else {
@@ -6088,11 +6190,14 @@ func (s *Server) search(c *echo.Context) error {
 	}
 
 	q := normalizeSearchQuery(c.QueryParam("q"))
+	searchType := c.QueryParam("type")
+	if q != "" && searchIncludesType(searchType, "accounts") {
+		s.scheduleFASPAccountSearch(c, q)
+	}
 	if q == "" || s.db == nil {
 		return c.JSON(http.StatusOK, emptySearchResult())
 	}
 	limitValue := limit(c, 20, 40)
-	searchType := c.QueryParam("type")
 	offsetValue := searchOffsetValue(searchType, c.QueryParam("offset"))
 	if limitValue < 1 {
 		return c.JSON(http.StatusOK, emptySearchResult())
@@ -6204,10 +6309,14 @@ func (s *Server) search(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
+	tagFeaturing, err := s.searchTagFeaturingMap(account, tags)
+	if err != nil {
+		return err
+	}
 	return c.JSON(http.StatusOK, serializer.Search{
 		Accounts: serializeAccounts(s.cfg, accounts),
 		Statuses: serializeStatusesWithFilterContext(s.cfg, statuses, account, s.accountFilters(account), statusListFilterContext(c)),
-		Hashtags: searchHashtagResults(s.cfg, tags, tagFollowing, account != nil),
+		Hashtags: searchHashtagResults(s.cfg, tags, tagFollowing, tagFeaturing, account != nil),
 	})
 }
 
@@ -6309,6 +6418,12 @@ func (s *Server) findVisibleStatusForAccount(account *models.Account, id string)
 	err := s.visibleStatusQuery(account).Where("statuses.id = ?", id).First(&status).Error
 	if err == nil {
 		err = s.hydrateStatusCustomEmojis(&status)
+	}
+	if err == nil {
+		s.hydrateStatusQuote(&status)
+		visibilityStatuses := []models.Status{status}
+		err = s.hydrateQuoteVisibility(visibilityStatuses, account)
+		status = visibilityStatuses[0]
 	}
 	return &status, err
 }
@@ -6606,6 +6721,13 @@ func (s *Server) manifest(c *echo.Context) error {
 		"shortcuts": []map[string]string{
 			{"name": "Compose new post", "url": "/publish"},
 			{"name": "Notifications", "url": "/notifications"},
+			{"name": "Explore", "url": "/explore"},
+		},
+		"prefer_related_applications": true,
+		"related_applications": []map[string]string{
+			{"platform": "play", "url": "https://play.google.com/store/apps/details?id=org.joinmastodon.android", "id": "org.joinmastodon.android"},
+			{"platform": "itunes", "url": "https://apps.apple.com/us/app/mastodon-for-iphone/id1571998974", "id": "id1571998974"},
+			{"platform": "f-droid", "url": "https://f-droid.org/en/packages/org.joinmastodon.android/", "id": "org.joinmastodon.android"},
 		},
 	})
 }
@@ -7202,6 +7324,9 @@ func (s *Server) hydrateStatusRelationships(statuses []models.Status, current *m
 		return err
 	}
 	s.hydrateStatusesQuote(statuses)
+	if err := s.hydrateQuoteVisibility(statuses, current); err != nil {
+		return err
+	}
 	for i := range statuses {
 		applyStatusPreviewCardOriginalURLs(&statuses[i])
 	}
@@ -7350,25 +7475,41 @@ func serializeAccounts(cfg config.Config, accounts []models.Account) []serialize
 func serializerTags(cfg config.Config, tags []models.Tag) []serializer.Tag {
 	out := make([]serializer.Tag, 0, len(tags))
 	for _, tag := range tags {
-		out = append(out, serializer.Tag{Name: tag.DisplayNameValue(), URL: cfg.BaseURL() + "/tags/" + url.PathEscape(tag.Name)})
+		out = append(out, serializer.Tag{
+			ID:      strconv.FormatInt(tag.ID, 10),
+			Name:    tag.DisplayNameValue(),
+			URL:     cfg.BaseURL() + "/tags/" + url.PathEscape(tag.Name),
+			History: []any{},
+		})
 	}
 	return out
 }
 
-func searchHashtagResults(cfg config.Config, tags []models.Tag, following map[int64]bool, includeFollowing bool) []serializer.TagDetail {
+func searchHashtagResults(cfg config.Config, tags []models.Tag, following map[int64]bool, featuring map[int64]bool, includeRelationships bool) []serializer.TagDetail {
 	out := make([]serializer.TagDetail, 0, len(tags))
 	for _, tag := range tags {
 		var follows *bool
-		if includeFollowing {
+		var features *bool
+		if includeRelationships {
 			value := following[tag.ID]
 			follows = &value
+			featured := featuring[tag.ID]
+			features = &featured
 		}
-		out = append(out, serializer.TagDetailFromModel(cfg, tag, follows))
+		out = append(out, serializer.TagDetailFromModelWithRelationships(cfg, tag, follows, features, nil))
 	}
 	return out
 }
 
 func (s *Server) searchTagFollowingMap(account *models.Account, tags []models.Tag) (map[int64]bool, error) {
+	return s.searchTagRelationshipMap(account, tags, false)
+}
+
+func (s *Server) searchTagFeaturingMap(account *models.Account, tags []models.Tag) (map[int64]bool, error) {
+	return s.searchTagRelationshipMap(account, tags, true)
+}
+
+func (s *Server) searchTagRelationshipMap(account *models.Account, tags []models.Tag, featuring bool) (map[int64]bool, error) {
 	out := map[int64]bool{}
 	if account == nil || s.db == nil || len(tags) == 0 {
 		return out, nil
@@ -7382,15 +7523,18 @@ func (s *Server) searchTagFollowingMap(account *models.Account, tags []models.Ta
 	if len(ids) == 0 {
 		return out, nil
 	}
-	var follows []models.TagFollow
-	if err := s.db.Model(&models.TagFollow{}).
-		Select("tag_id").
-		Where("account_id = ? AND tag_id IN ?", account.ID, ids).
-		Find(&follows).Error; err != nil {
+	var rows []struct {
+		TagID int64 `gorm:"column:tag_id"`
+	}
+	table := "tag_follows"
+	if featuring {
+		table = "featured_tags"
+	}
+	if err := s.db.Table(table).Select("tag_id").Where("account_id = ? AND tag_id IN ?", account.ID, ids).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	for _, follow := range follows {
-		out[follow.TagID] = true
+	for _, row := range rows {
+		out[row.TagID] = true
 	}
 	return out, nil
 }
@@ -7400,6 +7544,7 @@ type apiHTTPError struct {
 	message string
 	headers http.Header
 	cause   error
+	body    any
 }
 
 func (e apiHTTPError) Error() string {
@@ -7477,6 +7622,10 @@ func handleAPIErrorWithHTML(c *echo.Context, err error, renderHTML errorHTMLRend
 		}
 		if errorRequestWantsHTML(c) {
 			_ = c.HTML(apiErr.status, renderHTML(c, apiErr.status, apiErr.message))
+			return
+		}
+		if apiErr.body != nil {
+			_ = c.JSON(apiErr.status, apiErr.body)
 			return
 		}
 		_ = c.JSON(apiErr.status, map[string]string{"error": apiErr.message})
@@ -8118,9 +8267,6 @@ func scheduledStatusParamsFromPayload(payload statusCreatePayload, mediaIDs []st
 	if payload.InReplyToID != "" {
 		params["in_reply_to_id"] = payload.InReplyToID
 	}
-	if payload.QuoteID != "" {
-		params["quote_id"] = payload.QuoteID
-	}
 	if payload.HasAllowedMentions {
 		params["allowed_mentions"] = payload.AllowedMentions
 	}
@@ -8233,9 +8379,6 @@ func parseStatusCreatePayload(c *echo.Context) (statusCreatePayload, error) {
 		if value, ok := raw["scheduled_at"]; ok && string(value) != "null" {
 			payload.ScheduledAt = stringValueFromRaw(value)
 		}
-		if value, ok := raw["quote_id"]; ok && string(value) != "null" {
-			payload.QuoteID = stringValueFromRaw(value)
-		}
 		if value, ok := raw["allowed_mentions"]; ok {
 			payload.HasAllowedMentions = true
 			payload.AllowedMentions = stringSliceFromRaw(value)
@@ -8256,9 +8399,6 @@ func parseStatusCreatePayload(c *echo.Context) (statusCreatePayload, error) {
 	}
 	if value, ok := formField(c, "scheduled_at"); ok {
 		payload.ScheduledAt = value
-	}
-	if value, ok := formField(c, "quote_id"); ok {
-		payload.QuoteID = value
 	}
 	values, _ := c.FormValues()
 	if allowed, ok := statusAllowedMentionsFromForm(values); ok {
@@ -9260,6 +9400,7 @@ func loadStatusForSnapshot(tx *gorm.DB, id int64) (*models.Status, error) {
 		Preload("Account.User.Role").
 		Preload("MediaAttachments").
 		Preload("Poll").
+		Preload("Quote").
 		Where("statuses.id = ? AND statuses.deleted_at IS NULL", id).
 		First(&status).Error
 	return &status, err

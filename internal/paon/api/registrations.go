@@ -49,6 +49,9 @@ const registrationValidationUsernameInvalid = "Validation failed: Username is in
 const registrationValidationEmailInvalid = "Validation failed: Email is invalid"
 const registrationValidationPasswordInvalid = "Validation failed: Password is invalid"
 const registrationValidationAgreementRequired = "Validation failed: Agreement must be accepted"
+const registrationValidationDateOfBirthRequired = "Validation failed: Date of birth can't be blank"
+const registrationValidationDateOfBirthInvalid = "Validation failed: Date of birth is invalid"
+const registrationValidationDateOfBirthBelowLimit = "Validation failed: Date of birth is below the age limit"
 const registrationValidationUsernameReserved = "Validation failed: Username is reserved"
 const registrationValidationUsernameOrEmailTaken = "Validation failed: " + registrationUsernameOrEmailTakenFallback
 const registrationValidationReasonRequired = "Validation failed: Reason can't be blank"
@@ -71,6 +74,7 @@ type accountCreatePayload struct {
 	TurnstileResponse string `json:"cf-turnstile-response" form:"cf-turnstile-response"`
 	Website           string `json:"website" form:"website"`
 	ConfirmPassword   string `json:"confirm_password" form:"confirm_password"`
+	DateOfBirth       string `json:"date_of_birth" form:"date_of_birth"`
 }
 
 func (s *Server) createAccount(c *echo.Context) error {
@@ -86,6 +90,9 @@ func (s *Server) createAccount(c *echo.Context) error {
 		return apiError(c, http.StatusBadRequest, "Malformed request")
 	}
 	if err := validateAccountCreatePayload(payload); err != nil {
+		return err
+	}
+	if err := s.validateRegistrationAge(payload, time.Now().UTC()); err != nil {
 		return err
 	}
 	if err := validateInviteRequestText(payload.Reason, false); err != nil {
@@ -264,6 +271,9 @@ func (s *Server) createWebRegistration(c *echo.Context) error {
 		return c.HTML(http.StatusUnprocessableEntity, s.registrationPageHTMLForInvite(registrationErrorMessage(locale, "password_confirmation_mismatch", registrationPasswordConfirmationMismatchFallback), invite, payload.InviteCode, locale, c.FormValue("accept")))
 	}
 	if err := validateAccountCreatePayload(payload); err != nil {
+		return c.HTML(http.StatusUnprocessableEntity, s.registrationPageHTMLForInvite(registrationWebErrorMessage(locale, err), invite, payload.InviteCode, locale, c.FormValue("accept")))
+	}
+	if err := s.validateRegistrationAge(payload, time.Now().UTC()); err != nil {
 		return c.HTML(http.StatusUnprocessableEntity, s.registrationPageHTMLForInvite(registrationWebErrorMessage(locale, err), invite, payload.InviteCode, locale, c.FormValue("accept")))
 	}
 	if err := validateInviteRequestText(payload.Reason, s.webInviteRequestTextRequired(invite)); err != nil {
@@ -445,6 +455,7 @@ func parseAccountCreatePayload(c *echo.Context) (accountCreatePayload, error) {
 		payload.TimeZone = firstNonEmpty(payload.TimeZone, values.Get("time_zone"))
 		payload.InviteCode = firstNonEmpty(payload.InviteCode, values.Get("invite_code"))
 		payload.TurnstileResponse = firstNonEmpty(payload.TurnstileResponse, values.Get("cf-turnstile-response"))
+		payload.DateOfBirth = firstNonEmpty(payload.DateOfBirth, values.Get("date_of_birth"))
 	}
 	return payload, nil
 }
@@ -479,6 +490,10 @@ func parseWebAccountCreatePayload(c *echo.Context) (accountCreatePayload, error)
 		TurnstileResponse: values.Get("cf-turnstile-response"),
 		Website:           values.Get("user[website]"),
 		ConfirmPassword:   values.Get("user[confirm_password]"),
+		DateOfBirth: firstNonEmpty(
+			values.Get("user[date_of_birth]"),
+			dateOfBirthFromParts(values.Get("user[date_of_birth(1i)]"), values.Get("user[date_of_birth(2i)]"), values.Get("user[date_of_birth(3i)]")),
+		),
 	}, nil
 }
 
@@ -493,6 +508,7 @@ func accountCreatePayloadFromJSON(raw map[string]any) accountCreatePayload {
 		TimeZone:          stringPayloadValue(raw["time_zone"]),
 		InviteCode:        stringPayloadValue(raw["invite_code"]),
 		TurnstileResponse: stringPayloadValue(raw["cf-turnstile-response"]),
+		DateOfBirth:       dateOfBirthPayloadValue(raw["date_of_birth"]),
 	}
 }
 
@@ -512,7 +528,33 @@ func webAccountCreatePayloadFromJSON(raw map[string]any) accountCreatePayload {
 		TurnstileResponse: stringPayloadValue(raw["cf-turnstile-response"]),
 		Website:           firstNonBlankRaw(stringPayloadValue(user["website"])),
 		ConfirmPassword:   firstNonBlankRaw(stringPayloadValue(user["confirm_password"])),
+		DateOfBirth: firstNonEmpty(
+			dateOfBirthPayloadValue(raw["date_of_birth"]),
+			dateOfBirthPayloadValue(user["date_of_birth"]),
+		),
 	}
+}
+
+func dateOfBirthPayloadValue(value any) string {
+	if direct := stringPayloadValue(value); direct != "" {
+		return direct
+	}
+	parts, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	return dateOfBirthFromParts(
+		firstNonEmpty(stringPayloadValue(parts["1"]), stringPayloadValue(parts["year"])),
+		firstNonEmpty(stringPayloadValue(parts["2"]), stringPayloadValue(parts["month"])),
+		firstNonEmpty(stringPayloadValue(parts["3"]), stringPayloadValue(parts["day"])),
+	)
+}
+
+func dateOfBirthFromParts(year string, month string, day string) string {
+	if strings.TrimSpace(year) == "" && strings.TrimSpace(month) == "" && strings.TrimSpace(day) == "" {
+		return ""
+	}
+	return strings.TrimSpace(day) + "." + strings.TrimSpace(month) + "." + strings.TrimSpace(year)
 }
 
 func jsonMapValue(raw map[string]any, key string) map[string]any {
@@ -541,6 +583,61 @@ func validateAccountCreatePayload(payload accountCreatePayload) error {
 	default:
 		return nil
 	}
+}
+
+func (s *Server) registrationMinimumAge() (int, bool) {
+	raw := strings.TrimSpace(normalizeSettingScalar(s.settingValue("min_age", "")))
+	if raw == "" {
+		return 0, false
+	}
+	age, err := strconv.Atoi(raw)
+	if err != nil || age < 0 {
+		return 0, false
+	}
+	return age, true
+}
+
+func (s *Server) validateRegistrationAge(payload accountCreatePayload, now time.Time) error {
+	minimumAge, enabled := s.registrationMinimumAge()
+	if !enabled {
+		return nil
+	}
+	raw := strings.TrimSpace(payload.DateOfBirth)
+	if raw == "" {
+		return registrationDateOfBirthValidationError(registrationValidationDateOfBirthRequired, "ERR_BLANK", "can't be blank")
+	}
+	birthDate, err := parseRegistrationDateOfBirth(raw)
+	if err != nil {
+		return registrationDateOfBirthValidationError(registrationValidationDateOfBirthInvalid, "ERR_INVALID", "is invalid")
+	}
+	cutoff := time.Date(now.Year()-minimumAge, now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	if birthDate.After(cutoff) {
+		return registrationDateOfBirthValidationError(registrationValidationDateOfBirthBelowLimit, "ERR_BELOW_LIMIT", "is below the age limit")
+	}
+	return nil
+}
+
+func registrationDateOfBirthValidationError(message string, code string, description string) apiHTTPError {
+	return apiHTTPError{
+		status:  http.StatusUnprocessableEntity,
+		message: message,
+		body: map[string]any{
+			"error": message,
+			"details": map[string]any{
+				"date_of_birth": []map[string]string{{"error": code, "description": description}},
+			},
+		},
+	}
+}
+
+func parseRegistrationDateOfBirth(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	for _, layout := range []string{"2006-01-02", "02.01.2006"} {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, errors.New("invalid date of birth")
 }
 
 func registrationAgreementAccepted(value string) bool {
@@ -582,14 +679,27 @@ func validateInviteRequestText(reason string, required bool) error {
 }
 
 var defaultReservedUsernames = []string{
+	"abuse",
+	"account",
+	"accounts",
 	"admin",
-	"support",
-	"help",
-	"root",
-	"webmaster",
+	"administration",
 	"administrator",
+	"admins",
+	"help",
+	"helpdesk",
+	"instance",
 	"mod",
 	"moderator",
+	"moderators",
+	"mods",
+	"owner",
+	"root",
+	"security",
+	"server",
+	"staff",
+	"support",
+	"webmaster",
 }
 
 func (s *Server) validateAccountUsernameAvailable(username string) error {
@@ -718,6 +828,9 @@ func (s *Server) createLocalUserAccount(tx *gorm.DB, payload accountCreatePayloa
 		CreatedByApplicationID: options.ApplicationID,
 		SignUpIP:               nullString(options.SignUpIP),
 		TimeZone:               railsUserTimeZoneValue(payload.TimeZone),
+	}
+	if _, enabled := s.registrationMinimumAge(); enabled {
+		user.AgeVerifiedAt = sql.NullTime{Time: now, Valid: true}
 	}
 	if options.Invite != nil {
 		user.InviteID = sql.NullInt64{Int64: options.Invite.ID, Valid: true}
@@ -1265,7 +1378,9 @@ func (s *Server) registrationPageHTMLForInvite(errorText string, invite *models.
 	if len(acceptTokens) > 0 {
 		acceptToken = acceptTokens[0]
 	}
-	return registrationHTMLWithTurnstile(s.cfg.LocalDomain, errorText, inviteCode, s.cfg.CloudflareTurnstileEnabled, s.cfg.CloudflareTurnstileSiteKey, locale, manualReview, acceptToken, inviteRegistrationContext(invite))
+	minimumAge, requireAgeVerification := s.registrationMinimumAge()
+	_, currentTermsErr := s.currentTermsOfService(time.Now().UTC())
+	return registrationHTMLWithTurnstile(s.cfg.LocalDomain, errorText, inviteCode, s.cfg.CloudflareTurnstileEnabled, s.cfg.CloudflareTurnstileSiteKey, locale, manualReview, acceptToken, inviteRegistrationContext(invite), minimumAge, requireAgeVerification, currentTermsErr == nil, s.webInviteRequestTextRequired(invite))
 }
 
 func registrationHTML(domain string, errorText string, inviteCode string) string {
@@ -1286,7 +1401,12 @@ func registrationRulesHTMLForInvite(rules []models.Rule, inviteCode string, acce
 	var rows strings.Builder
 	rows.WriteString(`<ol class="rules-list">`)
 	for _, rule := range rules {
-		rows.WriteString(`<li><div class="rules-list__text">` + html.EscapeString(rule.Text) + `</div></li>`)
+		text, hint := localizedRuleContent(rule, locale)
+		rows.WriteString(`<li><button type="button" aria-expanded="false"><div class="rules-list__text">` + html.EscapeString(text) + `</div>`)
+		if strings.TrimSpace(hint) != "" {
+			rows.WriteString(`<div class="rules-list__hint">` + html.EscapeString(hint) + `</div>`)
+		}
+		rows.WriteString(`</button></li>`)
 	}
 	rows.WriteString(`</ol>`)
 
@@ -1327,6 +1447,22 @@ func registrationHTMLWithTurnstile(domain string, errorText string, inviteCode s
 	if len(args) > 2 {
 		inviteContext, _ = args[2].(registrationInviteContext)
 	}
+	minimumAge := 0
+	if len(args) > 3 {
+		minimumAge, _ = args[3].(int)
+	}
+	requireAgeVerification := false
+	if len(args) > 4 {
+		requireAgeVerification, _ = args[4].(bool)
+	}
+	termsOfServiceEnabled := false
+	if len(args) > 5 {
+		termsOfServiceEnabled, _ = args[5].(bool)
+	}
+	inviteRequestRequired := requireManualReview
+	if len(args) > 6 {
+		inviteRequestRequired, _ = args[6].(bool)
+	}
 	inviteInput := ""
 	if strings.TrimSpace(inviteCode) != "" {
 		inviteInput = `<input type="hidden" name="user[invite_code]" value="` + html.EscapeString(inviteCode) + `">`
@@ -1355,13 +1491,24 @@ func registrationHTMLWithTurnstile(domain string, errorText string, inviteCode s
 	body.WriteString(simpleTextInput(webT(locale, "simple_form.labels.defaults.email"), "user[email]", "", "email", `autocomplete="username" required`))
 	body.WriteString(simpleTextInput(passwordLabel, "user[password]", "", "password", `autocomplete="new-password" minlength="8" maxlength="72" required`))
 	body.WriteString(simpleTextInput(confirmPasswordLabel, "user[password_confirmation]", "", "password", `autocomplete="new-password" maxlength="72" required`))
+	if requireAgeVerification {
+		body.WriteString(`<div class="fields-group"><div class="input string required user_date_of_birth with_block_label"><label>` + html.EscapeString(webT(locale, "auth.date_of_birth")) + `</label><span class="hint">` + html.EscapeString(webT(locale, "auth.date_of_birth_hint", map[string]string{"count": strconv.Itoa(minimumAge), "domain": domain})) + `</span><div class="label_input"><input type="date" name="user[date_of_birth]" autocomplete="bday" required></div></div></div>`)
+	}
 	body.WriteString(`<div class="fields-group"><div class="input string optional user_confirm_password with_label"><div class="label_input"><label>` + html.EscapeString(webT(locale, "simple_form.labels.defaults.honeypot", map[string]string{"label": passwordLabel})) + `</label><input type="text" aria-label="` + html.EscapeString(webT(locale, "simple_form.labels.defaults.honeypot", map[string]string{"label": passwordLabel})) + `" name="user[confirm_password]" autocomplete="off"></div></div></div>`)
 	body.WriteString(`<div class="fields-group"><div class="input url optional user_website with_label"><div class="label_input"><label>` + html.EscapeString(webT(locale, "simple_form.labels.defaults.honeypot", map[string]string{"label": "Website"})) + `</label><input type="url" aria-label="` + html.EscapeString(webT(locale, "simple_form.labels.defaults.honeypot", map[string]string{"label": "Website"})) + `" name="user[website]" autocomplete="off"></div></div></div>`)
 	if requireManualReview {
+		requiredAttr := ""
+		if inviteRequestRequired {
+			requiredAttr = " required"
+		}
 		body.WriteString(`<p class="lead">` + html.EscapeString(webT(locale, "auth.sign_up.manual_review", map[string]string{"domain": domain})) + `</p>`)
-		body.WriteString(`<div class="fields-group"><div class="input text required user_invite_request_text with_block_label"><div class="label_input"><label>` + html.EscapeString(webT(locale, "auth.sign_up.manual_review", map[string]string{"domain": domain})) + `</label><textarea name="user[invite_request_attributes][text]" required></textarea></div></div></div>`)
+		body.WriteString(`<div class="fields-group"><div class="input text user_invite_request_text with_block_label"><div class="label_input"><label>` + html.EscapeString(webT(locale, "auth.sign_up.manual_review", map[string]string{"domain": domain})) + `</label><textarea name="user[invite_request_attributes][text]" maxlength="420"` + requiredAttr + `></textarea></div></div></div>`)
 	}
-	body.WriteString(`<div class="fields-group"><div class="input boolean required"><label class="boolean"><input type="checkbox" name="user[agreement]" value="true" required> ` + webT(locale, "auth.privacy_policy_agreement_html", map[string]string{"rules_path": "/about/more", "privacy_policy_path": "/privacy-policy"}) + `</label></div></div>`)
+	agreementKey := "auth.user_privacy_agreement_html"
+	if termsOfServiceEnabled {
+		agreementKey = "auth.user_agreement_html"
+	}
+	body.WriteString(`<div class="fields-group"><div class="input boolean required"><label class="boolean"><input type="checkbox" name="user[agreement]" value="true" required> ` + webT(locale, agreementKey, map[string]string{"terms_of_service_path": "/terms-of-service", "privacy_policy_path": "/privacy-policy"}) + `</label></div></div>`)
 	body.WriteString(turnstileHTML)
 	body.WriteString(simpleSubmit(title))
 	body.WriteString(simpleFormClose())
@@ -1447,6 +1594,9 @@ func (s *Server) requireApplicationWriteToken(c *echo.Context, scopes ...string)
 	accessToken, err := s.accessTokenFromRequest(c)
 	if err != nil || !accessToken.ApplicationID.Valid {
 		return nil, "", apiError(c, http.StatusUnauthorized, "The access token is invalid")
+	}
+	if accessToken.ResourceOwnerID.Valid {
+		return nil, "", apiError(c, http.StatusForbidden, "This method requires an client credentials authentication")
 	}
 	if !tokenHasAnyScope(accessToken.Scopes, append(scopes, "write")...) {
 		return nil, "", apiError(c, http.StatusForbidden, "This action is outside the authorized scopes")

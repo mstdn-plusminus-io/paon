@@ -16,7 +16,10 @@ import (
 	"gorm.io/gorm"
 )
 
-var errListAccountDuplicate = errors.New("list account duplicate")
+var (
+	errListAccountDuplicate       = errors.New("list account duplicate")
+	errListAccountMustBeFollowing = errors.New("list account must be following")
+)
 
 type listParams struct {
 	Title                *string
@@ -228,6 +231,7 @@ func (s *Server) addListAccounts(c *echo.Context) error {
 		return renderEmpty(c)
 	}
 
+	mergeAccountIDs := make([]int64, 0, len(accountIDs))
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		for _, targetID := range accountIDs {
 			item, err := listAccountRow(tx, *list, targetID)
@@ -240,6 +244,9 @@ func (s *Server) addListAccounts(c *echo.Context) error {
 				}
 				return err
 			}
+			if item.FollowID.Valid {
+				mergeAccountIDs = append(mergeAccountIDs, item.AccountID)
+			}
 		}
 		return nil
 	})
@@ -247,10 +254,16 @@ func (s *Server) addListAccounts(c *echo.Context) error {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apiError(c, http.StatusNotFound, "Record not found")
 		}
+		if err == errListAccountMustBeFollowing {
+			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Account must be a followed account")
+		}
 		if err == errListAccountDuplicate {
-			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Account has already been taken")
+			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Account is already on the list")
 		}
 		return err
+	}
+	for _, targetID := range uniqueInt64s(mergeAccountIDs) {
+		_ = s.mergeAccountIntoListFeed(c.Request().Context(), s.db, targetID, *list)
 	}
 	return renderEmpty(c)
 }
@@ -271,8 +284,20 @@ func (s *Server) removeListAccounts(c *echo.Context) error {
 	if len(accountIDs) == 0 {
 		return renderEmpty(c)
 	}
-	if err := s.db.Where("list_id = ? AND account_id IN ?", list.ID, accountIDs).Delete(&models.ListAccount{}).Error; err != nil {
+	var followedAccountIDs []int64
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.ListAccount{}).
+			Where("list_id = ? AND account_id IN ? AND follow_id IS NOT NULL", list.ID, accountIDs).
+			Pluck("account_id", &followedAccountIDs).Error; err != nil {
+			return err
+		}
+		return tx.Where("list_id = ? AND account_id IN ?", list.ID, accountIDs).Delete(&models.ListAccount{}).Error
+	})
+	if err != nil {
 		return err
+	}
+	for _, targetID := range uniqueInt64s(followedAccountIDs) {
+		_ = s.unmergeAccountFromListFeed(c.Request().Context(), s.db, targetID, *list)
 	}
 	return renderEmpty(c)
 }
@@ -374,7 +399,7 @@ func listAccountRow(tx *gorm.DB, list models.List, targetID int64) (*models.List
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
-	return nil, gorm.ErrRecordNotFound
+	return nil, errListAccountMustBeFollowing
 }
 
 func serializeLists(lists []models.List) []serializer.List {

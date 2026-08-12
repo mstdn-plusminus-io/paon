@@ -2440,8 +2440,9 @@ func uniqueOmniAuthUsername(tx *gorm.DB, uid string) (string, error) {
 
 func omniauthDisplayName(auth omniauthAuthInfo) string {
 	name := firstNonEmpty(auth.Name, strings.TrimSpace(auth.FirstName+" "+auth.LastName), auth.Nickname)
-	if len(name) > 30 {
-		return name[:30]
+	runes := []rune(name)
+	if len(runes) > 30 {
+		return string(runes[:30])
 	}
 	return name
 }
@@ -2734,25 +2735,6 @@ func (s *Server) oauthToken(c *echo.Context) error {
 		if err != nil {
 			return err
 		}
-		return c.JSON(http.StatusOK, tokenResponse(token))
-	case "password":
-		app, hasApp, err := s.oauthApplicationFromOptionalTokenRequest(c)
-		if err != nil {
-			return invalidOAuthClientError()
-		}
-		user, err := s.authenticateUserPassword(oauthParam(c, "username"), oauthParam(c, "password"))
-		if err != nil || user.OTPRequiredForLogin {
-			return oauthTokenErrorf(http.StatusBadRequest, "invalid_grant", "The user credentials were incorrect")
-		}
-		scopes := oauthScopeParam(c, "read write follow push")
-		if hasApp {
-			scopes = normalizeRequestedScopes(scopes, app.Scopes)
-		}
-		token, err := s.issueAccessTokenForApplication(user, app, scopes)
-		if err != nil {
-			return err
-		}
-		_ = s.recordSignIn(user, c.RealIP(), c.Request().UserAgent())
 		return c.JSON(http.StatusOK, tokenResponse(token))
 	case "client_credentials":
 		app, err := s.oauthApplicationFromTokenRequest(c)

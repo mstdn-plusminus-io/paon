@@ -3,6 +3,7 @@ package api
 import (
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,6 +83,10 @@ func (s *Server) fetchRemoteStatusFromActivityURIForRequestWithSigner(uri string
 }
 
 func (s *Server) fetchRemoteStatusFromActivityURIForRequestWithSignerAndContext(ctx context.Context, uri string, expectedActorURI string, requestID string, signer *models.Account) (*models.Status, error) {
+	return s.fetchRemoteStatusFromActivityURIForRequestWithSignerContextAndQuoteDepth(ctx, uri, expectedActorURI, requestID, signer, 0)
+}
+
+func (s *Server) fetchRemoteStatusFromActivityURIForRequestWithSignerContextAndQuoteDepth(ctx context.Context, uri string, expectedActorURI string, requestID string, signer *models.Account, quoteDepth int) (*models.Status, error) {
 	if strings.TrimSpace(uri) == "" || strings.TrimSpace(uri) != uri || s.db == nil {
 		return nil, nil
 	}
@@ -95,6 +100,11 @@ func (s *Server) fetchRemoteStatusFromActivityURIForRequestWithSignerAndContext(
 		if ctx != nil && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if status, ok := activityFetchStatus(err); ok && status == http.StatusNotFound {
+			if err := s.discardKnownDistributableRemoteStatusOnNotFound(ctx, uri); err != nil {
+				return nil, err
+			}
+		}
 		return nil, nil
 	}
 	if ctx != nil {
@@ -105,7 +115,7 @@ func (s *Server) fetchRemoteStatusFromActivityURIForRequestWithSignerAndContext(
 	if payload.Type == "Announce" {
 		return s.fetchRemoteAnnounceStatus(uri, payload, expectedActorURI, requestID)
 	}
-	return s.processFetchedRemoteStatusPayloadWithContext(ctx, uri, payload, expectedActorURI, requestID)
+	return s.processFetchedRemoteStatusPayloadWithContextAndQuoteDepth(ctx, uri, payload, expectedActorURI, requestID, quoteDepth)
 }
 
 func (s *Server) fetchRemoteStatusFromResolvableURL(uri string, current ...*models.Account) (*models.Status, error) {
@@ -123,7 +133,13 @@ func (s *Server) fetchRemoteStatusFromResolvableURLForRequest(uri string, reques
 	requestID = remoteStatusDiscoveryRequestID(requestID, uri)
 	payload, err := s.fetchActivityResourcePayloadWithUserAgentAndSigner(uri, paonUserAgent(s.cfg), s.activityFetchResourceServiceSigner())
 	if err != nil {
-		if status, ok := activityFetchStatus(err); ok && (status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound) {
+		if status, ok := activityFetchStatus(err); ok && status == http.StatusNotFound {
+			if err := s.discardKnownDistributableRemoteStatusOnNotFound(context.Background(), uri); err != nil {
+				return nil, err
+			}
+			return s.resolveKnownRemoteStatusFromDB(uri, account)
+		}
+		if status, ok := activityFetchStatus(err); ok && (status == http.StatusUnauthorized || status == http.StatusForbidden) {
 			return s.resolveKnownRemoteStatusFromDB(uri, account)
 		}
 		return nil, nil
@@ -137,6 +153,57 @@ func (s *Server) fetchRemoteStatusFromResolvableURLForRequest(uri string, reques
 		return s.fetchRemoteAnnounceStatus(uri, payload, "", requestID)
 	}
 	return s.processFetchedRemoteStatusPayload(uri, payload, "", requestID)
+}
+
+// Mastodon treats a 404 while re-fetching a known distributable remote post as
+// evidence that the post was removed. It discards that post without creating a
+// Tombstone. Private posts are deliberately retained: a remote server can
+// return 404 to an unsigned fetch even though an already-known viewer may still
+// access the local copy (the 4.4 known-private-GtS search behavior).
+func (s *Server) discardKnownDistributableRemoteStatusOnNotFound(ctx context.Context, raw string) error {
+	if s == nil || s.db == nil || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	identifiers := []string{raw}
+	if canonical := railsRemoteStatusURIFromWebURL(raw); canonical != "" && canonical != raw {
+		identifiers = append(identifiers, canonical)
+	}
+	var status models.Status
+	err := s.db.WithContext(ctx).
+		Preload("Account").
+		Where("statuses.deleted_at IS NULL").
+		Where("statuses.uri IN ? OR statuses.url IN ?", identifiers, identifiers).
+		First(&status).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !remoteStatusDistributableOnNotFound(status) {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	discarded, err := s.discardStatusRowsForRemoval(ctx, status.ID, now)
+	if err != nil {
+		return err
+	}
+	status.DeletedAt = sql.NullTime{Time: now, Valid: true}
+	removal := asynqRemovalPayload{StatusID: status.ID, Redraft: false, OriginalRemoved: true}
+	if !s.enqueueRemovalTask(removal) {
+		s.applyDiscardedStatusRowSideEffects(ctx, discarded)
+		s.applyDeletedStatusRemovalSideEffects(ctx, status, removal)
+	}
+	return nil
+}
+
+func remoteStatusDistributableOnNotFound(status models.Status) bool {
+	return status.ID != 0 &&
+		!status.Account.Local() &&
+		!status.DeletedAt.Valid &&
+		!status.ReblogOfID.Valid &&
+		(status.Visibility == 0 || status.Visibility == 1)
 }
 
 func (s *Server) fetchVisibleRemoteStatusFromResolvableURL(uri string, current *models.Account) (*models.Status, error) {
@@ -163,6 +230,10 @@ func (s *Server) processFetchedRemoteStatusPayload(uri string, payload activityP
 }
 
 func (s *Server) processFetchedRemoteStatusPayloadWithContext(ctx context.Context, uri string, payload activityPayload, expectedActorURI string, requestID string) (*models.Status, error) {
+	return s.processFetchedRemoteStatusPayloadWithContextAndQuoteDepth(ctx, uri, payload, expectedActorURI, requestID, 0)
+}
+
+func (s *Server) processFetchedRemoteStatusPayloadWithContextAndQuoteDepth(ctx context.Context, uri string, payload activityPayload, expectedActorURI string, requestID string, quoteDepth int) (*models.Status, error) {
 	expectedURI := activityPubFetchExpectedID(uri)
 	note := payload.Object
 	actorURI := activityPayloadFetchActorURI(payload)
@@ -201,7 +272,7 @@ func (s *Server) processFetchedRemoteStatusPayloadWithContext(ctx context.Contex
 		}
 		return s.statusFromActivityURIWithContext(ctx, objectURI)
 	}
-	if err := s.processFetchedActivityPubStatusForRequest(payload, actor, requestID); err != nil {
+	if err := s.processFetchedActivityPubStatusForRequestWithQuoteDepth(payload, actor, requestID, quoteDepth); err != nil {
 		return nil, err
 	}
 	return s.statusFromActivityURIWithContext(ctx, firstNonEmpty(note.ID, expectedURI))
@@ -346,6 +417,10 @@ func (s *Server) processFetchedActivityPubNoteForRequest(note activityObject, re
 }
 
 func (s *Server) processFetchedActivityPubStatusObjectForRequest(note activityObject, requestID string) error {
+	return s.processFetchedActivityPubStatusObjectForRequestWithQuoteDepth(note, requestID, 0)
+}
+
+func (s *Server) processFetchedActivityPubStatusObjectForRequestWithQuoteDepth(note activityObject, requestID string, quoteDepth int) error {
 	if !activityObjectIsStatus(note) {
 		return nil
 	}
@@ -357,7 +432,7 @@ func (s *Server) processFetchedActivityPubStatusObjectForRequest(note activityOb
 	if err != nil || actor == nil || actor.SuspendedAt.Valid {
 		return err
 	}
-	return s.processFetchedActivityPubStatusForRequest(activityPayload{Type: "Create", Actor: note.AttributedTo, ActorRaw: actorURI, Object: note}, actor, requestID)
+	return s.processFetchedActivityPubStatusForRequestWithQuoteDepth(activityPayload{Type: "Create", Actor: note.AttributedTo, ActorRaw: actorURI, Object: note}, actor, requestID, quoteDepth)
 }
 
 func (s *Server) processFetchedActivityPubStatus(payload activityPayload, actor *models.Account) error {
@@ -365,6 +440,10 @@ func (s *Server) processFetchedActivityPubStatus(payload activityPayload, actor 
 }
 
 func (s *Server) processFetchedActivityPubStatusForRequest(payload activityPayload, actor *models.Account, requestID string) error {
+	return s.processFetchedActivityPubStatusForRequestWithQuoteDepth(payload, actor, requestID, 0)
+}
+
+func (s *Server) processFetchedActivityPubStatusForRequestWithQuoteDepth(payload activityPayload, actor *models.Account, requestID string, quoteDepth int) error {
 	if s == nil || s.db == nil || actor == nil || actor.ID == 0 {
 		return nil
 	}
@@ -382,7 +461,7 @@ func (s *Server) processFetchedActivityPubStatusForRequest(payload activityPaylo
 		return err
 	}
 	payload.Fetch = true
-	return s.processActivityPubCreateNote(payload, actor, nil, nil, activityPubProcessingOptions{RequestID: requestID})
+	return s.processActivityPubCreateNote(payload, actor, nil, nil, activityPubProcessingOptions{RequestID: requestID, QuoteDepth: quoteDepth})
 }
 
 func (s *Server) processFetchedActivityPubReferencedStatus(payload activityPayload, actor *models.Account) error {
@@ -700,7 +779,9 @@ func activityHTTPClientForActivityFetch(s *Server, signer *models.Account) *http
 			return nil
 		}
 		req.Header.Del("Signature")
-		return s.signActivityPubFetchRequest(req, *signer)
+		// Mastodon 4.4.15 deliberately leaves Accept out when re-signing a
+		// redirected GET because redirect handling may have changed its value.
+		return s.signActivityPubFetchRequestWithAccept(req, *signer, false)
 	}
 	return &client
 }

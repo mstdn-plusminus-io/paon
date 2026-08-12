@@ -67,7 +67,8 @@ func (s *Server) adminTrendsTagWebRecords(c *echo.Context) ([]models.Tag, error)
 	if s.db == nil {
 		return []models.Tag{}, nil
 	}
-	query := s.db.Model(&models.Tag{})
+	query := s.db.Model(&models.Tag{}).
+		Joins("JOIN tag_trends ON tag_trends.tag_id = tags.id")
 	status, apply, err := adminTrendsTagStatusFilter(c)
 	if err != nil {
 		return nil, err
@@ -444,6 +445,7 @@ func (s *Server) applyAdminTrendsStatusBatch(ctx context.Context, actorAccountID
 		s.refreshAdminTrendStatusReviewSideEffects(ctx, ids, accountIDs)
 		for _, accountID := range uniqueInt64s(accountIDs) {
 			s.triggerAccountWebhook("account.updated", accountID)
+			_ = s.enqueueFASPAccountLifecycleByID(ctx, accountID, "update")
 		}
 		return nil
 	default:
@@ -1282,31 +1284,13 @@ func (s *Server) adminTrendTags(c *echo.Context) error {
 	var tags []models.Tag
 	limitValue := limit(c, 100, 200)
 	offsetValue := offset(c)
-	if rows, ok, err := s.trendingTagRowsFromRedis(c.Request().Context(), limitValue, offsetValue, time.Now().UTC(), false); err != nil {
+	query := s.db.WithContext(c.Request().Context()).Model(&models.Tag{}).
+		Joins("JOIN tag_trends ON tag_trends.tag_id = tags.id").
+		Order("tag_trends.score DESC").
+		Offset(offsetValue).
+		Limit(limitValue)
+	if err := query.Find(&tags).Error; err != nil {
 		return err
-	} else if ok {
-		ids := make([]int64, 0, len(rows))
-		order := map[int64]int{}
-		for _, row := range rows {
-			ids = append(ids, row.ID)
-			order[row.ID] = len(ids) - 1
-		}
-		if len(ids) > 0 {
-			if err := s.db.Where("id IN ?", ids).Find(&tags).Error; err != nil {
-				return err
-			}
-			sort.SliceStable(tags, func(i, j int) bool { return order[tags[i].ID] < order[tags[j].ID] })
-		}
-	} else {
-		query := s.db.Model(&models.Tag{}).
-			Order("CASE WHEN tags.reviewed_at IS NULL THEN 0 ELSE 1 END ASC").
-			Order("tags.max_score DESC NULLS LAST").
-			Order("tags.id DESC").
-			Offset(offsetValue).
-			Limit(limitValue)
-		if err := query.Find(&tags).Error; err != nil {
-			return err
-		}
 	}
 	if len(tags) > 0 {
 		setPaginationLinkHeader(c, offsetPaginationLinkWithPathAndAllowedParams(c, "/api/v1/trends/tags", offsetValue, limitValue, len(tags), adminLimitPaginationParams))
@@ -1565,6 +1549,7 @@ func (s *Server) reviewAdminTrendStatus(c *echo.Context, trendable bool) error {
 	if err := s.statusQuery().Where("statuses.id = ?", id).First(&status).Error; err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
+	_ = s.enqueueFASPContentLifecycle(c.Request().Context(), status, "update")
 	account, _, _ := s.currentAccount(c)
 	statuses := []models.Status{status}
 	if err := s.hydrateStatusRelationships(statuses, account); err != nil {

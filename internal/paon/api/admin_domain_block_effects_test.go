@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"os"
 	"testing"
 
@@ -31,6 +32,40 @@ func TestAdminDomainBlockAccountEffectModes(t *testing.T) {
 				t.Fatalf("noop = %v", got)
 			}
 		})
+	}
+}
+
+func TestAdminDomainBlockMediaEffectsMatchMastodon44(t *testing.T) {
+	src, err := os.ReadFile("admin_domain_block_effects.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`if block.RejectMedia {`,
+		`return s.clearDomainMediaCache(database, block.Domain)`,
+		`if adminDomainBlockSuspendsAccounts(block) {`,
+		`return s.deleteDomainCustomEmojis(database, block.Domain)`,
+	} {
+		if !functionBodyContains(t, src, "applyAdminDomainBlockMediaEffects", want) {
+			t.Fatalf("domain-block media effects missing %q", want)
+		}
+	}
+	for _, fn := range []string{"enqueueAdminDomainBlockEffectsOrApply"} {
+		if !functionBodyContains(t, src, fn, `adminDomainBlockSuspendsAccounts(block) || block.RejectMedia`) ||
+			!functionBodyContains(t, src, fn, `s.applyAdminDomainBlockMediaEffects(database, block)`) {
+			t.Fatalf("%s does not schedule/fallback custom emoji purge for every suspension", fn)
+		}
+	}
+
+	worker, err := os.ReadFile("asynq_workers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range []string{"handleAsynqDomainBlock", "handleAsynqDomainClearMedia"} {
+		if !functionBodyContains(t, worker, fn, `adminDomainBlockSuspendsAccounts(block)`) ||
+			!functionBodyContains(t, worker, fn, `s.applyAdminDomainBlockMediaEffects`) {
+			t.Fatalf("%s does not retain the 4.4 suspension emoji purge contract", fn)
+		}
 	}
 }
 
@@ -119,7 +154,9 @@ func TestAdminDomainSuspendCleanupKeepsRailsSafeAssociationPurge(t *testing.T) {
 			`s.deliverAdminSuspendedRemoteFollowActivities(followDeliveries)`,
 			`s.applyAdminSuspendedRemoteFollowCacheEffects(context.Background(), followDeliveries)`,
 			`if destroyRows {`,
-			`return database.Where("id IN (?)", accountIDs).Delete(&models.Account{}).Error`,
+			`database.Where("id IN (?)", accountIDs).Delete(&models.Account{}).Error`,
+			`s.enqueueFASPAccountLifecycle(context.Background(), account, "delete")`,
+			`s.enqueueFASPAccountLifecycleUpdate(context.Background(), previous, current)`,
 		},
 		"adminSuspendedRemoteFollowDeliveries": {
 			`Where("follows.account_id IN (?)", accountIDs)`,
@@ -144,8 +181,10 @@ func TestAdminDomainSuspendCleanupKeepsRailsSafeAssociationPurge(t *testing.T) {
 		},
 		"applyAdminSuspensionWorkerEffects": {
 			`database.Where("id = ?", accountID).First(&account)`,
+			`adminSuspensionRejectsRemoteFollows(account)`,
 			`s.adminSuspensionWorkerRejectDeliveries(database, accountID)`,
 			`deleteFollow(tx, models.Follow{`,
+			`tx.Where("account_id = ?", account.ID).Delete(&models.StatusTrend{})`,
 			`s.deliverAdminSuspendedRemoteFollowActivities(deliveries)`,
 			`s.applyAdminSuspendedRemoteFollowCacheEffects(ctx, deliveries)`,
 			`s.applyAdminAccountMediaVisibility(ctx, database, account.ID, true)`,
@@ -265,5 +304,20 @@ func TestAdminDomainSuspendCleanupKeepsRailsSafeAssociationPurge(t *testing.T) {
 		if !functionBodyContains(t, instancesSrc, fn, want) {
 			t.Fatalf("%s must scope its indexed recount with %q", fn, want)
 		}
+	}
+}
+
+func TestAdminSuspensionRejectRemoteFollowPolicy(t *testing.T) {
+	local := models.Account{Protocol: 1}
+	if adminSuspensionRejectsRemoteFollows(local) {
+		t.Fatal("local suspension must not reject follows")
+	}
+	remote := models.Account{Domain: sql.NullString{String: "remote.example", Valid: true}, Protocol: 1}
+	if !adminSuspensionRejectsRemoteFollows(remote) {
+		t.Fatal("locally-initiated remote suspension must reject remote follows")
+	}
+	remote.SuspensionOrigin = sql.NullInt64{Int64: 1, Valid: true}
+	if adminSuspensionRejectsRemoteFollows(remote) {
+		t.Fatal("remote-origin suspension must preserve remote follows")
 	}
 }

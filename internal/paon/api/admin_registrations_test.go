@@ -30,11 +30,17 @@ func TestAdminSettingsRegistrationsRequiresWebSession(t *testing.T) {
 }
 
 func TestValidateAdminRegistrationsSettingsRejectsInvalidMode(t *testing.T) {
-	if err := validateAdminRegistrationsSettings(adminRegistrationsSettings{RegistrationsMode: "open"}); err != nil {
+	if err := validateAdminRegistrationsSettings(adminRegistrationsSettings{RegistrationsMode: "open", MinAge: "16"}); err != nil {
 		t.Fatal(err)
+	}
+	if err := validateAdminRegistrationsSettings(adminRegistrationsSettings{RegistrationsMode: "open"}); err != nil {
+		t.Fatalf("blank minimum age must disable the age gate: %v", err)
 	}
 	if err := validateAdminRegistrationsSettings(adminRegistrationsSettings{RegistrationsMode: "invite_only"}); err == nil {
 		t.Fatal("expected invalid registration mode to be rejected")
+	}
+	if err := validateAdminRegistrationsSettings(adminRegistrationsSettings{RegistrationsMode: "open", MinAge: "16.5"}); err == nil {
+		t.Fatal("expected non-integer minimum age to be rejected")
 	}
 }
 
@@ -55,6 +61,7 @@ func TestAdminSettingsRegistrationsHTMLIncludesRailsFields(t *testing.T) {
 		RequireInviteText:          true,
 		CaptchaEnabled:             true,
 		ClosedRegistrationsMessage: "Closed",
+		MinAge:                     "16",
 	}, "saved", "")
 
 	for _, want := range []string{
@@ -65,6 +72,9 @@ func TestAdminSettingsRegistrationsHTMLIncludesRailsFields(t *testing.T) {
 		`name="form_admin_settings[require_invite_text]" value="1" checked`,
 		`name="form_admin_settings[captcha_enabled]" value="1" checked`,
 		`name="form_admin_settings[closed_registrations_message]"`,
+		`name="form_admin_settings[min_age]" value="16"`,
+		`inputmode="numeric"`,
+		"Users will be asked to confirm their date of birth during sign-up",
 		"Closed",
 		"saved",
 	} {

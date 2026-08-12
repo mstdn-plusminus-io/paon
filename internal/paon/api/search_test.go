@@ -69,7 +69,7 @@ func TestSearchHashtagResultsUseRailsTagSerializerShape(t *testing.T) {
 		{ID: 11, Name: "rust"},
 	}
 
-	authenticated := searchHashtagResults(cfg, tags, map[int64]bool{10: true}, true)
+	authenticated := searchHashtagResults(cfg, tags, map[int64]bool{10: true}, map[int64]bool{11: true}, true)
 	body, err := json.Marshal(authenticated)
 	if err != nil {
 		t.Fatal(err)
@@ -90,8 +90,14 @@ func TestSearchHashtagResultsUseRailsTagSerializerShape(t *testing.T) {
 	if payload[0]["following"] != true || payload[1]["following"] != false {
 		t.Fatalf("following flags = %#v / %#v in %s", payload[0]["following"], payload[1]["following"], string(body))
 	}
+	if payload[0]["featuring"] != false || payload[1]["featuring"] != true {
+		t.Fatalf("featuring flags = %#v / %#v in %s", payload[0]["featuring"], payload[1]["featuring"], string(body))
+	}
+	if payload[0]["id"] != "10" || payload[1]["id"] != "11" {
+		t.Fatalf("tag IDs = %#v / %#v in %s", payload[0]["id"], payload[1]["id"], string(body))
+	}
 
-	anonymous := searchHashtagResults(cfg, tags[:1], nil, false)
+	anonymous := searchHashtagResults(cfg, tags[:1], nil, nil, false)
 	body, err = json.Marshal(anonymous)
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +108,9 @@ func TestSearchHashtagResultsUseRailsTagSerializerShape(t *testing.T) {
 	}
 	if _, ok := payload[0]["following"]; ok {
 		t.Fatalf("anonymous hashtag serialized following: %s", string(body))
+	}
+	if _, ok := payload[0]["featuring"]; ok {
+		t.Fatalf("anonymous hashtag serialized featuring: %s", string(body))
 	}
 }
 
@@ -260,7 +269,7 @@ func TestSearchMeiliAccountIDsSeparatesAutocompleteAndFullSearch(t *testing.T) {
 	if _, err := server.searchMeiliAccountIDs(t.Context(), "alice profile", nil, false, true, 20, 0); err != nil {
 		t.Fatal(err)
 	}
-	if len(bodies) != 2 {
+	if len(bodies) != 3 {
 		t.Fatalf("requests = %#v", bodies)
 	}
 	if got := jsonStringSlice(bodies[0]["attributesToSearchOn"]); strings.Join(got, ",") != "username,display_name" {
@@ -274,6 +283,40 @@ func TestSearchMeiliAccountIDsSeparatesAutocompleteAndFullSearch(t *testing.T) {
 	}
 	if bodies[1]["matchingStrategy"] != "all" {
 		t.Fatalf("full matching strategy = %#v", bodies[1])
+	}
+	if bodies[2]["q"] != "aliceprofile" || bodies[2]["matchingStrategy"] != "all" {
+		t.Fatalf("full word-joined query = %#v", bodies[2])
+	}
+}
+
+func TestSearchMeiliAccountIDsMergesWordJoinedResultsBeforePagination(t *testing.T) {
+	var queries []string
+	originalClient := meiliHTTPClient
+	meiliHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		query, _ := body["q"].(string)
+		queries = append(queries, query)
+		hits := `{"hits":[{"id":1},{"id":2}]}`
+		if query == "FooBar" {
+			hits = `{"hits":[{"id":2},{"id":3}]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(hits))}, nil
+	})}
+	defer func() { meiliHTTPClient = originalClient }()
+
+	server := &Server{cfg: config.Config{MeiliEnabled: true, MeiliHost: "http://meili.test"}}
+	ids, err := server.searchMeiliAccountIDs(t.Context(), "Foo Bar", nil, false, true, 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(queries, ",") != "Foo Bar,FooBar" {
+		t.Fatalf("queries = %#v", queries)
+	}
+	if strings.Join(searchTestInt64Strings(ids), ",") != "2,3" {
+		t.Fatalf("ids = %#v", ids)
 	}
 }
 
@@ -401,6 +444,22 @@ func TestMeiliStatusQueryDateFiltersUseCurrentUserTimeZone(t *testing.T) {
 		"created_at_timestamp >= 1780239600",
 		"created_at_timestamp >= 1781449200 AND created_at_timestamp < 1781535600",
 	} {
+		if !stringSliceContains(filters, want) {
+			t.Fatalf("filters %#v missing %q", filters, want)
+		}
+	}
+}
+
+func TestMeiliStatusQuerySupportsMastodon44QuoteFilter(t *testing.T) {
+	server := &Server{}
+	query, filters, err := server.meiliStatusQueryFilters(t.Context(), "hello has:quote -is:quote", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query != "hello" {
+		t.Fatalf("query = %q", query)
+	}
+	for _, want := range []string{"has_quote = true", "has_quote = false"} {
 		if !stringSliceContains(filters, want) {
 			t.Fatalf("filters %#v missing %q", filters, want)
 		}
@@ -594,7 +653,7 @@ func TestSyncMeiliIndexesConfiguresRailsCompatibleSettings(t *testing.T) {
 			t.Fatalf("status searchableAttributes missing %q: %#v", want, statusSettings)
 		}
 	}
-	for _, want := range []string{"visibility", "searchable_by", "created_at_timestamp"} {
+	for _, want := range []string{"visibility", "searchable_by", "has_quote", "created_at_timestamp"} {
 		if !jsonArrayContainsString(statusSettings["filterableAttributes"], want) {
 			t.Fatalf("status filterableAttributes missing %q: %#v", want, statusSettings)
 		}
@@ -814,6 +873,7 @@ func TestMeiliStatusDocumentMatchesRailsSearchFields(t *testing.T) {
 		},
 		PreviewCards: []models.PreviewCard{{Type: 2}},
 		Poll:         &models.Poll{Options: models.StringArray{"yes", "no"}},
+		Quote:        &models.Quote{ID: 12, StatusID: 42, State: models.QuoteStatePending},
 	}
 	doc := server.meiliStatusDocument(status)
 	if doc.ID != 42 || doc.AccountID != 7 || doc.Visibility != "public" || !doc.Sensitive {
@@ -830,7 +890,7 @@ func TestMeiliStatusDocumentMatchesRailsSearchFields(t *testing.T) {
 	if strings.Contains(doc.Text, "<strong>") {
 		t.Fatalf("doc text kept HTML: %q", doc.Text)
 	}
-	if !doc.HasMedia || !doc.HasImage || !doc.HasVideo || !doc.HasPoll || !doc.HasLink || !doc.HasEmbed || !doc.IsReply {
+	if !doc.HasMedia || !doc.HasImage || !doc.HasVideo || !doc.HasPoll || !doc.HasLink || !doc.HasEmbed || !doc.HasQuote || !doc.IsReply {
 		t.Fatalf("doc booleans = %#v", doc)
 	}
 	if doc.CreatedAtTimestamp != 1781740800 || doc.FavouritesCount != 3 || doc.ReblogsCount != 2 || doc.RepliesCount != 1 {

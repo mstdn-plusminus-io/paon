@@ -214,6 +214,26 @@ func TestNotification43WireTypesMatchRails(t *testing.T) {
 	}
 }
 
+func TestNotification44AnnualReportGroupUsesStringYear(t *testing.T) {
+	body, err := json.Marshal(notificationGroupEntity{
+		GroupKey:                 "ungrouped-44",
+		NotificationsCount:       1,
+		Type:                     "annual_report",
+		MostRecentNotificationID: 44,
+		SampleAccountIDs:         []string{"7"},
+		AnnualReport:             &annualReportEventEntity{Year: "2025"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"annual_report":{"year":"2025"}`) {
+		t.Fatalf("annual report notification = %s", body)
+	}
+	if _, ok := notificationTypes["annual_report"]; !ok {
+		t.Fatal("annual_report is not accepted by notification type filters")
+	}
+}
+
 func TestUniquePositiveRequestIDsAcceptsJSONArraysAndDeduplicates(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/requests/accept?id[]=7", strings.NewReader(`{"id":["3",3,0,-2,"7"]}`))
 	req.Header.Set("Content-Type", "application/json")

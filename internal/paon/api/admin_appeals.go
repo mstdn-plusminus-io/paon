@@ -174,6 +174,7 @@ func (s *Server) applyAdminAppealDecision(rawID string, actorAccountID int64, ap
 	}
 	if approve && targetAccountID != 0 && adminAppealStrikeUpdatesAccount(decidedAppeal.Strike.Action) {
 		s.triggerAccountWebhook("account.updated", targetAccountID)
+		_ = s.enqueueFASPAccountLifecycleByID(context.Background(), targetAccountID, "update")
 	}
 	if approve && targetAccountID != 0 && decidedAppeal.Strike.Action == 4000 {
 		if err := s.enqueueAdminUnsuspensionOrRun(s.db, targetAccountID); err != nil {

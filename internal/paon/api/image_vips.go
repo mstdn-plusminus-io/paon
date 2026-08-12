@@ -15,6 +15,11 @@ import (
 // attachment size limit.
 const mediaPreviewImageSizeLimit = 8 * 1024 * 1024
 
+// Mastodon 4.4 raises local avatar and header uploads to 8 MiB when libvips
+// is the active processor. Native/ImageMagick-compatible builds retain the
+// 2 MiB contract declared in image_vips_unavailable.go.
+const profileImageSizeLimit = 8 * 1024 * 1024
+
 func tryConvertVIPSFileToJPEG(source string, target string) error {
 	img, err := vips.NewImageFromFile(source, vips.DefaultLoadOptions())
 	if err != nil {

@@ -141,11 +141,13 @@ func preferencesBoolSettingKeys() map[string]struct{} {
 		"web.reduce_motion":                   {},
 		"web.disable_swiping":                 {},
 		"web.use_system_font":                 {},
+		"web.use_system_scrollbars":           {},
 		"web.crop_images":                     {},
 		"web.trends":                          {},
 		"web.disable_hover_cards":             {},
 		"web.reblog_modal":                    {},
 		"web.delete_modal":                    {},
+		"web.missing_alt_text_modal":          {},
 		"web.use_blurhash":                    {},
 		"web.expand_content_warnings":         {},
 		"notification_emails.follow":          {},
@@ -171,6 +173,7 @@ func preferencesStringSettingKeys() map[string][]string {
 		"web.display_media":                    {"default", "show_all", "hide_all"},
 		"notification_emails.software_updates": {"none", "critical", "patch", "all"},
 		"default_privacy":                      {"public", "unlisted", "private"},
+		"default_quote_policy":                 {"public", "followers", "nobody"},
 		"default_language":                     nil,
 	}
 }

@@ -654,7 +654,7 @@ func TestRailsCORSMiddlewareStaysBeforeAPIGate(t *testing.T) {
 	hostAuth := strings.Index(body, `e.Use(hostAuthorizationMiddleware(cfg))`)
 	forceSSL := strings.Index(body, `e.Use(forceSSLMiddleware(cfg))`)
 	rateLimit := strings.Index(body, `e.Use(apiRateLimitHeadersMiddleware)`)
-	securityHeaders := strings.Index(body, `e.Use(securityHeadersMiddleware)`)
+	securityHeaders := strings.Index(body, `e.Use(securityHeadersMiddleware(database))`)
 	cors := strings.Index(body, `e.Use(corsMiddleware)`)
 	gate := strings.Index(body, `e.Use(server.apiAuthenticationGateMiddleware)`)
 	if cors < 0 || gate < 0 {
@@ -976,13 +976,29 @@ func TestRailsAdminWebRoutesStayRegistered(t *testing.T) {
 		`e.POST("/admin/relays/:id/disable", s.disableAdminRelay)`,
 		`e.DELETE("/admin/relays/:id", s.destroyAdminRelay)`,
 		`e.POST("/admin/relays/:id", s.notFound)`,
+		`e.GET("/admin/terms_of_service.:format", s.adminTermsOfServicePage)`,
+		`e.GET("/admin/terms_of_service", s.adminTermsOfServicePage)`,
+		`e.GET("/admin/terms_of_service/generate.:format", s.adminTermsOfServiceGeneratePage)`,
+		`e.GET("/admin/terms_of_service/generate", s.adminTermsOfServiceGeneratePage)`,
+		`e.POST("/admin/terms_of_service/generate", s.generateAdminTermsOfService)`,
+		`e.GET("/admin/terms_of_service/draft", s.adminTermsOfServiceDraftPage)`,
+		`e.PUT("/admin/terms_of_service/draft", s.updateAdminTermsOfServiceDraft)`,
+		`e.PATCH("/admin/terms_of_service/draft", s.updateAdminTermsOfServiceDraft)`,
+		`e.GET("/admin/terms_of_service/history", s.adminTermsOfServiceHistoryPage)`,
+		`e.GET("/admin/terms_of_service/:id/preview", s.adminTermsOfServicePreviewPage)`,
+		`e.POST("/admin/terms_of_service/:id/test", s.testAdminTermsOfServiceDistribution)`,
+		`e.POST("/admin/terms_of_service/:id/distribution", s.distributeAdminTermsOfService)`,
 		`e.GET("/admin/rules.:format", s.adminRulesPage)`,
 		`e.GET("/admin/rules", s.adminRulesPage)`,
+		`e.GET("/admin/rules/new.:format", s.newAdminRulePage)`,
+		`e.GET("/admin/rules/new", s.newAdminRulePage)`,
 		`e.POST("/admin/rules", s.createAdminRule)`,
 		`e.GET("/admin/rules/:id/edit.:format", optionalFormatPathParam("id", s.editAdminRulePage))`,
 		`e.GET("/admin/rules/:id/edit", s.editAdminRulePage)`,
 		`e.PUT("/admin/rules/:id", s.updateAdminRule)`,
 		`e.PATCH("/admin/rules/:id", s.updateAdminRule)`,
+		`e.POST("/admin/rules/:id/move_up", s.moveAdminRuleUp)`,
+		`e.POST("/admin/rules/:id/move_down", s.moveAdminRuleDown)`,
 		`e.DELETE("/admin/rules/:id", s.destroyAdminRule)`,
 		`e.POST("/admin/rules/:id", s.notFound)`,
 		`e.GET("/admin/webhooks.:format", s.adminWebhooksPage)`,
@@ -1069,8 +1085,11 @@ func TestRailsAdminWebRoutesStayRegistered(t *testing.T) {
 		`e.POST("/admin/invites/deactivate_all.:format", s.deactivateAllAdminInvites)`,
 		`e.DELETE("/admin/invites/:id.:format", optionalFormatPathParam("id", s.destroyAdminInvite))`,
 		`e.POST("/admin/rules.:format", s.createAdminRule)`,
+		`e.POST("/admin/terms_of_service/generate.:format", s.generateAdminTermsOfService)`,
 		`e.PUT("/admin/rules/:id.:format", optionalFormatPathParam("id", s.updateAdminRule))`,
 		`e.PATCH("/admin/rules/:id.:format", optionalFormatPathParam("id", s.updateAdminRule))`,
+		`e.POST("/admin/rules/:id/move_up.:format", optionalFormatPathParam("id", s.moveAdminRuleUp))`,
+		`e.POST("/admin/rules/:id/move_down.:format", optionalFormatPathParam("id", s.moveAdminRuleDown))`,
 		`e.DELETE("/admin/rules/:id.:format", optionalFormatPathParam("id", s.destroyAdminRule))`,
 		`e.POST("/admin/roles.:format", s.createAdminRole)`,
 		`e.PUT("/admin/roles/:id.:format", optionalFormatPathParam("id", s.updateAdminRole))`,

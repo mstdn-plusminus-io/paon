@@ -51,6 +51,7 @@ func (s *Server) updateSettingsProfile(c *echo.Context) error {
 			return err
 		}
 		s.triggerAccountWebhook("account.updated", reloaded.ID)
+		_ = s.enqueueFASPAccountLifecycleUpdate(c.Request().Context(), *account, *reloaded)
 		if len(payload.FieldsAttributes) > 0 {
 			s.enqueueVerifyAccountLinksIfNeeded(c.Request().Context(), *reloaded, time.Now().UTC())
 		}
@@ -104,6 +105,7 @@ func (s *Server) destroySettingsProfilePicture(c *echo.Context) error {
 		return err
 	}
 	s.triggerAccountWebhook("account.updated", reloaded.ID)
+	_ = s.enqueueFASPAccountLifecycleUpdate(c.Request().Context(), *account, *reloaded)
 	_ = s.enqueueActivityPubAccountUpdate(*reloaded, activityPubAccountUpdateDebounceDelay)
 	return c.Redirect(http.StatusSeeOther, "/settings/profile?notice="+url.QueryEscape(settingsChangeSavedMessage(locale)))
 }

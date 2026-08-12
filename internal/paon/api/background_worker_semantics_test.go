@@ -14,8 +14,8 @@ func TestBackgroundWorkerConcurrencyInventoryCoversEveryStartedRunner(t *testing
 		t.Fatal(err)
 	}
 	body := string(source)
-	if len(backgroundWorkerConcurrencyInventory) != 34 {
-		t.Fatalf("inventory has %d entries, want 34", len(backgroundWorkerConcurrencyInventory))
+	if len(backgroundWorkerConcurrencyInventory) != 35 {
+		t.Fatalf("inventory has %d entries, want 35", len(backgroundWorkerConcurrencyInventory))
 	}
 	for name, semantics := range backgroundWorkerConcurrencyInventory {
 		if !strings.Contains(body, "s."+name) {

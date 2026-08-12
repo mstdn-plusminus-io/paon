@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
@@ -577,6 +578,34 @@ func TestPublicMediaStatusVisible(t *testing.T) {
 	}
 }
 
+func TestDiscardedMediaRequiresManageReportsPermission(t *testing.T) {
+	s := &Server{}
+	attachment := models.MediaAttachment{
+		StatusID:  sql.NullInt64{Int64: 42, Valid: true},
+		Discarded: true,
+	}
+	if visible, err := s.mediaAttachmentDownloadVisible(attachment, &models.Account{ID: 10}, false); err != nil || visible {
+		t.Fatal("discarded media must not be visible to the status owner without manage_reports")
+	}
+	if visible, err := s.mediaAttachmentDownloadVisible(attachment, nil, true); err != nil || !visible {
+		t.Fatal("discarded media must remain available to report moderators")
+	}
+	attachment.Discarded = false
+	attachment.Status = models.Status{ID: 42, AccountID: 10, Visibility: 0}
+	if visible, err := s.mediaAttachmentDownloadVisible(attachment, nil, false); err != nil || !visible {
+		t.Fatal("active public status media should remain visible")
+	}
+}
+
+func TestDiscardedMediaProxyUsesShortExpiry(t *testing.T) {
+	if got := mediaProxyExpiry(models.MediaAttachment{Discarded: true}); got != 10*time.Minute {
+		t.Fatalf("discarded media expiry = %s, want 10m", got)
+	}
+	if got := mediaProxyExpiry(models.MediaAttachment{}); got != time.Hour {
+		t.Fatalf("regular media expiry = %s, want 1h", got)
+	}
+}
+
 func TestPublicMediaRoutesRequireAuthenticationInLimitedFederationMode(t *testing.T) {
 	src, err := os.ReadFile("media.go")
 	if err != nil {
@@ -903,6 +932,20 @@ func TestDownloadProxyLocalFileStreamsWhenSendfileHeaderUnset(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK || rec.Body.String() != "image-bytes" {
 		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDownloadProxyLocalPathUsesRemoteCachePrefix(t *testing.T) {
+	s := &Server{cfg: config.Config{PublicDir: "/srv/paon/public"}}
+	attachment := models.MediaAttachment{
+		ID:                       123,
+		RemoteURL:                "https://remote.example/photo.png",
+		FileStorageSchemaVersion: sql.NullInt64{Int64: 1, Valid: true},
+		FileFileName:             sql.NullString{String: "photo.png", Valid: true},
+	}
+	want := "/srv/paon/public/system/cache/media_attachments/files/000/000/123/original/photo.png"
+	if got := s.downloadProxyLocalPath(attachment, "original"); got != want {
+		t.Fatalf("downloadProxyLocalPath = %q, want %q", got, want)
 	}
 }
 

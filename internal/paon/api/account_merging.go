@@ -32,6 +32,7 @@ var accountMergingOwnedTables = []string{
 	"notifications",
 	"notification_permissions",
 	"notification_requests",
+	"quotes",
 }
 
 var accountMergingTargetTables = []string{
@@ -42,6 +43,7 @@ var accountMergingTargetTables = []string{
 	"account_moderation_notes",
 	"account_pins",
 	"account_notes",
+	"account_warnings",
 }
 
 // Mastodon 4.3 notification policies introduced a second account reference
@@ -83,6 +85,11 @@ func (s *Server) mergeDuplicateRemoteActivityPubAccount(ctx context.Context, dat
 	if accountID == 0 || duplicateID == 0 || accountID == duplicateID {
 		return nil
 	}
+	var duplicate models.Account
+	duplicateResult := database.WithContext(ctx).Where("id = ?", duplicateID).Find(&duplicate)
+	if duplicateResult.Error != nil {
+		return duplicateResult.Error
+	}
 	if err := database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, table := range accountMergingOwnedTables {
 			if err := mergeAccountReferenceRows(tx, table, "account_id", accountID, duplicateID); err != nil {
@@ -105,12 +112,27 @@ func (s *Server) mergeDuplicateRemoteActivityPubAccount(ctx context.Context, dat
 		if err := mergeNullableAccountReferenceRows(tx, "canonical_email_blocks", "reference_account_id", accountID, duplicateID); err != nil {
 			return err
 		}
-		if err := mergeAccountReferenceRows(tx, "appeals", "account_warning_id", accountID, duplicateID); err != nil {
+		if err := mergeAccountReferenceRows(tx, "severed_relationships", "local_account_id", accountID, duplicateID); err != nil {
+			return err
+		}
+		if err := mergeAccountReferenceRows(tx, "severed_relationships", "remote_account_id", accountID, duplicateID); err != nil {
+			return err
+		}
+		if err := mergeAccountReferenceRows(tx, "quotes", "quoted_account_id", accountID, duplicateID); err != nil {
+			return err
+		}
+		if err := mergeAccountReferenceRows(tx, "fasp_follow_recommendations", "requesting_account_id", accountID, duplicateID); err != nil {
+			return err
+		}
+		if err := mergeAccountReferenceRows(tx, "fasp_follow_recommendations", "recommended_account_id", accountID, duplicateID); err != nil {
 			return err
 		}
 		return tx.Where("id = ?", duplicateID).Delete(&models.Account{}).Error
 	}); err != nil {
 		return err
+	}
+	if duplicateResult.RowsAffected > 0 {
+		_ = s.enqueueFASPAccountLifecycle(ctx, duplicate, "delete")
 	}
 	s.invalidateRelationshipCaches(ctx, accountID, duplicateID)
 	return nil

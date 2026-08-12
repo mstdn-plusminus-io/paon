@@ -70,7 +70,10 @@ func (s *Server) fetchLinkCardForStatus(ctx context.Context, statusID int64) err
 		return nil
 	}
 	var status models.Status
-	if err := s.db.WithContext(ctx).Preload("PreviewCards").Preload("Mentions.Account").Preload("Tags").Where("id = ? AND deleted_at IS NULL", statusID).First(&status).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("PreviewCards").Preload("Mentions.Account").Preload("Tags").Preload("Quote").Where("id = ? AND deleted_at IS NULL", statusID).First(&status).Error; err != nil {
+		return nil
+	}
+	if status.Quote != nil {
 		return nil
 	}
 	if len(status.PreviewCards) > 0 {
@@ -576,8 +579,9 @@ func resolvePreviewCardOEmbedURL(baseRaw string, valueRaw string) string {
 }
 
 func previewCardFromHTML(rawURL string, body string, now time.Time) (fetchedPreviewCard, bool) {
-	meta := previewCardMetaValues(body)
-	title := firstNonBlankRaw(meta["og:title"], meta["twitter:title"], previewCardHTMLTitle(body))
+	head := previewCardHTMLHead(body)
+	meta := previewCardMetaValues(head)
+	title := firstNonBlankRaw(meta["og:title"], meta["twitter:title"], previewCardHTMLTitle(head))
 	description := firstNonBlankRaw(meta["og:description"], meta["twitter:description"], meta["description"])
 	if strings.TrimSpace(title) == "" {
 		return fetchedPreviewCard{}, false
@@ -585,7 +589,7 @@ func previewCardFromHTML(rawURL string, body string, now time.Time) (fetchedPrev
 	parsed, _ := url.Parse(rawURL)
 	providerName := firstNonBlankRaw(meta["og:site_name"], previewCardProviderName(parsed.Hostname()))
 	card := models.PreviewCard{
-		URL:          previewCardCanonicalURL(rawURL, body, meta),
+		URL:          previewCardCanonicalURL(rawURL, head, meta),
 		Title:        truncateString(title, 512),
 		Description:  truncateString(description, 512),
 		Type:         0,
@@ -603,6 +607,36 @@ func previewCardFromHTML(rawURL string, body string, now time.Time) (fetchedPrev
 		card.ImageDescription = truncateString(firstNonBlankRaw(meta["og:image:alt"], meta["twitter:image:alt"]), 1500)
 	}
 	return fetchedPreviewCard{card: card, imageURL: imageURL, creator: strings.TrimSpace(meta["fediverse:creator"])}, true
+}
+
+func previewCardHTMLHead(body string) string {
+	document, err := nethtml.Parse(strings.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	var head *nethtml.Node
+	var find func(*nethtml.Node)
+	find = func(node *nethtml.Node) {
+		if head != nil {
+			return
+		}
+		if node.Type == nethtml.ElementNode && strings.EqualFold(node.Data, "head") {
+			head = node
+			return
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			find(child)
+		}
+	}
+	find(document)
+	if head == nil {
+		return ""
+	}
+	var rendered strings.Builder
+	if err := nethtml.Render(&rendered, head); err != nil {
+		return ""
+	}
+	return rendered.String()
 }
 
 func previewCardLanguage(body string, meta map[string]string) string {
@@ -763,7 +797,7 @@ func previewCardMetaValues(body string) map[string]string {
 		attrs := previewCardTagAttrs(tag)
 		key := strings.ToLower(firstNonBlankRaw(attrs["property"], attrs["name"]))
 		value := html.UnescapeString(attrs["content"])
-		if key != "" && strings.TrimSpace(value) != "" {
+		if _, exists := out[key]; key != "" && strings.TrimSpace(value) != "" && !exists {
 			out[key] = value
 		}
 	}

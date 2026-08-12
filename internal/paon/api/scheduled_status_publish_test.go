@@ -23,7 +23,6 @@ func TestStatusCreatePayloadFromScheduledParamsRoundTrip(t *testing.T) {
 		},
 		Visibility:         "private",
 		InReplyToID:        "123",
-		QuoteID:            "456",
 		AllowedMentions:    []string{"123", "456"},
 		HasAllowedMentions: true,
 		ApplicationID:      sql.NullInt64{Int64: 99, Valid: true},
@@ -35,7 +34,7 @@ func TestStatusCreatePayloadFromScheduledParamsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != "hello #go" || !payload.Sensitive || !payload.HasSensitive || payload.SpoilerText != "cw" || payload.Language != "ja" || payload.Visibility != "private" || payload.InReplyToID != "123" || payload.QuoteID != "456" {
+	if payload.Status != "hello #go" || !payload.Sensitive || !payload.HasSensitive || payload.SpoilerText != "cw" || payload.Language != "ja" || payload.Visibility != "private" || payload.InReplyToID != "123" {
 		t.Fatalf("payload = %#v", payload)
 	}
 	if !reflect.DeepEqual(mediaIDs, []string{"7", "8"}) || !reflect.DeepEqual(payload.MediaIDs, []string{"7", "8"}) || !payload.HasMediaIDs {
@@ -59,7 +58,7 @@ func TestStatusCreatePayloadFromScheduledParamsAcceptsRailsLikeJSON(t *testing.T
 		"sensitive":false,
 		"spoiler_text":"",
 		"in_reply_to_id":123,
-		"quote_id":456,
+		"quoted_status_id":456,
 		"application_id":"99",
 		"allowed_mentions":[123,"456"],
 		"media_ids":[7,"8"],
@@ -69,7 +68,7 @@ func TestStatusCreatePayloadFromScheduledParamsAcceptsRailsLikeJSON(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != "queued" || payload.Visibility != "unlisted" || payload.InReplyToID != "123" || payload.QuoteID != "456" || payload.Sensitive || !payload.HasSensitive {
+	if payload.Status != "queued" || payload.Visibility != "unlisted" || payload.InReplyToID != "123" || payload.Sensitive || !payload.HasSensitive {
 		t.Fatalf("payload = %#v", payload)
 	}
 	if !reflect.DeepEqual(mediaIDs, []string{"7", "8"}) {
@@ -115,6 +114,23 @@ func TestScheduledStatusPublishRestoresRailsApplicationID(t *testing.T) {
 		if !strings.Contains(string(src), want) {
 			t.Fatalf("scheduled publish missing %q", want)
 		}
+	}
+}
+
+func TestScheduledStatusPublishDiscardsForDisabledAuthorLikeMastodon44(t *testing.T) {
+	src, err := os.ReadFile("scheduled_status_publish.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, src, "publishScheduledStatus")
+	disabled := strings.Index(body, `if account.User.Disabled`)
+	if disabled < 0 {
+		t.Fatal("disabled scheduled-status guard is missing")
+	}
+	discard := strings.Index(body[disabled:], `s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)`)
+	returnNoop := strings.Index(body[disabled:], `return nil, nil`)
+	if discard < 0 || returnNoop < 0 || discard > returnNoop {
+		t.Fatal("disabled scheduled-status author must discard the scheduled row before the successful no-op")
 	}
 }
 

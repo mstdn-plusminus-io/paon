@@ -228,6 +228,7 @@ func (s *Server) StartBackgroundWorkers(ctx context.Context) *BackgroundWorkers 
 	workers.Go(ctx, s.runRemoteMediaRedownloadWorker)
 	workers.Go(ctx, s.runStatusVacuumWorker)
 	workers.Go(ctx, s.runFollowRecommendationsWorker)
+	workers.Go(ctx, s.runFASPFollowRecommendationCleanupWorker)
 	workers.Go(ctx, s.runIPCleanupWorker)
 	workers.Go(ctx, s.runUserCleanupWorker)
 	workers.Go(ctx, s.runAutoCloseRegistrationsWorker)

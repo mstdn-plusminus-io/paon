@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"net/http"
@@ -28,6 +29,53 @@ func TestActivityFetchUsesWorkerContext(t *testing.T) {
 	_, err := fetchActivityResourceWithMetadataAndUserAgentSignedWithAcceptAndContext(ctx, "https://remote.example/statuses/1", "", nil, nil, activityResourceAcceptHeader)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("fetch error = %v, want context cancellation", err)
+	}
+}
+
+func TestRemoteStatusDistributableOnNotFoundMatchesMastodon44(t *testing.T) {
+	remote := models.Account{Domain: sql.NullString{String: "remote.example", Valid: true}}
+	for _, tt := range []struct {
+		name   string
+		status models.Status
+		want   bool
+	}{
+		{name: "public remote", status: models.Status{ID: 1, Account: remote, Visibility: 0}, want: true},
+		{name: "unlisted remote", status: models.Status{ID: 1, Account: remote, Visibility: 1}, want: true},
+		{name: "followers-only remote", status: models.Status{ID: 1, Account: remote, Visibility: 2}, want: false},
+		{name: "private mention remote", status: models.Status{ID: 1, Account: remote, Visibility: 3}, want: false},
+		{name: "local", status: models.Status{ID: 1, Visibility: 0}, want: false},
+		{name: "boost", status: models.Status{ID: 1, Account: remote, Visibility: 0, ReblogOfID: sql.NullInt64{Int64: 2, Valid: true}}, want: false},
+		{name: "already deleted", status: models.Status{ID: 1, Account: remote, Visibility: 0, DeletedAt: sql.NullTime{Time: time.Now(), Valid: true}}, want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := remoteStatusDistributableOnNotFound(tt.status); got != tt.want {
+				t.Fatalf("remoteStatusDistributableOnNotFound() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRemoteStatusNotFoundDiscardDoesNotCreateTombstone(t *testing.T) {
+	src, err := os.ReadFile("activitypub_fetch.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`s.discardStatusRowsForRemoval(ctx, status.ID, now)`,
+		`OriginalRemoved: true`,
+		`s.enqueueRemovalTask(removal)`,
+	} {
+		if !functionBodyContains(t, src, "discardKnownDistributableRemoteStatusOnNotFound", want) {
+			t.Fatalf("404 discard path missing %q", want)
+		}
+	}
+	if functionBodyContains(t, src, "discardKnownDistributableRemoteStatusOnNotFound", "Tombstone{") ||
+		functionBodyContains(t, src, "discardKnownDistributableRemoteStatusOnNotFound", "markActivityPubDeleteUponArrival") {
+		t.Fatal("404 discard path must not create a tombstone")
+	}
+	if !functionBodyContains(t, src, "fetchRemoteStatusFromActivityURIForRequestWithSignerContextAndQuoteDepth", `s.discardKnownDistributableRemoteStatusOnNotFound(ctx, uri)`) ||
+		!functionBodyContains(t, src, "fetchRemoteStatusFromResolvableURLForRequest", `s.discardKnownDistributableRemoteStatusOnNotFound(context.Background(), uri)`) {
+		t.Fatal("both ActivityPub URI and resolvable URL fetch paths must discard a known public post on 404")
 	}
 }
 
@@ -334,7 +382,7 @@ func TestFetchRemoteStatusReturnsExpandedNoteURI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !functionBodyContains(t, src, "processFetchedRemoteStatusPayloadWithContext", `return s.statusFromActivityURIWithContext(ctx, firstNonEmpty(note.ID, expectedURI))`) {
+	if !functionBodyContains(t, src, "processFetchedRemoteStatusPayloadWithContextAndQuoteDepth", `return s.statusFromActivityURIWithContext(ctx, firstNonEmpty(note.ID, expectedURI))`) {
 		t.Fatal("fetched remote status processing must return the fetched Note URI, not the wrapping Create activity URI")
 	}
 }

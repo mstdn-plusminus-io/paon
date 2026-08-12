@@ -14,9 +14,13 @@ func TestPaonGoDockerfileBuildsAssetsAndRuntimeSeparately(t *testing.T) {
 	}
 	body := string(raw)
 	for _, want := range []string{
-		`FROM golang:1.25.12-trixie AS go-builder`,
+		`ARG BASE_REGISTRY=docker.io`,
+		`FROM ${BASE_REGISTRY}/golang:1.25.12-trixie AS go-builder`,
 		`apt-get install -y --no-install-recommends libvips-dev pkg-config`,
-		`FROM node:22-bookworm-slim AS assets`,
+		`FROM ${BASE_REGISTRY}/node:22-bookworm-slim AS assets`,
+		`FROM ${BASE_REGISTRY}/debian:trixie-slim`,
+		`ARG SOURCE_COMMIT=""`,
+		`ENV SOURCE_COMMIT=${SOURCE_COMMIT}`,
 		`COPY go.mod go.sum ./`,
 		`RUN go mod download`,
 		`RUN go list -mod=mod ./cmd/paon ./cmd/paon-admin ./cmd/paon-cutover ./cmd/paon-meili-deploy ./cmd/paon-migrate >/dev/null`,
@@ -195,7 +199,6 @@ func TestRailsPlatformAppManifestsKeepDatabaseAndRedisContracts(t *testing.T) {
 		for _, want := range []string{
 			`"LOCAL_DOMAIN"`,
 			`"SECRET_KEY_BASE"`,
-			`"OTP_SECRET"`,
 			`"ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY"`,
 			`"ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"`,
 			`"ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"`,

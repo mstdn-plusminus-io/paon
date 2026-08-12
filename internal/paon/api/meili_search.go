@@ -295,7 +295,7 @@ func meiliIndexDefinitions() []meiliIndexDefinition {
 			PrimaryKey: "id",
 			Settings: meiliIndexSettings{
 				SearchableAttributes: []string{"text", "tags"},
-				FilterableAttributes: []string{"id", "account_id", "in_reply_to_id", "language", "visibility", "sensitive", "has_media", "has_image", "has_video", "has_poll", "has_link", "has_embed", "is_reply", "searchable_by", "created_at_timestamp"},
+				FilterableAttributes: []string{"id", "account_id", "in_reply_to_id", "language", "visibility", "sensitive", "has_media", "has_image", "has_video", "has_poll", "has_link", "has_embed", "has_quote", "is_reply", "searchable_by", "created_at_timestamp"},
 				SortableAttributes:   []string{"created_at_timestamp", "favourites_count", "reblogs_count", "replies_count"},
 				RankingRules:         []string{"words", "typo", "proximity", "attribute", "sort", "created_at_timestamp:desc", "favourites_count:desc", "reblogs_count:desc"},
 			},
@@ -361,16 +361,16 @@ func (s *Server) searchMeiliAccountIDs(ctx context.Context, query string, curren
 			return []int64{}, nil
 		}
 		options.Filter = "id IN [" + joinInt64s(ids) + "]"
-		return s.searchMeiliIDs(ctx, "accounts", query, options)
+		return s.searchMeiliAccountQueryIDs(ctx, query, options, fullText)
 	}
 	if current == nil {
-		return s.searchMeiliIDs(ctx, "accounts", query, options)
+		return s.searchMeiliAccountQueryIDs(ctx, query, options, fullText)
 	}
 
 	candidateLimit := min(1000, max(limitValue, offsetValue+limitValue))
 	options.Limit = candidateLimit
 	options.Offset = 0
-	general, err := s.searchMeiliIDs(ctx, "accounts", query, options)
+	general, err := s.searchMeiliAccountQueryIDs(ctx, query, options, fullText)
 	if err != nil {
 		return nil, err
 	}
@@ -380,11 +380,42 @@ func (s *Server) searchMeiliAccountIDs(ctx context.Context, query string, curren
 	}
 	followedIDs = append(followedIDs, current.ID)
 	options.Filter = "id IN [" + joinInt64s(followedIDs) + "]"
-	followed, err := s.searchMeiliIDs(ctx, "accounts", query, options)
+	followed, err := s.searchMeiliAccountQueryIDs(ctx, query, options, fullText)
 	if err != nil {
 		return nil, err
 	}
 	merged := mergeUniqueAccountSearchIDs(followed, general...)
+	if offsetValue >= len(merged) {
+		return []int64{}, nil
+	}
+	return merged[offsetValue:min(offsetValue+limitValue, len(merged))], nil
+}
+
+// Mastodon 4.4's account-search analyzer emits both the individual words and
+// their concatenation (for example, "Foo Bar" also searches for "foobar").
+// Meilisearch does not expose an equivalent per-query shingle analyzer, so run
+// the concatenated variant alongside the normal full-account search and merge
+// the result sets while preserving Meilisearch's order within each variant.
+func (s *Server) searchMeiliAccountQueryIDs(ctx context.Context, query string, options meiliSearchOptions, wordJoin bool) ([]int64, error) {
+	joined := strings.Join(strings.Fields(query), "")
+	if !wordJoin || joined == "" || joined == strings.TrimSpace(query) {
+		return s.searchMeiliIDs(ctx, "accounts", query, options)
+	}
+
+	limitValue := options.Limit
+	offsetValue := options.Offset
+	options.Limit = min(1000, max(limitValue, offsetValue+limitValue))
+	options.Offset = 0
+
+	normal, err := s.searchMeiliIDs(ctx, "accounts", query, options)
+	if err != nil {
+		return nil, err
+	}
+	concatenated, err := s.searchMeiliIDs(ctx, "accounts", joined, options)
+	if err != nil {
+		return nil, err
+	}
+	merged := mergeUniqueAccountSearchIDs(normal, concatenated...)
 	if offsetValue >= len(merged) {
 		return []int64{}, nil
 	}
@@ -633,6 +664,8 @@ func meiliStatusHasFilter(value string) (string, bool) {
 		return "has_link", true
 	case "embed":
 		return "has_embed", true
+	case "quote":
+		return "has_quote", true
 	default:
 		return "", false
 	}

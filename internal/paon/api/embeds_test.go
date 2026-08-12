@@ -105,6 +105,12 @@ func TestStaticAssetDirectoriesServeFromAbsolutePublicDir(t *testing.T) {
 		if err := os.WriteFile(assetPath, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		// Tests can run under a restrictive process umask. Public fixtures must
+		// remain distinguishable from the 0600 retained-moderation media that
+		// the in-process static handler deliberately protects.
+		if err := os.Chmod(assetPath, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(publicDir, "packs", "manifest.json"), []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)

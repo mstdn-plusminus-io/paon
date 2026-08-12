@@ -16,6 +16,8 @@ import (
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type statusQuote struct {
@@ -26,10 +28,7 @@ type statusQuote struct {
 }
 
 type statusQuoteStore interface {
-	Get(ctx context.Context, statusID string) (statusQuote, bool, error)
 	GetMany(ctx context.Context, statusIDs []string) (map[string]statusQuote, error)
-	Put(ctx context.Context, quote statusQuote) error
-	Delete(ctx context.Context, statusID string) error
 }
 
 type dynamoDBStatusQuoteStore struct {
@@ -88,86 +87,76 @@ func dynamoDBTableName(namespace string, baseName string) string {
 }
 
 func (s *Server) hydrateStatusQuote(status *models.Status) {
-	if s == nil || s.quoteStore == nil || status == nil || status.ID == 0 || !statusTextContainsQuoteMarker(status.Text) {
+	if s == nil || s.db == nil || status == nil || status.ID == 0 {
 		return
 	}
-	quote, ok, err := s.quoteStore.Get(context.Background(), strconv.FormatInt(status.ID, 10))
-	if err != nil || !ok || quote.QuoteID == "" || quote.QuoteID == quote.StatusID {
+	var quote models.Quote
+	if err := quoteRelationshipQuery(s.db.WithContext(context.Background())).
+		Where("quotes.status_id = ?", status.ID).
+		First(&quote).Error; err != nil {
 		return
 	}
-	applyStatusQuoteMetadata(status, quote)
+	s.hydrateQuoteTarget(&quote)
+	applySQLStatusQuote(status, &quote, s)
 }
 
 func (s *Server) hydrateStatusesQuote(statuses []models.Status) {
-	if s == nil || s.quoteStore == nil || len(statuses) == 0 {
+	s.hydrateStatusesQuoteDepth(statuses, 1)
+}
+
+// hydrateStatusesQuoteDepth bounds quote expansion to the shape exposed by the
+// Mastodon REST API: the top-level quote contains a status, while a quote on
+// that status is serialized in its shallow form.
+func (s *Server) hydrateStatusesQuoteDepth(statuses []models.Status, remainingDepth int) {
+	if s == nil || s.db == nil || len(statuses) == 0 {
 		return
 	}
-	type target struct {
-		status   *models.Status
-		statusID string
-	}
-	targets := make([]target, 0, len(statuses)*2)
-	seen := make(map[string]struct{}, len(statuses)*2)
-	statusIDs := make([]string, 0, len(statuses)*2)
+	targets := make(map[int64][]*models.Status, len(statuses)*2)
+	statusIDs := make([]int64, 0, len(statuses)*2)
 	for i := range statuses {
-		if statuses[i].ID != 0 && statusTextContainsQuoteMarker(statuses[i].Text) {
-			id := strconv.FormatInt(statuses[i].ID, 10)
-			targets = append(targets, target{status: &statuses[i], statusID: id})
-			if _, ok := seen[id]; !ok {
-				seen[id] = struct{}{}
+		if statuses[i].ID != 0 {
+			id := statuses[i].ID
+			if len(targets[id]) == 0 {
 				statusIDs = append(statusIDs, id)
 			}
+			targets[id] = append(targets[id], &statuses[i])
 		}
-		if statuses[i].Reblog != nil && statuses[i].Reblog.ID != 0 && statusTextContainsQuoteMarker(statuses[i].Reblog.Text) {
-			id := strconv.FormatInt(statuses[i].Reblog.ID, 10)
-			targets = append(targets, target{status: statuses[i].Reblog, statusID: id})
-			if _, ok := seen[id]; !ok {
-				seen[id] = struct{}{}
+		if statuses[i].Reblog != nil && statuses[i].Reblog.ID != 0 {
+			id := statuses[i].Reblog.ID
+			if len(targets[id]) == 0 {
 				statusIDs = append(statusIDs, id)
 			}
+			targets[id] = append(targets[id], statuses[i].Reblog)
 		}
 	}
 	if len(statusIDs) == 0 {
 		return
 	}
-	quotes, err := s.quoteStore.GetMany(context.Background(), statusIDs)
-	if err != nil {
+	var quotes []models.Quote
+	if err := quoteRelationshipQuery(s.db.WithContext(context.Background())).
+		Where("quotes.status_id IN ?", statusIDs).
+		Find(&quotes).Error; err != nil {
 		return
 	}
-	for _, target := range targets {
-		quote, ok := quotes[target.statusID]
-		if !ok || quote.QuoteID == "" || quote.QuoteID == quote.StatusID {
-			continue
+	quotedStatusIDs := make([]int64, 0, len(quotes))
+	for i := range quotes {
+		if quotes[i].QuotedStatusID.Valid {
+			quotedStatusIDs = append(quotedStatusIDs, quotes[i].QuotedStatusID.Int64)
 		}
-		applyStatusQuoteMetadata(target.status, quote)
 	}
-}
-
-func (s *Server) putStatusQuoteBestEffort(ctx context.Context, statusID int64, quote *models.Status) {
-	if s == nil || s.quoteStore == nil || statusID == 0 || quote == nil || quote.ID == 0 || quote.ID == statusID {
-		return
+	quotedStatuses := s.loadQuoteTargetsDepth(quotedStatusIDs, remainingDepth)
+	for i := range quotes {
+		if quotes[i].QuotedStatusID.Valid {
+			if quoted, ok := quotedStatuses[quotes[i].QuotedStatusID.Int64]; ok {
+				quotedCopy := quoted
+				quotes[i].QuotedStatus = &quotedCopy
+			}
+		}
+		for _, status := range targets[quotes[i].StatusID] {
+			quoteCopy := quotes[i]
+			applySQLStatusQuote(status, &quoteCopy, s)
+		}
 	}
-	s.putStatusQuoteMetadataBestEffort(ctx, statusID, quote.ID, s.quoteStatusURI(*quote), s.quoteStatusURI(*quote))
-}
-
-func (s *Server) putStatusQuoteMetadataBestEffort(ctx context.Context, statusID int64, quoteID int64, originalURL string, localURL string) {
-	if s == nil || s.quoteStore == nil || statusID == 0 || quoteID == 0 || statusID == quoteID {
-		return
-	}
-	_ = s.quoteStore.Put(ctx, statusQuote{
-		StatusID:    strconv.FormatInt(statusID, 10),
-		QuoteID:     strconv.FormatInt(quoteID, 10),
-		OriginalURL: originalURL,
-		LocalURL:    firstNonEmpty(localURL, originalURL),
-	})
-}
-
-func (s *Server) applyStatusQuote(status *models.Status, quote *models.Status) {
-	if s == nil || status == nil || quote == nil || quote.ID == 0 || quote.ID == status.ID {
-		return
-	}
-	status.QuoteID = sqlNullString(strconv.FormatInt(quote.ID, 10))
-	status.QuoteOriginalURL = sqlNullString(s.quoteStatusURI(*quote))
 }
 
 func statusQuoteTargetStructurallyAllowed(quote *models.Status) bool {
@@ -220,46 +209,316 @@ func (s *Server) statusQuoteTargetAllowedForAccount(ctx context.Context, account
 }
 
 func (s *Server) deleteStatusQuoteBestEffort(ctx context.Context, statusID int64) {
-	if s == nil || s.quoteStore == nil || statusID == 0 {
+	if s == nil || s.db == nil || statusID == 0 {
 		return
 	}
-	_ = s.quoteStore.Delete(ctx, strconv.FormatInt(statusID, 10))
+	database := s.db.WithContext(nonNilContext(ctx))
+	var references []models.Quote
+	_ = database.Select("id", "status_id").Where("quoted_status_id = ?", statusID).Find(&references).Error
+	_ = database.Where("status_id = ?", statusID).Delete(&models.Quote{}).Error
+	for _, quote := range references {
+		result := database.Model(&models.Quote{}).
+			Where("id = ? AND quoted_status_id = ?", quote.ID, statusID).
+			Updates(map[string]any{
+				"quoted_status_id": nil,
+				"updated_at":       time.Now().UTC(),
+			})
+		if result.Error == nil && result.RowsAffected > 0 {
+			s.publishQuoteStateUpdate(ctx, quote.StatusID)
+		}
+	}
 }
 
-func applyStatusQuoteMetadata(status *models.Status, quote statusQuote) {
-	if status == nil {
+func quoteRelationshipQuery(db *gorm.DB) *gorm.DB {
+	return db.Model(&models.Quote{}).
+		Preload("Account.AccountStat").
+		Preload("Account.User.Role").
+		Preload("QuotedAccount.AccountStat").
+		Preload("QuotedAccount.User.Role")
+}
+
+func (s *Server) hydrateQuoteTarget(quote *models.Quote) {
+	if s == nil || quote == nil || !quote.QuotedStatusID.Valid {
 		return
 	}
-	status.QuoteID = sqlNullString(quote.QuoteID)
-	status.QuoteOriginalURL = sqlNullString(quote.OriginalURL)
+	if target, ok := s.loadQuoteTargets([]int64{quote.QuotedStatusID.Int64})[quote.QuotedStatusID.Int64]; ok {
+		quote.QuotedStatus = &target
+	}
+}
+
+func (s *Server) loadQuoteTargets(ids []int64) map[int64]models.Status {
+	return s.loadQuoteTargetsDepth(ids, 1)
+}
+
+func (s *Server) loadQuoteTargetsDepth(ids []int64, remainingDepth int) map[int64]models.Status {
+	out := make(map[int64]models.Status)
+	ids = uniqueInt64s(ids)
+	if s == nil || s.db == nil || len(ids) == 0 {
+		return out
+	}
+	var statuses []models.Status
+	if err := s.statusQuery().Where("statuses.id IN ? AND statuses.deleted_at IS NULL", ids).Find(&statuses).Error; err != nil {
+		return out
+	}
+	_ = s.hydrateStatusesCustomEmojis(statuses)
+	if remainingDepth > 0 {
+		s.hydrateStatusesQuoteDepth(statuses, remainingDepth-1)
+	}
+	for _, status := range statuses {
+		out[status.ID] = status
+	}
+	return out
+}
+
+func (s *Server) hydrateQuoteVisibility(statuses []models.Status, current *models.Account) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	quotes := make([]*models.Quote, 0, len(statuses))
+	quotedStatusIDs := make([]int64, 0, len(statuses))
+	visitedStatuses := make(map[*models.Status]struct{})
+	var collect func(*models.Status)
+	collect = func(status *models.Status) {
+		if status == nil {
+			return
+		}
+		if _, ok := visitedStatuses[status]; ok {
+			return
+		}
+		visitedStatuses[status] = struct{}{}
+		collect(status.Reblog)
+		if status.Quote == nil || status.Quote.QuotedStatus == nil {
+			return
+		}
+		quotes = append(quotes, status.Quote)
+		quotedStatusIDs = append(quotedStatusIDs, status.Quote.QuotedStatus.ID)
+		collect(status.Quote.QuotedStatus)
+	}
+	for i := range statuses {
+		collect(&statuses[i])
+	}
+	quotedStatusIDs = uniqueInt64s(quotedStatusIDs)
+	if len(quotedStatusIDs) == 0 {
+		return nil
+	}
+	visibleIDs := make([]int64, 0, len(quotedStatusIDs))
+	query := s.visibleStatusQuery(current)
+	if current != nil && current.ID != 0 {
+		// REST::BaseQuoteSerializer uses StatusFilter#filtered_for_quote?, which
+		// applies the viewer's blocks, domain blocks, and mutes while deliberately
+		// not hiding accounts merely because the server has silenced them.
+		query = query.
+			Where(`(
+				statuses.account_id = ?
+				OR NOT EXISTS (
+					SELECT 1 FROM blocks quote_status_viewer_blocks
+					WHERE quote_status_viewer_blocks.account_id = ?
+					  AND quote_status_viewer_blocks.target_account_id = statuses.account_id
+				)
+			)`, current.ID, current.ID).
+			Where(`(
+				statuses.account_id = ?
+				OR NOT EXISTS (
+					SELECT 1 FROM mutes quote_status_viewer_mutes
+					WHERE quote_status_viewer_mutes.account_id = ?
+					  AND quote_status_viewer_mutes.target_account_id = statuses.account_id
+				)
+			)`, current.ID, current.ID).
+			Where(`(
+				statuses.account_id = ?
+				OR NOT EXISTS (
+					SELECT 1
+					FROM account_domain_blocks quote_status_viewer_domain_blocks
+					JOIN accounts quote_status_target_accounts
+					  ON quote_status_target_accounts.id = statuses.account_id
+					WHERE quote_status_viewer_domain_blocks.account_id = ?
+					  AND quote_status_target_accounts.domain IS NOT NULL
+					  AND lower(quote_status_viewer_domain_blocks.domain) = lower(quote_status_target_accounts.domain)
+				)
+			)`, current.ID, current.ID)
+	}
+	if err := query.
+		Where("statuses.id IN ?", quotedStatusIDs).
+		Pluck("statuses.id", &visibleIDs).Error; err != nil {
+		return err
+	}
+	visible := make(map[int64]struct{}, len(visibleIDs))
+	for _, id := range visibleIDs {
+		visible[id] = struct{}{}
+	}
+	for _, quote := range quotes {
+		quote.QuotedStatusVisibilityChecked = true
+		_, quote.QuotedStatusVisible = visible[quote.QuotedStatus.ID]
+	}
+	return nil
+}
+
+func applySQLStatusQuote(status *models.Status, quote *models.Quote, server *Server) {
+	if status == nil || quote == nil || quote.StatusID != status.ID || !statusQuoteAcceptable(quote) {
+		return
+	}
+	status.Quote = quote
+	if server != nil && quote.ID != 0 && quote.QuotedStatusID.Valid && quote.ApprovalURI.Valid && !quote.UpdatedAt.IsZero() && !quote.UpdatedAt.After(time.Now().UTC().Add(-quoteBackgroundRefreshInterval)) {
+		server.enqueueQuoteRefreshTask(quote.ID)
+	}
+}
+
+func statusQuoteAcceptable(quote *models.Quote) bool {
+	return quote != nil && (quote.State == models.QuoteStateAccepted || !quote.Legacy)
+}
+
+func (s *Server) upsertSQLStatusQuote(ctx context.Context, statusID int64, quoted *models.Status, approvalURI sql.NullString, activityURI sql.NullString, legacy bool, state int) error {
+	if s == nil || s.db == nil || statusID == 0 || quoted == nil || quoted.ID == 0 || statusID == quoted.ID {
+		return nil
+	}
+	var source models.Status
+	if err := s.db.WithContext(nonNilContext(ctx)).Select("id", "account_id").Where("id = ? AND deleted_at IS NULL", statusID).First(&source).Error; err != nil {
+		return err
+	}
+	return upsertSQLStatusQuoteTx(s.db.WithContext(nonNilContext(ctx)), &source, quoted, approvalURI, activityURI, legacy, state)
+}
+
+func upsertSQLStatusQuoteTx(tx *gorm.DB, source *models.Status, quoted *models.Status, approvalURI sql.NullString, activityURI sql.NullString, legacy bool, state int) error {
+	if tx == nil || source == nil || source.ID == 0 || source.AccountID == 0 || quoted == nil || quoted.ID == 0 || quoted.AccountID == 0 || source.ID == quoted.ID {
+		return nil
+	}
+	now := time.Now().UTC()
+	value := models.Quote{
+		AccountID:       source.AccountID,
+		StatusID:        source.ID,
+		QuotedStatusID:  sql.NullInt64{Int64: quoted.ID, Valid: true},
+		QuotedAccountID: sql.NullInt64{Int64: quoted.AccountID, Valid: true},
+		State:           state,
+		ApprovalURI:     approvalURI,
+		ActivityURI:     activityURI,
+		Legacy:          legacy,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	return tx.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "status_id"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"quoted_status_id":  value.QuotedStatusID,
+			"quoted_account_id": value.QuotedAccountID,
+			"state":             value.State,
+			"approval_uri":      value.ApprovalURI,
+			"activity_uri":      value.ActivityURI,
+			"legacy":            value.Legacy,
+			"updated_at":        value.UpdatedAt,
+		}),
+	}).Create(&value).Error
+}
+
+func nonNilContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+// QuoteCutoverResult reports the one-way DynamoDB-to-PostgreSQL quote cut-over.
+// The importer never mutates DynamoDB and only accepts rows whose source and target
+// can still be resolved and revalidated under the current visibility/block rules.
+type QuoteCutoverResult struct {
+	Candidates int `json:"candidates"`
+	Imported   int `json:"imported"`
+	Skipped    int `json:"skipped"`
+}
+
+func (s *Server) cutoverLegacyDynamoStatusQuotes(ctx context.Context, apply bool, store statusQuoteStore) (QuoteCutoverResult, error) {
+	var result QuoteCutoverResult
+	if s == nil || s.db == nil || store == nil {
+		return result, nil
+	}
+	var ids []int64
+	if err := s.db.WithContext(nonNilContext(ctx)).Model(&models.Status{}).
+		Where("deleted_at IS NULL AND (text LIKE ? OR text LIKE ?)", "%RE:%", "%QT:%").
+		Pluck("id", &ids).Error; err != nil {
+		return result, err
+	}
+	result.Candidates = len(ids)
+	for offset := 0; offset < len(ids); offset += 100 {
+		end := min(offset+100, len(ids))
+		keys := make([]string, 0, end-offset)
+		for _, id := range ids[offset:end] {
+			keys = append(keys, strconv.FormatInt(id, 10))
+		}
+		rows, err := store.GetMany(nonNilContext(ctx), keys)
+		if err != nil {
+			return result, err
+		}
+		for _, sourceID := range ids[offset:end] {
+			row, ok := rows[strconv.FormatInt(sourceID, 10)]
+			quotedID, parseErr := strconv.ParseInt(strings.TrimSpace(row.QuoteID), 10, 64)
+			if !ok || strings.TrimSpace(row.StatusID) != strconv.FormatInt(sourceID, 10) || parseErr != nil || quotedID == 0 || quotedID == sourceID {
+				result.Skipped++
+				continue
+			}
+			var source models.Status
+			if err := s.statusQuery().Where("statuses.id = ? AND statuses.deleted_at IS NULL", sourceID).First(&source).Error; err != nil {
+				result.Skipped++
+				continue
+			}
+			var target models.Status
+			if err := s.statusQuery().Where("statuses.id = ? AND statuses.deleted_at IS NULL", quotedID).First(&target).Error; err != nil {
+				result.Skipped++
+				continue
+			}
+			if !legacyQuoteURLMatchesStatus(s, row.OriginalURL, target) || strings.TrimSpace(row.LocalURL) != "" && !legacyQuoteURLMatchesStatus(s, row.LocalURL, target) {
+				result.Skipped++
+				continue
+			}
+			if !legacyQuoteMarkerMatchesRow(source.Text, row) {
+				result.Skipped++
+				continue
+			}
+			allowed, err := s.statusQuoteTargetAllowedForAccount(nonNilContext(ctx), &source.Account, &target)
+			if err != nil {
+				return result, err
+			}
+			if !allowed {
+				result.Skipped++
+				continue
+			}
+			if apply {
+				if err := s.upsertSQLStatusQuote(ctx, sourceID, &target, sql.NullString{}, sql.NullString{}, true, models.QuoteStateAccepted); err != nil {
+					return result, err
+				}
+			}
+			result.Imported++
+		}
+	}
+	return result, nil
+}
+
+func legacyQuoteMarkerMatchesRow(text string, row statusQuote) bool {
+	if !statusTextContainsQuoteMarker(text) {
+		return false
+	}
+	for _, candidate := range []string{row.OriginalURL, row.LocalURL} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" && strings.Contains(text, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func legacyQuoteURLMatchesStatus(s *Server, value string, status models.Status) bool {
+	value = activityPubFetchExpectedID(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	for _, candidate := range []string{status.URI.String, status.URL.String, s.quoteStatusURI(status), s.quoteStatusURL(status)} {
+		if strings.TrimSpace(candidate) != "" && value == activityPubFetchExpectedID(candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func statusTextContainsQuoteMarker(text string) bool {
 	return strings.Contains(text, "RE:") || strings.Contains(text, "QT:")
-}
-
-func (d *dynamoDBStatusQuoteStore) Get(ctx context.Context, statusID string) (statusQuote, bool, error) {
-	var out statusQuote
-	if strings.TrimSpace(statusID) == "" {
-		return out, false, nil
-	}
-	ctx, cancel := dynamoDBStatusQuoteContext(ctx)
-	defer cancel()
-	output, err := d.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String(d.tableName),
-		Key:       map[string]dynamodbtypes.AttributeValue{"status_id": dynamoDBStringAttribute(statusID)},
-	})
-	if err != nil {
-		return out, false, err
-	}
-	if len(output.Item) == 0 {
-		return out, false, nil
-	}
-	out = statusQuoteFromDynamoDBItem(output.Item)
-	if out.StatusID == "" {
-		out.StatusID = statusID
-	}
-	return out, true, nil
 }
 
 func (d *dynamoDBStatusQuoteStore) GetMany(ctx context.Context, statusIDs []string) (map[string]statusQuote, error) {
@@ -303,35 +562,6 @@ func (d *dynamoDBStatusQuoteStore) getManyChunk(ctx context.Context, statusIDs [
 		}
 	}
 	return nil
-}
-
-func (d *dynamoDBStatusQuoteStore) Put(ctx context.Context, quote statusQuote) error {
-	if strings.TrimSpace(quote.StatusID) == "" || strings.TrimSpace(quote.QuoteID) == "" {
-		return nil
-	}
-	item := map[string]dynamodbtypes.AttributeValue{
-		"status_id":    dynamoDBStringAttribute(quote.StatusID),
-		"quote_id":     dynamoDBStringAttribute(quote.QuoteID),
-		"original_url": dynamoDBStringAttribute(quote.OriginalURL),
-		"local_url":    dynamoDBStringAttribute(firstNonEmpty(quote.LocalURL, quote.OriginalURL)),
-	}
-	ctx, cancel := dynamoDBStatusQuoteContext(ctx)
-	defer cancel()
-	_, err := d.client.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(d.tableName), Item: item})
-	return err
-}
-
-func (d *dynamoDBStatusQuoteStore) Delete(ctx context.Context, statusID string) error {
-	if strings.TrimSpace(statusID) == "" {
-		return nil
-	}
-	ctx, cancel := dynamoDBStatusQuoteContext(ctx)
-	defer cancel()
-	_, err := d.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName: aws.String(d.tableName),
-		Key:       map[string]dynamodbtypes.AttributeValue{"status_id": dynamoDBStringAttribute(statusID)},
-	})
-	return err
 }
 
 func dynamoDBStatusQuoteContext(ctx context.Context) (context.Context, context.CancelFunc) {

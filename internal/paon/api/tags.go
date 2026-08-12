@@ -20,6 +20,7 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
 	"golang.org/x/text/unicode/norm"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -62,8 +63,6 @@ type trendTagRow struct {
 	ID          int64
 	Name        string
 	DisplayName sql.NullString
-	Uses        int64
-	Accounts    int64
 }
 
 type publicTagRSSOptions struct {
@@ -78,7 +77,8 @@ func (s *Server) showTag(c *echo.Context) error {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	following := s.tagFollowing(c, tag.ID)
-	return c.JSON(http.StatusOK, s.tagDetailWithHistory(c.Request().Context(), *tag, following))
+	featuring := s.tagFeaturing(c, tag.ID)
+	return c.JSON(http.StatusOK, s.tagDetailWithHistoryAndRelationships(c.Request().Context(), *tag, following, featuring))
 }
 
 func (s *Server) publicTag(c *echo.Context) error {
@@ -140,7 +140,20 @@ func (s *Server) publicTag(c *echo.Context) error {
 		return activityJSONWithCachePrivacy(c, activityPubTagCollection(s.cfg, *tag), 180, activityPubPublicFetchCache(s))
 	}
 	publicHTMLCacheIfUnauthenticated(c, 15, 3600)
-	return s.webApp(c)
+	return s.webAppWithOptions(c, func(options *web.AppOptions, _ *models.User) {
+		applyPublicTagHead(options, s.cfg.BaseURL()+"/tags/"+url.PathEscape(tag.Name))
+	})
+}
+
+func applyPublicTagHead(options *web.AppOptions, tagURL string) {
+	if options == nil || strings.TrimSpace(tagURL) == "" {
+		return
+	}
+	options.HeadMeta = append(options.HeadMeta, web.HeadMeta{Name: "robots", Content: "noindex"})
+	options.HeadLinks = append(options.HeadLinks,
+		web.HeadLink{Rel: "alternate", Type: "application/rss+xml", Href: tagURL},
+		web.HeadLink{Rel: "alternate", Type: "application/activity+json", Href: tagURL},
+	)
 }
 
 func (s *Server) publicTagVary(c *echo.Context) {
@@ -643,7 +656,7 @@ func (s *Server) followTag(c *echo.Context) error {
 		setFollowsFamilyRateLimitHeaders(c, railsFollowsFamilyLimit)
 	}
 	following := true
-	return c.JSON(http.StatusOK, s.tagDetailWithHistory(c.Request().Context(), *tag, &following))
+	return c.JSON(http.StatusOK, s.tagDetailWithHistoryAndRelationships(c.Request().Context(), *tag, &following, s.tagFeaturing(c, tag.ID)))
 }
 
 func (s *Server) unfollowTag(c *echo.Context) error {
@@ -662,7 +675,59 @@ func (s *Server) unfollowTag(c *echo.Context) error {
 		s.unmergeTagFromHomeBestEffort(c.Request().Context(), tag.ID, account.ID)
 	}
 	following := false
-	return c.JSON(http.StatusOK, s.tagDetailWithHistory(c.Request().Context(), *tag, &following))
+	return c.JSON(http.StatusOK, s.tagDetailWithHistoryAndRelationships(c.Request().Context(), *tag, &following, s.tagFeaturing(c, tag.ID)))
+}
+
+func (s *Server) featureTag(c *echo.Context) error {
+	account, _, err := s.requireAccountScope(c, "write", "write:accounts")
+	if err != nil {
+		return err
+	}
+	tag, err := s.findOrCreateTag(c.Param("name"))
+	if err != nil {
+		return apiError(c, http.StatusNotFound, "Record not found")
+	}
+	featured, created, err := s.createFeaturedTagForAccount(account, tag.DisplayNameValue(), true)
+	if err != nil {
+		switch err {
+		case errFeaturedTagInvalidName:
+			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Name is invalid")
+		case errFeaturedTagLimit:
+			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Featured tag limit reached")
+		}
+		return err
+	}
+	if created {
+		_ = s.deliverActivityPubAccountRawDistribution(featured.Account, activityPubAddFeaturedTag(s, *featured))
+	}
+	following := s.tagFollowing(c, tag.ID)
+	featuring := true
+	return c.JSON(http.StatusOK, s.tagDetailWithHistoryAndRelationships(c.Request().Context(), *tag, following, &featuring))
+}
+
+func (s *Server) unfeatureTag(c *echo.Context) error {
+	account, _, err := s.requireAccountScope(c, "write", "write:accounts")
+	if err != nil {
+		return err
+	}
+	tag, err := s.findOrBuildTag(c.Param("name"))
+	if err != nil {
+		return apiError(c, http.StatusNotFound, "Record not found")
+	}
+	if tag.ID != 0 {
+		var featured models.FeaturedTag
+		err := s.db.Where("account_id = ? AND tag_id = ?", account.ID, tag.ID).First(&featured).Error
+		if err == nil {
+			if err := s.removeFeaturedTagForAccount(c.Request().Context(), account.ID, featured.ID); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	following := s.tagFollowing(c, tag.ID)
+	featuring := false
+	return c.JSON(http.StatusOK, s.tagDetailWithHistoryAndRelationships(c.Request().Context(), *tag, following, &featuring))
 }
 
 func (s *Server) unmergeTagFromHomeBestEffort(ctx context.Context, tagID int64, accountID int64) {
@@ -766,7 +831,7 @@ func (s *Server) followedTags(c *echo.Context) error {
 	following := true
 	out := make([]serializer.TagDetail, 0, len(follows))
 	for _, follow := range follows {
-		out = append(out, serializer.TagDetailFromModel(s.cfg, follow.Tag, &following))
+		out = append(out, serializer.TagDetailFromModelWithRelationships(s.cfg, follow.Tag, &following, s.tagFeaturing(c, follow.TagID), nil))
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -778,7 +843,7 @@ func reverseTagFollows(rows []models.TagFollow) {
 }
 
 func (s *Server) trendingTags(c *echo.Context) error {
-	c.Response().Header().Set("Vary", "Authorization")
+	c.Response().Header().Set("Vary", "Authorization, Accept-Language")
 	publicRESTCacheIfUnauthenticated(c, 15)
 	if s.db == nil || !s.trendsEnabled() {
 		return c.JSON(http.StatusOK, []any{})
@@ -786,14 +851,16 @@ func (s *Server) trendingTags(c *echo.Context) error {
 	now := time.Now().UTC()
 	offsetValue := offset(c)
 	limitValue := limit(c, 10, 20)
-	rows, err := s.trendingTagRows(c.Request().Context(), limitValue, offsetValue, now)
+	rows, err := s.trendingTagRows(c.Request().Context(), limitValue, offsetValue, s.trendPreferredLanguages(c))
 	if err != nil {
 		return err
 	}
 	out := make([]serializer.TagDetail, 0, len(rows))
 	for _, row := range rows {
 		following := s.tagFollowing(c, row.ID)
-		out = append(out, serializerTrendingTag(s.cfg, row, following, now))
+		featuring := s.tagFeaturing(c, row.ID)
+		tag := models.Tag{ID: row.ID, Name: row.Name, DisplayName: row.DisplayName}
+		out = append(out, serializer.TagDetailFromModelWithRelationships(s.cfg, tag, following, featuring, s.tagHistory(c.Request().Context(), row.ID, now)))
 	}
 	if len(out) > 0 {
 		setPaginationLinkHeader(c, offsetPaginationLinkWithAllowedParams(c, offsetValue, limitValue, len(out), []string{"limit"}))
@@ -801,107 +868,20 @@ func (s *Server) trendingTags(c *echo.Context) error {
 	return c.JSON(http.StatusOK, out)
 }
 
-func (s *Server) trendingTagRows(ctx context.Context, limitValue int, offsetValue int, now time.Time) ([]trendTagRow, error) {
-	if rows, ok, err := s.trendingTagRowsFromRedis(ctx, limitValue, offsetValue, now, true); ok || err != nil {
-		return rows, err
-	}
+func (s *Server) trendingTagRows(ctx context.Context, limitValue int, offsetValue int, preferredLanguages []string) ([]trendTagRow, error) {
 	var rows []trendTagRow
-	since := now.AddDate(0, 0, -7)
-	err := s.db.Model(&models.Tag{}).
-		Select("tags.id, tags.name, tags.display_name, COUNT(statuses.id) AS uses, COUNT(DISTINCT statuses.account_id) AS accounts").
-		Joins("JOIN statuses_tags ON statuses_tags.tag_id = tags.id").
-		Joins("JOIN statuses ON statuses.id = statuses_tags.status_id").
-		Where("statuses.deleted_at IS NULL").
-		Where("statuses.visibility IN ?", []int{0, 1}).
-		Where("statuses.created_at >= ?", since).
-		Where("(tags.trendable IS NULL OR tags.trendable = true)").
-		Group("tags.id, tags.name, tags.display_name").
-		Order("uses DESC").
-		Order("accounts DESC").
-		Order("tags.id ASC").
+	query := s.db.WithContext(ctx).
+		Table("tag_trends").
+		Select("tags.id, tags.name, tags.display_name").
+		Joins("JOIN tags ON tags.id = tag_trends.tag_id").
+		Where("tag_trends.allowed = ?", true)
+	query = applyTrendLanguageOrder(query, "tag_trends.language", preferredLanguages)
+	err := query.
+		Order("tag_trends.score DESC").
 		Offset(offsetValue).
 		Limit(limitValue).
 		Scan(&rows).Error
 	return rows, err
-}
-
-func (s *Server) trendingTagRowsFromRedis(ctx context.Context, limitValue int, offsetValue int, now time.Time, allowed bool) ([]trendTagRow, bool, error) {
-	if limitValue <= 0 {
-		return []trendTagRow{}, true, nil
-	}
-	stop := offsetValue + limitValue - 1
-	key := s.cfg.RedisNamespace + "trending_tags:all"
-	if allowed {
-		key = s.cfg.RedisNamespace + "trending_tags:allowed"
-	}
-	value, err := s.redisCommand(ctx, "ZREVRANGE", key, strconv.Itoa(offsetValue), strconv.Itoa(stop))
-	if err != nil {
-		return nil, false, nil
-	}
-	members, ok := redisStringArray(value)
-	if !ok || len(members) == 0 {
-		return nil, false, nil
-	}
-	ids := make([]int64, 0, len(members))
-	order := map[int64]int{}
-	for _, member := range members {
-		id, err := strconv.ParseInt(strings.TrimSpace(member), 10, 64)
-		if err != nil || id <= 0 {
-			continue
-		}
-		if _, exists := order[id]; exists {
-			continue
-		}
-		order[id] = len(ids)
-		ids = append(ids, id)
-	}
-	if len(ids) == 0 {
-		return []trendTagRow{}, true, nil
-	}
-	var tags []models.Tag
-	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&tags).Error; err != nil {
-		return nil, true, err
-	}
-	rows := make([]trendTagRow, len(ids))
-	present := make([]bool, len(ids))
-	day := truncateMetricTime(now, "day")
-	for _, tag := range tags {
-		pos, ok := order[tag.ID]
-		if !ok {
-			continue
-		}
-		uses, _ := s.adminTagUsesRedisDay(tag.ID, day)
-		accounts, _ := s.adminTagAccountsRedisDay(tag.ID, day)
-		rows[pos] = trendTagRow{
-			ID:          tag.ID,
-			Name:        tag.Name,
-			DisplayName: tag.DisplayName,
-			Uses:        uses,
-			Accounts:    accounts,
-		}
-		present[pos] = true
-	}
-	out := make([]trendTagRow, 0, len(rows))
-	for i, row := range rows {
-		if present[i] {
-			out = append(out, row)
-		}
-	}
-	return out, true, nil
-}
-
-func serializerTrendingTag(cfg config.Config, row trendTagRow, following *bool, now time.Time) serializer.TagDetail {
-	tag := models.Tag{ID: row.ID, Name: row.Name, DisplayName: row.DisplayName}
-	out := serializer.TagDetailFromModel(cfg, tag, following)
-	day := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC).Unix()
-	out.History = []any{
-		map[string]string{
-			"day":      strconv.FormatInt(day, 10),
-			"uses":     strconv.FormatInt(row.Uses, 10),
-			"accounts": strconv.FormatInt(row.Accounts, 10),
-		},
-	}
-	return out
 }
 
 func (s *Server) adminTagFromModel(c *echo.Context, tag models.Tag) serializer.AdminTag {
@@ -909,7 +889,11 @@ func (s *Server) adminTagFromModel(c *echo.Context, tag models.Tag) serializer.A
 }
 
 func (s *Server) tagDetailWithHistory(ctx context.Context, tag models.Tag, following *bool) serializer.TagDetail {
-	return serializer.TagDetailFromModelWithHistory(s.cfg, tag, following, s.tagHistory(ctx, tag.ID, time.Now().UTC()))
+	return s.tagDetailWithHistoryAndRelationships(ctx, tag, following, nil)
+}
+
+func (s *Server) tagDetailWithHistoryAndRelationships(ctx context.Context, tag models.Tag, following *bool, featuring *bool) serializer.TagDetail {
+	return serializer.TagDetailFromModelWithRelationships(s.cfg, tag, following, featuring, s.tagHistory(ctx, tag.ID, time.Now().UTC()))
 }
 
 func (s *Server) tagHistory(ctx context.Context, tagID int64, now time.Time) []any {
@@ -1008,12 +992,24 @@ func (s *Server) findOrCreateTag(name string) (*models.Tag, error) {
 }
 
 func (s *Server) tagFollowing(c *echo.Context, tagID int64) *bool {
+	return s.tagRelationship(c, tagID, false)
+}
+
+func (s *Server) tagFeaturing(c *echo.Context, tagID int64) *bool {
+	return s.tagRelationship(c, tagID, true)
+}
+
+func (s *Server) tagRelationship(c *echo.Context, tagID int64, featuring bool) *bool {
 	account, _, err := s.currentAccount(c)
 	if err != nil || tagID == 0 || s.db == nil {
 		return nil
 	}
 	var count int64
-	_ = s.db.Model(&models.TagFollow{}).Where("account_id = ? AND tag_id = ?", account.ID, tagID).Count(&count).Error
+	query := s.db.Model(&models.TagFollow{})
+	if featuring {
+		query = s.db.Model(&models.FeaturedTag{})
+	}
+	_ = query.Where("account_id = ? AND tag_id = ?", account.ID, tagID).Count(&count).Error
 	value := count > 0
 	return &value
 }

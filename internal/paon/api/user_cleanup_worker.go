@@ -80,6 +80,9 @@ func (s *Server) cleanupUnconfirmedUsers(ctx context.Context, cutoff time.Time) 
 			if err := tx.Where("target_account_id IN ?", accountIDs).Delete(&models.AccountModerationNote{}).Error; err != nil {
 				return err
 			}
+			if err := tx.Where("requesting_account_id IN ? OR recommended_account_id IN ?", accountIDs, accountIDs).Delete(&models.FaspFollowRecommendation{}).Error; err != nil {
+				return err
+			}
 			if err := tx.Where("user_id IN ?", userIDs).Delete(&models.WebauthnCredential{}).Error; err != nil {
 				return err
 			}

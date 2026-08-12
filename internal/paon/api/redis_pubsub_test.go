@@ -121,11 +121,16 @@ func TestRedisAvailablePingsConfiguredRedis(t *testing.T) {
 	}
 	defer func() { redisDial = originalDial }()
 
-	requests := make(chan string, 1)
+	requests := make(chan string, 2)
 	go func() {
 		buf := make([]byte, len("*1\r\n$4\r\nPING\r\n"))
 		_, _ = io.ReadFull(server, buf)
 		_, _ = io.WriteString(server, "+PONG\r\n")
+		requests <- string(buf)
+		buf = make([]byte, len("*2\r\n$4\r\nINFO\r\n$6\r\nserver\r\n"))
+		_, _ = io.ReadFull(server, buf)
+		info := "# Server\r\nredis_version:7.2.5\r\n"
+		_, _ = io.WriteString(server, "$"+strconv.Itoa(len(info))+"\r\n"+info+"\r\n")
 		requests <- string(buf)
 	}()
 
@@ -134,6 +139,9 @@ func TestRedisAvailablePingsConfiguredRedis(t *testing.T) {
 		t.Fatalf("RedisAvailable returned error: %v", err)
 	}
 	if got := <-requests; got != "*1\r\n$4\r\nPING\r\n" {
+		t.Fatalf("redis request = %q", got)
+	}
+	if got := <-requests; got != "*2\r\n$4\r\nINFO\r\n$6\r\nserver\r\n" {
 		t.Fatalf("redis request = %q", got)
 	}
 }
@@ -145,7 +153,7 @@ func TestRedisAvailablePingsRoleSpecificRedisLikeRails(t *testing.T) {
 	redisDial = func(_ context.Context, cfg redisConnConfig) (net.Conn, *bufio.Reader, error) {
 		client, server := net.Pipe()
 		configs <- cfg
-		go serveRedisHandshakeAndPing(t, server)
+		go serveRedisHandshakeAndAvailability(t, server, "7.2.5")
 		return client, bufio.NewReader(client), nil
 	}
 
@@ -178,9 +186,12 @@ func TestRedisAvailableDeduplicatesRoleSpecificRedisFallbacks(t *testing.T) {
 		client, server := net.Pipe()
 		go func() {
 			defer server.Close()
-			buf := make([]byte, len("*1\r\n$4\r\nPING\r\n"))
-			_, _ = io.ReadFull(server, buf)
+			reader := bufio.NewReader(server)
+			_, _ = readRedisValue(reader)
 			_, _ = io.WriteString(server, "+PONG\r\n")
+			_, _ = readRedisValue(reader)
+			info := "# Server\r\nredis_version:7.2.5\r\n"
+			_, _ = io.WriteString(server, "$"+strconv.Itoa(len(info))+"\r\n"+info+"\r\n")
 		}()
 		return client, bufio.NewReader(client), nil
 	}
@@ -195,6 +206,34 @@ func TestRedisAvailableDeduplicatesRoleSpecificRedisFallbacks(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("RedisAvailable should ping shared role Redis once, calls=%d", calls)
+	}
+}
+
+func TestRedisAvailableRejectsRedisOlderThanSixPointTwo(t *testing.T) {
+	originalDial := redisDial
+	defer func() { redisDial = originalDial }()
+	redisDial = func(_ context.Context, _ redisConnConfig) (net.Conn, *bufio.Reader, error) {
+		client, server := net.Pipe()
+		go serveRedisHandshakeAndAvailability(t, server, "6.0.20")
+		return client, bufio.NewReader(client), nil
+	}
+
+	err := RedisAvailable(t.Context(), config.Config{RedisHost: "redis.internal", RedisPort: "6379"})
+	if err == nil || !strings.Contains(err.Error(), "Redis 6.2 or newer") {
+		t.Fatalf("RedisAvailable error = %v, want minimum version error", err)
+	}
+}
+
+func TestValidateRedisVersion(t *testing.T) {
+	for _, version := range []string{"6.2.0", "7.0.0", "10.1.3"} {
+		if err := validateRedisVersion(version); err != nil {
+			t.Errorf("validateRedisVersion(%q) = %v", version, err)
+		}
+	}
+	for _, version := range []string{"", "6", "5.9.9", "6.0.20", "six.2"} {
+		if err := validateRedisVersion(version); err == nil {
+			t.Errorf("validateRedisVersion(%q) accepted unsupported or invalid version", version)
+		}
 	}
 }
 
@@ -270,7 +309,7 @@ func stringsReader(value string) *bytes.Reader {
 	return bytes.NewReader([]byte(value))
 }
 
-func serveRedisHandshakeAndPing(t *testing.T, conn net.Conn) {
+func serveRedisHandshakeAndAvailability(t *testing.T, conn net.Conn, version string) {
 	t.Helper()
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
@@ -299,6 +338,11 @@ func serveRedisHandshakeAndPing(t *testing.T, conn net.Conn) {
 		case "PING":
 			if _, err := io.WriteString(conn, "+PONG\r\n"); err != nil {
 				t.Errorf("write redis PONG: %v", err)
+			}
+		case "INFO":
+			info := "# Server\r\nredis_version:" + version + "\r\n"
+			if _, err := io.WriteString(conn, "$"+strconv.Itoa(len(info))+"\r\n"+info+"\r\n"); err != nil {
+				t.Errorf("write redis INFO: %v", err)
 			}
 			return
 		default:

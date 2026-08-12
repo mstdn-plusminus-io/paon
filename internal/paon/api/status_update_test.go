@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -131,7 +132,7 @@ func TestParseStatusCreatePayloadAcceptsJSONReplyPollAndMediaAttributes(t *testi
 		"visibility":"unlisted",
 		"language":"ja",
 		"scheduled_at":"2026-06-19T12:00:00Z",
-		"quote_id":"456",
+		"quoted_status_id":"456",
 		"allowed_mentions":[123,"456"],
 		"poll":{"options":["yes","no"],"multiple":true,"hide_totals":true,"expires_in":3600}
 	}`))
@@ -152,9 +153,6 @@ func TestParseStatusCreatePayloadAcceptsJSONReplyPollAndMediaAttributes(t *testi
 	if payload.ScheduledAt != "2026-06-19T12:00:00Z" {
 		t.Fatalf("scheduled_at = %q", payload.ScheduledAt)
 	}
-	if payload.QuoteID != "456" {
-		t.Fatalf("quote_id = %q", payload.QuoteID)
-	}
 	if !payload.HasAllowedMentions || len(payload.AllowedMentions) != 2 || payload.AllowedMentions[0] != "123" || payload.AllowedMentions[1] != "456" {
 		t.Fatalf("allowed_mentions = %#v has=%v", payload.AllowedMentions, payload.HasAllowedMentions)
 	}
@@ -169,9 +167,30 @@ func TestParseStatusCreatePayloadAcceptsJSONReplyPollAndMediaAttributes(t *testi
 	}
 }
 
+func TestParseStatusCreatePayloadIgnoresUnsupportedQuoteIDs(t *testing.T) {
+	for _, contentType := range []string{"application/json", "application/x-www-form-urlencoded"} {
+		t.Run(contentType, func(t *testing.T) {
+			body := `{"status":"hello","quote_id":"456","quoted_status_id":"789"}`
+			if contentType == "application/x-www-form-urlencoded" {
+				body = "status=hello&quote_id=456&quoted_status_id=789"
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/statuses", strings.NewReader(body))
+			req.Header.Set("Content-Type", contentType)
+			c := echo.NewContext(req, httptest.NewRecorder(), echo.New())
+			payload, err := parseStatusCreatePayload(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if payload.Status != "hello" {
+				t.Fatalf("status = %q", payload.Status)
+			}
+		})
+	}
+}
+
 func TestParseStatusCreatePayloadAcceptsFormReplyAndPoll(t *testing.T) {
 	e := echo.New()
-	body := "status=hello&in_reply_to_id=123&quote_id=456&visibility=private&scheduled_at=2026-06-19T12%3A00%3A00Z&allowed_mentions%5B%5D=123&allowed_mentions%5B%5D=456&poll%5Boptions%5D%5B%5D=yes&poll%5Boptions%5D%5B%5D=no&poll%5Bmultiple%5D=0&poll%5Bexpires_in%5D=600"
+	body := "status=hello&in_reply_to_id=123&quoted_status_id=456&visibility=private&scheduled_at=2026-06-19T12%3A00%3A00Z&allowed_mentions%5B%5D=123&allowed_mentions%5B%5D=456&poll%5Boptions%5D%5B%5D=yes&poll%5Boptions%5D%5B%5D=no&poll%5Bmultiple%5D=0&poll%5Bexpires_in%5D=600"
 	req := httptest.NewRequest("POST", "/api/v1/statuses", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
@@ -181,7 +200,7 @@ func TestParseStatusCreatePayloadAcceptsFormReplyAndPoll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != "hello" || payload.InReplyToID != "123" || payload.QuoteID != "456" || payload.Visibility != "private" {
+	if payload.Status != "hello" || payload.InReplyToID != "123" || payload.Visibility != "private" {
 		t.Fatalf("payload = %#v", payload)
 	}
 	if payload.ScheduledAt != "2026-06-19T12:00:00Z" {
@@ -454,7 +473,6 @@ func TestScheduledStatusParamsFromPayloadUsesRESTKeys(t *testing.T) {
 		},
 		Visibility:  "unlisted",
 		InReplyToID: "123",
-		QuoteID:     "456",
 	}, []string{"4"})
 	if err != nil {
 		t.Fatal(err)
@@ -470,11 +488,13 @@ func TestScheduledStatusParamsFromPayloadUsesRESTKeys(t *testing.T) {
 		"visibility":     "unlisted",
 		"language":       "ja",
 		"in_reply_to_id": "123",
-		"quote_id":       "456",
 	} {
 		if out[key] != want {
 			t.Fatalf("params[%s] = %#v, want %#v: %#v", key, out[key], want, out)
 		}
+	}
+	if _, ok := out["quoted_status_id"]; ok {
+		t.Fatalf("Mastodon 4.4 scheduled params unexpectedly include quoted_status_id: %#v", out)
 	}
 	if out["scheduled_at"] != nil {
 		t.Fatalf("scheduled_at = %#v", out["scheduled_at"])
@@ -527,39 +547,13 @@ func TestQuoteStatusURLPrefersRailsPublicURL(t *testing.T) {
 	}
 }
 
-func TestStatusTextWithQuoteURLAppendsRailsQuoteMarker(t *testing.T) {
-	if got := statusTextWithQuoteURL("hello", "https://social.example/@alice/123"); got != "hello\n\nRE: https://social.example/@alice/123" {
-		t.Fatalf("quoted text = %q", got)
-	}
-	if got := statusTextWithQuoteURL("hello\n", "https://social.example/@alice/123"); got != "hello\n\nRE: https://social.example/@alice/123" {
-		t.Fatalf("quoted text trims trailing newline = %q", got)
-	}
-	if got := statusTextWithQuoteURL("", "https://social.example/@alice/123"); got != "\n\nRE: https://social.example/@alice/123" {
-		t.Fatalf("blank quoted text = %q", got)
-	}
-}
-
-func TestStatusTextWithExistingQuoteURLPreservesRailsQuoteOnEdit(t *testing.T) {
-	quoteURL := "https://social.example/@alice/123"
-	if got := statusTextWithExistingQuoteURL("edited", quoteURL); got != "edited\n\nRE: "+quoteURL {
-		t.Fatalf("quoted edit = %q", got)
-	}
-	alreadyQuoted := "edited\n\nRE: " + quoteURL
-	if got := statusTextWithExistingQuoteURL(alreadyQuoted, quoteURL); got != alreadyQuoted {
-		t.Fatalf("quoted edit duplicated = %q", got)
-	}
-	if got := statusTextWithExistingQuoteURL("edited", ""); got != "edited" {
-		t.Fatalf("quote-free edit = %q", got)
-	}
-}
-
-func TestUpdateStatusUsesQuotePreservingTextForMetadataRefresh(t *testing.T) {
+func TestUpdateStatusUsesOfficialQuoteRelationshipWithoutPrivateTextMarker(t *testing.T) {
 	src, err := os.ReadFile("server.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	checks := []string{
-		`nextText = statusTextWithExistingQuoteURL(payload.Status, status.QuoteOriginalURL.String)`,
+		`nextText = payload.Status`,
 		`updates["text"] = nextText`,
 		`deleteStatusPreviewCardLinks(tx, status.ID)`,
 		`s.updateStatusMentionsFromTextAndCollectAccounts(tx, status.ID, account.ID, nextText, now)`,
@@ -569,6 +563,27 @@ func TestUpdateStatusUsesQuotePreservingTextForMetadataRefresh(t *testing.T) {
 		if !strings.Contains(string(src), want) {
 			t.Fatalf("updateStatus missing %q", want)
 		}
+	}
+	for _, forbidden := range []string{"statusTextWithQuoteURL", "statusTextWithExistingQuoteURL", "QuoteOriginalURL"} {
+		if strings.Contains(string(src), forbidden) {
+			t.Fatalf("official Mastodon quote path must not use private marker %q", forbidden)
+		}
+	}
+}
+
+func TestCreateStatusDoesNotExposeLaterOfficialQuoteCreation(t *testing.T) {
+	src, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, src, "createStatus")
+	for _, forbidden := range []string{"quoted_status_id", "QuoteID", "upsertSQLStatusQuoteTx"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("Mastodon 4.4 createStatus exposes later quote creation contract %q", forbidden)
+		}
+	}
+	if !strings.Contains(body, `if strings.TrimSpace(text) == "" && len(mediaIDs) == 0 && !hasPoll`) {
+		t.Fatal("createStatus no longer rejects empty non-quote statuses")
 	}
 }
 
@@ -760,7 +775,7 @@ func TestStatusLengthValidationUsesRailsCountableText(t *testing.T) {
 		want         string
 	}{
 		{"createStatus", `statusLengthTooLong(text, payload.SpoilerText, s.maxStatusChars())`},
-		{"updateStatus", `nextText = statusTextWithExistingQuoteURL(payload.Status, status.QuoteOriginalURL.String)`},
+		{"updateStatus", `nextText = payload.Status`},
 		{"updateStatus", `statusLengthTooLong(nextText, nextSpoilerText, s.maxStatusChars())`},
 	} {
 		if !functionBodyContains(t, serverSrc, check.functionName, check.want) {

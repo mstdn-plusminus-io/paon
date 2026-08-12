@@ -302,6 +302,25 @@ func (s *Server) unmergeAfterUnfollowBestEffort(ctx context.Context, fromAccount
 	}()
 }
 
+func (s *Server) unmergeListFeedsAfterUnfollowBestEffort(ctx context.Context, fromAccountID int64, listIDs []int64) {
+	if s == nil || s.db == nil || fromAccountID == 0 {
+		return
+	}
+	for _, listID := range uniqueInt64s(listIDs) {
+		if listID == 0 || s.enqueueListUnmergeTask(fromAccountID, listID) {
+			continue
+		}
+		go func(listID int64) {
+			workerCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			var list models.List
+			if err := s.db.WithContext(workerCtx).Where("id = ?", listID).First(&list).Error; err == nil {
+				_ = s.unmergeAccountFromListFeed(workerCtx, s.db, fromAccountID, list)
+			}
+		}(listID)
+	}
+}
+
 func (s *Server) restoreAfterUnmuteFeedCache(ctx context.Context, accountID int64, targetID int64) {
 	if s == nil || s.db == nil || accountID == 0 || targetID == 0 {
 		return
@@ -519,6 +538,7 @@ func (s *Server) unfollowAccount(c *echo.Context) error {
 
 	var undoFollowID int64
 	var undoFollowURI string
+	var affectedListIDs []int64
 	followDeleted := false
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		var follow models.Follow
@@ -529,7 +549,8 @@ func (s *Server) unfollowAccount(c *echo.Context) error {
 			if undoFollowURI == "" && !target.Local() {
 				undoFollowURI = activityPubFollowURI(s, *account, follow.ID)
 			}
-			if err := deleteFollow(tx, follow); err != nil {
+			affectedListIDs, err = deleteFollowWithAffectedListIDs(tx, follow)
+			if err != nil {
 				return err
 			}
 			followDeleted = true
@@ -567,6 +588,7 @@ func (s *Server) unfollowAccount(c *echo.Context) error {
 	s.invalidateSuggestionCache(c.Request().Context(), account.ID)
 	if followDeleted {
 		s.unmergeAfterUnfollowBestEffort(c.Request().Context(), target.ID, *account)
+		s.unmergeListFeedsAfterUnfollowBestEffort(c.Request().Context(), target.ID, affectedListIDs)
 		s.meiliReindexPrivateStatusesForAccountsBestEffort(c.Request().Context(), target.ID)
 	}
 	if undoFollowID != 0 {
@@ -848,23 +870,24 @@ type accountBlockFollowDelivery struct {
 type accountBlockUnmerge struct {
 	FromAccountID int64
 	IntoAccount   models.Account
+	ListIDs       []int64
 }
 
 func cleanupAccountBlockRelationships(tx *gorm.DB, account models.Account, target models.Account) (accountBlockRelationshipCleanup, error) {
 	effects := accountBlockRelationshipCleanup{}
-	if follow, deleted, err := deleteFollowEdgeReturningFollow(tx, account.ID, target.ID); err != nil {
+	if follow, listIDs, deleted, err := deleteFollowEdgeReturningFollow(tx, account.ID, target.ID); err != nil {
 		return effects, err
 	} else if deleted {
 		effects.UndoFollows = append(effects.UndoFollows, accountBlockFollowDelivery{Local: account, Remote: target, ID: follow.ID, URI: string(follow.URI)})
-		effects.Unmerges = append(effects.Unmerges, accountBlockUnmerge{FromAccountID: target.ID, IntoAccount: account})
+		effects.Unmerges = append(effects.Unmerges, accountBlockUnmerge{FromAccountID: target.ID, IntoAccount: account, ListIDs: listIDs})
 	}
-	if follow, deleted, err := deleteFollowEdgeReturningFollow(tx, target.ID, account.ID); err != nil {
+	if follow, listIDs, deleted, err := deleteFollowEdgeReturningFollow(tx, target.ID, account.ID); err != nil {
 		return effects, err
 	} else if deleted {
 		if account.Local() && !target.Local() && target.Protocol == 1 {
 			effects.RejectFollows = append(effects.RejectFollows, accountBlockFollowDelivery{Local: account, Remote: target, ID: follow.ID, URI: string(follow.URI)})
 		}
-		effects.Unmerges = append(effects.Unmerges, accountBlockUnmerge{FromAccountID: account.ID, IntoAccount: target})
+		effects.Unmerges = append(effects.Unmerges, accountBlockUnmerge{FromAccountID: account.ID, IntoAccount: target, ListIDs: listIDs})
 	}
 	var requestIDs []int64
 	if err := tx.Model(&models.FollowRequest{}).
@@ -895,6 +918,7 @@ func cleanupAccountBlockRelationships(tx *gorm.DB, account models.Account, targe
 func (s *Server) applyAccountBlockRelationshipCleanupEffects(ctx context.Context, account models.Account, target models.Account, effects accountBlockRelationshipCleanup) {
 	for _, effect := range effects.Unmerges {
 		s.unmergeAfterUnfollowBestEffort(ctx, effect.FromAccountID, effect.IntoAccount)
+		s.unmergeListFeedsAfterUnfollowBestEffort(ctx, effect.FromAccountID, effect.ListIDs)
 	}
 	for _, delivery := range effects.UndoFollows {
 		uri := delivery.URI
@@ -1098,23 +1122,24 @@ func (s *Server) relationshipsForAccounts(accountID int64, ids []int64, accounts
 }
 
 func deleteFollowEdge(tx *gorm.DB, sourceID int64, targetID int64) error {
-	_, _, err := deleteFollowEdgeReturningFollow(tx, sourceID, targetID)
+	_, _, _, err := deleteFollowEdgeReturningFollow(tx, sourceID, targetID)
 	return err
 }
 
-func deleteFollowEdgeReturningFollow(tx *gorm.DB, sourceID int64, targetID int64) (models.Follow, bool, error) {
+func deleteFollowEdgeReturningFollow(tx *gorm.DB, sourceID int64, targetID int64) (models.Follow, []int64, bool, error) {
 	var follow models.Follow
 	err := tx.Where("account_id = ? AND target_account_id = ?", sourceID, targetID).First(&follow).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return models.Follow{}, false, nil
+		return models.Follow{}, nil, false, nil
 	}
 	if err != nil {
-		return models.Follow{}, false, err
+		return models.Follow{}, nil, false, err
 	}
-	if err := deleteFollow(tx, follow); err != nil {
-		return models.Follow{}, false, err
+	listIDs, err := deleteFollowWithAffectedListIDs(tx, follow)
+	if err != nil {
+		return models.Follow{}, nil, false, err
 	}
-	return follow, true, nil
+	return follow, listIDs, true, nil
 }
 
 func deleteFollow(tx *gorm.DB, follow models.Follow) error {
@@ -1131,6 +1156,22 @@ func deleteFollow(tx *gorm.DB, follow models.Follow) error {
 		return err
 	}
 	return decrementAccountStatCounter(tx, follow.TargetAccountID, accountStatCounterFollowers, 1)
+}
+
+func deleteFollowWithAffectedListIDs(tx *gorm.DB, follow models.Follow) ([]int64, error) {
+	var listIDs []int64
+	if err := tx.Model(&models.List{}).
+		Distinct("lists.id").
+		Joins("JOIN list_accounts ON list_accounts.list_id = lists.id").
+		Where("lists.account_id = ?", follow.AccountID).
+		Where("list_accounts.account_id = ?", follow.TargetAccountID).
+		Pluck("lists.id", &listIDs).Error; err != nil {
+		return nil, err
+	}
+	if err := deleteFollow(tx, follow); err != nil {
+		return nil, err
+	}
+	return uniqueInt64s(listIDs), nil
 }
 
 type relationshipFollow struct {
@@ -1351,7 +1392,7 @@ func setRelationshipNotificationGroupKey(tx *gorm.DB, notification *models.Notif
 	kind := notification.ResolvedType()
 	prefix := ""
 	switch kind {
-	case "follow":
+	case "follow", "admin.sign_up":
 		prefix = kind
 	case "favourite":
 		var favourite models.Favourite

@@ -40,10 +40,11 @@ func (s *Server) adminMeasures(c *echo.Context) error {
 	if err != nil {
 		return apiError(c, http.StatusBadRequest, "Malformed request")
 	}
-	if len(payload.Keys) == 0 {
-		return c.JSON(http.StatusOK, []serializer.AdminMeasure{})
+	if missing := adminMetricsMissingRequiredParameter(payload, true); missing != "" {
+		return adminMetricsRequiredParameterError(c, missing)
 	}
 	start, end := adminMetricsRange(payload.StartAt, payload.EndAt)
+	start = adminMetricsTwoYearStart(start, end)
 	out := make([]serializer.AdminMeasure, 0, len(payload.Keys))
 	for _, key := range payload.Keys {
 		out = append(out, s.cachedAdminMeasure(key, start, end, payload.Params[key]))
@@ -60,6 +61,9 @@ func (s *Server) adminDimensions(c *echo.Context) error {
 		return apiError(c, http.StatusBadRequest, "Malformed request")
 	}
 	start, end := adminMetricsRange(payload.StartAt, payload.EndAt)
+	if strings.TrimSpace(payload.StartAt) != "" && strings.TrimSpace(payload.EndAt) != "" {
+		start = adminMetricsTwoYearStart(start, end)
+	}
 	out := make([]serializer.AdminDimension, 0, len(payload.Keys))
 	for _, key := range payload.Keys {
 		out = append(out, s.cachedAdminDimension(key, payload.Limit, payload.Params[key], start, end))
@@ -75,12 +79,33 @@ func (s *Server) adminRetention(c *echo.Context) error {
 	if err != nil {
 		return apiError(c, http.StatusBadRequest, "Malformed request")
 	}
-	start, _ := adminMetricsRange(payload.StartAt, payload.EndAt)
+	if missing := adminMetricsMissingRequiredParameter(payload, false); missing != "" {
+		return adminMetricsRequiredParameterError(c, missing)
+	}
+	start, end := adminMetricsRange(payload.StartAt, payload.EndAt)
 	frequency := payload.Frequency
 	if frequency != "month" {
 		frequency = "day"
 	}
+	start = adminRetentionMaximumStart(start, end, frequency)
 	return c.JSON(http.StatusOK, s.cachedAdminRetentionCohorts(start, payload.EndAt, frequency))
+}
+
+func adminMetricsRequiredParameterError(c *echo.Context, name string) error {
+	return apiError(c, http.StatusBadRequest, "param is missing or the value is empty: "+name)
+}
+
+func adminMetricsMissingRequiredParameter(payload adminMetricsPayload, requireKeys bool) string {
+	if requireKeys && len(payload.Keys) == 0 {
+		return "keys"
+	}
+	if strings.TrimSpace(payload.StartAt) == "" {
+		return "start_at"
+	}
+	if strings.TrimSpace(payload.EndAt) == "" {
+		return "end_at"
+	}
+	return ""
 }
 
 func parseAdminMetricsPayload(c *echo.Context) (adminMetricsPayload, error) {
@@ -1132,6 +1157,31 @@ func adminMetricsRange(startValue string, endValue string) (time.Time, time.Time
 		start = end.AddDate(0, 0, -1)
 	}
 	return start, end
+}
+
+// Mastodon 4.4.21 bounds dashboard measure and dimension queries to two years.
+// adminMetricsRange returns an exclusive end one day after the requested end,
+// so subtract that day before applying the upstream end_at - 2.years floor.
+func adminMetricsTwoYearStart(start time.Time, end time.Time) time.Time {
+	minimum := end.AddDate(-2, 0, -1)
+	if start.Before(minimum) {
+		return minimum
+	}
+	return start
+}
+
+// Mastodon 4.4.21 bounds daily retention to 31 days and monthly retention to
+// 12 months. As above, end is exclusive while the upstream end_at is inclusive.
+func adminRetentionMaximumStart(start time.Time, end time.Time, frequency string) time.Time {
+	end = end.AddDate(0, 0, -1)
+	minimum := end.AddDate(0, 0, -31)
+	if frequency == "month" {
+		minimum = end.AddDate(-1, 0, 0)
+	}
+	if start.Before(minimum) {
+		return minimum
+	}
+	return start
 }
 
 func parseMetricTime(value string, fallback time.Time) time.Time {

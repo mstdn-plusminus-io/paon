@@ -33,6 +33,23 @@ func TestInviteFromRequestRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestAdminInviteFromRequestPreservesAutofollow(t *testing.T) {
+	form := url.Values{}
+	form.Set("invite[max_uses]", "5")
+	form.Set("invite[autofollow]", "1")
+	req := httptest.NewRequest(http.MethodPost, "/admin/invites", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	c := echo.NewContext(req, httptest.NewRecorder(), echo.New())
+
+	invite, err := adminInviteFromRequest(c, 42, time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !invite.Autofollow {
+		t.Fatalf("admin invite ignored invite[autofollow]: %#v", invite)
+	}
+}
+
 func TestInviteHelpers(t *testing.T) {
 	code, err := randomInviteCode()
 	if err != nil {

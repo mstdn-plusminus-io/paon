@@ -942,7 +942,6 @@ func TestValidateRuntimeAcceptsDefaultDropInConfig(t *testing.T) {
 func TestValidateRuntimeRequiresSecretSafeActiveRecordEncryptionKeysInProduction(t *testing.T) {
 	t.Setenv("RAILS_ENV", "production")
 	t.Setenv("SECRET_KEY_BASE", strings.Repeat("s", 64))
-	t.Setenv("OTP_SECRET", strings.Repeat("o", 64))
 	t.Setenv("ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY", "short-deterministic")
 	t.Setenv("ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT", "short-salt")
 	t.Setenv("ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY", "short-primary")
@@ -1434,7 +1433,6 @@ func TestValidateRuntimeUsesAWSSDKConfigurationContracts(t *testing.T) {
 func TestRuntimeWarningsReportDropInCompatibilityGaps(t *testing.T) {
 	cfg := FromEnv()
 	cfg.SecretKeyBase = ""
-	cfg.OTPSecret = ""
 	cfg.VapidPublicKey = ""
 	cfg.VapidPrivateKey = ""
 	cfg.DynamoDBEnabled = true
@@ -1467,7 +1465,6 @@ func TestRuntimeWarningsReportDropInCompatibilityGaps(t *testing.T) {
 	warnings := strings.Join(cfg.RuntimeWarnings(), "\n")
 	for _, want := range []string{
 		"SECRET_KEY_BASE",
-		"OTP_SECRET",
 		"ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY",
 		"ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT",
 		"ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY",
@@ -1576,10 +1573,10 @@ func TestS3ObjectKeyAppliesPrefixExactlyOncePerBoundary(t *testing.T) {
 	}
 }
 
-func TestRuntimeWarningsReportsDeprecatedRedisNamespace(t *testing.T) {
-	warnings := strings.Join((Config{RedisNamespace: "mastodon:"}).RuntimeWarnings(), "\n")
-	if !strings.Contains(warnings, "REDIS_NAMESPACE is deprecated") {
-		t.Fatalf("warnings = %q", warnings)
+func TestValidateRuntimeRejectsRemovedRedisNamespace(t *testing.T) {
+	err := (Config{RedisNamespace: "mastodon:"}).ValidateRuntime()
+	if err == nil || !strings.Contains(err.Error(), "REDIS_NAMESPACE is no longer supported") || !strings.Contains(err.Error(), "namespace-cutover") {
+		t.Fatalf("ValidateRuntime error = %v", err)
 	}
 }
 

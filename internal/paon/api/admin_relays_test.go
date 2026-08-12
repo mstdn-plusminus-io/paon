@@ -66,6 +66,40 @@ func TestValidateAdminRelayForm(t *testing.T) {
 	}
 }
 
+func TestAdminRelayActionsCreateAuditLogs(t *testing.T) {
+	target := relayAuditLogTarget(models.Relay{ID: 7, InboxURL: "https://relay.example/inbox"})
+	if target.Type != "Relay" || target.ID != 7 || target.HumanIdentifier != "https://relay.example/inbox" {
+		t.Fatalf("relay audit target = %#v", target)
+	}
+
+	src, err := os.ReadFile("admin_relays.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		function string
+		action   string
+	}{
+		{"insertAdminRelay", "create"},
+		{"enableAdminRelay", "enable"},
+		{"disableAdminRelay", "disable"},
+		{"destroyAdminRelay", "destroy"},
+	} {
+		want := `logAdminAction(tx, `
+		if !functionBodyContains(t, src, check.function, want) || !functionBodyContains(t, src, check.function, `"`+check.action+`", relayAuditLogTarget(relay), now)`) {
+			t.Fatalf("%s must record %s Relay audit action", check.function, check.action)
+		}
+	}
+	for _, key := range []string{"create_relay", "enable_relay", "disable_relay", "destroy_relay"} {
+		if got := adminActionLogActionTypeLabel("en", key); got == key {
+			t.Fatalf("English action type %s was not localized", key)
+		}
+		if got := adminActionLogActionTypeLabel("ja", key); got == key {
+			t.Fatalf("Japanese action type %s was not localized", key)
+		}
+	}
+}
+
 func TestAdminRelaysHTMLUsesRailsLocaleKeys(t *testing.T) {
 	html := adminRelaysIndexHTML([]models.Relay{
 		{ID: 2, InboxURL: "https://relay.example/inbox", State: relayStateAccepted},

@@ -90,6 +90,7 @@ func TestApplyPublicStatusHeadMatchesRailsPublicAndUnlistedMetadata(t *testing.T
 		s.applyPublicStatusHead(&options, models.Status{
 			ID:         123,
 			Text:       "Hello from Paon",
+			Language:   sql.NullString{String: "ca", Valid: true},
 			CreatedAt:  createdAt,
 			Visibility: visibility,
 			Account: models.Account{
@@ -110,6 +111,7 @@ func TestApplyPublicStatusHeadMatchesRailsPublicAndUnlistedMetadata(t *testing.T
 			"og:published_time": "2026-07-21T03:34:56Z",
 			"profile:username":  "alice@example.com",
 			"og:description":    "Hello from Paon",
+			"og:locale":         "ca",
 			"twitter:card":      "summary",
 		} {
 			if got := publicStatusMetaProperty(options.HeadMeta, property); got != want {
@@ -136,6 +138,20 @@ func TestApplyPublicStatusHeadRejectsPrivateStatus(t *testing.T) {
 	}, "en")
 	if options.DocumentTitle != "unchanged" || len(options.HeadMeta) != 0 || len(options.HeadLinks) != 0 {
 		t.Fatalf("private status changed app options: %#v", options)
+	}
+}
+
+func TestApplyPublicStatusHeadOmitsLocaleWhenStatusLanguageIsMissing(t *testing.T) {
+	s := &Server{cfg: config.Config{Scheme: "https", WebDomain: "example.com", LocalDomain: "example.com", Title: "Paon"}}
+	options := web.AppOptions{}
+	s.applyPublicStatusHead(&options, models.Status{
+		ID:         123,
+		Text:       "No language metadata",
+		Visibility: 0,
+		Account:    models.Account{ID: 10, Username: "alice"},
+	}, "en")
+	if got := publicStatusMetaProperty(options.HeadMeta, "og:locale"); got != "" {
+		t.Fatalf("missing status language produced og:locale %q", got)
 	}
 }
 

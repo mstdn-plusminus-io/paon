@@ -834,12 +834,9 @@ func statusEmbedURLLinkHTML(raw string) string {
 	}
 	prefix := statusEmbedURLDisplayPrefix(urlValue)
 	rest := urlValue[len(prefix):]
-	display := rest
-	suffix := ""
+	display, suffix, cutoff := activityPubConvertedURLDisplay(rest)
 	class := ""
-	if len(rest) > 30 {
-		display = rest[:30]
-		suffix = rest[30:]
+	if cutoff {
 		class = ` class="ellipsis"`
 	}
 	return `<a href="` + html.EscapeString(urlValue) + `" target="_blank" rel="nofollow noopener noreferrer" translate="no"><span class="invisible">` + html.EscapeString(prefix) + `</span><span` + class + `>` + html.EscapeString(display) + `</span><span class="invisible">` + html.EscapeString(suffix) + `</span></a>`

@@ -1,12 +1,24 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math/big"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +27,7 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
+	"golang.org/x/crypto/hkdf"
 	"gorm.io/gorm"
 )
 
@@ -60,6 +73,32 @@ func defaultWebPushDeliverer(ctx context.Context, cfg config.Config, subscriptio
 	if cfg.VapidPublicKey == "" || cfg.VapidPrivateKey == "" {
 		return nil, errors.New("web push VAPID keys are not configured")
 	}
+	return deliverWebPushWithClient(ctx, cfg, subscription, payload, http.DefaultClient, time.Now().UTC(), rand.Reader)
+}
+
+func deliverWebPushWithClient(ctx context.Context, cfg config.Config, subscription models.WebPushSubscription, payload []byte, client webpush.HTTPClient, now time.Time, entropy io.Reader) (*http.Response, error) {
+	if subscription.Standard {
+		return deliverStandardWebPush(ctx, cfg, subscription, payload, client, now, entropy)
+	}
+	return deliverLegacyWebPush(ctx, cfg, subscription, payload, client, now, entropy)
+}
+
+func deliverStandardWebPush(ctx context.Context, cfg config.Config, subscription models.WebPushSubscription, payload []byte, client webpush.HTTPClient, now time.Time, entropy io.Reader) (*http.Response, error) {
+	authorization, _, err := webPushVAPIDHeaders(cfg, subscription.Endpoint, true, now, entropy)
+	if err != nil {
+		return nil, err
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	client = webPushHeaderClient{
+		base: client,
+		headers: http.Header{
+			"Authorization":   []string{authorization},
+			"Unsubscribe-Url": []string{webPushUnsubscribeURL(cfg, subscription, now)},
+		},
+		setContentLength: true,
+	}
 	return webpush.SendNotificationWithContext(ctx, payload, &webpush.Subscription{
 		Endpoint: subscription.Endpoint,
 		Keys: webpush.Keys{
@@ -67,16 +106,262 @@ func defaultWebPushDeliverer(ctx context.Context, cfg config.Config, subscriptio
 			P256dh: subscription.KeyP256dh,
 		},
 	}, &webpush.Options{
+		HTTPClient:      client,
 		Subscriber:      cfg.VapidSubject,
 		TTL:             webPushTTL,
 		Urgency:         webPushUrgency,
 		VAPIDPublicKey:  cfg.VapidPublicKey,
 		VAPIDPrivateKey: cfg.VapidPrivateKey,
+		VapidExpiration: now.UTC().Add(24 * time.Hour),
 	})
+}
+
+type webPushHeaderClient struct {
+	base             webpush.HTTPClient
+	headers          http.Header
+	setContentLength bool
+}
+
+func (client webPushHeaderClient) Do(request *http.Request) (*http.Response, error) {
+	for key, values := range client.headers {
+		if len(values) == 0 || values[0] == "" {
+			continue
+		}
+		request.Header.Del(key)
+		for _, value := range values {
+			request.Header.Add(key, value)
+		}
+	}
+	if client.setContentLength && request.ContentLength >= 0 {
+		request.Header.Set("Content-Length", strconv.FormatInt(request.ContentLength, 10))
+	}
+	return client.base.Do(request)
+}
+
+type webPushLegacyCiphertext struct {
+	Ciphertext      []byte
+	Salt            []byte
+	ServerPublicKey []byte
+}
+
+func deliverLegacyWebPush(ctx context.Context, cfg config.Config, subscription models.WebPushSubscription, payload []byte, client webpush.HTTPClient, now time.Time, entropy io.Reader) (*http.Response, error) {
+	encrypted, err := encryptLegacyWebPush(payload, subscription.KeyP256dh, subscription.KeyAuth, entropy)
+	if err != nil {
+		return nil, err
+	}
+	authorization, vapidCryptoKey, err := webPushVAPIDHeaders(cfg, subscription.Endpoint, false, now, entropy)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, subscription.Endpoint, bytes.NewReader(encrypted.Ciphertext))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/octet-stream")
+	request.Header.Set("TTL", strconv.Itoa(webPushTTL))
+	request.Header.Set("Urgency", string(webPushUrgency))
+	request.Header.Set("Content-Encoding", "aesgcm")
+	request.Header.Set("Encryption", "salt="+base64.RawURLEncoding.EncodeToString(encrypted.Salt))
+	request.Header.Set("Crypto-Key", "dh="+base64.RawURLEncoding.EncodeToString(encrypted.ServerPublicKey)+";"+vapidCryptoKey)
+	request.Header.Set("Authorization", authorization)
+	if unsubscribeURL := webPushUnsubscribeURL(cfg, subscription, now); unsubscribeURL != "" {
+		request.Header.Set("Unsubscribe-URL", unsubscribeURL)
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return client.Do(request)
+}
+
+func encryptLegacyWebPush(payload []byte, encodedClientPublicKey string, encodedAuthSecret string, entropy io.Reader) (webPushLegacyCiphertext, error) {
+	var out webPushLegacyCiphertext
+	if len(payload) == 0 || encodedClientPublicKey == "" || encodedAuthSecret == "" {
+		return out, errors.New("web push payload and subscription keys are required")
+	}
+	clientPublicKey, err := decodeWebPushKey(encodedClientPublicKey)
+	if err != nil {
+		return out, fmt.Errorf("decode web push p256dh key: %w", err)
+	}
+	authSecret, err := decodeWebPushKey(encodedAuthSecret)
+	if err != nil {
+		return out, fmt.Errorf("decode web push auth key: %w", err)
+	}
+	curve := elliptic.P256()
+	clientX, clientY := elliptic.Unmarshal(curve, clientPublicKey)
+	if clientX == nil || clientY == nil {
+		return out, errors.New("web push p256dh key is not a P-256 point")
+	}
+	if entropy == nil {
+		entropy = rand.Reader
+	}
+	serverPrivateKey, serverX, serverY, err := elliptic.GenerateKey(curve, entropy)
+	if err != nil {
+		return out, err
+	}
+	serverPublicKey := elliptic.Marshal(curve, serverX, serverY)
+	sharedX, _ := curve.ScalarMult(clientX, clientY, serverPrivateKey)
+	if sharedX == nil {
+		return out, errors.New("web push ECDH shared secret is invalid")
+	}
+	sharedSecret := make([]byte, (curve.Params().BitSize+7)/8)
+	sharedX.FillBytes(sharedSecret)
+
+	prk, err := webPushHKDF(sharedSecret, authSecret, []byte("Content-Encoding: auth\x00"), 32)
+	if err != nil {
+		return out, err
+	}
+	salt := make([]byte, 16)
+	if _, err := io.ReadFull(entropy, salt); err != nil {
+		return out, err
+	}
+	context := legacyWebPushContext(clientPublicKey, serverPublicKey)
+	contentEncryptionKey, err := webPushHKDF(prk, salt, append([]byte("Content-Encoding: aesgcm\x00P-256"), context...), 16)
+	if err != nil {
+		return out, err
+	}
+	nonce, err := webPushHKDF(prk, salt, append([]byte("Content-Encoding: nonce\x00P-256"), context...), 12)
+	if err != nil {
+		return out, err
+	}
+	block, err := aes.NewCipher(contentEncryptionKey)
+	if err != nil {
+		return out, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return out, err
+	}
+	paddedPayload := make([]byte, 2, len(payload)+2)
+	paddedPayload = append(paddedPayload, payload...)
+	out.Ciphertext = gcm.Seal(nil, nonce, paddedPayload, nil)
+	out.Salt = salt
+	out.ServerPublicKey = serverPublicKey
+	return out, nil
+}
+
+func legacyWebPushContext(clientPublicKey []byte, serverPublicKey []byte) []byte {
+	context := bytes.NewBuffer(make([]byte, 0, 1+2+len(clientPublicKey)+2+len(serverPublicKey)))
+	context.WriteByte(0)
+	_ = binary.Write(context, binary.BigEndian, uint16(len(clientPublicKey)))
+	context.Write(clientPublicKey)
+	_ = binary.Write(context, binary.BigEndian, uint16(len(serverPublicKey)))
+	context.Write(serverPublicKey)
+	return context.Bytes()
+}
+
+func webPushHKDF(secret []byte, salt []byte, info []byte, size int) ([]byte, error) {
+	key := make([]byte, size)
+	read, err := io.ReadFull(hkdf.New(sha256.New, secret, salt, info), key)
+	if err != nil {
+		return nil, err
+	}
+	if read != size {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return key, nil
+}
+
+func webPushVAPIDHeaders(cfg config.Config, endpoint string, standard bool, now time.Time, entropy io.Reader) (string, string, error) {
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil || endpointURL.Scheme == "" || endpointURL.Host == "" {
+		return "", "", errors.New("web push endpoint is not an absolute URL")
+	}
+	privateKey, err := webPushVAPIDPrivateKey(cfg.VapidPrivateKey)
+	if err != nil {
+		return "", "", err
+	}
+	publicKey, err := decodeWebPushKey(cfg.VapidPublicKey)
+	if err != nil {
+		return "", "", fmt.Errorf("decode VAPID public key: %w", err)
+	}
+	publicX, publicY := elliptic.Unmarshal(elliptic.P256(), publicKey)
+	if publicX == nil || publicY == nil {
+		return "", "", errors.New("VAPID public key is not a P-256 point")
+	}
+	if entropy == nil {
+		entropy = rand.Reader
+	}
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"ES256","typ":"JWT"}`))
+	claims, err := json.Marshal(struct {
+		Audience  string `json:"aud"`
+		ExpiresAt int64  `json:"exp"`
+		Subject   string `json:"sub"`
+	}{
+		Audience:  endpointURL.Scheme + "://" + endpointURL.Host,
+		ExpiresAt: now.UTC().Add(24 * time.Hour).Unix(),
+		Subject:   normalizedVAPIDSubject(cfg.VapidSubject),
+	})
+	if err != nil {
+		return "", "", err
+	}
+	encodedClaims := base64.RawURLEncoding.EncodeToString(claims)
+	signingInput := header + "." + encodedClaims
+	digest := sha256.Sum256([]byte(signingInput))
+	r, signatureS, err := ecdsa.Sign(entropy, privateKey, digest[:])
+	if err != nil {
+		return "", "", err
+	}
+	signature := make([]byte, 64)
+	r.FillBytes(signature[:32])
+	signatureS.FillBytes(signature[32:])
+	token := signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+	encodedPublicKey := base64.RawURLEncoding.EncodeToString(publicKey)
+	if standard {
+		return "vapid t=" + token + ",k=" + encodedPublicKey, "", nil
+	}
+	return "WebPush " + token, "p256ecdsa=" + encodedPublicKey, nil
+}
+
+func webPushVAPIDPrivateKey(encoded string) (*ecdsa.PrivateKey, error) {
+	raw, err := decodeWebPushKey(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode VAPID private key: %w", err)
+	}
+	curve := elliptic.P256()
+	d := new(big.Int).SetBytes(raw)
+	if d.Sign() <= 0 || d.Cmp(curve.Params().N) >= 0 {
+		return nil, errors.New("VAPID private key is outside the P-256 scalar range")
+	}
+	x, y := curve.ScalarBaseMult(raw)
+	return &ecdsa.PrivateKey{PublicKey: ecdsa.PublicKey{Curve: curve, X: x, Y: y}, D: d}, nil
+}
+
+func decodeWebPushKey(encoded string) ([]byte, error) {
+	encoded = strings.TrimSpace(encoded)
+	for _, encoding := range []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	} {
+		if decoded, err := encoding.DecodeString(encoded); err == nil {
+			return decoded, nil
+		}
+	}
+	return nil, errors.New("invalid base64 key")
+}
+
+func normalizedVAPIDSubject(subject string) string {
+	subject = strings.TrimSpace(subject)
+	if strings.HasPrefix(subject, "mailto:") || strings.HasPrefix(subject, "https:") {
+		return subject
+	}
+	return "mailto:" + subject
+}
+
+func webPushUnsubscribeURL(cfg config.Config, subscription models.WebPushSubscription, now time.Time) string {
+	token, err := webPushUnsubscribeToken(subscription.ID, cfg.SecretKeyBase, now)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(cfg.BaseURL(), "/") + "/api/web/push_subscriptions/" + url.PathEscape(token)
 }
 
 func (s *Server) deliverWebPushNotification(ctx context.Context, notification models.Notification, recipient models.Account) {
 	if s == nil || s.db == nil || !webPushConfigured(s.cfg) {
+		return
+	}
+	if webPushNotificationOutsideTTL(notification, time.Now().UTC()) {
 		return
 	}
 	if !s.webPushNotificationActivityPresent(ctx, notification) {
@@ -132,6 +417,9 @@ func (s *Server) performWebPushNotificationDelivery(ctx context.Context, subscri
 		return taskTargetError("web push account hydration", "local", serverLocalTaskTargetHost(s), err)
 	}
 	notification = notifications[0]
+	if webPushNotificationOutsideTTL(notification, time.Now().UTC()) {
+		return nil
+	}
 	if !s.webPushNotificationActivityPresent(ctx, notification) || !webPushSubscriptionPushable(s.db.WithContext(ctx), subscription, notification) {
 		return nil
 	}
@@ -144,6 +432,13 @@ func (s *Server) performWebPushNotificationDelivery(ctx context.Context, subscri
 		return taskTargetError("web push payload generation", "local", serverLocalTaskTargetHost(s), err)
 	}
 	return s.deliverWebPushTargetForWorker(ctx, subscription, payload)
+}
+
+func webPushNotificationOutsideTTL(notification models.Notification, now time.Time) bool {
+	if notification.UpdatedAt.IsZero() {
+		return false
+	}
+	return notification.UpdatedAt.Before(now.UTC().Add(-time.Duration(webPushTTL) * time.Second))
 }
 
 func (s *Server) deliverWebPushTargetForWorker(ctx context.Context, subscription models.WebPushSubscription, payload []byte) error {
@@ -340,6 +635,12 @@ func notificationActivityTable(activityType string, kind string) string {
 		return "reports"
 	case "Account":
 		return "accounts"
+	case "AccountRelationshipSeveranceEvent":
+		return "account_relationship_severance_events"
+	case "AccountWarning":
+		return "account_warnings"
+	case "GeneratedAnnualReport":
+		return "generated_annual_reports"
 	}
 	switch kind {
 	case "mention":
@@ -358,6 +659,12 @@ func notificationActivityTable(activityType string, kind string) string {
 		return "reports"
 	case "admin.sign_up":
 		return "accounts"
+	case "severed_relationships":
+		return "account_relationship_severance_events"
+	case "moderation_warning":
+		return "account_warnings"
+	case "annual_report":
+		return "generated_annual_reports"
 	default:
 		return ""
 	}

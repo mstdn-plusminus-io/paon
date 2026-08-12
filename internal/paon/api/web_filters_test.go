@@ -285,3 +285,12 @@ func TestWebFilterHandlersValidateActionEnumLikeRails(t *testing.T) {
 		}
 	}
 }
+
+func TestFilterActionRadiosIncludeMastodon44MediaBlur(t *testing.T) {
+	html := filterActionRadios(2, "en")
+	for _, want := range []string{`value="blur"`, `id="custom_filter_filter_action_blur"`, `value="blur" name="custom_filter[filter_action]" id="custom_filter_filter_action_blur" checked`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("filter action radios missing %q: %s", want, html)
+		}
+	}
+}

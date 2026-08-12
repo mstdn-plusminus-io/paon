@@ -13,6 +13,8 @@ func OptionsFromConfig(cfg config.Config, role string) Options {
 		ServiceNameSeparator: cfg.OTelServiceNameSeparator,
 		Role:                 role,
 		ServiceVersion:       cfg.Version,
+		SourceCommit:         cfg.SourceCommit,
+		SourceURL:            cfg.SourceURL,
 		Sampler:              cfg.OTelTracesSampler,
 		SamplerArg:           cfg.OTelTracesSamplerArg,
 		Propagators:          cfg.OTelPropagators,

@@ -29,7 +29,8 @@ func TestOpenUsesConfiguredDatabasePool(t *testing.T) {
 		`if strings.TrimSpace(cfg.ReplicaDatabaseURL) != ""`,
 		`replicaDSN := databaseDSNWithLockTimeout(cfg.ReplicaDatabaseURL, cfg.DatabaseLockTimeout)`,
 		`dbresolver.Register(dbresolver.Config{`,
-		`Replicas: []gorm.Dialector{postgres.Open(replicaDSN)}`,
+		`Replicas: []gorm.Dialector{postgres.New(postgres.Config{`,
+		`PreferSimpleProtocol: !cfg.ReplicaPreparedStatements`,
 		`sqlDB.SetMaxOpenConns(cfg.DatabaseMaxOpenConns)`,
 		`sqlDB.SetMaxIdleConns(cfg.DatabaseMaxIdleConns)`,
 		`newGORMLogger(os.Stdout, gormLoggerLevel(cfg.RailsLogLevel))`,
@@ -172,6 +173,27 @@ func TestAvailableExplainsSupportedDatabaseConfiguration(t *testing.T) {
 	}
 }
 
+func TestValidatePostgreSQLVersionNumRequiresMastodon44Floor(t *testing.T) {
+	for _, version := range []int{130000, 130021, 160003} {
+		if err := validatePostgreSQLVersionNum(version); err != nil {
+			t.Errorf("validatePostgreSQLVersionNum(%d) = %v", version, err)
+		}
+	}
+	for _, version := range []int{0, 90624, 120019, 129999} {
+		err := validatePostgreSQLVersionNum(version)
+		if err == nil || !strings.Contains(err.Error(), "PostgreSQL 13.0 or newer") {
+			t.Errorf("validatePostgreSQLVersionNum(%d) error = %v, want minimum version error", version, err)
+		}
+	}
+}
+
+func TestRequireSupportedVersionExplainsMissingDatabaseConfiguration(t *testing.T) {
+	err := RequireSupportedVersion(nil)
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("RequireSupportedVersion(nil) error = %v", err)
+	}
+}
+
 func TestRequiredMastodonTablesCoverDropInSchemaCore(t *testing.T) {
 	tables := map[string]bool{}
 	for _, table := range RequiredMastodonTables() {
@@ -233,7 +255,6 @@ func TestRequiredMastodonTablesCoverDropInSchemaCore(t *testing.T) {
 		"backups",
 		"bulk_imports",
 		"bulk_import_rows",
-		"imports",
 		"identities",
 		"instances",
 		"account_summaries",
@@ -250,6 +271,13 @@ func TestRequiredMastodonTablesCoverDropInSchemaCore(t *testing.T) {
 		"oauth_access_tokens",
 		"oauth_access_grants",
 		"settings",
+		"quotes",
+		"terms_of_services",
+		"tag_trends",
+		"rule_translations",
+		"fasp_providers",
+		"fasp_follow_recommendations",
+		"instance_moderation_notes",
 	} {
 		if !tables[want] {
 			t.Fatalf("RequiredMastodonTables missing %q: %#v", want, RequiredMastodonTables())
@@ -275,6 +303,9 @@ func TestRequiredMastodonTablesCoverConcreteGoModels(t *testing.T) {
 		"encrypted_messages": true,
 		"one_time_keys":      true,
 		"system_keys":        true,
+		// Mastodon 4.4 removes imports; the model only supports the one-way
+		// legacy importer before the acknowledged contract phase.
+		"imports": true,
 	}
 	for _, match := range modelTableNamePattern.FindAllStringSubmatch(string(raw), -1) {
 		table := match[1]
@@ -316,6 +347,7 @@ func TestModelBackedMastodonColumnsCoverConcreteGoModels(t *testing.T) {
 		"encrypted_messages": true,
 		"one_time_keys":      true,
 		"system_keys":        true,
+		"imports":            true,
 	}
 	for _, match := range modelTableNamePattern.FindAllStringSubmatch(string(raw), -1) {
 		table := match[1]
@@ -399,7 +431,6 @@ func TestRequiredMastodonColumnsCoverDropInSchemaCore(t *testing.T) {
 		"backups":                {"id", "user_id", "dump_file_name", "dump_file_size", "processed"},
 		"bulk_imports":           {"id", "account_id", "type", "state", "original_filename"},
 		"bulk_import_rows":       {"id", "bulk_import_id", "data"},
-		"imports":                {"id", "account_id", "type", "approved", "data_file_name", "overwrite"},
 		"identities":             {"id", "user_id", "provider", "uid"},
 		"instances":              {"domain", "accounts_count"},
 		"account_summaries":      {"account_id", "language", "sensitive"},
@@ -429,7 +460,9 @@ func TestRequiredMastodonColumnsCoverDropInSchemaCore(t *testing.T) {
 		"session_activations": {"id", "user_id", "session_id", "access_token_id", "web_push_subscription_id", "ip", "user_agent"},
 		"oauth_access_tokens": {"id", "token", "resource_owner_id", "application_id", "scopes", "revoked_at"},
 		"oauth_access_grants": {"id", "token", "resource_owner_id", "application_id", "redirect_uri", "scopes"},
-		"settings":            {"id", "var", "value", "thing_type", "thing_id"},
+		"settings":            {"id", "var", "value"},
+		"quotes":              {"id", "account_id", "status_id", "quoted_status_id", "quoted_account_id", "state", "legacy"},
+		"terms_of_services":   {"id", "text", "changelog", "effective_date"},
 	}
 	for table, wantColumns := range checks {
 		got := map[string]bool{}
@@ -456,7 +489,7 @@ func TestRequiredMastodonIndexesCoverDropInSchemaCore(t *testing.T) {
 			"index_accounts_on_url",
 		},
 		"accounts_tags":             {"accounts_tags_pkey", "index_accounts_tags_on_account_id_and_tag_id"},
-		"account_aliases":           {"index_account_aliases_on_account_id"},
+		"account_aliases":           {"index_account_aliases_on_account_id_and_uri"},
 		"account_conversations":     {"index_unique_conversations", "index_account_conversations_on_conversation_id"},
 		"account_deletion_requests": {"index_account_deletion_requests_on_account_id"},
 		"account_migrations":        {"index_account_migrations_on_account_id", "index_account_migrations_on_target_account_id"},
@@ -489,7 +522,7 @@ func TestRequiredMastodonIndexesCoverDropInSchemaCore(t *testing.T) {
 		"custom_emoji_categories":            {"index_custom_emoji_categories_on_name"},
 		"custom_emojis":                      {"index_custom_emojis_on_shortcode_and_domain"},
 		"custom_filter_keywords":             {"index_custom_filter_keywords_on_custom_filter_id"},
-		"custom_filter_statuses":             {"index_custom_filter_statuses_on_custom_filter_id", "index_custom_filter_statuses_on_status_id"},
+		"custom_filter_statuses":             {"index_custom_filter_statuses_on_custom_filter_id", "index_custom_filter_statuses_on_status_id_and_custom_filter_id"},
 		"custom_filters":                     {"index_custom_filters_on_account_id"},
 		"domain_allows":                      {"index_domain_allows_on_domain"},
 		"domain_blocks":                      {"index_domain_blocks_on_domain"},
@@ -531,7 +564,7 @@ func TestRequiredMastodonIndexesCoverDropInSchemaCore(t *testing.T) {
 		"reports":                {"index_reports_on_account_id", "index_reports_on_action_taken_by_account_id", "index_reports_on_assigned_account_id", "index_reports_on_target_account_id"},
 		"scheduled_statuses":     {"index_scheduled_statuses_on_account_id", "index_scheduled_statuses_on_scheduled_at"},
 		"session_activations":    {"index_session_activations_on_access_token_id", "index_session_activations_on_session_id", "index_session_activations_on_user_id"},
-		"settings":               {"index_settings_on_thing_type_and_thing_id_and_var"},
+		"settings":               {"index_settings_on_var"},
 		"site_uploads":           {"index_site_uploads_on_var"},
 		"software_updates":       {"index_software_updates_on_version"},
 		"status_edits":           {"index_status_edits_on_account_id", "index_status_edits_on_status_id"},
@@ -547,7 +580,7 @@ func TestRequiredMastodonIndexesCoverDropInSchemaCore(t *testing.T) {
 			"index_statuses_on_reblog_of_id_and_account_id",
 			"index_statuses_on_uri",
 			"index_statuses_local_20190824",
-			"index_statuses_public_20200119",
+			"index_statuses_public_20250129",
 		},
 		"statuses_tags":        {"statuses_tags_pkey", "index_statuses_tags_on_status_id"},
 		"tag_follows":          {"index_tag_follows_on_account_id_and_tag_id", "index_tag_follows_on_tag_id"},
@@ -567,7 +600,10 @@ func TestRequiredMastodonIndexesCoverDropInSchemaCore(t *testing.T) {
 		"web_push_subscriptions": {"index_web_push_subscriptions_on_access_token_id", "index_web_push_subscriptions_on_user_id"},
 		"web_settings":           {"index_web_settings_on_user_id"},
 		"webhooks":               {"index_webhooks_on_url"},
-		"webauthn_credentials":   {"index_webauthn_credentials_on_external_id", "index_webauthn_credentials_on_user_id"},
+		"webauthn_credentials":   {"index_webauthn_credentials_on_external_id", "index_webauthn_credentials_on_user_id_and_nickname"},
+		"quotes":                 {"index_quotes_on_status_id", "index_quotes_on_activity_uri"},
+		"terms_of_services":      {"index_terms_of_services_on_effective_date"},
+		"tag_trends":             {"index_tag_trends_on_tag_id_and_language"},
 	}
 	for table, wantIndexes := range checks {
 		got := map[string]bool{}
@@ -633,11 +669,13 @@ func TestRequiredMastodonUniqueIndexesCoverDropInSchemaCore(t *testing.T) {
 		"index_users_on_email",
 		"index_users_on_confirmation_token",
 		"index_users_on_reset_password_token",
-		"index_settings_on_thing_type_and_thing_id_and_var",
+		"index_settings_on_var",
 		"index_statuses_on_uri",
 		"index_preview_cards_on_url",
 		"index_tags_on_name_lower_btree",
 		"index_webauthn_credentials_on_external_id",
+		"index_quotes_on_status_id",
+		"index_fasp_providers_on_base_url",
 	} {
 		if !required[want] {
 			t.Fatalf("RequiredMastodonUniqueIndexes missing %q", want)
@@ -669,7 +707,10 @@ func TestRequiredMastodonIndexDefinitionFragmentsCoverDropInSchemaCore(t *testin
 		"index_statuses_on_deleted_at":                    {`where: "(deleted_at IS NOT NULL)"`},
 		"index_statuses_on_in_reply_to_id":                {`where: "(in_reply_to_id IS NOT NULL)"`},
 		"index_statuses_local_20190824":                   {"local", "deleted_at IS NULL", "visibility = 0", "reblog_of_id IS NULL"},
-		"index_statuses_public_20200119":                  {"deleted_at IS NULL", "visibility = 0", "reblog_of_id IS NULL"},
+		"index_statuses_public_20250129":                  {"language", "deleted_at IS NULL", "visibility = 0", "reblog_of_id IS NULL"},
+		"index_terms_of_services_on_effective_date":       {"effective_date", `where: "(effective_date IS NOT NULL)"`},
+		"index_quotes_on_activity_uri":                    {"activity_uri", `where: "(activity_uri IS NOT NULL)"`},
+		"index_quotes_on_approval_uri":                    {"approval_uri", `where: "(approval_uri IS NOT NULL)"`},
 		"index_statuses_on_uri":                           {"opclass: :text_pattern_ops", `where: "(uri IS NOT NULL)"`},
 		"index_tags_on_name_lower_btree":                  {"lower((name)::text)", "text_pattern_ops"},
 		"index_users_on_created_by_application_id":        {`where: "(created_by_application_id IS NOT NULL)"`},
@@ -710,7 +751,6 @@ func TestRequiredMastodonPrimaryKeysCoverDropInCoreTables(t *testing.T) {
 		"follow_recommendation_suppressions": {"id"},
 		"follow_requests":                    {"id"},
 		"follows":                            {"id"},
-		"imports":                            {"id"},
 		"invites":                            {"id"},
 		"list_accounts":                      {"id"},
 		"lists":                              {"id"},
@@ -736,6 +776,9 @@ func TestRequiredMastodonPrimaryKeysCoverDropInCoreTables(t *testing.T) {
 		"web_settings":                       {"id"},
 		"webauthn_credentials":               {"id"},
 		"webhooks":                           {"id"},
+		"quotes":                             {"id"},
+		"terms_of_services":                  {"id"},
+		"tag_trends":                         {"id"},
 	}
 	for table, wantColumns := range checks {
 		gotColumns, ok := primaryKeys[table]
@@ -847,10 +890,6 @@ func TestRequiredMastodonColumnDefinitionsCoverDropInCoreDefaults(t *testing.T) 
 		{Table: "follow_requests", Column: "notify", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "follows", Column: "show_reblogs", NotNull: true, DefaultFragments: []string{"true"}},
 		{Table: "follows", Column: "notify", NotNull: true, DefaultFragments: []string{"false"}},
-		{Table: "imports", Column: "type", NotNull: true},
-		{Table: "imports", Column: "approved", NotNull: true, DefaultFragments: []string{"false"}},
-		{Table: "imports", Column: "account_id", NotNull: true},
-		{Table: "imports", Column: "overwrite", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "identities", Column: "provider", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "identities", Column: "uid", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "invites", Column: "user_id", NotNull: true},
@@ -979,6 +1018,81 @@ func TestRequiredMastodonColumnDefinitionsCoverDropInCoreDefaults(t *testing.T) 
 	}
 }
 
+func TestRequiredMastodon44CatalogContract(t *testing.T) {
+	tables := map[string]bool{}
+	for _, table := range RequiredMastodonTables() {
+		tables[table] = true
+	}
+	for _, table := range []string{
+		"annual_report_statuses_per_account_counts", "tag_trends", "terms_of_services",
+		"fasp_providers", "fasp_debug_callbacks", "fasp_subscriptions",
+		"fasp_backfill_requests", "fasp_follow_recommendations",
+		"instance_moderation_notes", "quotes", "rule_translations",
+	} {
+		if !tables[table] {
+			t.Fatalf("RequiredMastodonTables missing Mastodon 4.4 table %q", table)
+		}
+	}
+	if slices.Contains(RequiredMastodonTables(), "imports") || !slices.Contains(ForbiddenMastodonRelations(), "imports") {
+		t.Fatal("Mastodon 4.4 imports relation must be forbidden, not required")
+	}
+
+	definitions := map[string]MastodonColumnDefinition{}
+	for _, definition := range RequiredMastodonColumnDefinitions() {
+		definitions[definition.String()] = definition
+	}
+	checks := []MastodonColumnDefinition{
+		{Table: "account_aliases", Column: "account_id", NotNull: true},
+		{Table: "account_conversations", Column: "conversation_id", NotNull: true},
+		{Table: "account_notes", Column: "target_account_id", NotNull: true},
+		{Table: "poll_votes", Column: "poll_id", NotNull: true},
+		{Table: "polls", Column: "status_id", NotNull: true},
+		{Table: "tombstones", Column: "account_id", NotNull: true},
+		{Table: "web_push_subscriptions", Column: "user_id", NotNull: true},
+		{Table: "web_push_subscriptions", Column: "access_token_id", NotNull: true},
+		{Table: "web_push_subscriptions", Column: "standard", NotNull: true, DefaultFragments: []string{"false"}},
+		{Table: "statuses", Column: "quote_approval_policy", NotNull: true, DefaultFragments: []string{"0"}},
+		{Table: "users", Column: "require_tos_interstitial", NotNull: true, DefaultFragments: []string{"false"}},
+		{Table: "quotes", Column: "id", NotNull: true, DefaultFragments: []string{"timestamp_id('quotes'"}},
+		{Table: "quotes", Column: "state", NotNull: true, DefaultFragments: []string{"0"}},
+		{Table: "quotes", Column: "legacy", NotNull: true, DefaultFragments: []string{"false"}},
+		{Table: "tag_trends", Column: "language", NotNull: true, DefaultFragments: []string{"''::character varying"}},
+		{Table: "fasp_providers", Column: "capabilities", NotNull: true, DefaultFragments: []string{"'[]'::jsonb"}},
+	}
+	for _, check := range checks {
+		got, ok := definitions[check.String()]
+		if !ok || got.NotNull != check.NotNull {
+			t.Fatalf("RequiredMastodonColumnDefinitions missing 4.4 definition %#v; got %#v", check, got)
+		}
+		for _, fragment := range check.DefaultFragments {
+			if !runtimeDefaultFragmentsContain(got.DefaultFragments, fragment) {
+				t.Fatalf("%s missing default fragment %q: %#v", check.String(), fragment, got.DefaultFragments)
+			}
+		}
+	}
+
+	foreignKeys := map[string]bool{}
+	for _, foreignKey := range RequiredMastodonForeignKeys() {
+		foreignKeys[foreignKey.String()] = true
+	}
+	for _, foreignKey := range []MastodonForeignKey{
+		{Table: "account_moderation_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
+		{Table: "webauthn_credentials", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
+		{Table: "quotes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
+		{Table: "quotes", Column: "quoted_status_id", ForeignTable: "statuses", OnDelete: "n"},
+		{Table: "tag_trends", Column: "tag_id", ForeignTable: "tags", OnDelete: "c"},
+		{Table: "rule_translations", Column: "rule_id", ForeignTable: "rules", OnDelete: "c"},
+		{Table: "fasp_follow_recommendations", Column: "recommended_account_id", ForeignTable: "accounts", OnDelete: "a"},
+	} {
+		if !foreignKeys[foreignKey.String()] {
+			t.Fatalf("RequiredMastodonForeignKeys missing 4.4 FK %s", foreignKey.String())
+		}
+	}
+	if !slices.Contains(RequiredMastodonSequences(), "quotes_id_seq") {
+		t.Fatal("RequiredMastodonSequences missing quotes_id_seq")
+	}
+}
+
 func TestRequiredMastodonForeignKeysCoverDropInCascadeCore(t *testing.T) {
 	foreignKeys := RequiredMastodonForeignKeys()
 	required := map[string]bool{}
@@ -992,8 +1106,8 @@ func TestRequiredMastodonForeignKeysCoverDropInCascadeCore(t *testing.T) {
 		{Table: "account_domain_blocks", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "account_migrations", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "account_migrations", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "account_moderation_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "a"},
-		{Table: "account_moderation_notes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "a"},
+		{Table: "account_moderation_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
+		{Table: "account_moderation_notes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "account_notes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "account_pins", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "account_warnings", Column: "report_id", ForeignTable: "reports", OnDelete: "c"},
@@ -1016,7 +1130,6 @@ func TestRequiredMastodonForeignKeysCoverDropInCascadeCore(t *testing.T) {
 		{Table: "follow_requests", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "follows", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "identities", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "imports", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "invites", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
 		{Table: "list_accounts", Column: "follow_request_id", ForeignTable: "follow_requests", OnDelete: "c"},
 		{Table: "login_activities", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
@@ -1047,7 +1160,7 @@ func TestRequiredMastodonForeignKeysCoverDropInCascadeCore(t *testing.T) {
 		{Table: "users", Column: "invite_id", ForeignTable: "invites", OnDelete: "n"},
 		{Table: "web_push_subscriptions", Column: "access_token_id", ForeignTable: "oauth_access_tokens", OnDelete: "c"},
 		{Table: "web_settings", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "webauthn_credentials", Column: "user_id", ForeignTable: "users", OnDelete: "a"},
+		{Table: "webauthn_credentials", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
 	}
 	for _, check := range checks {
 		if !required[check.String()] {

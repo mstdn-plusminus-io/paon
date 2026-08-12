@@ -24,6 +24,7 @@ func mastodon4219UpgradePrerequisites() map[string][]string {
 		"email_domain_blocks":    {"id"},
 		"encrypted_messages":     {"id"},
 		"identities":             {"id", "uid", "provider"},
+		"imports":                {"id", "account_id", "type", "approved", "overwrite"},
 		"mentions":               {"id", "status_id", "account_id"},
 		"notifications":          {"id", "account_id", "type"},
 		"oauth_access_grants":    {"id"},
@@ -34,6 +35,7 @@ func mastodon4219UpgradePrerequisites() map[string][]string {
 		"preview_cards_statuses": {"preview_card_id", "status_id"},
 		"reports":                {"id"},
 		"rules":                  {"id"},
+		"settings":               {"id", "var", "thing_type", "thing_id"},
 		"status_pins":            {"id", "created_at", "updated_at"},
 		"system_keys":            {"id"},
 		"users":                  {"id", "account_id", "admin", "moderator", "locale", "settings", "otp_required_for_login", "encrypted_otp_secret", "encrypted_otp_secret_iv", "encrypted_otp_secret_salt"},
@@ -48,6 +50,20 @@ func mastodon4219UpgradePrerequisites() map[string][]string {
 		"notification_requests":                 {},
 		"relationship_severance_events":         {},
 		"severed_relationships":                 {},
+		// Mastodon 4.4 tables are absent from the 4.2 base and must not be
+		// mistaken for prerequisites merely because they are part of Paon's
+		// current runtime catalog.
+		"annual_report_statuses_per_account_counts": {},
+		"fasp_backfill_requests":                    {},
+		"fasp_debug_callbacks":                      {},
+		"fasp_follow_recommendations":               {},
+		"fasp_providers":                            {},
+		"fasp_subscriptions":                        {},
+		"instance_moderation_notes":                 {},
+		"quotes":                                    {},
+		"rule_translations":                         {},
+		"tag_trends":                                {},
+		"terms_of_services":                         {},
 	}
 	addedColumns := map[string]map[string]struct{}{
 		"accounts":               {"attribution_domains": {}},
@@ -58,7 +74,12 @@ func mastodon4219UpgradePrerequisites() map[string][]string {
 		"preview_cards_statuses": {"url": {}},
 		"reports":                {"application_id": {}},
 		"rules":                  {"hint": {}},
-		"users":                  {"otp_secret": {}},
+		"users":                  {"otp_secret": {}, "age_verified_at": {}, "require_tos_interstitial": {}},
+		"announcements":          {"notification_sent_at": {}},
+		"status_edits":           {"quote_id": {}},
+		"status_stats":           {"untrusted_favourites_count": {}, "untrusted_reblogs_count": {}},
+		"statuses":               {"fetched_replies_at": {}, "quote_approval_policy": {}},
+		"web_push_subscriptions": {"standard": {}},
 	}
 	for _, table := range paondb.RequiredMastodonTables() {
 		if _, added := createdIn43[table]; added {

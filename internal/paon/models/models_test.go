@@ -184,6 +184,45 @@ func TestAdditionalRailsCompatibilityTableNames(t *testing.T) {
 	}
 }
 
+func TestQuoteMastodon44ModelContract(t *testing.T) {
+	if got := (Quote{}).TableName(); got != "quotes" {
+		t.Fatalf("Quote.TableName() = %q, want quotes", got)
+	}
+	if got := []int{QuoteStatePending, QuoteStateAccepted, QuoteStateRejected, QuoteStateRevoked, QuoteStateDeleted}; !reflect.DeepEqual(got, []int{0, 1, 2, 3, 4}) {
+		t.Fatalf("quote states = %#v, want Mastodon 4.4 enum [0 1 2 3 4]", got)
+	}
+
+	quoteSchema, err := schema.Parse(&Quote{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, column := range []string{"id", "account_id", "status_id", "quoted_status_id", "quoted_account_id", "state", "approval_uri", "activity_uri", "legacy", "created_at", "updated_at"} {
+		if quoteSchema.LookUpField(column) == nil {
+			t.Fatalf("Quote schema missing column %q", column)
+		}
+	}
+	for _, transient := range []string{"QuotedStatusVisible", "QuotedStatusVisibilityChecked"} {
+		field := quoteSchema.LookUpField(transient)
+		if field == nil || field.DBName != "" {
+			t.Fatalf("Quote.%s must remain transient, field=%#v", transient, field)
+		}
+	}
+}
+
+func TestRuleTranslationsAssociation(t *testing.T) {
+	ruleSchema, err := schema.Parse(&Rule{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relation := ruleSchema.Relationships.Relations["Translations"]
+	if relation == nil || relation.FieldSchema == nil || relation.FieldSchema.Table != "rule_translations" {
+		t.Fatalf("Rule.Translations relation = %#v", relation)
+	}
+	if len(relation.References) != 1 || relation.References[0].ForeignKey == nil || relation.References[0].ForeignKey.DBName != "rule_id" {
+		t.Fatalf("Rule.Translations references = %#v", relation.References)
+	}
+}
+
 func TestCoreRailsSchemaColumnsRemainMapped(t *testing.T) {
 	tests := []struct {
 		name  string

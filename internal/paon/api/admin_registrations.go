@@ -4,6 +4,8 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v5"
 	"gorm.io/gorm"
@@ -14,6 +16,7 @@ type adminRegistrationsSettings struct {
 	RequireInviteText          bool
 	CaptchaEnabled             bool
 	ClosedRegistrationsMessage string
+	MinAge                     string
 }
 
 func (s *Server) adminSettingsRegistrationsPage(c *echo.Context) error {
@@ -61,6 +64,7 @@ func (s *Server) adminRegistrationsSettings() adminRegistrationsSettings {
 		RequireInviteText:          s.settingBoolValue("require_invite_text", false),
 		CaptchaEnabled:             s.settingBoolValue("captcha_enabled", false),
 		ClosedRegistrationsMessage: s.settingStringValue("closed_registrations_message", ""),
+		MinAge:                     s.settingStringValue("min_age", ""),
 	}
 }
 
@@ -74,16 +78,22 @@ func parseAdminRegistrationsSettings(c *echo.Context) (adminRegistrationsSetting
 		RequireInviteText:          adminSettingsCheckbox(req.Form, "form_admin_settings[require_invite_text]"),
 		CaptchaEnabled:             adminSettingsCheckbox(req.Form, "form_admin_settings[captcha_enabled]"),
 		ClosedRegistrationsMessage: lastFormValue(req.Form, "form_admin_settings[closed_registrations_message]"),
+		MinAge:                     strings.TrimSpace(lastFormValue(req.Form, "form_admin_settings[min_age]")),
 	}, nil
 }
 
 func validateAdminRegistrationsSettings(settings adminRegistrationsSettings) error {
 	switch settings.RegistrationsMode {
 	case "open", "approved", "none":
-		return nil
 	default:
 		return errAdminSetting("Registration mode is invalid")
 	}
+	if settings.MinAge != "" {
+		if _, err := strconv.Atoi(settings.MinAge); err != nil {
+			return errAdminSetting("Minimum age must be an integer")
+		}
+	}
+	return nil
 }
 
 func (s *Server) updateAdminRegistrationsSettings(settings adminRegistrationsSettings) error {
@@ -92,6 +102,7 @@ func (s *Server) updateAdminRegistrationsSettings(settings adminRegistrationsSet
 		"require_invite_text":          boolSettingValue(settings.RequireInviteText),
 		"captcha_enabled":              boolSettingValue(settings.CaptchaEnabled),
 		"closed_registrations_message": settings.ClosedRegistrationsMessage,
+		"min_age":                      settings.MinAge,
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		for name, value := range values {
@@ -150,6 +161,7 @@ func adminSettingsRegistrationsHTML(settings adminRegistrationsSettings, notice 
   <input type="hidden" name="form_admin_settings[captcha_enabled]" value="0">
   <div class="fields-group"><label><input type="checkbox" name="form_admin_settings[captcha_enabled]" value="1"` + checkedCaptcha + `> ` + html.EscapeString(adminT(loc, "admin.settings.captcha_enabled.title", "Require new users to solve a CAPTCHA to confirm their account")) + `</label></div>
   <div class="fields-group"><label>` + html.EscapeString(adminSettingsLabel(loc, "closed_registrations_message", "Custom message when sign-ups are not available")) + ` <textarea name="form_admin_settings[closed_registrations_message]" rows="3">` + html.EscapeString(settings.ClosedRegistrationsMessage) + `</textarea></label></div>
+  <div class="fields-group"><label>` + html.EscapeString(adminSettingsLabel(loc, "min_age", "Minimum age for sign-up")) + ` <input type="text" inputmode="numeric" name="form_admin_settings[min_age]" value="` + html.EscapeString(settings.MinAge) + `"></label><p class="hint">` + html.EscapeString(adminSettingsHint(loc, "min_age", "Users will be asked to confirm their date of birth during sign-up. This must not be lower than the minimum age required by local law.")) + `</p></div>
   <div class="actions"><button type="submit">` + html.EscapeString(settingsT(loc, "generic.save_changes", "Save changes")) + `</button></div>
 </form>`
 	return adminSettingsPageHTML(title, "registrations", notice, errorText, body, loc, theme)

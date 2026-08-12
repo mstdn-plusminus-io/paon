@@ -122,8 +122,8 @@ func TestTrendEndpointsMatchRailsCacheAndVaryHeaders(t *testing.T) {
 		handler func(*Server, *echo.Context) error
 		vary    string
 	}{
-		{path: "/api/v1/trends", handler: (*Server).trendingTags, vary: "Authorization"},
-		{path: "/api/v1/trends/tags", handler: (*Server).trendingTags, vary: "Authorization"},
+		{path: "/api/v1/trends", handler: (*Server).trendingTags, vary: "Authorization, Accept-Language"},
+		{path: "/api/v1/trends/tags", handler: (*Server).trendingTags, vary: "Authorization, Accept-Language"},
 		{path: "/api/v1/trends/links", handler: (*Server).trendingLinks, vary: "Authorization, Accept-Language"},
 		{path: "/api/v1/trends/statuses", handler: (*Server).trendingStatuses, vary: "Authorization, Accept-Language"},
 	}
@@ -171,19 +171,25 @@ func TestTrendEndpointsDoNotPublicCacheAuthenticatedRequests(t *testing.T) {
 	}
 }
 
-func TestTrendingTagsPreferRailsRedisTrendZSet(t *testing.T) {
+func TestTrendingTagsUseRails44TagTrendTable(t *testing.T) {
 	src, err := os.ReadFile("tags.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`s.trendingTagRowsFromRedis(ctx, limitValue, offsetValue, now, true)`,
-		`key = s.cfg.RedisNamespace + "trending_tags:allowed"`,
-		`s.adminTagUsesRedisDay(tag.ID, day)`,
-		`s.adminTagAccountsRedisDay(tag.ID, day)`,
+		`Table("tag_trends")`,
+		`Joins("JOIN tags ON tags.id = tag_trends.tag_id")`,
+		`Where("tag_trends.allowed = ?", true)`,
+		`applyTrendLanguageOrder(query, "tag_trends.language", preferredLanguages)`,
+		`Order("tag_trends.score DESC")`,
 	} {
-		if !functionBodyContains(t, src, "trendingTagRows", want) && !functionBodyContains(t, src, "trendingTagRowsFromRedis", want) {
+		if !functionBodyContains(t, src, "trendingTagRows", want) {
 			t.Fatalf("tags.go trending tag path does not contain %q", want)
+		}
+	}
+	for _, forbidden := range []string{"trending_tags:all", "trending_tags:allowed", "trendingTagRowsFromRedis"} {
+		if functionBodyContains(t, src, "trendingTagRows", forbidden) {
+			t.Fatalf("trendingTagRows must not use retired Redis ranking %q", forbidden)
 		}
 	}
 }

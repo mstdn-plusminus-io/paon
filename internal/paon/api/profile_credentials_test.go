@@ -16,6 +16,7 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
 func TestParseAccountUpdatePayloadAcceptsJSONFields(t *testing.T) {
@@ -45,6 +46,44 @@ func TestParseAccountUpdatePayloadAcceptsJSONFields(t *testing.T) {
 	}
 	if payload.Source == nil {
 		t.Fatal("source missing")
+	}
+}
+
+func TestAccountUpdatePayloadAcceptsAndNormalizesAttributionDomains(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/update_credentials", strings.NewReader(`{"attribution_domains":["https://*.Example.COM","news.example.org"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	payload, err := parseAccountUpdatePayload(echo.NewContext(req, httptest.NewRecorder(), e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates, err := accountUpdateMap(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := updates["attribution_domains"].(models.StringArray)
+	if !ok || len(got) != 2 || got[0] != "example.com" || got[1] != "news.example.org" {
+		t.Fatalf("attribution_domains = %#v", updates["attribution_domains"])
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/update_credentials", strings.NewReader(`{"attribution_domains":["example.org/path"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	payload, err = parseAccountUpdatePayload(echo.NewContext(req, httptest.NewRecorder(), e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accountUpdateMap(payload); err == nil {
+		t.Fatal("path-bearing attribution domain was accepted")
+	}
+}
+
+func TestFollowRequestsCountExcludesSuspendedRequestersLikeMastodon44(t *testing.T) {
+	src, err := os.ReadFile("profile_credentials.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !functionBodyContains(t, src, "followRequestsCount", `accounts.suspended_at IS NULL`) {
+		t.Fatal("credential follow_requests_count must exclude suspended requester accounts")
 	}
 }
 
@@ -255,8 +294,8 @@ func TestProfileImageValidationMatchesRailsAvatarHeaderConcerns(t *testing.T) {
 			t.Fatalf("profile image content type %q should be rejected", contentType)
 		}
 	}
-	if profileImageSizeLimit != 2*1024*1024 {
-		t.Fatalf("profileImageSizeLimit = %d", profileImageSizeLimit)
+	if profileImageSizeLimit != mediaPreviewImageSizeLimit {
+		t.Fatalf("profileImageSizeLimit = %d, mediaPreviewImageSizeLimit = %d", profileImageSizeLimit, mediaPreviewImageSizeLimit)
 	}
 }
 

@@ -14,7 +14,6 @@ type localStatusCreatePostCommit struct {
 	Status               models.Status
 	Account              models.Account
 	ReplyTo              *models.Status
-	Quote                *models.Status
 	NotificationIDs      []int64
 	NotificationPayloads []asynqLocalNotificationPayload
 	ConversationIDs      []int64
@@ -76,13 +75,19 @@ func (s *Server) runLocalStatusCreatePostCommit(effects localStatusCreatePostCom
 	s.meiliIndexStatusBestEffort(ctx, created.ID)
 	s.meiliIndexTagsBestEffort(ctx, effects.IndexedTagIDs)
 	s.recordStatusTrendUse(ctx, created.ID, created.CreatedAt)
+	if err := s.enqueueFASPContentLifecycle(ctx, created, "new"); err != nil {
+		s.logLocalStatusPostCommitError(effects, "fasp_content_lifecycle", err)
+	}
+	if created.InReplyToID.Valid {
+		if err := s.enqueueFASPTrendForStatus(ctx, created, "reply"); err != nil {
+			s.logLocalStatusPostCommitError(effects, "fasp_reply_trend", err)
+		}
+	}
 	if created.InReplyToAccountID.Valid && created.InReplyToAccountID.Int64 != effects.Account.ID {
 		s.activityTrackerIncrementBasic(ctx, "activity:interactions", created.CreatedAt, 1)
 		s.recordPotentialFriendship(ctx, effects.Account.ID, created.InReplyToAccountID.Int64, "reply")
 	}
 	s.recordTagTrendUse(ctx, effects.Account.ID, created.Visibility, effects.IndexedTagIDs, effects.CreatedAt)
-	s.putStatusQuoteBestEffort(ctx, created.ID, effects.Quote)
-	s.applyStatusQuote(&created, effects.Quote)
 	s.publishStatusUpdateEvent("update", created)
 	s.publishConversationIDs(ctx, effects.ConversationIDs)
 	s.publishNotificationIDs(notificationIDs)

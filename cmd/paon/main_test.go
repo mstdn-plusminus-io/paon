@@ -28,6 +28,7 @@ func TestMainUsesContextAwareServerStart(t *testing.T) {
 		`web.ValidatePublicAssets(cfg)`,
 		`web.ValidateServerRenderedLocales(cfg)`,
 		`paondb.Available(database)`,
+		`paondb.RequireSupportedVersion(database)`,
 		`paondb.SchemaAvailable(database)`,
 		`api.RedisAvailable(ctx, cfg)`,
 		`api.WaitForMeiliAvailable(ctx, cfg, 30*time.Second)`,
@@ -43,13 +44,17 @@ func TestMainUsesContextAwareServerStart(t *testing.T) {
 		}
 	}
 	availabilityCheck := strings.Index(body, `paondb.Available(database)`)
+	versionCheck := strings.Index(body, `paondb.RequireSupportedVersion(database)`)
 	schemaCheck := strings.Index(body, `paondb.SchemaAvailable(database)`)
 	serverCreate := strings.Index(body, `api.NewServer(cfg, database)`)
 	if availabilityCheck < 0 || serverCreate < 0 || availabilityCheck > serverCreate {
 		t.Fatal("main.go must validate database availability before creating the HTTP server")
 	}
-	if schemaCheck < availabilityCheck || schemaCheck > serverCreate {
-		t.Fatal("main.go must validate Mastodon schema after database availability and before creating the HTTP server")
+	if versionCheck < availabilityCheck || versionCheck > schemaCheck {
+		t.Fatal("main.go must validate the PostgreSQL version after database availability and before the schema")
+	}
+	if schemaCheck < versionCheck || schemaCheck > serverCreate {
+		t.Fatal("main.go must validate Mastodon schema after the database version and before creating the HTTP server")
 	}
 	redisCheck := strings.Index(body, `api.RedisAvailable(ctx, cfg)`)
 	meiliCheck := strings.Index(body, `api.WaitForMeiliAvailable(ctx, cfg, 30*time.Second)`)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
 
@@ -62,8 +63,23 @@ func (s *Server) enqueueAdminDomainBlockEffectsOrApply(database *gorm.DB, block 
 	if err := s.applyAdminDomainBlockEffects(database, block, update); err != nil {
 		return err
 	}
-	if block.RejectMedia && !s.enqueueDomainClearMediaTask(block.ID) {
+	if adminDomainBlockSuspendsAccounts(block) || block.RejectMedia {
+		if !s.enqueueDomainClearMediaTask(block.ID) {
+			return s.applyAdminDomainBlockMediaEffects(database, block)
+		}
+	}
+	return nil
+}
+
+// Mastodon 4.4 purges custom emoji for every suspended domain, even when the
+// separate reject_media option is disabled. For non-suspension blocks the
+// legacy reject_media behavior still clears all cached media.
+func (s *Server) applyAdminDomainBlockMediaEffects(database *gorm.DB, block models.DomainBlock) error {
+	if block.RejectMedia {
 		return s.clearDomainMediaCache(database, block.Domain)
+	}
+	if adminDomainBlockSuspendsAccounts(block) {
+		return s.deleteDomainCustomEmojis(database, block.Domain)
 	}
 	return nil
 }
@@ -153,6 +169,12 @@ func (s *Server) purgeAdminUnallowedAccountIDs(database *gorm.DB, accountIDs *go
 
 func (s *Server) purgeAdminSuspendedAccountIDsWithMode(database *gorm.DB, accountIDs *gorm.DB, destroyRows bool) error {
 	now := time.Now().UTC()
+	faspAccounts := []models.Account{}
+	if s != nil && s.faspEnabled() {
+		if err := database.Where("id IN (?)", accountIDs).Find(&faspAccounts).Error; err != nil {
+			return err
+		}
+	}
 	followDeliveries, err := s.adminSuspendedRemoteFollowDeliveries(database, accountIDs)
 	if err != nil {
 		return err
@@ -210,7 +232,18 @@ func (s *Server) purgeAdminSuspendedAccountIDsWithMode(database *gorm.DB, accoun
 	s.deliverAdminSuspendedRemoteFollowActivities(followDeliveries)
 	s.applyAdminSuspendedRemoteFollowCacheEffects(context.Background(), followDeliveries)
 	if destroyRows {
-		return database.Where("id IN (?)", accountIDs).Delete(&models.Account{}).Error
+		if err := database.Where("id IN (?)", accountIDs).Delete(&models.Account{}).Error; err != nil {
+			return err
+		}
+		for _, account := range faspAccounts {
+			_ = s.enqueueFASPAccountLifecycle(context.Background(), account, "delete")
+		}
+		return nil
+	}
+	for _, previous := range faspAccounts {
+		current := previous
+		current.Discoverable = sql.NullBool{Bool: false, Valid: true}
+		_ = s.enqueueFASPAccountLifecycleUpdate(context.Background(), previous, current)
 	}
 	return nil
 }
@@ -320,9 +353,13 @@ func (s *Server) applyAdminSuspensionWorkerEffects(ctx context.Context, database
 	if err := database.Where("id = ?", accountID).First(&account).Error; err != nil {
 		return err
 	}
-	deliveries, err := s.adminSuspensionWorkerRejectDeliveries(database, accountID)
-	if err != nil {
-		return err
+	deliveries := []adminSuspendedRemoteFollowDelivery{}
+	if adminSuspensionRejectsRemoteFollows(account) {
+		var err error
+		deliveries, err = s.adminSuspensionWorkerRejectDeliveries(database, accountID)
+		if err != nil {
+			return err
+		}
 	}
 	if err := database.Transaction(func(tx *gorm.DB) error {
 		for _, delivery := range deliveries {
@@ -334,7 +371,7 @@ func (s *Server) applyAdminSuspensionWorkerEffects(ctx context.Context, database
 				return err
 			}
 		}
-		return nil
+		return tx.Where("account_id = ?", account.ID).Delete(&models.StatusTrend{}).Error
 	}); err != nil {
 		return err
 	}
@@ -350,6 +387,10 @@ func (s *Server) applyAdminSuspensionWorkerEffects(ctx context.Context, database
 		return err
 	}
 	return s.clearAdminSuspendedAccountFeedCaches(ctx, database, accountIDs)
+}
+
+func adminSuspensionRejectsRemoteFollows(account models.Account) bool {
+	return !account.Local() && account.Protocol == 1 && !(account.SuspensionOrigin.Valid && account.SuspensionOrigin.Int64 == 1)
 }
 
 func (s *Server) enqueueAdminSuspensionOrRun(ctx context.Context, database *gorm.DB, accountID int64) error {
@@ -632,6 +673,9 @@ func (s *Server) clearAdminSuspendedAccountFeedCaches(ctx context.Context, datab
 func purgeAdminDomainSuspendedAccountAssociations(database *gorm.DB, accountIDs *gorm.DB, now time.Time) error {
 	affectedRelationshipAccountIDs, err := accountIDsAffectedByRelationshipDeletion(database, accountIDs)
 	if err != nil {
+		return err
+	}
+	if err := database.Exec("DELETE FROM fasp_follow_recommendations WHERE requesting_account_id IN (?) OR recommended_account_id IN (?)", accountIDs, accountIDs).Error; err != nil {
 		return err
 	}
 	for _, table := range []string{

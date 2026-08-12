@@ -300,12 +300,20 @@ func (s *Server) mediaProxy(c *echo.Context) error {
 		return apiError(c, http.StatusServiceUnavailable, "There was a temporary problem serving your request, please try again")
 	}
 	defer releaseMediaLock()
-	current, _, _ := s.currentAccount(c)
-	attachment, err := s.findProxyMediaAttachment(c.Param("id"), true, current)
+	current, canManageReports := s.currentMediaViewer(c)
+	attachment, err := s.findProxyMediaAttachment(c.Param("id"), true, current, canManageReports)
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
-	target := s.mediaProxyRedirectURL(*attachment, mediaProxyVersion(c.Request().URL.Path))
+	version := mediaProxyVersion(c.Request().URL.Path)
+	if attachment.Discarded {
+		if localPath := s.downloadProxyLocalPath(*attachment, version); localPath != "" {
+			if info, statErr := os.Stat(localPath); statErr == nil && !info.IsDir() {
+				return s.serveDiscardedMediaProxyLocalFile(c, localPath, *attachment, version)
+			}
+		}
+	}
+	target := s.mediaProxyRedirectURLWithExpiry(*attachment, version, mediaProxyExpiry(*attachment))
 	if target == "" {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
@@ -324,8 +332,8 @@ func (s *Server) downloadProxy(c *echo.Context) error {
 		return apiError(c, http.StatusServiceUnavailable, "There was a temporary problem serving your request, please try again")
 	}
 	defer releaseMediaLock()
-	current, _, _ := s.currentAccount(c)
-	attachment, err := s.findProxyMediaAttachment(c.Param("id"), false, current)
+	current, canManageReports := s.currentMediaViewer(c)
+	attachment, err := s.findProxyMediaAttachment(c.Param("id"), false, current, canManageReports)
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
@@ -358,6 +366,31 @@ func (s *Server) serveDownloadProxyLocalFile(c *echo.Context, localPath string) 
 	}
 	http.ServeFile(c.Response(), c.Request(), localPath)
 	return nil
+}
+
+func (s *Server) serveDiscardedMediaProxyLocalFile(c *echo.Context, localPath string, attachment models.MediaAttachment, version string) error {
+	contentType := attachment.FileContentType.String
+	if version == "small" && attachment.ThumbnailFileName.Valid && strings.TrimSpace(attachment.ThumbnailFileName.String) != "" {
+		contentType = attachment.ThumbnailContentType.String
+	}
+	if strings.TrimSpace(contentType) != "" {
+		c.Response().Header().Set(echo.HeaderContentType, contentType)
+	}
+	c.Response().Header().Set("Content-Disposition", "inline")
+	c.Response().Header().Set("Cache-Control", "private, no-store")
+	return s.serveDownloadProxyLocalFile(c, localPath)
+}
+
+func (s *Server) currentMediaViewer(c *echo.Context) (*models.Account, bool) {
+	current, _, err := s.currentAccount(c)
+	if err != nil {
+		return nil, false
+	}
+	user, _, err := s.currentUserIncludingDisabled(c)
+	if err != nil {
+		return current, false
+	}
+	return current, s.userCan(user, rolePermissionManageReports)
 }
 
 func (s *Server) requireMediaProxyAuthenticationIfLimited(c *echo.Context) error {
@@ -474,6 +507,29 @@ func (s *Server) updateMedia(c *echo.Context) error {
 		attachment.Description = sql.NullString{String: description, Valid: description != ""}
 	}
 	return c.JSON(mediaAttachmentStatusCode(*attachment), serializer.MediaAttachmentFromModel(s.cfg, *attachment))
+}
+
+func (s *Server) deleteMedia(c *echo.Context) error {
+	c.Response().Header().Set("Vary", "Authorization")
+	account, _, err := s.requireAccountScope(c, "write", "write:media")
+	if err != nil {
+		return err
+	}
+	var attachment models.MediaAttachment
+	if err := s.db.Where("id = ? AND account_id = ?", c.Param("id"), account.ID).First(&attachment).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return apiError(c, http.StatusNotFound, "Record not found")
+		}
+		return err
+	}
+	if attachment.StatusID.Valid {
+		return apiError(c, http.StatusUnprocessableEntity, "Media attachment is currently used by a status")
+	}
+	if err := s.db.Delete(&attachment).Error; err != nil {
+		return err
+	}
+	s.removeMediaAttachmentLocalFiles(attachment)
+	return renderEmpty(c)
 }
 
 func mediaUpdateJSONFields(c *echo.Context) (string, bool, string, bool) {
@@ -676,16 +732,13 @@ func (s *Server) findPublicMediaAttachment(rawID string, current *models.Account
 	return &attachment, nil
 }
 
-func (s *Server) findProxyMediaAttachment(rawID string, remoteOnly bool, current *models.Account) (*models.MediaAttachment, error) {
+func (s *Server) findProxyMediaAttachment(rawID string, remoteOnly bool, current *models.Account, canManageReports bool) (*models.MediaAttachment, error) {
 	if s.db == nil {
 		return nil, gorm.ErrRecordNotFound
 	}
 	query := s.db.Preload("Status.Account").
 		Where("status_id IS NOT NULL").
 		Where("(file_file_name IS NOT NULL OR remote_url <> '')")
-	if remoteOnly {
-		query = query.Where("remote_url <> ''")
-	}
 	if len(rawID) == 19 {
 		query = query.Where("shortcode = ?", rawID)
 	} else {
@@ -695,7 +748,11 @@ func (s *Server) findProxyMediaAttachment(rawID string, remoteOnly bool, current
 	if err := query.First(&attachment).Error; err != nil {
 		return nil, err
 	}
-	visible, err := s.publicMediaStatusVisible(attachment.Status, current)
+	attachment.Discarded = attachment.StatusID.Valid && (attachment.Status.ID == 0 || attachment.Status.DeletedAt.Valid)
+	if remoteOnly && strings.TrimSpace(attachment.RemoteURL) == "" && !attachment.Discarded {
+		return nil, gorm.ErrRecordNotFound
+	}
+	visible, err := s.mediaAttachmentDownloadVisible(attachment, current, canManageReports)
 	if err != nil {
 		return nil, err
 	}
@@ -706,6 +763,13 @@ func (s *Server) findProxyMediaAttachment(rawID string, remoteOnly bool, current
 		return nil, err
 	}
 	return &attachment, nil
+}
+
+func (s *Server) mediaAttachmentDownloadVisible(attachment models.MediaAttachment, current *models.Account, canManageReports bool) (bool, error) {
+	if attachment.Discarded {
+		return canManageReports, nil
+	}
+	return s.publicMediaStatusVisible(attachment.Status, current)
 }
 
 func (s *Server) proxyMediaRejectedByAccountDomain(attachment models.MediaAttachment) (bool, error) {
@@ -763,24 +827,35 @@ func (s *Server) publicMediaRedirectURL(attachment models.MediaAttachment) strin
 }
 
 func (s *Server) mediaProxyRedirectURL(attachment models.MediaAttachment, version string) string {
+	return s.mediaProxyRedirectURLWithExpiry(attachment, version, time.Hour)
+}
+
+func (s *Server) mediaProxyRedirectURLWithExpiry(attachment models.MediaAttachment, version string, expiry time.Duration) string {
 	if version == "small" {
 		if attachment.ThumbnailFileName.Valid && attachment.ThumbnailFileName.String != "" {
-			return s.mediaAttachmentRedirectURLForAttachment(attachment, "thumbnails", "original", attachment.ThumbnailFileName.String)
+			return s.mediaAttachmentRedirectURLForAttachmentWithExpiry(attachment, "thumbnails", "original", attachment.ThumbnailFileName.String, expiry)
 		}
 		if mediaProxyHasLocalFile(attachment) && mediaProxyProcessed(attachment) && mediaProxyHasSmallFileStyle(attachment) {
-			return s.mediaAttachmentRedirectURLForAttachment(attachment, "files", "small", mediaGeneratedSmallStyleFilename(attachment.FileFileName.String, attachment.Type))
+			return s.mediaAttachmentRedirectURLForAttachmentWithExpiry(attachment, "files", "small", mediaGeneratedSmallStyleFilename(attachment.FileFileName.String, attachment.Type), expiry)
 		}
 		if attachment.ThumbnailRemoteURL.Valid && attachment.ThumbnailRemoteURL.String != "" {
 			return attachment.ThumbnailRemoteURL.String
 		}
 	}
 	if mediaProxyHasLocalFile(attachment) {
-		return s.mediaAttachmentRedirectURLForAttachment(attachment, "files", "original", attachment.FileFileName.String)
+		return s.mediaAttachmentRedirectURLForAttachmentWithExpiry(attachment, "files", "original", attachment.FileFileName.String, expiry)
 	}
 	if strings.TrimSpace(attachment.RemoteURL) != "" {
 		return attachment.RemoteURL
 	}
 	return ""
+}
+
+func mediaProxyExpiry(attachment models.MediaAttachment) time.Duration {
+	if attachment.Discarded {
+		return 10 * time.Minute
+	}
+	return time.Hour
 }
 
 func (s *Server) downloadProxyTargetURL(attachment models.MediaAttachment, version string) string {
@@ -797,14 +872,15 @@ func (s *Server) downloadProxyLocalPath(attachment models.MediaAttachment, versi
 	if s == nil || s.cfg.PublicDir == "" {
 		return ""
 	}
+	cachePrefix := mediaAttachmentUsesCachePrefix(attachment.FileStorageSchemaVersion, attachment.RemoteURL)
 	if version == "small" && attachment.ThumbnailFileName.Valid && strings.TrimSpace(attachment.ThumbnailFileName.String) != "" {
-		return s.mediaThumbnailPath(attachment.ID, filepath.Base(strings.TrimSpace(attachment.ThumbnailFileName.String)))
+		return s.mediaThumbnailPathWithCachePrefix(attachment.ID, filepath.Base(strings.TrimSpace(attachment.ThumbnailFileName.String)), cachePrefix)
 	}
 	if version == "small" && mediaProxyHasLocalFile(attachment) && mediaProxyProcessed(attachment) && mediaProxyHasSmallFileStyle(attachment) {
-		return s.mediaFileStylePath(attachment.ID, "small", filepath.Base(mediaGeneratedSmallStyleFilename(attachment.FileFileName.String, attachment.Type)))
+		return s.mediaFileStylePathWithCachePrefix(attachment.ID, "small", filepath.Base(mediaGeneratedSmallStyleFilename(attachment.FileFileName.String, attachment.Type)), cachePrefix)
 	}
 	if attachment.FileFileName.Valid && strings.TrimSpace(attachment.FileFileName.String) != "" {
-		return s.mediaFilePath(attachment.ID, filepath.Base(strings.TrimSpace(attachment.FileFileName.String)))
+		return s.mediaFileStylePathWithCachePrefix(attachment.ID, "original", filepath.Base(strings.TrimSpace(attachment.FileFileName.String)), cachePrefix)
 	}
 	return ""
 }
@@ -1359,18 +1435,26 @@ func (s *Server) mediaAttachmentRedirectURL(id int64, attachment string, style s
 }
 
 func (s *Server) mediaAttachmentRedirectURLForAttachment(media models.MediaAttachment, attachment string, style string, filename string) string {
-	return s.mediaAttachmentRedirectURLWithCachePrefix(media.ID, attachment, style, filename, mediaAttachmentUsesCachePrefix(media.FileStorageSchemaVersion, media.RemoteURL))
+	return s.mediaAttachmentRedirectURLForAttachmentWithExpiry(media, attachment, style, filename, time.Hour)
+}
+
+func (s *Server) mediaAttachmentRedirectURLForAttachmentWithExpiry(media models.MediaAttachment, attachment string, style string, filename string, expiry time.Duration) string {
+	return s.mediaAttachmentRedirectURLWithCachePrefixAndExpiry(media.ID, attachment, style, filename, mediaAttachmentUsesCachePrefix(media.FileStorageSchemaVersion, media.RemoteURL), expiry)
 }
 
 func (s *Server) mediaAttachmentRedirectURLWithCachePrefix(id int64, attachment string, style string, filename string, cachePrefix bool) string {
+	return s.mediaAttachmentRedirectURLWithCachePrefixAndExpiry(id, attachment, style, filename, cachePrefix, time.Hour)
+}
+
+func (s *Server) mediaAttachmentRedirectURLWithCachePrefixAndExpiry(id int64, attachment string, style string, filename string, cachePrefix bool, expiry time.Duration) string {
 	key := mediaAttachmentObjectKeyWithCachePrefix(id, attachment, style, filename, cachePrefix)
-	if signed := s.presignedS3ObjectURL(key, time.Hour); signed != "" {
+	if signed := s.presignedS3ObjectURL(key, expiry); signed != "" {
 		return signed
 	}
-	if signed := s.presignedAzureBlobURL(key, time.Hour); signed != "" {
+	if signed := s.presignedAzureBlobURL(key, expiry); signed != "" {
 		return signed
 	}
-	if signed := s.presignedSwiftObjectURL(key, time.Hour); signed != "" {
+	if signed := s.presignedSwiftObjectURL(key, expiry); signed != "" {
 		return signed
 	}
 	return s.mediaAttachmentURLWithCachePrefix(id, attachment, style, filename, cachePrefix)

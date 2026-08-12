@@ -128,7 +128,7 @@ func TestStatusStreamingSurfacesPublishStatusEvents(t *testing.T) {
 	checks := map[string]map[string]string{
 		"server.go": {
 			"updateStatus":   `s.publishStatusUpdateEvent("status.update", *updated)`,
-			"deleteStatus":   `s.enqueueRemovalTask(asynqRemovalPayload{StatusID: status.ID, Redraft: true})`,
+			"deleteStatus":   `s.enqueueRemovalTask(asynqRemovalPayload{StatusID: status.ID, Redraft: redraft})`,
 			"reblogStatus":   `s.fanOutStatusToLocalRecipientsSkipNotifications(c.Request().Context(), s.db, *createdStatus)`,
 			"unreblogStatus": `s.enqueueRemovalTask(asynqRemovalPayload{StatusID: reblog.ID})`,
 		},

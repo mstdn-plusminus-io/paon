@@ -680,6 +680,7 @@ func defaultRequiredPackEntries(locale string) map[string]string {
 		"features/keyboard_shortcuts.js":                     "/packs/js/features/keyboard_shortcuts-hash.chunk.js",
 		"features/pinned_statuses.js":                        "/packs/js/features/pinned_statuses-hash.chunk.js",
 		"features/account_timeline.js":                       "/packs/js/features/account_timeline-hash.chunk.js",
+		"features/account_featured.js":                       "/packs/js/features/account_featured-hash.chunk.js",
 		"features/account_gallery.js":                        "/packs/js/features/account_gallery-hash.chunk.js",
 		"features/followers.js":                              "/packs/js/features/followers-hash.chunk.js",
 		"features/following.js":                              "/packs/js/features/following-hash.chunk.js",
@@ -709,9 +710,11 @@ func defaultRequiredPackEntries(locale string) map[string]string {
 		"modals/interaction_modal.js":                        "/packs/js/modals/interaction_modal-hash.chunk.js",
 		"modals/subscribed_languages_modal.js":               "/packs/js/modals/subscribed_languages_modal-hash.chunk.js",
 		"modals/closed_registrations_modal.js":               "/packs/js/modals/closed_registrations_modal-hash.chunk.js",
+		"modals/annual_report_modal.js":                      "/packs/js/modals/annual_report_modal-hash.chunk.js",
 		"features/instance_stats.js":                         "/packs/js/features/instance_stats-hash.chunk.js",
 		"features/about.js":                                  "/packs/js/features/about-hash.chunk.js",
 		"features/privacy_policy.js":                         "/packs/js/features/privacy_policy-hash.chunk.js",
+		"features/terms_of_service.js":                       "/packs/js/features/terms_of_service-hash.chunk.js",
 		"remote_interaction_helper.js":                       "/packs/js/remote_interaction_helper-hash.js",
 	}
 	for _, loc := range append(config.RailsI18nAvailableLocales(), locale) {
@@ -801,7 +804,7 @@ func TestAppHTMLUsesConfiguredUserThemeCSS(t *testing.T) {
 	if !strings.Contains(html, `href="/packs/css/mastodon-light-hash.css"`) {
 		t.Fatalf("app html missing user theme css: %s", html)
 	}
-	if !strings.Contains(html, `<body class="app-body theme-mastodon-light no-reduce-motion">`) {
+	if !strings.Contains(html, `<body class="app-body theme-mastodon-light custom-scrollbars no-reduce-motion">`) {
 		t.Fatalf("app html missing user theme body class: %s", html)
 	}
 }
@@ -814,9 +817,22 @@ func TestAppHTMLIncludesRailsBodyClassesFromUserSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `<body class="app-body theme-single-column-chat-dark system-font reduce-motion rtl">`
+	want := `<body class="app-body theme-single-column-chat-dark system-font custom-scrollbars reduce-motion rtl">`
 	if !strings.Contains(html, want) {
 		t.Fatalf("app html missing body classes %s: %s", want, html)
+	}
+}
+
+func TestAppHTMLCanUseSystemScrollbarsLikeMastodon44(t *testing.T) {
+	renderer := &Renderer{cfg: config.Config{Title: "Paon"}}
+	html, err := renderer.AppHTML("/home", nil, "", AppOptions{
+		User: &models.User{Settings: sql.NullString{String: `{"web.use_system_scrollbars":true}`, Valid: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(html, "custom-scrollbars") {
+		t.Fatalf("system scrollbar preference retained custom scrollbar class: %s", html)
 	}
 }
 
@@ -826,7 +842,7 @@ func TestShareHTMLUsesRailsComposeStandaloneBodyClasses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `<body class="modal-layout compose-standalone theme-system no-reduce-motion">`
+	want := `<body class="modal-layout compose-standalone theme-system custom-scrollbars no-reduce-motion">`
 	if !strings.Contains(html, want) {
 		t.Fatalf("share html missing body classes %s: %s", want, html)
 	}

@@ -53,9 +53,80 @@ func mastodonStrictPreformatUnsupportedElements(fragment string) string {
 		return fragment
 	}
 	root := fragmentRoot(nodes)
+	mastodonStrictReplaceMathFallbacks(root)
 	mastodonStrictConvertHeadings(root)
 	mastodonStrictRemoveUnsupportedAnchors(root)
 	return renderHTMLFragment(childNodes(root))
+}
+
+// mastodonStrictReplaceMathFallbacks mirrors Mastodon 4.4's MATH_TRANSFORMER
+// for FEP-dc88 MathML. MathML itself is not part of the strict allowlist, but a
+// direct annotation child can provide a safe plain-text representation. TeX is
+// preferred over text/plain regardless of source order.
+func mastodonStrictReplaceMathFallbacks(node *nethtml.Node) {
+	for child := node.FirstChild; child != nil; {
+		next := child.NextSibling
+		if child.Type == nethtml.ElementNode && child.Data == "math" {
+			if fallback, ok := mastodonStrictMathFallback(child); ok {
+				replaceNodeWithText(child, node, fallback)
+			}
+		} else {
+			mastodonStrictReplaceMathFallbacks(child)
+		}
+		child = next
+	}
+}
+
+func mastodonStrictMathFallback(math *nethtml.Node) (string, bool) {
+	var semantics *nethtml.Node
+	for child := math.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == nethtml.ElementNode {
+			semantics = child
+			break
+		}
+	}
+	if semantics == nil || semantics.Data != "semantics" {
+		return "", false
+	}
+
+	var plain *nethtml.Node
+	var tex *nethtml.Node
+	for child := semantics.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != nethtml.ElementNode || child.Data != "annotation" {
+			continue
+		}
+		encoding := ""
+		for _, attr := range child.Attr {
+			if attr.Key == "encoding" {
+				encoding = attr.Val
+				break
+			}
+		}
+		switch encoding {
+		case "application/x-tex":
+			if tex == nil {
+				tex = child
+			}
+		case "text/plain":
+			if plain == nil {
+				plain = child
+			}
+		}
+	}
+	if tex != nil {
+		delimiter := "$"
+		for _, attr := range math.Attr {
+			if attr.Key == "display" && attr.Val == "block" {
+				delimiter = "$$"
+				break
+			}
+		}
+		return delimiter + textContent(tex) + delimiter, true
+	}
+	if plain != nil {
+		return textContent(plain), true
+	}
+	return "", false
 }
 
 func mastodonStrictConvertHeadings(node *nethtml.Node) {

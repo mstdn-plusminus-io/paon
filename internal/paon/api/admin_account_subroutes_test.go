@@ -83,11 +83,24 @@ func TestAdminAccountSubrouteModelsUseRailsPageSizesAndOffsets(t *testing.T) {
 	}{
 		{"adminAccountStatusModels", "Offset(adminPageOffset(c, adminAccountStatusesPageSize))"},
 		{"adminAccountStatusModels", "Limit(adminAccountStatusesPageSize)"},
+		{"adminAccountStatusModels", `Preload("Poll")`},
 		{"adminAccountRelationshipModels", "Offset(adminRailsPageOffset(c))"},
 		{"adminAccountRelationshipModels", "Limit(adminRailsDefaultPageSize)"},
 	} {
 		if !functionBodyContains(t, src, check.fn, check.want) {
 			t.Fatalf("%s missing %q", check.fn, check.want)
+		}
+	}
+}
+
+func TestAdminModerationStatusRowDisplaysPoll(t *testing.T) {
+	html := adminAccountStatusRowHTML("en", 7, models.Status{
+		ID:   11,
+		Poll: &models.Poll{Options: models.StringArray{"one", "two"}},
+	})
+	for _, want := range []string{`class="poll"`, `role="radio" aria-label="one"`, `disabled>Vote</button>`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("moderation row missing poll markup %q: %s", want, html)
 		}
 	}
 }
@@ -160,7 +173,8 @@ func TestAdminAccountStatusHTMLIncludesMetadataAndHistory(t *testing.T) {
 		Language:    sql.NullString{String: "ja", Valid: true},
 		Application: &models.OAuthApplication{Name: "Paon Mobile"},
 		StatusStat:  models.StatusStat{ReblogsCount: 2, FavouritesCount: 3},
-	}, []models.StatusEdit{{Text: "original", CreatedAt: time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)}, {Text: "changed", CreatedAt: time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)}}, "", "")
+		Poll:        &models.Poll{Options: models.StringArray{"red", "blue"}, Multiple: true},
+	}, []models.StatusEdit{{Text: "original", PollOptions: models.StringArray{"yes", "no"}, CreatedAt: time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)}, {Text: "changed", CreatedAt: time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)}}, "", "")
 	for _, want := range []string{
 		"Account posts",
 		`class="table-wrapper"`,
@@ -176,6 +190,10 @@ func TestAdminAccountStatusHTMLIncludesMetadataAndHistory(t *testing.T) {
 		"Reblogs",
 		"Favorites",
 		`class="history"`,
+		`class="poll"`,
+		`role="checkbox" aria-label="red"`,
+		`role="radio" aria-label="yes"`,
+		`class="button button-secondary" disabled`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("status html missing %q: %s", want, html)

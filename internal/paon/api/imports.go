@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -337,6 +338,16 @@ func (s *Server) processBulkImport(ctx context.Context, bulkImportID int64) erro
 
 func (s *Server) processLegacyImport(ctx context.Context, importID int64) error {
 	if s == nil || s.db == nil || importID == 0 {
+		return nil
+	}
+	var table sql.NullString
+	if err := s.db.WithContext(ctx).Raw(`SELECT to_regclass('public.imports')`).Scan(&table).Error; err != nil {
+		return err
+	}
+	// Mastodon 4.4 drops imports after the bulk-import cutover. A queued legacy
+	// task can outlive the contract migration, so treat it as already complete
+	// instead of querying a table that no longer exists.
+	if !table.Valid || strings.TrimSpace(table.String) == "" {
 		return nil
 	}
 	var legacy models.Import
@@ -727,6 +738,7 @@ func (s *Server) processLegacyImportRelationship(ctx context.Context, accountID 
 
 	now := time.Now().UTC()
 	var targetID int64
+	var affectedListIDs []int64
 	var hideNotifications bool
 	var notificationPayloads []asynqLocalNotificationPayload
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -745,7 +757,8 @@ func (s *Server) processLegacyImportRelationship(ctx context.Context, accountID 
 			notificationPayloads = appendRelationshipBatchNotificationPayload(notificationPayloads, notificationPayload)
 			return err
 		case "unfollow":
-			if err := deleteFollowEdge(tx, accountID, target.ID); err != nil {
+			_, affectedListIDs, _, err = deleteFollowEdgeReturningFollow(tx, accountID, target.ID)
+			if err != nil {
 				return err
 			}
 			return deleteFollowRequestEdge(tx, accountID, target.ID)
@@ -784,6 +797,7 @@ func (s *Server) processLegacyImportRelationship(ctx context.Context, accountID 
 	case "unfollow":
 		s.invalidateFollowRelationshipCaches(context.Background(), account, targetID)
 		s.unmergeAfterUnfollowBestEffort(context.Background(), targetID, account)
+		s.unmergeListFeedsAfterUnfollowBestEffort(context.Background(), targetID, affectedListIDs)
 		s.meiliReindexPrivateStatusesForAccountsBestEffort(context.Background(), targetID)
 	case "block":
 		s.clearAfterBlockFeedCaches(context.Background(), accountID, targetID)
@@ -1032,6 +1046,7 @@ func (s *Server) finishBulkImportIfComplete(ctx context.Context, bulkImportID in
 func (s *Server) processRelationshipImport(bulkImport models.BulkImport) error {
 	now := time.Now().UTC()
 	affectedRelationshipTargets := []int64{}
+	affectedListIDs := map[int64][]int64{}
 	importType := importNameByType[bulkImport.Type]
 	var rows []models.BulkImportRow
 	err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -1044,11 +1059,14 @@ func (s *Server) processRelationshipImport(bulkImport models.BulkImport) error {
 			return err
 		}
 		if bulkImport.Overwrite {
-			removedIDs, err := s.applyRelationshipImportOverwrite(tx, bulkImport.AccountID, importType, rows)
+			removedIDs, removedListIDs, err := s.applyRelationshipImportOverwrite(tx, bulkImport.AccountID, importType, rows)
 			if err != nil {
 				return err
 			}
 			affectedRelationshipTargets = append(affectedRelationshipTargets, removedIDs...)
+			for targetID, listIDs := range removedListIDs {
+				affectedListIDs[targetID] = append(affectedListIDs[targetID], listIDs...)
+			}
 		}
 		return nil
 	})
@@ -1062,6 +1080,7 @@ func (s *Server) processRelationshipImport(bulkImport models.BulkImport) error {
 	for _, targetID := range affectedTargets {
 		switch importType {
 		case "following":
+			s.unmergeListFeedsAfterUnfollowBestEffort(context.Background(), targetID, affectedListIDs[targetID])
 			s.invalidateFollowRelationshipCaches(context.Background(), models.Account{ID: bulkImport.AccountID}, targetID)
 			s.meiliReindexPrivateStatusesForAccountsBestEffort(context.Background(), targetID)
 		case "blocking":
@@ -1310,29 +1329,32 @@ func containsInt64(values []int64, target int64) bool {
 	return false
 }
 
-func (s *Server) applyRelationshipImportOverwrite(tx *gorm.DB, accountID int64, importType string, rows []models.BulkImportRow) ([]int64, error) {
+func (s *Server) applyRelationshipImportOverwrite(tx *gorm.DB, accountID int64, importType string, rows []models.BulkImportRow) ([]int64, map[int64][]int64, error) {
 	accts := s.relationshipImportAccts(rows)
 	switch importType {
 	case "following":
 		var follows []models.Follow
 		if err := tx.Preload("TargetAccount").Where("account_id = ?", accountID).Find(&follows).Error; err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		removed := make([]int64, 0, len(follows))
+		removedListIDs := map[int64][]int64{}
 		for _, follow := range follows {
 			if relationshipImportHasAcct(accts, follow.TargetAccount.Acct()) {
 				continue
 			}
 			removed = append(removed, follow.TargetAccountID)
-			if err := deleteFollow(tx, follow); err != nil {
-				return nil, err
+			listIDs, err := deleteFollowWithAffectedListIDs(tx, follow)
+			if err != nil {
+				return nil, nil, err
 			}
+			removedListIDs[follow.TargetAccountID] = append(removedListIDs[follow.TargetAccountID], listIDs...)
 		}
-		return removed, nil
+		return removed, removedListIDs, nil
 	case "blocking":
 		var rows []models.Block
 		if err := tx.Preload("TargetAccount").Where("account_id = ?", accountID).Find(&rows).Error; err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		removed := make([]int64, 0, len(rows))
 		removedRowIDs := make([]int64, 0, len(rows))
@@ -1344,13 +1366,13 @@ func (s *Server) applyRelationshipImportOverwrite(tx *gorm.DB, accountID int64, 
 			removedRowIDs = append(removedRowIDs, row.ID)
 		}
 		if len(removedRowIDs) == 0 {
-			return removed, nil
+			return removed, nil, nil
 		}
-		return removed, tx.Where("id IN ?", removedRowIDs).Delete(&models.Block{}).Error
+		return removed, nil, tx.Where("id IN ?", removedRowIDs).Delete(&models.Block{}).Error
 	case "muting":
 		var rows []models.Mute
 		if err := tx.Preload("TargetAccount").Where("account_id = ?", accountID).Find(&rows).Error; err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		removed := make([]int64, 0, len(rows))
 		removedRowIDs := make([]int64, 0, len(rows))
@@ -1362,11 +1384,11 @@ func (s *Server) applyRelationshipImportOverwrite(tx *gorm.DB, accountID int64, 
 			removedRowIDs = append(removedRowIDs, row.ID)
 		}
 		if len(removedRowIDs) == 0 {
-			return removed, nil
+			return removed, nil, nil
 		}
-		return removed, tx.Where("id IN ?", removedRowIDs).Delete(&models.Mute{}).Error
+		return removed, nil, tx.Where("id IN ?", removedRowIDs).Delete(&models.Mute{}).Error
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 func (s *Server) relationshipImportAccts(rows []models.BulkImportRow) map[string]struct{} {

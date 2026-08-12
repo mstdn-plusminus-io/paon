@@ -17,6 +17,8 @@ import (
 
 var adminRoleColorPattern = regexp.MustCompile(`^#?(?:[A-Fa-f0-9]{3}){1,2}$`)
 
+const adminRolePositionLimit = (1 << 31) - 1
+
 var errAdminRoleParamsMissing = errors.New("admin role root parameter is missing")
 
 type adminRolePermission struct {
@@ -265,7 +267,7 @@ func (s *Server) adminRoleFromRequest(c *echo.Context, current models.UserRole, 
 	}
 	if rawPosition := strings.TrimSpace(lastFormValue(req.Form, "user_role[position]")); rawPosition != "" {
 		position, err := strconv.Atoi(rawPosition)
-		if err != nil {
+		if err != nil || !validAdminRolePosition(position) {
 			return role, "Position is invalid", nil
 		}
 		role.Position = position
@@ -309,6 +311,10 @@ func (s *Server) adminRoleFromRequest(c *echo.Context, current models.UserRole, 
 		return role, "Position must be lower than your current role", nil
 	}
 	return role, "", nil
+}
+
+func validAdminRolePosition(position int) bool {
+	return position >= -adminRolePositionLimit && position <= adminRolePositionLimit
 }
 
 func (s *Server) adminRoleOverridesTarget(actor *models.User, target models.UserRole) (bool, error) {

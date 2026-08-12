@@ -446,6 +446,7 @@ func (s *Server) applyAdminAccountWebAction(user *models.User, rawID string, act
 			}
 		}
 		s.triggerAccountWebhook("account.updated", account.ID)
+		_ = s.enqueueFASPAccountLifecycleByID(context.Background(), account.ID, "update")
 		return nil
 	}
 	switch actionType {
@@ -560,6 +561,7 @@ func (s *Server) redownloadAdminRemoteAccount(account *models.Account, now time.
 	}
 	_, _ = s.fetchAndStoreActivityActorForAcct(account.Acct())
 	s.triggerAccountWebhook("account.updated", account.ID)
+	_ = s.enqueueFASPAccountLifecycleByID(context.Background(), account.ID, "update")
 	return nil
 }
 
@@ -738,6 +740,7 @@ func (s *Server) createAdminAccountWebWarning(user *models.User, account *models
 			}
 		}
 		s.triggerAccountWebhook("account.updated", account.ID)
+		_ = s.enqueueFASPAccountLifecycleByID(context.Background(), account.ID, "update")
 	}
 	if opts.SendEmailNotification && account.User.ID != 0 {
 		account.User.Account = account
@@ -1312,7 +1315,7 @@ func adminAccountModerationNoteHTML(note models.AccountModerationNote, locale st
 	createdAt := note.CreatedAt.UTC()
 	return `<div class="report-notes__item">` +
 		`<img src="` + html.EscapeString(adminAccountModerationNoteAvatarURL(cfg, note.Account)) + `" alt="" class="report-notes__item__avatar">` +
-		`<div class="report-notes__item__header"><span class="username">` + authorHTML + `</span><time class="relative-formatted" datetime="` + html.EscapeString(createdAt.Format(time.RFC3339)) + `">` + html.EscapeString(createdAt.Format("2006-01-02")) + `</time></div>` +
+		`<div class="report-notes__item__header"><span class="username">` + authorHTML + `</span><time class="relative-formatted" datetime="` + html.EscapeString(createdAt.Format(time.RFC3339)) + `" title="` + html.EscapeString(createdAt.Format(time.RFC3339)) + `">` + html.EscapeString(createdAt.Format("2006-01-02")) + `</time></div>` +
 		`<div class="report-notes__item__content">` + adminLinkifyModerationNoteContent(note.Content) + `</div>` +
 		`<div class="report-notes__item__actions">` + adminAccountTableLink("trash", adminT(loc, "admin.reports.notes.delete", "Delete note"), "/admin/account_moderation_notes/"+strconv.FormatInt(note.ID, 10), "delete") + `</div>` +
 		`</div>`

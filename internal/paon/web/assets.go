@@ -41,9 +41,11 @@ type AppOptions struct {
 	MovedToAccount         *models.Account
 	PushSubscription       *models.WebPushSubscription
 	CriticalUpdatesPending *bool
+	TermsOfServiceEnabled  bool
 	ComposeText            string
 	ComposeVisibility      string
 	IncludeCSRFMeta        bool
+	CustomCSSPath          string
 }
 
 type HeadMeta struct {
@@ -56,6 +58,15 @@ type HeadLink struct {
 	Rel  string
 	Type string
 	Href string
+}
+
+func firstNonEmptyString(values []string, fallback string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return fallback
 }
 
 func NewRenderer(cfg config.Config) (*Renderer, error) {
@@ -229,6 +240,7 @@ func requiredPackAssets(cfg config.Config) []string {
 		"features/keyboard_shortcuts.js",
 		"features/pinned_statuses.js",
 		"features/account_timeline.js",
+		"features/account_featured.js",
 		"features/account_gallery.js",
 		"features/followers.js",
 		"features/following.js",
@@ -258,9 +270,11 @@ func requiredPackAssets(cfg config.Config) []string {
 		"modals/interaction_modal.js",
 		"modals/subscribed_languages_modal.js",
 		"modals/closed_registrations_modal.js",
+		"modals/annual_report_modal.js",
 		"features/instance_stats.js",
 		"features/about.js",
 		"features/privacy_policy.js",
+		"features/terms_of_service.js",
 		"remote_interaction_helper.js",
 	}
 	required = appendRailsLocalePackAssets(required, cfg.Locale())
@@ -363,6 +377,7 @@ func (r *Renderer) AppHTML(path string, current *models.Account, token string, o
 		MovedToAccount:         opts.MovedToAccount,
 		PushSubscription:       opts.PushSubscription,
 		CriticalUpdatesPending: opts.CriticalUpdatesPending,
+		TermsOfServiceEnabled:  opts.TermsOfServiceEnabled,
 		ComposeText:            opts.ComposeText,
 		ComposeVisibility:      opts.ComposeVisibility,
 	})
@@ -371,7 +386,7 @@ func (r *Renderer) AppHTML(path string, current *models.Account, token string, o
 		r.asset("features/compose.js"),
 		r.asset("features/home_timeline.js"),
 		r.asset("features/notifications.js"),
-	}, CSRFTokenForSession(token), opts.User, "app-body", appHTMLIncludesCSRFMeta(current, opts), opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks)
+	}, CSRFTokenForSession(token), opts.User, "app-body", appHTMLIncludesCSRFMeta(current, opts), opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks, opts.CustomCSSPath)
 }
 
 func (r *Renderer) ShareHTML(current *models.Account, token string, text string, options ...AppOptions) (string, error) {
@@ -393,12 +408,13 @@ func (r *Renderer) ShareHTML(current *models.Account, token string, text string,
 		MovedToAccount:         opts.MovedToAccount,
 		PushSubscription:       opts.PushSubscription,
 		CriticalUpdatesPending: opts.CriticalUpdatesPending,
+		TermsOfServiceEnabled:  opts.TermsOfServiceEnabled,
 		ComposeVisibility:      opts.ComposeVisibility,
 	})
 	return r.appHTML("/share", initial, "mastodon-compose", r.asset("share.js"), []string{
 		r.asset("locale/" + r.cfg.Locale() + "-json.js"),
 		r.asset("features/compose.js"),
-	}, CSRFTokenForSession(token), opts.User, "modal-layout compose-standalone", true, opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks)
+	}, CSRFTokenForSession(token), opts.User, "modal-layout compose-standalone", true, opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks, opts.CustomCSSPath)
 }
 
 // EmbedHTML renders the isolated React status mount used by Mastodon oEmbed.
@@ -572,7 +588,7 @@ func rendererLocalesDir(publicDir string) string {
 	return filepath.Join(filepath.Dir(publicDir), "config", "locales")
 }
 
-func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID string, appJS string, preloads []string, csrfToken string, user *models.User, baseBodyClasses string, includeCSRFMeta bool, documentTitle string, headMeta []HeadMeta, headLinks []HeadLink) (string, error) {
+func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID string, appJS string, preloads []string, csrfToken string, user *models.User, baseBodyClasses string, includeCSRFMeta bool, documentTitle string, headMeta []HeadMeta, headLinks []HeadLink, customCSSPath ...string) (string, error) {
 	initialJSON, err := json.Marshal(initial)
 	if err != nil {
 		return "", err
@@ -617,6 +633,7 @@ func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID
 		Locale      string
 		HeadMeta    []HeadMeta
 		HeadLinks   []HeadLink
+		CustomCSS   string
 	}{
 		Title:       title,
 		InitialPath: path,
@@ -643,6 +660,7 @@ func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID
 		Locale:      locale,
 		HeadMeta:    headMeta,
 		HeadLinks:   headLinks,
+		CustomCSS:   firstNonEmptyString(customCSSPath, "/custom.css"),
 	}
 
 	var out string
@@ -717,6 +735,9 @@ func bodyClasses(base string, user *models.User, locale string) string {
 	classes = append(classes, "theme-"+theme)
 	if boolSetting(settings, "web.use_system_font") {
 		classes = append(classes, "system-font")
+	}
+	if !boolSetting(settings, "web.use_system_scrollbars") {
+		classes = append(classes, "custom-scrollbars")
 	}
 	if boolSetting(settings, "web.reduce_motion") {
 		classes = append(classes, "reduce-motion")
@@ -902,7 +923,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!DOCTYPE html>
   <link rel="stylesheet" media="{{ .Media }}" href="{{ .Href }}" crossorigin="anonymous">
   {{- end }}
   <link rel="stylesheet" media="all" id="inert-style" href="/inert.css">
-  <link rel="stylesheet" media="all" href="/custom.css">
+  <link rel="stylesheet" media="all" href="{{ .CustomCSS }}">
   {{- range .Preloads }}
   {{- if . }}
   <link rel="preload" as="script" href="{{ . }}" crossorigin="anonymous">

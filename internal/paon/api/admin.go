@@ -231,6 +231,7 @@ func (s *Server) adminAccountAction(c *echo.Context) error {
 	switch payload.Type {
 	case "sensitive", "silence", "suspend":
 		s.triggerAccountWebhook("account.updated", target.ID)
+		_ = s.enqueueFASPAccountLifecycleByID(c.Request().Context(), target.ID, "update")
 	}
 	if payload.Type == "disable" {
 		s.publishStreamingKillForLocalAccount(target)
@@ -819,6 +820,7 @@ func (s *Server) updateAdminAccount(c *echo.Context, updates map[string]any, act
 		}
 	}
 	s.triggerAccountWebhook("account.updated", account.ID)
+	_ = s.enqueueFASPAccountLifecycleByID(c.Request().Context(), account.ID, "update")
 	out, err := s.adminAccountFromModel(*account)
 	if err != nil {
 		return err

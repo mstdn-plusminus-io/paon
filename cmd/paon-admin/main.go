@@ -57,9 +57,20 @@ func run() error {
 			}
 		}()
 	}
+	// Redis namespace cutover intentionally runs without PostgreSQL so it can
+	// be completed during the required all-process downtime before 4.4 starts.
+	if os.Args[1] == "redis" {
+		return runRedis(ctx, cfg, os.Args[2:])
+	}
 	database, err := paondb.Open(cfg)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
+	}
+	if err := paondb.Available(database); err != nil {
+		return fmt.Errorf("check database: %w", err)
+	}
+	if err := paondb.RequireSupportedVersion(database); err != nil {
+		return fmt.Errorf("check database version: %w", err)
 	}
 	if err := paondb.SchemaAvailable(database); err != nil {
 		return fmt.Errorf("check schema: %w", err)
@@ -94,6 +105,8 @@ func run() error {
 		return runStorageSchema(ctx, operations, os.Args[2:])
 	case "search":
 		return runSearch(ctx, operations, os.Args[2:])
+	case "quotes":
+		return runQuotes(ctx, operations, os.Args[2:])
 	case "self-destruct":
 		return runSelfDestruct(ctx, operations, cfg, os.Args[2:], os.Stdin, os.Stdout)
 	default:
@@ -253,6 +266,34 @@ func runSettings(ctx context.Context, operations *api.Operations, args []string)
 		return err
 	}
 	fmt.Println("OK")
+	return nil
+}
+
+func runRedis(ctx context.Context, cfg config.Config, args []string) error {
+	if len(args) == 0 || args[0] != "namespace-cutover" {
+		return errors.New("usage: paon-admin redis namespace-cutover --prefix NAME (--dry-run|--confirm)")
+	}
+	flags := flag.NewFlagSet("redis namespace-cutover", flag.ContinueOnError)
+	prefix := flags.String("prefix", "", "former REDIS_NAMESPACE value, without a trailing colon")
+	dryRun := flags.Bool("dry-run", false, "scan every configured Redis topology and reject collisions without changing keys")
+	confirm := flags.Bool("confirm", false, "rename keys after preflight; every Paon process must already be stopped")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*prefix) == "" || *dryRun == *confirm {
+		return errors.New("redis namespace-cutover requires --prefix NAME and exactly one of --dry-run or --confirm")
+	}
+	result, err := api.CutoverRedisNamespace(ctx, cfg, *prefix, *dryRun)
+	if err != nil {
+		return err
+	}
+	if *dryRun {
+		fmt.Printf("preflight_ok=true topologies=%d keys=%d asynq_queue_members=%d changed=0\n", result.Topologies, result.Keys, result.AsynqQueueMembers)
+		fmt.Println("Stop every Paon 4.3 process, take a Redis backup, rerun with --confirm, then remove REDIS_NAMESPACE before starting Paon 4.4.")
+		return nil
+	}
+	fmt.Printf("cutover_complete=true topologies=%d keys=%d asynq_queue_members=%d changed=%d\n", result.Topologies, result.Keys, result.AsynqQueueMembers, result.Migrated)
+	fmt.Println("Remove REDIS_NAMESPACE before starting Paon 4.4. Keep MEILI_PREFIX explicit when search indexes use a prefix.")
 	return nil
 }
 
@@ -646,6 +687,9 @@ func runFeeds(ctx context.Context, operations *api.Operations, args []string) er
 	case "build":
 		flags := flag.NewFlagSet("feeds build", flag.ContinueOnError)
 		all := flags.Bool("all", false, "build feeds for every local user")
+		skipFilledTimelines := false
+		flags.BoolVar(&skipFilledTimelines, "skip-filled-timelines", false, "skip home and list feeds that are more than half full")
+		flags.BoolVar(&skipFilledTimelines, "skip-filled-timeline", false, "alias for --skip-filled-timelines")
 		if err := flags.Parse(commandFlagArgs(args[1:])); err != nil {
 			return err
 		}
@@ -656,7 +700,7 @@ func runFeeds(ctx context.Context, operations *api.Operations, args []string) er
 		if flags.NArg() == 1 {
 			username = flags.Arg(0)
 		}
-		built, err := operations.BuildHomeFeeds(ctx, username, *all)
+		built, err := operations.BuildHomeFeedsWithOptions(ctx, username, *all, api.OperationBuildHomeFeedsOptions{SkipFilledTimelines: skipFilledTimelines})
 		if err != nil {
 			return err
 		}
@@ -712,6 +756,27 @@ func runCache(ctx context.Context, operations *api.Operations, args []string) er
 	return nil
 }
 
+func runQuotes(ctx context.Context, operations *api.Operations, args []string) error {
+	flags := flag.NewFlagSet("quotes cutover", flag.ContinueOnError)
+	dryRun := flags.Bool("dry-run", false, "validate and report importable legacy quote rows without writing PostgreSQL")
+	confirm := flags.Bool("confirm", false, "apply the one-way DynamoDB-to-PostgreSQL quote cutover")
+	if len(args) == 0 || args[0] != "cutover" {
+		return errors.New("usage: paon-admin quotes cutover <--dry-run|--confirm>")
+	}
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *dryRun == *confirm || flags.NArg() != 0 {
+		return errors.New("quotes cutover requires exactly one of --dry-run or --confirm")
+	}
+	result, err := operations.CutoverLegacyStatusQuotes(ctx, *dryRun)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("candidates=%d imported=%d skipped=%d dry_run=%t\n", result.Candidates, result.Imported, result.Skipped, *dryRun)
+	return nil
+}
+
 func randomPassword() string {
 	value := make([]byte, 18)
 	if _, err := rand.Read(value); err != nil {
@@ -729,5 +794,5 @@ func commandFlagArgs(args []string) []string {
 }
 
 func usageError() error {
-	return errors.New("usage: paon-admin <accounts|settings|domains|email-domain-blocks|canonical-email-blocks|ip-blocks|feeds|cache|vacuum|emoji|media|storage-schema|search|self-destruct|version> ...")
+	return errors.New("usage: paon-admin <accounts|settings|domains|email-domain-blocks|canonical-email-blocks|ip-blocks|feeds|cache|vacuum|emoji|media|storage-schema|search|quotes|redis|self-destruct|version> ...")
 }

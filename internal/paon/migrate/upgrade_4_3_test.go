@@ -70,12 +70,13 @@ func TestOptionsFromEnvUsesExplicitMigrationGates(t *testing.T) {
 	t.Setenv("PAON_MIGRATION_PHASE", "backfill")
 	t.Setenv("PAON_MIGRATION_ACKNOWLEDGE_CONTRACT", "true")
 	t.Setenv("MIGRATION_IGNORE_INVALID_OTP_SECRET", "true")
+	t.Setenv("MIGRATION_SKIP_TAG_TREND_BACKFILL", "true")
 	t.Setenv("OTP_SECRET", "legacy")
 	t.Setenv("ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY", "primary")
 	t.Setenv("ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY", "deterministic")
 	t.Setenv("ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT", "salt")
 	options := OptionsFromEnv()
-	if options.Phase != UpgradePhaseBackfill || !options.AcknowledgeContract || !options.IgnoreInvalidOTPSecret || options.OTPSecret != "legacy" {
+	if options.Phase != UpgradePhaseBackfill || !options.AcknowledgeContract || !options.IgnoreInvalidOTPSecret || !options.Mastodon44SkipTagTrendBackfill || options.OTPSecret != "legacy" {
 		t.Fatalf("options = %#v", options)
 	}
 	if options.ActiveRecordEncryption.PrimaryKey != "primary" || options.ActiveRecordEncryption.DeterministicKey != "deterministic" || options.ActiveRecordEncryption.KeyDerivationSalt != "salt" {

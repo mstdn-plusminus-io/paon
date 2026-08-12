@@ -422,12 +422,36 @@ func TestOperationalAccountAndSettingsCommandsAgainstRailsSchema(t *testing.T) {
 	if user.Account == nil || user.Account.Username != "operator" || !user.ConfirmedAt.Valid || !user.Approved || !user.RoleID.Valid {
 		t.Fatalf("created user = %#v", user)
 	}
-	modified, err := operations.ModifyAccount(context.Background(), "operator", OperationAccountModify{Disable: true, ResetPassword: true})
+	if err := database.Model(&models.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+		"otp_required_for_login": true,
+		"otp_secret":             "integration-otp-secret",
+		"otp_backup_codes":       models.StringArray{"backup-code"},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Create(&models.WebauthnCredential{
+		ExternalID: "integration-credential",
+		PublicKey:  "integration-public-key",
+		Nickname:   "integration-key",
+		UserID:     models.WebauthnCredentialUserID(user.ID),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	modified, err := operations.ModifyAccount(context.Background(), "operator", OperationAccountModify{Disable: true, Disable2FA: true, ResetPassword: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !modified.User.Disabled || modified.GeneratedPassword == "" {
 		t.Fatalf("modified user = %#v", modified)
+	}
+	if modified.User.OTPRequiredForLogin || modified.User.OTPSecret.Valid || len(modified.User.OTPBackupCodes) != 0 {
+		t.Fatalf("two-factor fields were not cleared: %#v", modified.User)
+	}
+	var webauthnCredentialCount int64
+	if err := database.Model(&models.WebauthnCredential{}).Where("user_id = ?", user.ID).Count(&webauthnCredentialCount).Error; err != nil || webauthnCredentialCount != 0 {
+		t.Fatalf("webauthn credentials after --disable-2fa = %d, %v", webauthnCredentialCount, err)
 	}
 	requireReason := true
 	if err := operations.SetRegistrationsMode(context.Background(), "approved", &requireReason); err != nil {

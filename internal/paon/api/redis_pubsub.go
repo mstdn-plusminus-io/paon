@@ -386,13 +386,72 @@ func RedisAvailable(ctx context.Context, cfg config.Config) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	for _, item := range redisAvailabilityConfigs(cfg) {
-		value, err := redisCommandWithConfig(ctx, item.cfg, "PING")
+		version, err := redisAvailabilityVersion(ctx, item.cfg)
 		if err != nil {
 			return fmt.Errorf("%s unavailable: %w", item.name, err)
 		}
-		if pong, ok := value.(string); !ok || !strings.EqualFold(pong, "PONG") {
-			return fmt.Errorf("unexpected %s PING response %v", item.name, value)
+		if err := validateRedisVersion(version); err != nil {
+			return fmt.Errorf("%s unsupported: %w", item.name, err)
 		}
+	}
+	return nil
+}
+
+func redisAvailabilityVersion(ctx context.Context, cfg redisConnConfig) (string, error) {
+	conn, reader, err := redisDial(ctx, cfg)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	if err := redisHandshake(conn, reader, cfg); err != nil {
+		return "", err
+	}
+	if err := writeRedisCommand(conn, "PING"); err != nil {
+		return "", err
+	}
+	value, err := readRedisValue(reader)
+	if err != nil {
+		return "", err
+	}
+	if pong, ok := value.(string); !ok || !strings.EqualFold(pong, "PONG") {
+		return "", fmt.Errorf("unexpected PING response %v", value)
+	}
+	if err := writeRedisCommand(conn, "INFO", "server"); err != nil {
+		return "", err
+	}
+	value, err = readRedisValue(reader)
+	if err != nil {
+		return "", err
+	}
+	info, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("unexpected INFO server response %v", value)
+	}
+	version := redisInfoValue(info, "redis_version")
+	if version == "" {
+		return "", errors.New("INFO server response is missing redis_version")
+	}
+	return version, nil
+}
+
+func validateRedisVersion(version string) error {
+	parts := strings.Split(strings.TrimSpace(version), ".")
+	if len(parts) < 2 {
+		return fmt.Errorf("invalid Redis version %q", version)
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid Redis version %q", version)
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return fmt.Errorf("invalid Redis version %q", version)
+	}
+	if major < 6 || major == 6 && minor < 2 {
+		return fmt.Errorf("Redis 6.2 or newer is required (server reports %s)", version)
 	}
 	return nil
 }

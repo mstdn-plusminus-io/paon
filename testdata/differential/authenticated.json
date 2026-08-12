@@ -38,8 +38,7 @@
       "method": "GET",
       "path": "/api/v1/statuses/${PAON_DIFF_PUBLIC_STATUS_ID}",
       "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
-      "compare_headers": ["Content-Type", "Cache-Control"],
-      "go_only_json_pointers": ["/quote_id", "/quote_original_url"]
+      "compare_headers": ["Content-Type", "Cache-Control"]
     },
     {
       "id": "AUTH-STATUS-PRIVATE-OWNER-001",
@@ -47,8 +46,7 @@
       "method": "GET",
       "path": "/api/v1/statuses/${PAON_DIFF_PRIVATE_STATUS_ID}",
       "headers_from_env": { "Authorization": "PAON_DIFF_OWNER_AUTHORIZATION" },
-      "compare_headers": ["Content-Type", "Cache-Control", "Vary"],
-      "go_only_json_pointers": ["/quote_id", "/quote_original_url"]
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
     },
     {
       "id": "AUTH-STATUS-PRIVATE-NONOWNER-JA-001",
@@ -65,8 +63,7 @@
       "method": "GET",
       "path": "/api/v1/statuses/${PAON_DIFF_BLOCKED_STATUS_ID}",
       "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
-      "compare_headers": ["Content-Type", "Cache-Control", "Vary"],
-      "go_only_json_pointers": ["/quote_id", "/quote_original_url"]
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
     },
     {
       "id": "AUTH-BATCH-STATUSES-001",
@@ -74,8 +71,7 @@
       "method": "GET",
       "path": "/api/v1/statuses?id%5B%5D=${PAON_DIFF_PUBLIC_STATUS_ID}&id%5B%5D=${PAON_DIFF_PRIVATE_STATUS_ID}&id%5B%5D=${PAON_DIFF_PUBLIC_STATUS_ID}",
       "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
-      "compare_headers": ["Content-Type", "Cache-Control", "Link"],
-      "go_only_json_pointers": ["/*/quote_id", "/*/quote_original_url"]
+      "compare_headers": ["Content-Type", "Cache-Control", "Link"]
     },
     {
       "id": "AUTH-ACCOUNT-PINNED-PAGINATION-001",
@@ -83,8 +79,7 @@
       "method": "GET",
       "path": "/api/v1/accounts/${PAON_DIFF_LOCAL_ACCOUNT_ID}/statuses?pinned=true&limit=1",
       "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
-      "compare_headers": ["Content-Type", "Cache-Control", "Link"],
-      "go_only_json_pointers": ["/*/quote_id", "/*/quote_original_url"]
+      "compare_headers": ["Content-Type", "Cache-Control", "Link"]
     },
     {
       "id": "AUTH-STATUS-FAVOURITED-BY-PAGINATION-001",
@@ -108,11 +103,7 @@
       "method": "GET",
       "path": "/api/v2/notifications?limit=1&expand_accounts=full&include_filtered=true&grouped_types%5B%5D=favourite&grouped_types%5B%5D=reblog&grouped_types%5B%5D=follow",
       "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
-      "compare_headers": ["Content-Type", "Cache-Control", "Link"],
-      "go_only_json_pointers": [
-        "/statuses/*/quote_id",
-        "/statuses/*/quote_original_url"
-      ]
+      "compare_headers": ["Content-Type", "Cache-Control", "Link"]
     },
     {
       "id": "AUTH-NOTIFICATIONS-UNREAD-001",

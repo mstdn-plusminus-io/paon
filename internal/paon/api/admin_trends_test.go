@@ -127,17 +127,14 @@ func TestAdminTrendIndexesUseRailsTrendQueries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tags, err := os.ReadFile("tags.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	checks := []struct {
 		src  []byte
 		fn   string
 		want string
 	}{
-		{src, "adminTrendTags", `s.trendingTagRowsFromRedis(c.Request().Context(), limitValue, offsetValue, time.Now().UTC(), false)`},
-		{tags, "trendingTagRowsFromRedis", `key := s.cfg.RedisNamespace + "trending_tags:all"`},
+		{src, "adminTrendsTagWebRecords", `Joins("JOIN tag_trends ON tag_trends.tag_id = tags.id")`},
+		{src, "adminTrendTags", `Joins("JOIN tag_trends ON tag_trends.tag_id = tags.id")`},
+		{src, "adminTrendTags", `Order("tag_trends.score DESC")`},
 		{src, "adminTrendingPreviewCardRefs", `Table("preview_card_trends")`},
 		{src, "adminTrendingPreviewCardRefs", `Order("preview_card_trends.score DESC")`},
 		{src, "adminTrendStatuses", `Joins("JOIN status_trends ON status_trends.status_id = statuses.id")`},

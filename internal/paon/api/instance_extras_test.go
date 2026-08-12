@@ -51,8 +51,6 @@ func TestInstanceDomainBlocksMatchesRailsConditionalVary(t *testing.T) {
 
 func TestLimitedFederationPublicInstanceAPIsRequireAuthenticationLikeRails(t *testing.T) {
 	handlers := map[string]func(*Server, *echo.Context) error{
-		"/api/v1/instance":                       (*Server).instanceV1,
-		"/api/v2/instance":                       (*Server).instanceV2,
 		"/api/v1/instance/translation_languages": (*Server).translationLanguages,
 		"/api/v1/instance/extended_description":  (*Server).instanceExtendedDescription,
 		"/api/v1/instance/privacy_policy":        (*Server).instancePrivacyPolicy,
@@ -79,6 +77,43 @@ func TestLimitedFederationPublicInstanceAPIsRequireAuthenticationLikeRails(t *te
 			}
 			if got := rec.Header().Get("Vary"); got != "Authorization" {
 				t.Fatalf("Vary = %q, want Authorization", got)
+			}
+		})
+	}
+}
+
+func TestLimitedFederationInstanceAPIsRemainPublicLikeMastodon44(t *testing.T) {
+	handlers := map[string]func(*Server, *echo.Context) error{
+		"/api/v1/instance": (*Server).instanceV1,
+		"/api/v2/instance": (*Server).instanceV2,
+	}
+
+	for path, handler := range handlers {
+		t.Run(path, func(t *testing.T) {
+			e := echo.New()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			c := echo.NewContext(req, rec, e)
+			s := &Server{cfg: config.Config{
+				LimitedFederationMode: true,
+				Scheme:                "https",
+				LocalDomain:           "example.com",
+				WebDomain:             "example.com",
+			}}
+
+			if err := handler(s, c); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			// Limited federation still exposes these discovery endpoints in 4.4,
+			// but it must not mark their responses as publicly cacheable.
+			if got := rec.Header().Get("Cache-Control"); got != "" {
+				t.Fatalf("Cache-Control = %q, want empty", got)
+			}
+			if got := rec.Header().Get("Vary"); got != "" {
+				t.Fatalf("Vary = %q, want empty", got)
 			}
 		})
 	}

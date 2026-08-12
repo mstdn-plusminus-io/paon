@@ -142,6 +142,10 @@ func (s *Server) fanOutStatusToLocalRecipientsSkipNotifications(ctx context.Cont
 	if s == nil || database == nil || status.ID == 0 || status.AccountID == 0 {
 		return nil
 	}
+	allowed, err := statusProperAuthorCanFanOut(ctx, database, status)
+	if err != nil || !allowed {
+		return err
+	}
 	acquired, releaseDistributionLock, err := s.acquireStatusDistributionRedisLock(ctx, status.ID)
 	if err != nil {
 		return err
@@ -182,6 +186,10 @@ func (s *Server) fanOutStatusUpdateToLocalRecipients(ctx context.Context, databa
 	if s == nil || database == nil || status.ID == 0 || status.AccountID == 0 {
 		return nil
 	}
+	allowed, err := statusProperAuthorCanFanOut(ctx, database, status)
+	if err != nil || !allowed {
+		return err
+	}
 	acquired, releaseDistributionLock, err := s.acquireStatusDistributionRedisLock(ctx, status.ID)
 	if err != nil {
 		return err
@@ -213,6 +221,42 @@ func (s *Server) fanOutStatusUpdateToLocalRecipients(ctx context.Context, databa
 		enqueueHome(s.statusMentionedFollowerHomeFeedTargetsForLocalDistribution(ctx, database, status))
 	}
 	return s.notifyStatusUpdateRebloggers(ctx, database, status)
+}
+
+func statusAuthorCanFanOut(ctx context.Context, database *gorm.DB, accountID int64) (bool, error) {
+	if database == nil || accountID == 0 {
+		return false, nil
+	}
+	var count int64
+	err := database.WithContext(ctx).
+		Model(&models.Account{}).
+		Where("id = ? AND suspended_at IS NULL", accountID).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func statusProperAuthorCanFanOut(ctx context.Context, database *gorm.DB, status models.Status) (bool, error) {
+	if database == nil || status.AccountID == 0 {
+		return false, nil
+	}
+	properAccountID := status.AccountID
+	if status.ReblogOfID.Valid {
+		var original struct {
+			AccountID int64 `gorm:"column:account_id"`
+		}
+		if err := database.WithContext(ctx).
+			Model(&models.Status{}).
+			Select("account_id").
+			Where("id = ? AND deleted_at IS NULL", status.ReblogOfID.Int64).
+			Take(&original).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		properAccountID = original.AccountID
+	}
+	return statusAuthorCanFanOut(ctx, database, properAccountID)
 }
 
 func (s *Server) notifyStatusUpdateRebloggers(ctx context.Context, database *gorm.DB, status models.Status) error {
@@ -473,6 +517,17 @@ func (s *Server) populateAccountFeeds(ctx context.Context, database *gorm.DB, ac
 		}
 	}
 	return nil
+}
+
+func (s *Server) feedTimelineMoreThanHalfFull(ctx context.Context, feedType string, feedID int64) (bool, error) {
+	if s == nil || feedID == 0 || (feedType != "home" && feedType != "list") {
+		return false, nil
+	}
+	value, err := s.redisCommand(ctx, "ZCARD", feedRedisKey(redisConfig(s.cfg).prefix, feedType, feedID))
+	if err != nil {
+		return false, err
+	}
+	return redisInt(value) > int64(feedMaxItems/2), nil
 }
 
 func (s *Server) populateListFeed(ctx context.Context, list models.List, settings sql.NullString) error {

@@ -8,6 +8,8 @@ import "fmt"
 // limit. Original image uploads continue to use IMAGE_SIZE_LIMIT.
 const mediaPreviewImageSizeLimit = 2 * 1024 * 1024
 
+const profileImageSizeLimit = 2 * 1024 * 1024
+
 var errVIPSUnavailable = fmt.Errorf("libvips image processor is unavailable in this build")
 
 func tryConvertVIPSFileToJPEG(string, string) error {

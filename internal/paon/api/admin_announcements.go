@@ -430,6 +430,9 @@ func adminAnnouncementsIndexHTML(announcements []models.Announcement, notice str
 		for _, announcement := range announcements {
 			id := strconv.FormatInt(announcement.ID, 10)
 			rows.WriteString(`<div class="announcements-list__item"><a class="announcements-list__item__title" href="/admin/announcements/` + id + `/edit">` + html.EscapeString(announcement.Text) + `</a><div class="announcements-list__item__action-bar"><div class="announcements-list__item__meta">` + html.EscapeString(adminAnnouncementMeta(announcement, loc)) + `</div><div>`)
+			if announcement.Published && !announcement.NotificationSentAt.Valid {
+				rows.WriteString(`<a class="table-action-link" href="/admin/announcements/` + id + `/preview"><i class="fa fa-envelope fa-fw"></i> ` + html.EscapeString(adminT(loc, "admin.terms_of_service.notify_users", "Notify users")) + `</a> `)
+			}
 			if announcement.Published {
 				rows.WriteString(`<a class="table-action-link" data-method="post" data-confirm="` + html.EscapeString(adminT(loc, "admin.accounts.are_you_sure", "Are you sure?")) + `" href="/admin/announcements/` + id + `/unpublish"><i class="fa fa-toggle-off fa-fw"></i> ` + html.EscapeString(adminT(loc, "admin.announcements.unpublish", "Unpublish")) + `</a>`)
 			} else {

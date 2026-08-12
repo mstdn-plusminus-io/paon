@@ -18,8 +18,8 @@ import (
 
 func main() {
 	check := flag.Bool("check", false, "validate the current schema without applying a fresh schema")
-	phase := flag.String("phase", "", "upgrade a Mastodon 4.2 schema through expand, backfill, validate, or contract (default: expand)")
-	acknowledgeContract := flag.Bool("acknowledge-contract", false, "confirm all Mastodon 4.2 processes are stopped and apply irreversible 4.3 contract migrations")
+	phase := flag.String("phase", "", "upgrade a supported Mastodon 4.2/4.3 schema through expand, backfill, validate, or contract (default: expand)")
+	acknowledgeContract := flag.Bool("acknowledge-contract", false, "confirm all older-version processes are stopped and apply irreversible contract migrations")
 	flag.Parse()
 	if err := config.LoadDotenv(); err != nil {
 		log.Fatalf("load dotenv: %v", err)
@@ -45,6 +45,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
+	if err := paondb.Available(database); err != nil {
+		log.Fatalf("check database: %v", err)
+	}
+	if err := paondb.RequireSupportedVersion(database); err != nil {
+		log.Fatalf("check database version: %v", err)
+	}
 	if *check {
 		if err := paondb.SchemaAvailable(database); err != nil {
 			log.Fatalf("check schema: %v", err)
@@ -58,6 +64,17 @@ func main() {
 	}
 	options.AcknowledgeContract = options.AcknowledgeContract || *acknowledgeContract
 	options.Logf = log.Printf
+	legacyTrendRedis, err := configureLegacyTagTrendBackfill(cfg.RedisURL, &options)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if legacyTrendRedis != nil {
+		defer func() {
+			if err := legacyTrendRedis.Close(); err != nil {
+				log.Printf("close Redis client: %v", err)
+			}
+		}()
+	}
 	applied, err := migrate.RunWithOptions(ctx, database, options)
 	if err != nil {
 		log.Fatal(err)

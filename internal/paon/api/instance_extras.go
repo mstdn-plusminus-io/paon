@@ -1,7 +1,9 @@
 package api
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -43,6 +45,16 @@ func (s *Server) customCSS(c *echo.Context) error {
 	return c.String(http.StatusOK, s.customCSSBody())
 }
 
+// customCSSImmutable implements Mastodon 4.4's content-addressed /css/:id
+// compatibility route. The identifier is intentionally opaque to the
+// controller (as it is upstream); pages change it whenever the stylesheet
+// digest changes, allowing this response to be cached for a month.
+func (s *Server) customCSSImmutable(c *echo.Context) error {
+	c.Response().Header().Set("Content-Type", "text/css; charset=utf-8")
+	c.Response().Header().Set("Cache-Control", "max-age=2592000, public, immutable")
+	return c.String(http.StatusOK, s.customCSSBody())
+}
+
 func (s *Server) customCSSBody() string {
 	var body strings.Builder
 	if custom := s.settingValue("custom_css", ""); strings.TrimSpace(custom) != "" {
@@ -61,6 +73,15 @@ func (s *Server) customCSSBody() string {
 	}
 	body.WriteString(highlightedUserRoleCSS(roles))
 	return body.String()
+}
+
+func (s *Server) customCSSPath() string {
+	body := s.customCSSBody()
+	if strings.TrimSpace(body) == "" {
+		return "/custom.css"
+	}
+	digest := sha256.Sum256([]byte(body))
+	return fmt.Sprintf("/css/custom-%x", digest[:4])
 }
 
 func highlightedUserRoleCSS(roles []models.UserRole) string {
@@ -154,8 +175,6 @@ func (s *Server) findSetting(name string) (*models.Setting, error) {
 	var setting models.Setting
 	err := s.db.
 		Where("var = ?", name).
-		Where("thing_type IS NULL").
-		Where("thing_id IS NULL").
 		First(&setting).Error
 	return &setting, err
 }
@@ -327,7 +346,7 @@ var railsSettingDefaults = map[string]string{
 	"trends":                       "true",
 	"trends_as_landing_page":       "true",
 	"trendable_by_default":         "false",
-	"reserved_usernames":           "admin\nsupport\nhelp\nroot\nwebmaster\nadministrator\nmod\nmoderator",
+	"reserved_usernames":           strings.Join(defaultReservedUsernames, "\n"),
 	"disallowed_hashtags":          "",
 	"bootstrap_timeline_accounts":  "",
 	"activity_api_enabled":         "true",

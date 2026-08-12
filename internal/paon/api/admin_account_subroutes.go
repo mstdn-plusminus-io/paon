@@ -313,6 +313,7 @@ func (s *Server) adminAccountStatusModels(accountID int64, c *echo.Context) ([]m
 	query := s.db.Preload("Account.AccountStat").
 		Preload("Application").
 		Preload("MediaAttachments").
+		Preload("Poll").
 		Preload("StatusStat").
 		Where("account_id = ? AND visibility IN ? AND deleted_at IS NULL", accountID, []int{0, 1}).
 		Order("id DESC").
@@ -332,7 +333,7 @@ func (s *Server) findAdminAccountStatus(accountID int64, rawID string) (models.S
 		return models.Status{}, echo.NewHTTPError(http.StatusNotFound, "status not found")
 	}
 	var status models.Status
-	if err := s.db.Preload("Account.AccountStat").Preload("Application").Preload("StatusStat").Where("id = ? AND account_id = ?", id, accountID).First(&status).Error; err != nil {
+	if err := s.db.Preload("Account.AccountStat").Preload("Application").Preload("MediaAttachments").Preload("Poll").Preload("StatusStat").Where("id = ? AND account_id = ?", id, accountID).First(&status).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return status, echo.NewHTTPError(http.StatusNotFound, "status not found")
 		}
@@ -491,6 +492,8 @@ func (s *Server) applyAdminStatusBatchAction(user *models.User, accountID int64,
 	if action == "delete" {
 		payload := s.adminStatusBatchRemovalPayload(accountID)
 		if !s.enqueueRemovalTasksForStatusIDs(deletedStatusIDs, payload) {
+			s.enqueueFASPContentDeletionForIDs(context.Background(), s.db, deletedStatusIDs)
+			s.applyDeletedStatusMediaForIDs(context.Background(), deletedStatusIDs, payload)
 			s.applyAdminDeletedStatusSideEffects(context.Background(), s.db, deletedStatusIDs)
 		}
 	}
@@ -719,6 +722,7 @@ func adminAccountStatusRowHTML(locale string, accountID int64, status models.Sta
 	var body strings.Builder
 	body.WriteString(`<div class="batch-table__row"><label class="batch-table__row__select batch-checkbox"><input type="checkbox" name="admin_status_batch_action[status_ids][]" value="` + statusID + `"></label><div class="batch-table__row__content">`)
 	body.WriteString(`<div class="status__content">` + adminAccountStatusRowContentHTML(status, locale) + `</div>`)
+	body.WriteString(adminAccountStatusPollHTML(status.Poll, locale))
 	body.WriteString(adminAccountStatusRowMediaHTML(status, locale))
 	body.WriteString(`<div class="detailed-status__meta">`)
 	if status.Application != nil && strings.TrimSpace(status.Application.Name) != "" {
@@ -779,6 +783,41 @@ func adminAccountStatusRowMediaHTML(status models.Status, locale string) string 
 	return body.String()
 }
 
+func adminAccountStatusPollHTML(poll *models.Poll, locale string) string {
+	if poll == nil || len(poll.Options) == 0 {
+		return ""
+	}
+	role := "radio"
+	inputClass := "poll__input"
+	if poll.Multiple {
+		role = "checkbox"
+		inputClass += " checkbox"
+	}
+	var body strings.Builder
+	body.WriteString(`<div class="poll"><ul>`)
+	for _, option := range poll.Options {
+		body.WriteString(`<li><label class="poll__option disabled"><span class="` + inputClass + `" role="` + role + `" aria-label="` + html.EscapeString(option) + `"></span><span class="poll__option__text">` + html.EscapeString(option) + `</span></label></li>`)
+	}
+	vote := webT(locale, "polls.vote")
+	if vote == "polls.vote" {
+		vote = "Vote"
+	}
+	body.WriteString(`</ul><button class="button button-secondary" disabled>` + html.EscapeString(vote) + `</button></div>`)
+	return body.String()
+}
+
+func adminStatusEditContentHTML(edit models.StatusEdit, locale string) string {
+	content := strings.ReplaceAll(html.EscapeString(edit.Text), "\n", "<br>")
+	if strings.TrimSpace(edit.SpoilerText) == "" {
+		return content
+	}
+	warning := webT(locale, "stream_entries.content_warning")
+	if warning == "stream_entries.content_warning" {
+		warning = "Content warning:"
+	}
+	return `<details><summary><strong>` + html.EscapeString(warning) + ` ` + html.EscapeString(edit.SpoilerText) + `</strong></summary>` + content + `</details>`
+}
+
 func adminAccountStatusHTML(account models.Account, status models.Status, edits []models.StatusEdit, notice string, errorText string, locale ...string) string {
 	loc := settingsLocaleArgOrEnglish(locale...)
 	var body strings.Builder
@@ -795,14 +834,18 @@ func adminAccountStatusHTML(account models.Account, status models.Status, edits 
 		application = status.Application.Name
 	}
 	body.WriteString(`<tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.application", "Application")) + `</th><td>` + html.EscapeString(application) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.language", "Language")) + `</th><td>` + html.EscapeString(railsStandardLocaleName(status.Language.String)) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.visibility", "Visibility")) + `</th><td>` + html.EscapeString(statusEmbedVisibilityLabel(status.Visibility, loc)) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.reblogs", "Reblogs")) + `</th><td>` + strconv.FormatInt(status.StatusStat.ReblogsCount, 10) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.favourites", "Favourites")) + `</th><td>` + strconv.FormatInt(status.StatusStat.FavouritesCount, 10) + `</td></tr>`)
-	body.WriteString(`</tbody></table></div><hr class="spacer"><h3>` + html.EscapeString(adminT(loc, "admin.statuses.history", "History")) + `</h3>`)
+	body.WriteString(`</tbody></table></div><hr class="spacer"><h3>` + html.EscapeString(adminT(loc, "admin.statuses.contents", "Contents")) + `</h3><div class="status"><div class="status__content">` + adminAccountStatusRowContentHTML(status, loc) + `</div>` + adminAccountStatusPollHTML(status.Poll, loc) + adminAccountStatusRowMediaHTML(status, loc) + `</div><hr class="spacer"><h3>` + html.EscapeString(adminT(loc, "admin.statuses.history", "History")) + `</h3>`)
 	body.WriteString(`<ol class="history">`)
 	for i, edit := range edits {
 		title := adminT(loc, "admin.statuses.status_changed", "Status changed")
 		if i == 0 {
 			title = adminT(loc, "admin.statuses.original_status", "Original status")
 		}
-		body.WriteString(`<li><div class="history__entry"><h5>` + html.EscapeString(title) + ` · <time class="formatted" datetime="` + html.EscapeString(edit.CreatedAt.UTC().Format(time.RFC3339)) + `">` + html.EscapeString(edit.CreatedAt.UTC().Format(time.RFC3339)) + `</time></h5><p>` + html.EscapeString(firstNonEmpty(edit.SpoilerText, edit.Text)) + `</p></div></li>`)
+		editPoll := (*models.Poll)(nil)
+		if len(edit.PollOptions) > 0 {
+			editPoll = &models.Poll{Options: edit.PollOptions}
+		}
+		body.WriteString(`<li><div class="history__entry"><h5>` + html.EscapeString(title) + ` · <time class="formatted" datetime="` + html.EscapeString(edit.CreatedAt.UTC().Format(time.RFC3339)) + `">` + html.EscapeString(edit.CreatedAt.UTC().Format(time.RFC3339)) + `</time></h5><div class="status"><div class="status__content">` + adminStatusEditContentHTML(edit, loc) + `</div>` + adminAccountStatusPollHTML(editPoll, loc) + `</div></div></li>`)
 	}
 	body.WriteString(`</ol>`)
 	return authPageHTML(adminT(loc, "admin.statuses.title", "Post"), notice, errorText, body.String(), loc)

@@ -59,3 +59,35 @@ func TestPermalinkRedirectGuardsMatchRailsSignedAndRemoteURLBoundaries(t *testin
 		}
 	}
 }
+
+func TestPermalinkRemoteURLFallsBackToActivityPubURI(t *testing.T) {
+	validURL := sql.NullString{String: "https://remote.example/@alice/42", Valid: true}
+	validURI := sql.NullString{String: "https://remote.example/users/alice/statuses/42", Valid: true}
+	malformedURL := sql.NullString{String: "acct:alice@remote.example", Valid: true}
+
+	if got := permalinkRemoteURLOrURI(validURL, validURI); got != validURL.String {
+		t.Fatalf("valid URL should win: got %q", got)
+	}
+	for name, urlValue := range map[string]sql.NullString{
+		"missing":   {},
+		"malformed": malformedURL,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := permalinkRemoteURLOrURI(urlValue, validURI); got != validURI.String {
+				t.Fatalf("fallback target = %q, want %q", got, validURI.String)
+			}
+		})
+	}
+	if got := permalinkRemoteURLOrURI(malformedURL, sql.NullString{String: "ftp://remote.example/object", Valid: true}); got != "" {
+		t.Fatalf("unsafe fallback target = %q, want empty", got)
+	}
+
+	status := models.Status{URL: malformedURL, URI: validURI}
+	if got := permalinkRemoteStatusURL(status); got != validURI.String {
+		t.Fatalf("status fallback target = %q, want %q", got, validURI.String)
+	}
+	account := models.Account{URL: malformedURL, URI: validURI.String}
+	if got := permalinkRemoteAccountURL(account); got != validURI.String {
+		t.Fatalf("account fallback target = %q, want %q", got, validURI.String)
+	}
+}

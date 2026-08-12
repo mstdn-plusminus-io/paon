@@ -328,10 +328,14 @@ func keywordPattern(keyword string, wholeWord bool) string {
 }
 
 func streamingFilterActionName(value int) string {
-	if value == 1 {
+	switch value {
+	case 1:
 		return "hide"
+	case 2:
+		return "blur"
+	default:
+		return "warn"
 	}
-	return "warn"
 }
 
 func anyID(value any) (int64, bool) {

@@ -190,6 +190,7 @@ func TestAdminReportHTMLIncludesActionsAndNotes(t *testing.T) {
 		`name="report_note[content]"`,
 		`href="/admin/report_notes/5"`,
 		`data-method="delete"`,
+		`title="2026-06-19T00:00:00Z"`,
 		"bad post",
 		"hello",
 	} {

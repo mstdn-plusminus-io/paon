@@ -649,7 +649,7 @@ func (s *Server) activityPubStatusRecipientInboxesConfigured(status models.Statu
 		inboxes = append(inboxes, inboxURL)
 	}
 	if status.Visibility != 3 && status.Visibility != 4 {
-		followerInboxes, err := s.activityPubRemoteFollowerInboxes(status.AccountID)
+		followerInboxes, err := s.activityPubRemoteFollowerInboxesConfigured(status.AccountID, unsafe)
 		if err != nil {
 			return nil, err
 		}
@@ -658,7 +658,7 @@ func (s *Server) activityPubStatusRecipientInboxesConfigured(status models.Statu
 		}
 	}
 	if s.db != nil && (status.Visibility == 0 || status.Visibility == 1) && status.InReplyToAccountID.Valid {
-		replyFollowerInboxes, err := s.activityPubRemoteFollowersOfLocalReplyAccountInboxes(status)
+		replyFollowerInboxes, err := s.activityPubRemoteFollowersOfLocalReplyAccountInboxesConfigured(status, unsafe)
 		if err != nil {
 			return nil, err
 		}
@@ -668,7 +668,7 @@ func (s *Server) activityPubStatusRecipientInboxesConfigured(status models.Statu
 	}
 	for _, mention := range status.Mentions {
 		account := mention.Account
-		if account.ID == 0 || account.Local() || account.SuspendedAt.Valid {
+		if account.ID == 0 || account.Local() || (!unsafe && account.SuspendedAt.Valid) {
 			continue
 		}
 		addInbox(activityPubPreferredInboxURL(account.SharedInboxURL, account.InboxURL))
@@ -676,7 +676,7 @@ func (s *Server) activityPubStatusRecipientInboxesConfigured(status models.Statu
 	if s.db == nil {
 		return inboxes, nil
 	}
-	mentionInboxes, err := s.activityPubStatusMentionInboxes(status.ID)
+	mentionInboxes, err := s.activityPubStatusMentionInboxesConfigured(status.ID, unsafe)
 	if err != nil {
 		return nil, err
 	}
@@ -703,6 +703,10 @@ func (s *Server) activityPubStatusRecipientInboxesConfigured(status models.Statu
 }
 
 func (s *Server) activityPubStatusMentionInboxes(statusID int64) ([]string, error) {
+	return s.activityPubStatusMentionInboxesConfigured(statusID, false)
+}
+
+func (s *Server) activityPubStatusMentionInboxesConfigured(statusID int64, unsafe bool) ([]string, error) {
 	if s.db == nil || statusID == 0 {
 		return nil, nil
 	}
@@ -710,11 +714,14 @@ func (s *Server) activityPubStatusMentionInboxes(statusID int64) ([]string, erro
 		InboxURL       string `gorm:"column:inbox_url"`
 		SharedInboxURL string `gorm:"column:shared_inbox_url"`
 	}{}
-	err := s.db.Model(&models.Mention{}).
+	query := s.db.Model(&models.Mention{}).
 		Select("accounts.inbox_url, accounts.shared_inbox_url").
 		Joins("JOIN accounts ON accounts.id = mentions.account_id").
-		Where("mentions.status_id = ? AND accounts.domain IS NOT NULL AND accounts.domain <> '' AND accounts.protocol = ?", statusID, 1).
-		Find(&rows).Error
+		Where("mentions.status_id = ? AND accounts.domain IS NOT NULL AND accounts.domain <> '' AND accounts.protocol = ?", statusID, 1)
+	if !unsafe {
+		query = query.Where("accounts.suspended_at IS NULL")
+	}
+	err := query.Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
@@ -742,13 +749,27 @@ func (s *Server) activityPubStatusReachedAccountInboxes(status models.Status, un
 			return nil, err
 		}
 		addAccountID(reblogOfAccountID)
-		return s.activityPubAccountInboxes(accountIDs)
+		return s.activityPubAccountInboxesConfigured(accountIDs, unsafe)
 	}
 	if distributable && status.InReplyToAccountID.Valid {
 		addAccountID(status.InReplyToAccountID.Int64)
 	}
+	var quotedAccountIDs []int64
+	if err := s.db.Model(&models.Quote{}).
+		Where("status_id = ? AND quoted_account_id IS NOT NULL", status.ID).
+		Pluck("quoted_account_id", &quotedAccountIDs).Error; err != nil {
+		return nil, err
+	}
+	accountIDs = append(accountIDs, quotedAccountIDs...)
 	if distributable || unsafe {
 		var interacted []int64
+		if err := s.db.Model(&models.Quote{}).
+			Where("quoted_status_id = ?", status.ID).
+			Pluck("account_id", &interacted).Error; err != nil {
+			return nil, err
+		}
+		accountIDs = append(accountIDs, interacted...)
+		interacted = nil
 		reblogQuery := s.db.Model(&models.Status{}).Where("reblog_of_id = ?", status.ID)
 		if unsafe && status.DeletedAt.Valid {
 			reblogQuery = reblogQuery.Where("(deleted_at IS NULL OR deleted_at = ?)", status.DeletedAt.Time)
@@ -774,10 +795,14 @@ func (s *Server) activityPubStatusReachedAccountInboxes(status models.Status, un
 		}
 		accountIDs = append(accountIDs, interacted...)
 	}
-	return s.activityPubAccountInboxes(accountIDs)
+	return s.activityPubAccountInboxesConfigured(accountIDs, unsafe)
 }
 
 func (s *Server) activityPubRemoteFollowersOfLocalReplyAccountInboxes(status models.Status) ([]string, error) {
+	return s.activityPubRemoteFollowersOfLocalReplyAccountInboxesConfigured(status, false)
+}
+
+func (s *Server) activityPubRemoteFollowersOfLocalReplyAccountInboxesConfigured(status models.Status, unsafe bool) ([]string, error) {
 	if s.db == nil || !status.InReplyToAccountID.Valid {
 		return nil, nil
 	}
@@ -785,15 +810,18 @@ func (s *Server) activityPubRemoteFollowersOfLocalReplyAccountInboxes(status mod
 		InboxURL       string `gorm:"column:inbox_url"`
 		SharedInboxURL string `gorm:"column:shared_inbox_url"`
 	}{}
-	err := s.db.Model(&models.Follow{}).
+	query := s.db.Model(&models.Follow{}).
 		Select("accounts.inbox_url, accounts.shared_inbox_url").
 		Joins("JOIN accounts ON accounts.id = follows.account_id").
 		Joins("JOIN accounts reply_accounts ON reply_accounts.id = follows.target_account_id").
 		Where("follows.target_account_id = ?", status.InReplyToAccountID.Int64).
 		Where("reply_accounts.domain IS NULL").
 		Where("accounts.domain IS NOT NULL AND accounts.domain <> '' AND accounts.protocol = ?", 1).
-		Where("NOT EXISTS (SELECT 1 FROM account_domain_blocks WHERE account_domain_blocks.account_id = ? AND lower(account_domain_blocks.domain) = lower(accounts.domain))", status.AccountID).
-		Find(&rows).Error
+		Where("NOT EXISTS (SELECT 1 FROM account_domain_blocks WHERE account_domain_blocks.account_id = ? AND lower(account_domain_blocks.domain) = lower(accounts.domain))", status.AccountID)
+	if !unsafe {
+		query = query.Where("accounts.suspended_at IS NULL")
+	}
+	err := query.Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
@@ -801,13 +829,20 @@ func (s *Server) activityPubRemoteFollowersOfLocalReplyAccountInboxes(status mod
 }
 
 func (s *Server) activityPubAccountInboxes(accountIDs []int64) ([]string, error) {
+	return s.activityPubAccountInboxesConfigured(accountIDs, true)
+}
+
+func (s *Server) activityPubAccountInboxesConfigured(accountIDs []int64, unsafe bool) ([]string, error) {
 	if s.db == nil || len(accountIDs) == 0 {
 		return nil, nil
 	}
 	var inboxes []string
-	if err := s.db.Model(&models.Account{}).
-		Where("id IN ? AND domain IS NOT NULL AND domain <> '' AND protocol = ?", accountIDs, 1).
-		Pluck("COALESCE(NULLIF(shared_inbox_url, ''), inbox_url)", &inboxes).Error; err != nil {
+	query := s.db.Model(&models.Account{}).
+		Where("id IN ? AND domain IS NOT NULL AND domain <> '' AND protocol = ?", accountIDs, 1)
+	if !unsafe {
+		query = query.Where("suspended_at IS NULL")
+	}
+	if err := query.Pluck("COALESCE(NULLIF(shared_inbox_url, ''), inbox_url)", &inboxes).Error; err != nil {
 		return nil, err
 	}
 	return s.compactAvailableActivityPubInboxes(inboxes), nil
@@ -1181,15 +1216,22 @@ func (s *Server) activityPubRemotePollVoteInboxes(pollID int64) ([]string, error
 }
 
 func (s *Server) activityPubRemoteFollowerInboxes(accountID int64) ([]string, error) {
+	return s.activityPubRemoteFollowerInboxesConfigured(accountID, true)
+}
+
+func (s *Server) activityPubRemoteFollowerInboxesConfigured(accountID int64, unsafe bool) ([]string, error) {
 	rows := []struct {
 		InboxURL       string `gorm:"column:inbox_url"`
 		SharedInboxURL string `gorm:"column:shared_inbox_url"`
 	}{}
-	err := s.db.Model(&models.Follow{}).
+	query := s.db.Model(&models.Follow{}).
 		Select("accounts.inbox_url, accounts.shared_inbox_url").
 		Joins("JOIN accounts ON accounts.id = follows.account_id").
-		Where("follows.target_account_id = ? AND accounts.domain IS NOT NULL AND accounts.domain <> '' AND accounts.protocol = ?", accountID, 1).
-		Find(&rows).Error
+		Where("follows.target_account_id = ? AND accounts.domain IS NOT NULL AND accounts.domain <> '' AND accounts.protocol = ?", accountID, 1)
+	if !unsafe {
+		query = query.Where("accounts.suspended_at IS NULL")
+	}
+	err := query.Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
@@ -1826,6 +1868,10 @@ func activityPubDeliveryAuthorizationFailureUnsalvageable(status int, sourcePerm
 }
 
 func (s *Server) signActivityPubFetchRequest(req *http.Request, account models.Account) error {
+	return s.signActivityPubFetchRequestWithAccept(req, account, true)
+}
+
+func (s *Server) signActivityPubFetchRequestWithAccept(req *http.Request, account models.Account, signAccept bool) error {
 	key, err := activityPrivateKey(account.PrivateKey.String)
 	if err != nil {
 		return err
@@ -1837,7 +1883,7 @@ func (s *Server) signActivityPubFetchRequest(req *http.Request, account models.A
 		req.Header.Set("User-Agent", paonUserAgent(s.cfg))
 	}
 	headers := []string{"host", "date"}
-	if req.Header.Get("Accept") != "" {
+	if signAccept && req.Header.Get("Accept") != "" {
 		headers = append(headers, "accept")
 	}
 	headers = append(headers, "(request-target)")

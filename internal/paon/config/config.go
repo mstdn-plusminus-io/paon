@@ -33,6 +33,8 @@ type Config struct {
 	DatabaseMaxOpenConns                    int
 	DatabaseMaxIdleConns                    int
 	DatabasePreparedStatements              bool
+	ReplicaPreparedStatements               bool
+	ReplicaDatabaseTasks                    bool
 	DatabaseLockTimeout                     time.Duration
 	PublicDir                               string
 	ShakapackerDevServerPublic              string
@@ -40,6 +42,7 @@ type Config struct {
 	CDNHost                                 string
 	StorageHost                             string
 	CSPMediaHost                            string
+	ExtraMediaHosts                         []string
 	PaperclipRootPath                       string
 	PaperclipRootPathSet                    bool
 	PaperclipRootURL                        string
@@ -129,6 +132,13 @@ type Config struct {
 	CacheRedisSentinel                      RedisSentinelConfig
 	SidekiqConcurrency                      int
 	AsynqQueues                             []string
+	ExperimentalFeatures                    []string
+	FetchRepliesEnabled                     bool
+	FetchRepliesCooldown                    time.Duration
+	FetchRepliesInitialWait                 time.Duration
+	FetchRepliesMaxGlobal                   int
+	FetchRepliesMaxSingle                   int
+	FetchRepliesMaxPages                    int
 	WorkerReadyFilename                     string
 	StatsDAddr                              string
 	StatsDNamespace                         string
@@ -150,6 +160,10 @@ type Config struct {
 	OTelTracesSampler                       string
 	OTelTracesSamplerArg                    string
 	OTelPropagators                         []string
+	PrometheusExporterEnabled               bool
+	PrometheusWebDetailedMetrics            bool
+	PrometheusSidekiqDetailedMetrics        bool
+	SourceCommit                            string
 	VapidPublicKey                          string
 	VapidPrivateKey                         string
 	VapidSubject                            string
@@ -169,6 +183,18 @@ type Config struct {
 	SMTPTLS                                 bool
 	SMTPStartTLS                            bool
 	SMTPStartTLSRequired                    bool
+	BulkSMTPServer                          string
+	BulkSMTPPort                            string
+	BulkSMTPLogin                           string
+	BulkSMTPPassword                        string
+	BulkSMTPDomain                          string
+	BulkSMTPDomainSet                       bool
+	BulkSMTPAuthMethod                      string
+	BulkSMTPCAFile                          string
+	BulkSMTPOpenSSLVerifyMode               string
+	BulkSMTPTLS                             bool
+	BulkSMTPStartTLS                        bool
+	BulkSMTPStartTLSRequired                bool
 	FFmpegBinary                            string
 	FFmpegBinarySet                         bool
 	FFprobeBinary                           string
@@ -284,8 +310,6 @@ type Config struct {
 	CloudflareTurnstileSecretKey            string
 	HCaptchaSiteKey                         string
 	HCaptchaSecretKey                       string
-	OTPSecret                               string
-	OTPSecretSet                            bool
 	ActiveRecordEncryptionDeterministicKey  string
 	ActiveRecordEncryptionKeyDerivationSalt string
 	ActiveRecordEncryptionPrimaryKey        string
@@ -293,6 +317,7 @@ type Config struct {
 	SelfDestruct                            string
 	DefaultLocale                           string
 	DefaultLocaleSet                        bool
+	ForceDefaultLocale                      bool
 	StatusMaxChars                          int
 	StatusMaxCharsSet                       bool
 	MaxMedia                                int
@@ -338,6 +363,7 @@ type Config struct {
 	TrustedProxyIP                          string
 	AllowAccessToHiddenService              bool
 	AllowedPrivateAddresses                 string
+	runtimeConfigurationErrors              []error
 }
 
 // RedisSentinelConfig is the connection metadata which cannot be represented
@@ -435,6 +461,8 @@ func FromEnv() Config {
 		DatabaseMaxOpenConns:                    databasePoolFromEnv(),
 		DatabaseMaxIdleConns:                    intFromEnv("PAON_DB_MAX_IDLE_CONNS", 5),
 		DatabasePreparedStatements:              envDefaultTrue("PREPARED_STATEMENTS"),
+		ReplicaPreparedStatements:               envDefaultTrueWithFallback("REPLICA_PREPARED_STATEMENTS", "PREPARED_STATEMENTS"),
+		ReplicaDatabaseTasks:                    envDefaultTrue("REPLICA_DB_TASKS"),
 		DatabaseLockTimeout:                     databaseLockTimeoutFromEnv(),
 		PublicDir:                               publicDir,
 		ShakapackerDevServerPublic:              shakapackerDevServerPublicFromEnv(),
@@ -442,6 +470,7 @@ func FromEnv() Config {
 		CDNHost:                                 railsPresenceEnv("CDN_HOST"),
 		StorageHost:                             storageHostFromEnv(),
 		CSPMediaHost:                            cspMediaHostFromEnv(scheme),
+		ExtraMediaHosts:                         extraMediaHostsFromEnv(),
 		PaperclipRootPath:                       paperclipRootPathFromEnv(publicDir),
 		PaperclipRootPathSet:                    envIsSet("PAPERCLIP_ROOT_PATH"),
 		PaperclipRootURL:                        paperclipRootURLFromEnv(),
@@ -531,6 +560,13 @@ func FromEnv() Config {
 		CacheRedisSentinel:                      cacheRedisSentinel,
 		SidekiqConcurrency:                      asynqConcurrencyFromEnv(),
 		AsynqQueues:                             asynqQueuesFromEnv(),
+		ExperimentalFeatures:                    experimentalFeaturesFromEnv(),
+		FetchRepliesEnabled:                     strictBoolValueFromEnv("FETCH_REPLIES_ENABLED", false),
+		FetchRepliesCooldown:                    time.Duration(strictIntFromEnv("FETCH_REPLIES_COOLDOWN_MINUTES", 15)) * time.Minute,
+		FetchRepliesInitialWait:                 time.Duration(strictIntFromEnv("FETCH_REPLIES_INITIAL_WAIT_MINUTES", 5)) * time.Minute,
+		FetchRepliesMaxGlobal:                   strictIntFromEnv("FETCH_REPLIES_MAX_GLOBAL", 1000),
+		FetchRepliesMaxSingle:                   strictIntFromEnv("FETCH_REPLIES_MAX_SINGLE", 500),
+		FetchRepliesMaxPages:                    strictIntFromEnv("FETCH_REPLIES_MAX_PAGES", 500),
 		WorkerReadyFilename:                     strings.TrimSpace(os.Getenv("MASTODON_SIDEKIQ_READY_FILENAME")),
 		StatsDAddr:                              os.Getenv("STATSD_ADDR"),
 		StatsDNamespace:                         envOrDefault("STATSD_NAMESPACE", "Mastodon."+railsEnvName()),
@@ -552,6 +588,10 @@ func FromEnv() Config {
 		OTelTracesSampler:                       envOrDefault("OTEL_TRACES_SAMPLER", "parentbased_always_on"),
 		OTelTracesSamplerArg:                    os.Getenv("OTEL_TRACES_SAMPLER_ARG"),
 		OTelPropagators:                         splitAndTrimCSV(envOrDefault("OTEL_PROPAGATORS", "tracecontext,baggage")),
+		PrometheusExporterEnabled:               strictBoolValueFromEnv("MASTODON_PROMETHEUS_EXPORTER_ENABLED", false),
+		PrometheusWebDetailedMetrics:            strictBoolValueFromEnv("MASTODON_PROMETHEUS_EXPORTER_WEB_DETAILED_METRICS", false),
+		PrometheusSidekiqDetailedMetrics:        strictBoolValueFromEnv("MASTODON_PROMETHEUS_EXPORTER_SIDEKIQ_DETAILED_METRICS", false),
+		SourceCommit:                            railsPresenceEnv("SOURCE_COMMIT"),
 		VapidPublicKey:                          vapidPublicKey,
 		VapidPrivateKey:                         vapidPrivateKey,
 		VapidSubject:                            vapidSubjectFromEnv(localDomain),
@@ -571,6 +611,18 @@ func FromEnv() Config {
 		SMTPTLS:                                 os.Getenv("SMTP_TLS") == "true" || os.Getenv("SMTP_SSL") == "true",
 		SMTPStartTLS:                            smtpStartTLSFromEnv(),
 		SMTPStartTLSRequired:                    os.Getenv("SMTP_ENABLE_STARTTLS") == "always",
+		BulkSMTPServer:                          railsPresenceEnv("BULK_SMTP_SERVER"),
+		BulkSMTPPort:                            railsPresenceEnv("BULK_SMTP_PORT"),
+		BulkSMTPLogin:                           railsPresenceEnv("BULK_SMTP_LOGIN"),
+		BulkSMTPPassword:                        railsPresenceEnv("BULK_SMTP_PASSWORD"),
+		BulkSMTPDomain:                          envOrDefault("BULK_SMTP_DOMAIN", localDomain),
+		BulkSMTPDomainSet:                       envIsSet("BULK_SMTP_DOMAIN"),
+		BulkSMTPAuthMethod:                      envOrDefault("BULK_SMTP_AUTH_METHOD", "plain"),
+		BulkSMTPCAFile:                          smtpCAFileForEnv("BULK_SMTP_CA_FILE"),
+		BulkSMTPOpenSSLVerifyMode:               os.Getenv("BULK_SMTP_OPENSSL_VERIFY_MODE"),
+		BulkSMTPTLS:                             os.Getenv("BULK_SMTP_TLS") == "true" || os.Getenv("BULK_SMTP_SSL") == "true",
+		BulkSMTPStartTLS:                        smtpStartTLSForEnv("BULK_SMTP_ENABLE_STARTTLS", "BULK_SMTP_ENABLE_STARTTLS_AUTO"),
+		BulkSMTPStartTLSRequired:                os.Getenv("BULK_SMTP_ENABLE_STARTTLS") == "always",
 		FFmpegBinary:                            envOrDefault("FFMPEG_BINARY", "ffmpeg"),
 		FFmpegBinarySet:                         envIsSet("FFMPEG_BINARY"),
 		FFprobeBinary:                           envOrDefault("FFPROBE_BINARY", "ffprobe"),
@@ -686,8 +738,6 @@ func FromEnv() Config {
 		CloudflareTurnstileSecretKey:            os.Getenv("CLOUDFLARE_TURNSTILE_SECRET_KEY"),
 		HCaptchaSiteKey:                         os.Getenv("HCAPTCHA_SITE_KEY"),
 		HCaptchaSecretKey:                       os.Getenv("HCAPTCHA_SECRET_KEY"),
-		OTPSecret:                               otpSecretFromRailsEnv(),
-		OTPSecretSet:                            envIsSet("OTP_SECRET"),
 		ActiveRecordEncryptionDeterministicKey:  os.Getenv("ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY"),
 		ActiveRecordEncryptionKeyDerivationSalt: os.Getenv("ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"),
 		ActiveRecordEncryptionPrimaryKey:        os.Getenv("ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"),
@@ -695,6 +745,7 @@ func FromEnv() Config {
 		SelfDestruct:                            railsPresenceEnv("SELF_DESTRUCT"),
 		DefaultLocale:                           defaultLocale,
 		DefaultLocaleSet:                        defaultLocaleSet,
+		ForceDefaultLocale:                      strictBoolValueFromEnv("FORCE_DEFAULT_LOCALE", false),
 		StatusMaxChars:                          railsIntFromEnv("STATUS_LENGTH_LIMIT", 5000),
 		StatusMaxCharsSet:                       envIsSet("STATUS_LENGTH_LIMIT"),
 		MaxMedia:                                railsIntFromEnv("MAX_MEDIA_ATTACHMENTS", 4),
@@ -740,6 +791,7 @@ func FromEnv() Config {
 		TrustedProxyIP:                          os.Getenv("TRUSTED_PROXY_IP"),
 		AllowAccessToHiddenService:              os.Getenv("ALLOW_ACCESS_TO_HIDDEN_SERVICE") == "true",
 		AllowedPrivateAddresses:                 os.Getenv("ALLOWED_PRIVATE_ADDRESSES"),
+		runtimeConfigurationErrors:              runtimeConfigurationErrorsFromEnv(),
 	}
 }
 
@@ -880,13 +932,17 @@ func updateCheckURLFromEnv() string {
 }
 
 func smtpStartTLSFromEnv() bool {
-	switch os.Getenv("SMTP_ENABLE_STARTTLS") {
+	return smtpStartTLSForEnv("SMTP_ENABLE_STARTTLS", "SMTP_ENABLE_STARTTLS_AUTO")
+}
+
+func smtpStartTLSForEnv(enableName string, autoName string) bool {
+	switch os.Getenv(enableName) {
 	case "always", "auto":
 		return true
 	case "never":
 		return false
 	default:
-		return os.Getenv("SMTP_ENABLE_STARTTLS_AUTO") != "false"
+		return os.Getenv(autoName) != "false"
 	}
 }
 
@@ -1136,6 +1192,23 @@ func (c Config) BaseURL() string {
 	return c.Scheme + "://" + host
 }
 
+// ExperimentalFeatureEnabled mirrors Mastodon's comma-separated
+// EXPERIMENTAL_FEATURES gate. Feature names are normalized while reading the
+// environment, but normalize here as well so explicitly constructed Config
+// values behave consistently in tests and embedded callers.
+func (c Config) ExperimentalFeatureEnabled(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, feature := range c.ExperimentalFeatures {
+		if strings.ToLower(strings.TrimSpace(feature)) == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (c Config) SystemAssetURL(path string) string {
 	path = strings.TrimLeft(strings.TrimSpace(path), "/")
 	if c.S3Enabled {
@@ -1308,6 +1381,9 @@ var railsI18nAvailableLocaleSet = func() map[string]struct{} {
 
 func (c Config) ValidateRuntime() error {
 	var problems []error
+	if err := c.validateRuntime44(); err != nil {
+		problems = append(problems, err)
+	}
 	switch c.ProcessRole {
 	case "all", "web", "worker":
 	default:
@@ -1319,10 +1395,23 @@ func (c Config) ValidateRuntime() error {
 		"ingress": {},
 		"mailers": {},
 		"pull":    {},
+		"fasp":    {},
 	}
 	for _, queue := range c.AsynqQueues {
 		if _, ok := validAsynqQueues[queue]; !ok {
-			problems = append(problems, fmt.Errorf("ASYNQ_QUEUES contains unsupported queue %q; supported queues are default, push, ingress, mailers, pull", queue))
+			problems = append(problems, fmt.Errorf("ASYNQ_QUEUES contains unsupported queue %q; supported queues are default, push, ingress, mailers, pull, fasp", queue))
+		}
+	}
+	if c.ExperimentalFeatureEnabled("fasp") && len(c.AsynqQueues) > 0 && c.ProcessRole != "web" {
+		faspQueueEnabled := false
+		for _, queue := range c.AsynqQueues {
+			if queue == "fasp" {
+				faspQueueEnabled = true
+				break
+			}
+		}
+		if !faspQueueEnabled {
+			problems = append(problems, errors.New("EXPERIMENTAL_FEATURES=fasp requires the fasp queue when ASYNQ_QUEUES restricts a worker"))
 		}
 	}
 	if c.ProcessRole != "worker" {
@@ -1351,9 +1440,6 @@ func (c Config) ValidateRuntime() error {
 	if c.RailsEnv == "production" {
 		if strings.TrimSpace(c.SecretKeyBase) == "" {
 			problems = append(problems, errors.New("SECRET_KEY_BASE is required in production"))
-		}
-		if !c.OTPSecretSet && strings.TrimSpace(c.OTPSecret) == "" {
-			problems = append(problems, errors.New("OTP_SECRET is required in production"))
 		}
 		for _, credential := range []struct {
 			name  string
@@ -1601,9 +1687,6 @@ func (c Config) RuntimeWarnings() []string {
 	if strings.TrimSpace(c.SecretKeyBase) == "" {
 		warnings = append(warnings, "SECRET_KEY_BASE is not configured; Rails session cookies and Devise-compatible token digests will not be verified")
 	}
-	if strings.TrimSpace(c.OTPSecret) == "" {
-		warnings = append(warnings, "OTP_SECRET is not configured; existing Rails attr_encrypted TOTP secrets cannot be decrypted")
-	}
 	for _, credential := range []struct {
 		name  string
 		value string
@@ -1620,13 +1703,10 @@ func (c Config) RuntimeWarnings() []string {
 		warnings = append(warnings, "VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY are not configured; Web Push delivery is disabled")
 	}
 	if c.DynamoDBEnabled && strings.TrimSpace(c.DynamoDBNamespace) == "" {
-		warnings = append(warnings, "DYNAMODB_ENABLED=true but DYNAMODB_NAMESPACE is not configured; quote metadata storage is disabled")
+		warnings = append(warnings, "DYNAMODB_ENABLED=true but DYNAMODB_NAMESPACE is not configured; the one-way legacy quote cutover is disabled")
 	}
 	if c.S3Enabled && strings.TrimSpace(c.S3Bucket) == "" {
 		warnings = append(warnings, "S3_ENABLED=true but S3_BUCKET is not configured; Paperclip files are kept locally but object-storage writes and deletes are disabled")
-	}
-	if strings.TrimSpace(c.RedisNamespace) != "" {
-		warnings = append(warnings, "REDIS_NAMESPACE is deprecated in Mastodon 4.3; Paon still applies it for existing Redis/Asynq key compatibility")
 	}
 	if c.OpenTelemetryEnabled && strings.TrimSpace(c.StatsDAddr) != "" {
 		warnings = append(warnings, "STATSD_ADDR is configured with OpenTelemetry; Paon disables the legacy StatsD extension while OTLP export is enabled to prevent double counting")
@@ -2219,7 +2299,11 @@ func railsPresenceEnv(name string) string {
 }
 
 func smtpCAFileFromEnv() string {
-	if value := railsPresenceEnv("SMTP_CA_FILE"); value != "" {
+	return smtpCAFileForEnv("SMTP_CA_FILE")
+}
+
+func smtpCAFileForEnv(name string) string {
+	if value := railsPresenceEnv(name); value != "" {
 		return value
 	}
 	return "/etc/ssl/certs/ca-certificates.crt"
@@ -2293,6 +2377,29 @@ func asynqQueuesFromEnv() []string {
 		queues = append(queues, queue)
 	}
 	return queues
+}
+
+func experimentalFeaturesFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv("EXPERIMENTAL_FEATURES"))
+	if raw == "" {
+		return nil
+	}
+	features := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, feature := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	}) {
+		feature = strings.ToLower(strings.TrimSpace(feature))
+		if feature == "" {
+			continue
+		}
+		if _, ok := seen[feature]; ok {
+			continue
+		}
+		seen[feature] = struct{}{}
+		features = append(features, feature)
+	}
+	return features
 }
 
 func railsFloatFromEnv(name string, fallback float64) float64 {
@@ -2388,11 +2495,15 @@ func envDefaultTrue(name string) bool {
 	return value == "true"
 }
 
-func meiliPrefixFromEnv() string {
-	prefix, ok := os.LookupEnv("MEILI_PREFIX")
-	if !ok {
-		prefix = os.Getenv("REDIS_NAMESPACE")
+func envDefaultTrueWithFallback(name string, fallbackName string) bool {
+	if _, ok := os.LookupEnv(name); ok {
+		return os.Getenv(name) == "true"
 	}
+	return envDefaultTrue(fallbackName)
+}
+
+func meiliPrefixFromEnv() string {
+	prefix := os.Getenv("MEILI_PREFIX")
 	if strings.TrimSpace(prefix) == "" {
 		return ""
 	}
@@ -2610,25 +2721,6 @@ func railsVapidKeysFromEnv(production bool) (string, string) {
 		return "", ""
 	}
 	return publicKey, privateKey
-}
-
-const (
-	railsDevelopmentOTPSecret = "1fc2b87989afa6351912abeebe31ffc5c476ead9bf8b3d74cbc4a302c7b69a45b40b1bbef3506ddad73e942e15ed5ca4b402bf9a66423626051104f4b5f05109"
-	railsTestOTPSecret        = "100c7faeef00caa29242f6b04156742bf76065771fd4117990c4282b8748ff3d99f8fdae97c982ab5bd2e6756a159121377cce4421f4a8ecd2d67bd7749a3fb4"
-)
-
-func otpSecretFromRailsEnv() string {
-	if value, ok := os.LookupEnv("OTP_SECRET"); ok {
-		return value
-	}
-	switch railsEnvName() {
-	case "development":
-		return railsDevelopmentOTPSecret
-	case "test":
-		return railsTestOTPSecret
-	default:
-		return ""
-	}
 }
 
 func ssoRedirectFromEnv() string {

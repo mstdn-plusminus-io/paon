@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -348,6 +349,41 @@ func TestDeleteS3ObjectsHonorsBatchLimit(t *testing.T) {
 	}
 }
 
+func TestS3BatchDeleteHTTPClientUsesOperationScopedLongReadTimeout(t *testing.T) {
+	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+	baseTransport.ResponseHeaderTimeout = 5 * time.Second
+	base := &http.Client{Transport: baseTransport, Timeout: 3 * time.Minute}
+
+	got, ok := s3BatchDeleteHTTPClient(base).(*http.Client)
+	if !ok || got == base {
+		t.Fatalf("batch HTTP client = %T %p, want a cloned *http.Client", got, got)
+	}
+	gotTransport, ok := got.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("batch transport = %T, want *http.Transport", got.Transport)
+	}
+	if gotTransport.ResponseHeaderTimeout != 120*time.Second {
+		t.Fatalf("batch read timeout = %s, want 120s", gotTransport.ResponseHeaderTimeout)
+	}
+	if baseTransport.ResponseHeaderTimeout != 5*time.Second {
+		t.Fatalf("shared read timeout mutated to %s", baseTransport.ResponseHeaderTimeout)
+	}
+	if got.Timeout != base.Timeout {
+		t.Fatalf("client timeout = %s, want %s", got.Timeout, base.Timeout)
+	}
+
+	baseTransport.ResponseHeaderTimeout = 180 * time.Second
+	got = s3BatchDeleteHTTPClient(base).(*http.Client)
+	if got.Transport.(*http.Transport).ResponseHeaderTimeout != 180*time.Second {
+		t.Fatalf("longer configured timeout was shortened to %s", got.Transport.(*http.Transport).ResponseHeaderTimeout)
+	}
+	baseTransport.ResponseHeaderTimeout = 0
+	got = s3BatchDeleteHTTPClient(base).(*http.Client)
+	if got.Transport.(*http.Transport).ResponseHeaderTimeout != 0 {
+		t.Fatalf("disabled read timeout was changed to %s", got.Transport.(*http.Transport).ResponseHeaderTimeout)
+	}
+}
+
 func TestUploadPaperclipObjectCanOverrideACLForPrivateBackups(t *testing.T) {
 	var gotACL string
 	oldClient := s3HTTPClient
@@ -678,8 +714,104 @@ func TestDeletePaperclipObjectRetriesTransientSwiftFailure(t *testing.T) {
 	}}
 
 	s.deletePaperclipObject(context.Background(), "media/file.png")
-	if authCalls != 2 || deleteCalls != 2 {
-		t.Fatalf("Swift retry auth=%d delete=%d, want 2/2", authCalls, deleteCalls)
+	if authCalls != 1 || deleteCalls != 2 {
+		t.Fatalf("Swift retry auth=%d delete=%d, want 1/2", authCalls, deleteCalls)
+	}
+}
+
+func TestSwiftAuthTokenCachesKeystoneAuthenticationAcrossConcurrentRequests(t *testing.T) {
+	oldClient := s3HTTPClient
+	t.Cleanup(func() { s3HTTPClient = oldClient })
+	var mu sync.Mutex
+	authCalls := 0
+	s3HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		authCalls++
+		mu.Unlock()
+		expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     http.Header{"X-Subject-Token": []string{"cached-token"}},
+			Body:       io.NopCloser(strings.NewReader(`{"token":{"expires_at":"` + expiresAt + `"}}`)),
+			Request:    r,
+		}, nil
+	})}
+	s := &Server{cfg: config.Config{
+		SwiftUsername:   "swift-user",
+		SwiftProjectID:  "project-id",
+		SwiftPassword:   "swift-password",
+		SwiftAuthURL:    "https://keystone.example.test/v3/",
+		SwiftDomainName: "example-domain",
+	}}
+
+	const callers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			token, err := s.swiftAuthToken(context.Background())
+			if err == nil && token != "cached-token" {
+				err = errors.New("unexpected Swift token")
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if authCalls != 1 {
+		t.Fatalf("Keystone authentication calls = %d, want 1", authCalls)
+	}
+}
+
+func TestDeleteSwiftObjectRefreshesRejectedCachedTokenOnce(t *testing.T) {
+	oldClient := s3HTTPClient
+	t.Cleanup(func() { s3HTTPClient = oldClient })
+	authCalls := 0
+	deleteTokens := []string{}
+	s3HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host {
+		case "keystone.example.test":
+			authCalls++
+			token := "stale-token"
+			if authCalls == 2 {
+				token = "fresh-token"
+			}
+			return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"X-Subject-Token": []string{token}}, Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+		case "swift.example.test":
+			deleteTokens = append(deleteTokens, r.Header.Get("X-Auth-Token"))
+			status := http.StatusNoContent
+			if len(deleteTokens) == 1 {
+				status = http.StatusUnauthorized
+			}
+			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		default:
+			return nil, errors.New("unexpected Swift test host")
+		}
+	})}
+	s := &Server{cfg: config.Config{
+		SwiftObjectURL:  "https://swift.example.test/v1/AUTH_project",
+		SwiftContainer:  "container",
+		SwiftUsername:   "swift-user",
+		SwiftProjectID:  "project-id",
+		SwiftPassword:   "swift-password",
+		SwiftAuthURL:    "https://keystone.example.test/v3/",
+		SwiftDomainName: "example-domain",
+	}}
+
+	if err := s.deleteSwiftObject(context.Background(), "media/file.png"); err != nil {
+		t.Fatal(err)
+	}
+	if authCalls != 2 || len(deleteTokens) != 2 || deleteTokens[0] != "stale-token" || deleteTokens[1] != "fresh-token" {
+		t.Fatalf("Swift refresh auth=%d tokens=%#v", authCalls, deleteTokens)
 	}
 }
 

@@ -19,9 +19,10 @@ import (
 const notificationGroupSampleAccountsLimit = 8
 
 var groupableNotificationTypes = map[string]struct{}{
-	"favourite": {},
-	"reblog":    {},
-	"follow":    {},
+	"favourite":     {},
+	"reblog":        {},
+	"follow":        {},
+	"admin.sign_up": {},
 }
 
 type notificationGroupRow struct {
@@ -42,6 +43,11 @@ type notificationGroupEntity struct {
 	Report                   *serializer.Report                            `json:"report,omitempty"`
 	Event                    *serializer.AccountRelationshipSeveranceEvent `json:"event,omitempty"`
 	ModerationWarning        *serializer.AccountWarning                    `json:"moderation_warning,omitempty"`
+	AnnualReport             *annualReportEventEntity                      `json:"annual_report,omitempty"`
+}
+
+type annualReportEventEntity struct {
+	Year string `json:"year"`
 }
 
 type partialNotificationAccount struct {
@@ -236,7 +242,7 @@ func notificationGroupedTypes(c *echo.Context) map[string]struct{} {
 	values := c.QueryParams()["grouped_types[]"]
 	values = append(values, c.QueryParams()["grouped_types"]...)
 	if len(values) == 0 {
-		return map[string]struct{}{"favourite": {}, "reblog": {}, "follow": {}}
+		return map[string]struct{}{"favourite": {}, "reblog": {}, "follow": {}, "admin.sign_up": {}}
 	}
 	out := map[string]struct{}{}
 	for _, kind := range values {
@@ -392,6 +398,9 @@ func (s *Server) notificationGroupEnvelope(account *models.Account, rows []notif
 		if notification.AccountWarning != nil {
 			warning := serializer.AccountWarningFromModel(s.cfg, *notification.AccountWarning)
 			entity.ModerationWarning = &warning
+		}
+		if notification.AnnualReport != nil {
+			entity.AnnualReport = &annualReportEventEntity{Year: strconv.Itoa(notification.AnnualReport.Year)}
 		}
 		groups = append(groups, entity)
 	}

@@ -22,16 +22,17 @@ import (
 )
 
 type accountUpdatePayload struct {
-	DisplayName      *string         `json:"display_name"`
-	Note             *string         `json:"note"`
-	Locked           *bool           `json:"locked"`
-	Bot              *bool           `json:"bot"`
-	Discoverable     *bool           `json:"discoverable"`
-	HideCollections  *bool           `json:"hide_collections"`
-	Indexable        *bool           `json:"indexable"`
-	FieldsAttributes []profileField  `json:"fields_attributes"`
-	RawFields        json.RawMessage `json:"-"`
-	Source           *sourcePayload  `json:"source"`
+	DisplayName        *string         `json:"display_name"`
+	Note               *string         `json:"note"`
+	Locked             *bool           `json:"locked"`
+	Bot                *bool           `json:"bot"`
+	Discoverable       *bool           `json:"discoverable"`
+	HideCollections    *bool           `json:"hide_collections"`
+	Indexable          *bool           `json:"indexable"`
+	AttributionDomains *[]string       `json:"attribution_domains"`
+	FieldsAttributes   []profileField  `json:"fields_attributes"`
+	RawFields          json.RawMessage `json:"-"`
+	Source             *sourcePayload  `json:"source"`
 }
 
 type sourcePayload struct {
@@ -47,8 +48,6 @@ type profileField struct {
 }
 
 var profileNoteURLPattern = regexp.MustCompile(`(^|[\s(])https?://[^\s<]+`)
-
-const profileImageSizeLimit = 2 * 1024 * 1024
 
 func (s *Server) updateCredentials(c *echo.Context) error {
 	c.Response().Header().Set("Vary", "Authorization")
@@ -100,6 +99,7 @@ func (s *Server) updateCredentials(c *echo.Context) error {
 	}
 	if accountChanged {
 		s.triggerAccountWebhook("account.updated", reloaded.ID)
+		_ = s.enqueueFASPAccountLifecycleUpdate(c.Request().Context(), *account, *reloaded)
 		if payload.RawFields != nil || len(payload.FieldsAttributes) > 0 {
 			s.enqueueVerifyAccountLinksIfNeeded(c.Request().Context(), *reloaded, time.Now().UTC())
 		}
@@ -424,6 +424,7 @@ func (s *Server) deleteProfileImage(c *echo.Context, kind string) error {
 		return err
 	}
 	s.triggerAccountWebhook("account.updated", reloaded.ID)
+	_ = s.enqueueFASPAccountLifecycleUpdate(c.Request().Context(), *account, *reloaded)
 	_ = s.enqueueActivityPubAccountUpdate(*reloaded, activityPubAccountUpdateDebounceDelay)
 	role, everyone := s.initialStateUserRole(user)
 	return c.JSON(http.StatusOK, serializer.CredentialAccountFromModelWithRole(s.cfg, *reloaded, *user, count, role, everyone))
@@ -443,6 +444,7 @@ func parseAccountUpdatePayload(c *echo.Context) (accountUpdatePayload, error) {
 		decodeRaw(raw, "discoverable", &payload.Discoverable)
 		decodeRaw(raw, "hide_collections", &payload.HideCollections)
 		decodeRaw(raw, "indexable", &payload.Indexable)
+		decodeRaw(raw, "attribution_domains", &payload.AttributionDomains)
 		if rawFields, ok := raw["fields_attributes"]; ok {
 			payload.RawFields = rawFields
 			payload.FieldsAttributes = profileFieldsFromRaw(rawFields)
@@ -469,6 +471,13 @@ func parseAccountUpdatePayload(c *echo.Context) (accountUpdatePayload, error) {
 	payload.Discoverable = boolPtrFromForm(c, "discoverable")
 	payload.HideCollections = boolPtrFromForm(c, "hide_collections")
 	payload.Indexable = boolPtrFromForm(c, "indexable")
+	if values, ok := req.Form["attribution_domains[]"]; ok {
+		copyValues := append([]string(nil), values...)
+		payload.AttributionDomains = &copyValues
+	} else if values, ok := req.Form["attribution_domains"]; ok {
+		copyValues := append([]string(nil), values...)
+		payload.AttributionDomains = &copyValues
+	}
 	payload.FieldsAttributes = profileFieldsFromForm(req.Form, "fields_attributes[")
 	payload.Source = sourcePayloadFromForm(c)
 	return payload, nil
@@ -508,6 +517,13 @@ func accountUpdateMap(payload accountUpdatePayload) (map[string]any, error) {
 	}
 	if payload.Indexable != nil {
 		updates["indexable"] = *payload.Indexable
+	}
+	if payload.AttributionDomains != nil {
+		domains, err := localAttributionDomains(strings.Join(*payload.AttributionDomains, "\n"))
+		if err != nil {
+			return nil, apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: Attribution domains is invalid"}
+		}
+		updates["attribution_domains"] = models.StringArray(domains)
 	}
 	if payload.RawFields != nil || len(payload.FieldsAttributes) > 0 {
 		fields := cleanProfileFields(payload.FieldsAttributes)
@@ -728,7 +744,11 @@ func (s *Server) accountForUser(user *models.User) (*models.Account, error) {
 
 func (s *Server) followRequestsCount(accountID int64) (int64, error) {
 	var count int64
-	err := s.db.Model(&models.FollowRequest{}).Where("target_account_id = ?", accountID).Limit(40).Count(&count).Error
+	err := s.db.Model(&models.Account{}).
+		Joins("JOIN follow_requests ON follow_requests.account_id = accounts.id").
+		Where("follow_requests.target_account_id = ? AND accounts.suspended_at IS NULL", accountID).
+		Limit(40).
+		Count(&count).Error
 	return count, err
 }
 

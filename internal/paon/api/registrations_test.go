@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,79 @@ func TestParseAccountCreatePayloadAcceptsJSONBooleanAgreement(t *testing.T) {
 	if err := validateAccountCreatePayload(payload); err != nil {
 		t.Fatalf("valid payload rejected: %v", err)
 	}
+}
+
+func TestParseAccountCreatePayloadAcceptsDateOfBirth(t *testing.T) {
+	req := httptest.NewRequest("POST", "/api/v1/accounts", strings.NewReader(`{
+		"username":"alice","email":"alice@example.test","password":"correcthorsebattery",
+		"agreement":true,"date_of_birth":"2000-08-12"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	payload, err := parseAccountCreatePayload(echo.NewContext(req, httptest.NewRecorder(), echo.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.DateOfBirth != "2000-08-12" {
+		t.Fatalf("date_of_birth = %q", payload.DateOfBirth)
+	}
+
+	body := "user%5Baccount_attributes%5D%5Busername%5D=alice&user%5Bemail%5D=alice%40example.test&user%5Bpassword%5D=correcthorsebattery&user%5Bagreement%5D=true&user%5Bdate_of_birth%281i%29%5D=2000&user%5Bdate_of_birth%282i%29%5D=8&user%5Bdate_of_birth%283i%29%5D=12"
+	req = httptest.NewRequest("POST", "/auth", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	payload, err = parseWebAccountCreatePayload(echo.NewContext(req, httptest.NewRecorder(), echo.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.DateOfBirth != "12.8.2000" {
+		t.Fatalf("web date_of_birth = %q", payload.DateOfBirth)
+	}
+}
+
+func TestValidateRegistrationAgeMatchesMastodon44Boundary(t *testing.T) {
+	previous, hadPrevious := railsSettingDefaults["min_age"]
+	railsSettingDefaults["min_age"] = "16"
+	t.Cleanup(func() {
+		if hadPrevious {
+			railsSettingDefaults["min_age"] = previous
+		} else {
+			delete(railsSettingDefaults, "min_age")
+		}
+	})
+
+	server := &Server{}
+	now := time.Date(2026, time.August, 12, 15, 0, 0, 0, time.UTC)
+	for _, date := range []string{"2010-08-12", "12.08.2010", "2009-08-13"} {
+		if err := server.validateRegistrationAge(accountCreatePayload{DateOfBirth: date}, now); err != nil {
+			t.Fatalf("eligible date %q rejected: %v", date, err)
+		}
+	}
+	for _, test := range []struct {
+		date    string
+		message string
+		code    string
+	}{
+		{date: "", message: registrationValidationDateOfBirthRequired, code: "ERR_BLANK"},
+		{date: "not-a-date", message: registrationValidationDateOfBirthInvalid, code: "ERR_INVALID"},
+		{date: "2010-08-13", message: registrationValidationDateOfBirthBelowLimit, code: "ERR_BELOW_LIMIT"},
+	} {
+		err := server.validateRegistrationAge(accountCreatePayload{DateOfBirth: test.date}, now)
+		if err == nil || err.Error() != test.message {
+			t.Fatalf("date %q error = %v, want %q", test.date, err, test.message)
+		}
+		apiErr, ok := err.(apiHTTPError)
+		if !ok || !strings.Contains(string(mustJSON(t, apiErr.body)), test.code) {
+			t.Fatalf("date %q response = %#v, want code %q", test.date, apiErr.body, test.code)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func TestRegistrationUserLocaleAndTimeZoneUseRailsSanitizers(t *testing.T) {
@@ -169,6 +243,18 @@ func TestCreateAccountRequiresApplicationToken(t *testing.T) {
 		t.Fatal("expected create account to require an application token")
 	} else if apiErr, ok := err.(apiHTTPError); !ok || apiErr.status != http.StatusUnauthorized {
 		t.Fatalf("error = %#v", err)
+	}
+}
+
+func TestCreateAccountRequiresClientCredentialsToken(t *testing.T) {
+	src, err := os.ReadFile("registrations.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	if !functionBodyContains(t, []byte(body), "requireApplicationWriteToken", `if accessToken.ResourceOwnerID.Valid {`) ||
+		!functionBodyContains(t, []byte(body), "requireApplicationWriteToken", `"This method requires an client credentials authentication"`) {
+		t.Fatal("Mastodon 4.4 account creation must reject user-owned access tokens")
 	}
 }
 
@@ -358,8 +444,8 @@ func TestRegistrationHTMLMatchesRailsSignupStructure(t *testing.T) {
 		`name="user[confirm_password]"`,
 		`name="user[website]"`,
 		`name="user[invite_request_attributes][text]"`,
+		`maxlength="420" required`,
 		`name="accept" value="accept-token"`,
-		`href="/about/more"`,
 		`href="/privacy-policy"`,
 		`class="turnstile"`,
 		`data-sitekey="site-key"`,
@@ -370,6 +456,34 @@ func TestRegistrationHTMLMatchesRailsSignupStructure(t *testing.T) {
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("registration html missing %q: %s", want, html)
+		}
+	}
+}
+
+func TestRegistrationInviteRequestTextCanBeOptional(t *testing.T) {
+	html := registrationHTMLWithTurnstile("example.com", "", "", false, "", "en", true, "", registrationInviteContext{}, 0, false, false, false)
+	if !strings.Contains(html, `name="user[invite_request_attributes][text]" maxlength="420"`) {
+		t.Fatalf("registration HTML missing invite request length limit: %s", html)
+	}
+	if strings.Contains(html, `name="user[invite_request_attributes][text]" maxlength="420" required`) {
+		t.Fatalf("registration HTML unexpectedly requires invite request text: %s", html)
+	}
+}
+
+func TestRegistrationHTMLIncludesAgeVerificationWithoutPersistingBirthDate(t *testing.T) {
+	html := registrationHTMLWithTurnstile("example.com", "", "", false, "", "en", false, "", registrationInviteContext{}, 16, true)
+	for _, want := range []string{`name="user[date_of_birth]"`, `autocomplete="bday"`, `at least 16`, `We won&#39;t store this`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("registration HTML missing %q: %s", want, html)
+		}
+	}
+}
+
+func TestRegistrationHTMLLinksCurrentTermsOfService(t *testing.T) {
+	html := registrationHTMLWithTurnstile("example.com", "", "", false, "", "en", false, "", registrationInviteContext{}, 0, false, true)
+	for _, want := range []string{`href="/terms-of-service"`, `href="/privacy-policy"`, `terms of service`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("registration HTML missing %q: %s", want, html)
 		}
 	}
 }

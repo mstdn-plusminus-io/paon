@@ -66,12 +66,27 @@ func TestManifestIncludesRailsShareTarget(t *testing.T) {
 		t.Fatalf("share_target = %#v", shareTarget)
 	}
 	shortcuts, ok := body["shortcuts"].([]any)
-	if !ok || len(shortcuts) != 2 {
+	if !ok || len(shortcuts) != 3 {
 		t.Fatalf("shortcuts = %#v", body["shortcuts"])
 	}
 	firstShortcut, ok := shortcuts[0].(map[string]any)
 	if !ok || firstShortcut["url"] != "/publish" {
 		t.Fatalf("first shortcut = %#v", shortcuts[0])
+	}
+	thirdShortcut, ok := shortcuts[2].(map[string]any)
+	if !ok || thirdShortcut["url"] != "/explore" {
+		t.Fatalf("third shortcut = %#v", shortcuts[2])
+	}
+	if body["prefer_related_applications"] != true {
+		t.Fatalf("prefer_related_applications = %#v", body["prefer_related_applications"])
+	}
+	related, ok := body["related_applications"].([]any)
+	if !ok || len(related) != 3 {
+		t.Fatalf("related_applications = %#v", body["related_applications"])
+	}
+	play, ok := related[0].(map[string]any)
+	if !ok || play["platform"] != "play" || play["id"] != "org.joinmastodon.android" {
+		t.Fatalf("play related application = %#v", related[0])
 	}
 }
 
@@ -99,8 +114,8 @@ func TestWebAppOptionsUseRailsSiteTitleSetting(t *testing.T) {
 	}
 	body := functionBody(t, src, "webAppOptions")
 	for _, want := range []string{
-		`SiteTitle:         s.settingRawValue("site_title", s.cfg.Title)`,
-		`SiteTitleSet:      true`,
+		`SiteTitle:             s.settingRawValue("site_title", s.cfg.Title)`,
+		`SiteTitleSet:          true`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("webAppOptions must pass raw Rails site_title setting into initial_state and HTML title; missing %q", want)
@@ -531,6 +546,11 @@ func TestPaperclipRootPathStaticAssetsStayServed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("photo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Keep this explicitly public even when the test runner uses umask 0077;
+	// mode 0600 is reserved for retained moderated media in Mastodon 4.4.
+	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
 

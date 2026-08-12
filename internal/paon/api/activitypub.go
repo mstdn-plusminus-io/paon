@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -720,7 +719,7 @@ func (s *Server) activityPubInbox(c *echo.Context) (err error) {
 	actor, err := s.verifyActivityPubSignature(c, body)
 	if err != nil {
 		logActivityPubIngressIssue(c, "rejected", "signature_verification_failed", body, err)
-		return apiError(c, http.StatusUnauthorized, err.Error())
+		return apiError(c, activityPubSignatureErrorStatus(err), err.Error())
 	}
 	s.upgradeActivityPubInboxAccount(actor)
 	s.trackActivityPubDeliverySuccess(actor.InboxURL)
@@ -1166,8 +1165,6 @@ func activityContext() []any {
 			"votersCount":      "toot:votersCount",
 			"blurhash":         "toot:blurhash",
 			"focalPoint":       map[string]any{"@container": "@list", "@id": "toot:focalPoint"},
-			"misskey":          "https://misskey-hub.net/ns#",
-			"_misskey_quote":   "misskey:_misskey_quote",
 		},
 	}
 }
@@ -1244,7 +1241,7 @@ func activityPubActorContext() []any {
 		"indexable":                 "toot:indexable",
 		"memorial":                  "toot:memorial",
 		"suspended":                 "toot:suspended",
-		"attributionDomains":        map[string]any{"@id": "toot:attributionDomains", "@type": "@id"},
+		"attributionDomains":        map[string]any{"@id": "toot:attributionDomains", "@container": "@set"},
 	}
 	return []any{
 		activityPubActivityStreamsContext(),
@@ -1856,14 +1853,6 @@ func activityPubNoteWithError(s *Server, status models.Status) (map[string]any, 
 	if status.EditedAt.Valid {
 		note["updated"] = status.EditedAt.Time.UTC().Format("2006-01-02T15:04:05Z")
 	}
-	if activityPubQuoteInContent(s, status) {
-		var quoteURL any
-		if status.QuoteOriginalURL.Valid {
-			quoteURL = status.QuoteOriginalURL.String
-		}
-		note["quoteUrl"] = quoteURL
-		note["_misskey_quote"] = quoteURL
-	}
 	if status.Poll != nil && status.Poll.ID != 0 {
 		key := "oneOf"
 		if status.Poll.Multiple {
@@ -1889,13 +1878,6 @@ func activityPubPresenceString(value string) any {
 		return nil
 	}
 	return value
-}
-
-func activityPubQuoteInContent(s *Server, status models.Status) bool {
-	if s == nil || !s.cfg.DynamoDBEnabled {
-		return false
-	}
-	return strings.Contains(html.EscapeString(status.Text), "RE:")
 }
 
 func activityPubStatusObjectType(status models.Status) string {

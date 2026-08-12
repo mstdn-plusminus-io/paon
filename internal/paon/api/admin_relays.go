@@ -66,14 +66,15 @@ func (s *Server) createAdminRelay(c *echo.Context) error {
 	if s.db == nil {
 		return c.HTML(http.StatusOK, adminRelayFormHTML(form, adminRelayMessage(locale, "errors.database_unavailable", "DATABASE_URL is not set"), s.authorizedFetchMode(), locale))
 	}
-	if err := s.insertAdminRelay(form); err != nil {
+	if err := s.insertAdminRelay(form, user.AccountID); err != nil {
 		return err
 	}
 	return c.Redirect(http.StatusFound, "/admin/relays")
 }
 
 func (s *Server) enableAdminRelay(c *echo.Context) error {
-	if _, handled, err := s.requireAdminFederationWebUser(c); handled || err != nil {
+	user, handled, err := s.requireAdminFederationWebUser(c)
+	if handled || err != nil {
 		return err
 	}
 	relay, err := s.findAdminRelay(c.Param("id"))
@@ -82,11 +83,16 @@ func (s *Server) enableAdminRelay(c *echo.Context) error {
 	}
 	now := time.Now().UTC()
 	activityID := s.relayFollowActivityID()
-	if err := s.db.Model(&models.Relay{}).Where("id = ?", relay.ID).Updates(map[string]any{
-		"state":              relayStatePending,
-		"follow_activity_id": sql.NullString{String: activityID, Valid: true},
-		"updated_at":         now,
-	}).Error; err != nil {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.Relay{}).Where("id = ?", relay.ID).Updates(map[string]any{
+			"state":              relayStatePending,
+			"follow_activity_id": sql.NullString{String: activityID, Valid: true},
+			"updated_at":         now,
+		}).Error; err != nil {
+			return err
+		}
+		return logAdminAction(tx, user.AccountID, "enable", relayAuditLogTarget(relay), now)
+	}); err != nil {
 		return err
 	}
 	relay.FollowActivityID = sql.NullString{String: activityID, Valid: true}
@@ -96,7 +102,8 @@ func (s *Server) enableAdminRelay(c *echo.Context) error {
 }
 
 func (s *Server) disableAdminRelay(c *echo.Context) error {
-	if _, handled, err := s.requireAdminFederationWebUser(c); handled || err != nil {
+	user, handled, err := s.requireAdminFederationWebUser(c)
+	if handled || err != nil {
 		return err
 	}
 	relay, err := s.findAdminRelay(c.Param("id"))
@@ -104,11 +111,17 @@ func (s *Server) disableAdminRelay(c *echo.Context) error {
 		return err
 	}
 	activityID := s.relayFollowActivityID()
-	if err := s.db.Model(&models.Relay{}).Where("id = ?", relay.ID).Updates(map[string]any{
-		"state":              relayStateIdle,
-		"follow_activity_id": sql.NullString{},
-		"updated_at":         time.Now().UTC(),
-	}).Error; err != nil {
+	now := time.Now().UTC()
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.Relay{}).Where("id = ?", relay.ID).Updates(map[string]any{
+			"state":              relayStateIdle,
+			"follow_activity_id": sql.NullString{},
+			"updated_at":         now,
+		}).Error; err != nil {
+			return err
+		}
+		return logAdminAction(tx, user.AccountID, "disable", relayAuditLogTarget(relay), now)
+	}); err != nil {
 		return err
 	}
 	s.trackActivityPubDeliveryStoplightSuccess(relay.InboxURL)
@@ -117,27 +130,39 @@ func (s *Server) disableAdminRelay(c *echo.Context) error {
 }
 
 func (s *Server) destroyAdminRelay(c *echo.Context) error {
-	if _, handled, err := s.requireAdminFederationWebUser(c); handled || err != nil {
+	user, handled, err := s.requireAdminFederationWebUser(c)
+	if handled || err != nil {
 		return err
 	}
 	relay, err := s.findAdminRelay(c.Param("id"))
 	if err != nil {
 		return err
 	}
+	now := time.Now().UTC()
+	activityID := ""
 	if relay.State == relayStateAccepted {
-		activityID := s.relayFollowActivityID()
-		if err := s.db.Model(&models.Relay{}).Where("id = ?", relay.ID).Updates(map[string]any{
-			"state":              relayStateIdle,
-			"follow_activity_id": sql.NullString{},
-			"updated_at":         time.Now().UTC(),
-		}).Error; err != nil {
+		activityID = s.relayFollowActivityID()
+	}
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if relay.State == relayStateAccepted {
+			if err := tx.Model(&models.Relay{}).Where("id = ?", relay.ID).Updates(map[string]any{
+				"state":              relayStateIdle,
+				"follow_activity_id": sql.NullString{},
+				"updated_at":         now,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Delete(&models.Relay{}, relay.ID).Error; err != nil {
 			return err
 		}
+		return logAdminAction(tx, user.AccountID, "destroy", relayAuditLogTarget(relay), now)
+	}); err != nil {
+		return err
+	}
+	if relay.State == relayStateAccepted {
 		s.trackActivityPubDeliveryStoplightSuccess(relay.InboxURL)
 		_ = s.deliverActivityPubRelayUndoFollow(relay, activityID)
-	}
-	if err := s.db.Delete(&models.Relay{}, relay.ID).Error; err != nil {
-		return err
 	}
 	return c.Redirect(http.StatusFound, "/admin/relays")
 }
@@ -230,7 +255,7 @@ func validateAdminRelayForm(form adminRelayForm) error {
 	return nil
 }
 
-func (s *Server) insertAdminRelay(form adminRelayForm) error {
+func (s *Server) insertAdminRelay(form adminRelayForm, actorAccountID int64) error {
 	now := time.Now().UTC()
 	inboxURL := strings.TrimSpace(form.InboxURL)
 	relay := models.Relay{
@@ -239,14 +264,19 @@ func (s *Server) insertAdminRelay(form adminRelayForm) error {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := s.db.Create(&relay).Error; err != nil {
-		return err
-	}
 	activityID := s.relayFollowActivityID()
-	if err := s.db.Model(&models.Relay{}).Where("id = ?", relay.ID).Updates(map[string]any{
-		"follow_activity_id": sql.NullString{String: activityID, Valid: true},
-		"updated_at":         now,
-	}).Error; err != nil {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&relay).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.Relay{}).Where("id = ?", relay.ID).Updates(map[string]any{
+			"follow_activity_id": sql.NullString{String: activityID, Valid: true},
+			"updated_at":         now,
+		}).Error; err != nil {
+			return err
+		}
+		return logAdminAction(tx, actorAccountID, "create", relayAuditLogTarget(relay), now)
+	}); err != nil {
 		return err
 	}
 	relay.FollowActivityID = sql.NullString{String: activityID, Valid: true}

@@ -133,6 +133,7 @@ type domainBlockCleanupResult struct {
 	PrivateStatusAccountIDs []int64
 	FollowCacheEffects      []followRelationshipCacheEffect
 	RelationshipCaches      []relationshipCacheEffect
+	ListUnmerges            []accountBlockUnmerge
 }
 
 type followRelationshipCacheEffect struct {
@@ -175,6 +176,9 @@ func (s *Server) runAfterAccountDomainBlockEffects(ctx context.Context, accountI
 	}
 	s.publishNotificationIDs(cleanup.NotificationIDs)
 	s.clearDomainBlockFeedCaches(ctx, accountID, []string{domain})
+	for _, effect := range cleanup.ListUnmerges {
+		s.unmergeListFeedsAfterUnfollowBestEffort(ctx, effect.FromAccountID, effect.ListIDs)
+	}
 	s.invalidateAccountDomainBlockCaches(ctx, accountID, []string{domain})
 	for _, effect := range cleanup.FollowCacheEffects {
 		s.invalidateFollowRelationshipCaches(ctx, effect.Source, effect.TargetID)
@@ -233,9 +237,11 @@ func cleanupDomainBlockRecords(tx *gorm.DB, accountID int64, domain string) (dom
 	for _, row := range outgoing {
 		result.PrivateStatusAccountIDs = append(result.PrivateStatusAccountIDs, row.TargetAccountID)
 		result.FollowCacheEffects = append(result.FollowCacheEffects, followRelationshipCacheEffect{Source: models.Account{ID: accountID}, TargetID: row.TargetAccountID})
-		if err := deleteFollowEdge(tx, accountID, row.TargetAccountID); err != nil {
+		listIDs, err := deleteFollowWithAffectedListIDs(tx, row)
+		if err != nil {
 			return result, err
 		}
+		result.ListUnmerges = append(result.ListUnmerges, accountBlockUnmerge{FromAccountID: row.TargetAccountID, ListIDs: listIDs})
 	}
 	for _, row := range incoming {
 		remote, err := domainBlockRemoteAccount(tx, row.AccountID)

@@ -165,7 +165,7 @@ func (s *Server) applyMediaAttachmentVisibility(ctx context.Context, attachment 
 			}
 		}
 		if s.cfg.CacheBusterEnabled {
-			s.bustCacheURL(s.cacheBusterMediaAttachmentURL(attachment.ID, object.attachment, object.style, object.filename))
+			s.bustCacheURL(s.cacheBusterAssetURL(object.key))
 		}
 	}
 	return nil
@@ -181,6 +181,7 @@ type mediaAttachmentStoredObject struct {
 
 func (s *Server) mediaAttachmentStoredObjects(attachment models.MediaAttachment) []mediaAttachmentStoredObject {
 	objects := make([]mediaAttachmentStoredObject, 0, 3)
+	cachePrefix := mediaAttachmentUsesCachePrefix(attachment.FileStorageSchemaVersion, attachment.RemoteURL)
 	if attachment.FileFileName.Valid && strings.TrimSpace(attachment.FileFileName.String) != "" {
 		filename := attachment.FileFileName.String
 		for _, style := range mediaAttachmentFileStyles(attachment) {
@@ -188,8 +189,8 @@ func (s *Server) mediaAttachmentStoredObjects(attachment models.MediaAttachment)
 				attachment: "files",
 				style:      style,
 				filename:   filename,
-				key:        mediaAttachmentObjectKey(attachment.ID, "files", style, filename),
-				path:       s.mediaAttachmentStylePath(attachment.ID, "files", style, filename),
+				key:        mediaAttachmentObjectKeyForAttachment(attachment, "files", style, filename),
+				path:       s.mediaAttachmentStylePathWithCachePrefix(attachment.ID, "files", style, filename, cachePrefix),
 			})
 		}
 	}
@@ -199,8 +200,8 @@ func (s *Server) mediaAttachmentStoredObjects(attachment models.MediaAttachment)
 			attachment: "thumbnails",
 			style:      "original",
 			filename:   filename,
-			key:        mediaAttachmentObjectKey(attachment.ID, "thumbnails", "original", filename),
-			path:       s.mediaThumbnailPath(attachment.ID, filename),
+			key:        mediaAttachmentObjectKeyForAttachment(attachment, "thumbnails", "original", filename),
+			path:       s.mediaAttachmentStylePathWithCachePrefix(attachment.ID, "thumbnails", "original", filename, cachePrefix),
 		})
 	}
 	return objects
@@ -222,10 +223,14 @@ func mediaAttachmentFileStyles(attachment models.MediaAttachment) []string {
 }
 
 func (s *Server) mediaAttachmentStylePath(id int64, attachment string, style string, filename string) string {
+	return s.mediaAttachmentStylePathWithCachePrefix(id, attachment, style, filename, false)
+}
+
+func (s *Server) mediaAttachmentStylePathWithCachePrefix(id int64, attachment string, style string, filename string, cachePrefix bool) string {
 	if attachment == "thumbnails" {
-		return s.mediaThumbnailPath(id, filename)
+		return s.mediaThumbnailPathWithCachePrefix(id, filename, cachePrefix)
 	}
-	return s.mediaFileStylePath(id, style, filename)
+	return s.mediaFileStylePathWithCachePrefix(id, style, filename, cachePrefix)
 }
 
 func (s *Server) removeAccountLocalImageFiles(accountID int64) {

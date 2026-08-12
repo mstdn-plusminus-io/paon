@@ -99,16 +99,16 @@ func TestListAccountIDsRejectsInvalidValuesLikeRailsAccountFind(t *testing.T) {
 	}
 }
 
-func TestAddListAccountsMissingFollowMatchesRailsNotFound(t *testing.T) {
+func TestAddListAccountsMissingFollowMatchesMastodon44Validation(t *testing.T) {
 	src, err := os.ReadFile("lists.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !functionBodyContains(t, src, "addListAccounts", `return apiError(c, http.StatusNotFound, "Record not found")`) {
-		t.Fatal("addListAccounts must return 404 when Rails ListAccount#set_follow raises RecordNotFound")
+	if !functionBodyContains(t, src, "addListAccounts", `return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Account must be a followed account")`) {
+		t.Fatal("addListAccounts must return Mastodon 4.4's 422 missing-follow validation")
 	}
-	if functionBodyContains(t, src, "addListAccounts", `Validation failed: Account follow relationship missing`) {
-		t.Fatal("addListAccounts should not expose a Rails-incompatible 422 for missing follow relationship")
+	if !functionBodyContains(t, src, "addListAccounts", `errors.Is(err, gorm.ErrRecordNotFound)`) {
+		t.Fatal("addListAccounts must keep unknown account/list IDs as 404")
 	}
 }
 
@@ -120,7 +120,7 @@ func TestAddListAccountsRejectsDuplicateLikeRailsValidation(t *testing.T) {
 	for _, want := range []string{
 		`if isUniqueConstraintError(err) {`,
 		`return errListAccountDuplicate`,
-		`return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Account has already been taken")`,
+		`return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Account is already on the list")`,
 	} {
 		if !functionBodyContains(t, src, "addListAccounts", want) {
 			t.Fatalf("addListAccounts missing Rails duplicate validation behavior %q", want)
@@ -128,6 +128,26 @@ func TestAddListAccountsRejectsDuplicateLikeRailsValidation(t *testing.T) {
 	}
 	if functionBodyContains(t, src, "addListAccounts", "OnConflict") || functionBodyContains(t, src, "addListAccounts", "DoNothing") {
 		t.Fatal("addListAccounts must not silently ignore duplicate list memberships")
+	}
+}
+
+func TestListMembershipChangesUpdateCachedPastFeedLikeMastodon44(t *testing.T) {
+	src, err := os.ReadFile("lists.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		fn   string
+		want string
+	}{
+		{"addListAccounts", `if item.FollowID.Valid`},
+		{"addListAccounts", `s.mergeAccountIntoListFeed(c.Request().Context(), s.db, targetID, *list)`},
+		{"removeListAccounts", `follow_id IS NOT NULL`},
+		{"removeListAccounts", `s.unmergeAccountFromListFeed(c.Request().Context(), s.db, targetID, *list)`},
+	} {
+		if !functionBodyContains(t, src, check.fn, check.want) {
+			t.Fatalf("%s missing retroactive list-feed behavior %q", check.fn, check.want)
+		}
 	}
 }
 

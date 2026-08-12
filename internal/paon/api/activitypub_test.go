@@ -467,6 +467,84 @@ func TestActivityPubNoteContentFormatsParagraphs(t *testing.T) {
 	}
 }
 
+func TestActivityPubNoteDoesNotSerializeQuoteCreationFieldsOn44(t *testing.T) {
+	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "example.com", LocalDomain: "example.com"}}
+	quoted := &models.Status{
+		ID:        77,
+		AccountID: 9,
+		URI:       sql.NullString{String: "https://remote.example/users/bob/statuses/77", Valid: true},
+		Account:   models.Account{ID: 9, Username: "bob", Domain: sql.NullString{String: "remote.example", Valid: true}},
+	}
+	status := models.Status{
+		ID:                  123,
+		AccountID:           42,
+		Text:                "quoted",
+		CreatedAt:           time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC),
+		QuoteApprovalPolicy: quotePolicyPublic << 16,
+		Account:             models.Account{ID: 42, Username: "alice", FollowersURL: "https://example.com/users/alice/followers"},
+		Quote: &models.Quote{
+			ID:              88,
+			StatusID:        123,
+			QuotedStatusID:  sql.NullInt64{Int64: 77, Valid: true},
+			QuotedAccountID: sql.NullInt64{Int64: 9, Valid: true},
+			State:           models.QuoteStateAccepted,
+			ApprovalURI:     sql.NullString{String: "https://remote.example/authorizations/88", Valid: true},
+			QuotedStatus:    quoted,
+		},
+	}
+
+	note := activityPubNote(server, status)
+	for _, key := range []string{"quote", "quoteAuthorization", "quoteUrl", "_misskey_quote", "interactionPolicy"} {
+		if _, ok := note[key]; ok {
+			t.Fatalf("Mastodon 4.4 outbound Note unexpectedly contains %q: %#v", key, note)
+		}
+	}
+	create := activityPubCreate(server, status)
+	contexts, ok := create["@context"].([]any)
+	if !ok || len(contexts) != 2 {
+		t.Fatalf("Mastodon 4.4 Create context = %#v", create["@context"])
+	}
+	extension, ok := contexts[1].(map[string]any)
+	if !ok {
+		t.Fatalf("Mastodon 4.4 Create context extension = %#v", contexts[1])
+	}
+	for _, key := range []string{"misskey", "_misskey_quote", "fedibird", "quoteUri", "fep", "quote", "quoteAuthorization", "QuoteAuthorization", "QuoteRequest", "gts", "interactionPolicy", "canQuote", "automaticApproval", "manualApproval", "interactingObject", "interactionTarget"} {
+		if _, ok := extension[key]; ok {
+			t.Fatalf("Mastodon 4.4 outbound Create context unexpectedly contains %q: %#v", key, extension)
+		}
+	}
+}
+
+func TestActivityPubQuotePolicyParsesAutomaticAndManualFlags(t *testing.T) {
+	actor := &models.Account{URI: "https://remote.example/users/alice", FollowersURL: "https://remote.example/users/alice/followers"}
+	note := activityObject{InteractionPolicy: map[string]any{
+		"canQuote": map[string]any{
+			"automaticApproval": []any{activityPubPublicIRI, actor.URI},
+			"manualApproval":    []any{actor.FollowersURL, "https://remote.example/collections/custom"},
+		},
+	}}
+	want := quotePolicyPublic<<16 | quotePolicyFollowers | quotePolicyUnknown
+	if got := activityPubQuoteApprovalPolicy(note, actor); got != want {
+		t.Fatalf("quote policy = %#x, want %#x", got, want)
+	}
+}
+
+func TestParseActivityPayloadReadsQuoteAcceptResult(t *testing.T) {
+	payload, err := parseActivityPayload([]byte(activityTestJSON(`{
+		"id":"https://remote.example/activities/accept-1",
+		"type":"Accept",
+		"actor":"https://remote.example/users/alice",
+		"object":"https://example.com/users/bob/quote_requests/request-1",
+		"result":"https://remote.example/quote_authorizations/1"
+	}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Result != "https://remote.example/quote_authorizations/1" {
+		t.Fatalf("result = %q", payload.Result)
+	}
+}
+
 func TestActivityPubNoteOmitsBlankPresenceFieldsLikeRails(t *testing.T) {
 	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "example.com", LocalDomain: "example.com"}}
 	status := models.Status{
@@ -677,10 +755,27 @@ func TestActivityPubActorObjectContextMatchesRailsExtensions(t *testing.T) {
 	if movedTo, ok := extension["movedTo"].(map[string]any); !ok || movedTo["@id"] != "as:movedTo" || movedTo["@type"] != "@id" {
 		t.Fatalf("movedTo context = %#v", extension["movedTo"])
 	}
+	if domains, ok := extension["attributionDomains"].(map[string]any); !ok || domains["@id"] != "toot:attributionDomains" || domains["@container"] != "@set" {
+		t.Fatalf("attributionDomains context = %#v", extension["attributionDomains"])
+	}
 	for _, unwanted := range []string{"Hashtag", "Emoji"} {
 		if _, ok := extension[unwanted]; ok {
 			t.Fatalf("actor context without virtual tags should not include nested tag extension %q: %#v", unwanted, extension)
 		}
+	}
+}
+
+func TestActivityLimitedStringListRejectsURIObjects(t *testing.T) {
+	got := activityLimitedStringList([]any{
+		"example.com",
+		map[string]any{"@value": "literal.example"},
+		map[string]any{"@id": "https://attacker.example"},
+		map[string]any{"id": "https://compact-attacker.example"},
+		42,
+		"last.example",
+	}, 3)
+	if !reflect.DeepEqual(got, []string{"example.com", "literal.example", "last.example"}) {
+		t.Fatalf("string-only list = %#v", got)
 	}
 }
 
@@ -1309,6 +1404,47 @@ func TestActivityPubStatusRecipientInboxesForDirectMentions(t *testing.T) {
 	}
 }
 
+func TestActivityPubStatusReachSkipsSuspendedAccountsUnlessUnsafe(t *testing.T) {
+	capture := &statusMentionSQLCapture{}
+	database := statusMentionDryRunDatabase(t, capture)
+	server := &Server{db: database}
+
+	assertSuspensionFilter := func(name string, unsafe bool, run func() error) {
+		t.Helper()
+		capture.queries = nil
+		if err := run(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		query := strings.Join(capture.queries, "\n")
+		hasFilter := strings.Contains(query, "suspended_at IS NULL")
+		if unsafe == hasFilter {
+			t.Fatalf("%s unsafe=%v suspension filter=%v query:\n%s", name, unsafe, hasFilter, query)
+		}
+	}
+
+	for _, unsafe := range []bool{false, true} {
+		assertSuspensionFilter("followers", unsafe, func() error {
+			_, err := server.activityPubRemoteFollowerInboxesConfigured(1, unsafe)
+			return err
+		})
+		assertSuspensionFilter("mentions", unsafe, func() error {
+			_, err := server.activityPubStatusMentionInboxesConfigured(2, unsafe)
+			return err
+		})
+		assertSuspensionFilter("reached accounts", unsafe, func() error {
+			_, err := server.activityPubAccountInboxesConfigured([]int64{3}, unsafe)
+			return err
+		})
+		assertSuspensionFilter("reply-account followers", unsafe, func() error {
+			_, err := server.activityPubRemoteFollowersOfLocalReplyAccountInboxesConfigured(models.Status{
+				AccountID:          4,
+				InReplyToAccountID: sql.NullInt64{Int64: 5, Valid: true},
+			}, unsafe)
+			return err
+		})
+	}
+}
+
 func TestActivityPubPollUpdateMentionInboxesUsesRemoteActivityPubMentions(t *testing.T) {
 	server := &Server{}
 	status := models.Status{
@@ -1788,7 +1924,7 @@ func TestParseRemoteActivityActorAcceptsExpandedJSONLDLikeInboxActorUpdate(t *te
 		"https://www.w3.org/ns/activitystreams#followers":[{"@id":"https://remote.example/users/alice/followers"}],
 			"https://joinmastodon.org/ns#featured":[{"@id":"https://remote.example/users/alice/collections/featured"}],
 			"https://joinmastodon.org/ns#featuredTags":[{"@id":"https://remote.example/users/alice/collections/tags"}],
-			"https://joinmastodon.org/ns#attributionDomains":[{"@id":"https://EXAMPLE.org"},{"@value":"*.sub.example"}],
+			"https://joinmastodon.org/ns#attributionDomains":[{"@id":"https://attacker.example"},{"@value":"https://EXAMPLE.org"},{"@value":"*.sub.example"}],
 		"https://www.w3.org/ns/activitystreams#endpoints":[{"@list":[{"https://www.w3.org/ns/activitystreams#sharedInbox":[{"@id":"https://remote.example/inbox"}]}]}],
 		"https://www.w3.org/ns/activitystreams#manuallyApprovesFollowers":[{"@list":[{"@value":true}]}],
 			"https://joinmastodon.org/ns#discoverable":[{"@list":[{"@value":true}]}],
@@ -1817,7 +1953,7 @@ func TestParseRemoteActivityActorAcceptsExpandedJSONLDLikeInboxActorUpdate(t *te
 		actor.SharedInbox() != "https://remote.example/inbox" {
 		t.Fatalf("expanded actor collections = %#v", actor)
 	}
-	if got := activityLimitedValueOrIDList(actor.AttributionDomains, 256); !reflect.DeepEqual(got, []string{"https://EXAMPLE.org", "*.sub.example"}) {
+	if got := activityLimitedStringList(actor.AttributionDomains, 256); !reflect.DeepEqual(got, []string{"https://EXAMPLE.org", "*.sub.example"}) {
 		t.Fatalf("expanded actor attribution domains = %#v", got)
 	}
 	inlineFeaturedActor, err := parseRemoteActivityActor([]byte(activityTestJSON(`{
@@ -2300,6 +2436,8 @@ func TestActivityFetchPrivateIPRejected(t *testing.T) {
 		"255.255.255.255",
 		"::",
 		"::1",
+		"::0.0.0.1",
+		"::127.0.0.1",
 		"::ffff:0.0.0.1",
 		"::ffff:127.0.0.1",
 		"64:ff9b::1",
@@ -2329,10 +2467,10 @@ func TestActivityFetchPrivateIPRejected(t *testing.T) {
 
 func TestActivityFetchPrivateIPExceptionsTakePrecedence(t *testing.T) {
 	old := activityPrivateAddressExceptions
-	activityPrivateAddressExceptions = parseActivityPrivateAddressExceptions("0.0.0.0/8, 100::/64")
+	activityPrivateAddressExceptions = parseActivityPrivateAddressExceptions("::0.0.0.0/104, 100::/64")
 	t.Cleanup(func() { activityPrivateAddressExceptions = old })
 
-	for _, raw := range []string{"0.0.0.1", "::ffff:0.0.0.1", "100::1"} {
+	for _, raw := range []string{"0.0.0.1", "::0.0.0.1", "::ffff:0.0.0.1", "100::1"} {
 		if !activityIPAllowed(net.ParseIP(raw)) {
 			t.Fatalf("expected configured private address exception %s to be allowed", raw)
 		}
@@ -2351,7 +2489,7 @@ func TestActivityHTTPDialControlRejectsResolvedPrivateAddresses(t *testing.T) {
 	if control == nil {
 		t.Fatal("direct connections must install a dial-time address check")
 	}
-	for _, address := range []string{"0.0.0.1:443", "[::ffff:0.0.0.1]:443", "[64:ff9b::1]:443", "[64:ff9b:1::101:101]:443", "[3fff::1]:443"} {
+	for _, address := range []string{"0.0.0.1:443", "[::0.0.0.1]:443", "[::127.0.0.1]:443", "[::ffff:0.0.0.1]:443", "[64:ff9b::1]:443", "[64:ff9b:1::101:101]:443", "[3fff::1]:443"} {
 		err := control(context.Background(), "tcp", address, nil)
 		if !errors.Is(err, errActivityPrivateNetworkAddress) {
 			t.Fatalf("resolved address %s error = %v, want private-network rejection", address, err)
@@ -2619,26 +2757,33 @@ func TestParseActivityPayloadCreateNote(t *testing.T) {
 	}
 }
 
-func TestActivityPubQuoteURLPriorityMatchesRailsInbound(t *testing.T) {
+func TestActivityPubQuoteURLPriorityMatchesMastodon44Inbound(t *testing.T) {
 	note := activityObject{
+		Quote:           "https://remote.example/fep-044f",
 		QuoteURI:        "https://remote.example/quote-uri",
 		QuoteURL:        "https://remote.example/quote-url",
 		MisskeyQuote:    "https://remote.example/misskey",
+		QuoteSet:        true,
 		QuoteURISet:     true,
 		QuoteURLSet:     true,
 		MisskeyQuoteSet: true,
 	}
-	if got := activityPubQuoteURL(note); got != "https://remote.example/quote-uri" {
+	if got := activityPubQuoteURL(note); got != "https://remote.example/fep-044f" {
 		t.Fatalf("quote URL = %q", got)
 	}
-	note.QuoteURI = ""
-	note.QuoteURISet = false
+	note.Quote = ""
+	note.QuoteSet = false
+	if got := activityPubQuoteURL(note); got != "https://remote.example/misskey" {
+		t.Fatalf("quote URL = %q", got)
+	}
+	note.MisskeyQuote = ""
+	note.MisskeyQuoteSet = false
 	if got := activityPubQuoteURL(note); got != "https://remote.example/quote-url" {
 		t.Fatalf("quote URL = %q", got)
 	}
 	note.QuoteURL = ""
 	note.QuoteURLSet = false
-	if got := activityPubQuoteURL(note); got != "https://remote.example/misskey" {
+	if got := activityPubQuoteURL(note); got != "https://remote.example/quote-uri" {
 		t.Fatalf("quote URL = %q", got)
 	}
 	bearcap := "bear:?u=https%3A%2F%2Fremote.example%2Fstatuses%2Fbear-quote&t=secret-token"
@@ -2715,6 +2860,48 @@ func TestActivityPubQuoteURLPriorityMatchesRailsInbound(t *testing.T) {
 	}
 }
 
+func TestActivityPubQuoteParserRetainsOnlyOneSafeInlineLevel(t *testing.T) {
+	payload, err := parseActivityPayload([]byte(activityTestJSON(`{
+		"type":"Create",
+		"actor":"https://remote.example/users/alice",
+		"object":{
+			"id":"https://remote.example/statuses/wrapper",
+			"type":"Note",
+			"attributedTo":"https://remote.example/users/alice",
+			"quote":{
+				"id":"https://remote.example/statuses/quoted",
+				"type":"Note",
+				"attributedTo":"https://remote.example/users/alice",
+				"content":"quoted",
+				"quote":{
+					"id":"https://remote.example/statuses/deeper",
+					"type":"Note",
+					"attributedTo":"https://remote.example/users/alice"
+				}
+			}
+		}
+	}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Object.QuotedObject == nil || payload.Object.QuotedObject.ID != "https://remote.example/statuses/quoted" {
+		t.Fatalf("quoted object = %#v", payload.Object.QuotedObject)
+	}
+	if payload.Object.QuotedObject.QuotedObject != nil {
+		t.Fatalf("recursive quoted object = %#v", payload.Object.QuotedObject.QuotedObject)
+	}
+	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "local.example", LocalDomain: "local.example"}}
+	actor := &models.Account{ID: 1, Username: "alice", URI: "https://remote.example/users/alice", Domain: sqlNullString("remote.example")}
+	if got := safeEmbeddedActivityPubQuote(server, payload.Object, "https://remote.example/statuses/quoted", actor); got == nil {
+		t.Fatal("same-origin, same-actor embedded quote was rejected")
+	}
+	payload.Object.QuotedObject.AttributedTo = "https://remote.example/users/mallory"
+	payload.Object.QuotedObject.AttributedToRaw = "https://remote.example/users/mallory"
+	if got := safeEmbeddedActivityPubQuote(server, payload.Object, "https://remote.example/statuses/quoted", actor); got != nil {
+		t.Fatalf("different-actor embedded quote was accepted: %#v", got)
+	}
+}
+
 func TestParseActivityPayloadDoesNotDispatchRemovedEncryptedMessage(t *testing.T) {
 	payload, err := parseActivityPayload([]byte(`{
 		"type":"Create",
@@ -2754,7 +2941,7 @@ func TestParseActivityPayloadUpdateActorAndDelete(t *testing.T) {
 		update.Object.HeaderRemoteURL != "https://remote.example/header.png" ||
 		len(update.Object.Tags) != 1 || update.Object.Tags[0].IconURL != "https://remote.example/emoji/party.png" ||
 		update.Object.FeaturedTags != "https://remote.example/users/alice/collections/tags" ||
-		!reflect.DeepEqual(activityLimitedValueOrIDList(update.Object.AttributionDomains, 256), []string{"https://EXAMPLE.org", "*.sub.example"}) ||
+		!reflect.DeepEqual(activityLimitedStringList(update.Object.AttributionDomains, 256), []string{"https://EXAMPLE.org", "*.sub.example"}) ||
 		!update.Object.Locked || !update.Object.Discoverable || !update.Object.Indexable || !update.Object.Memorial || !update.Object.Suspended ||
 		activityPubObjectID(update.Object.MovedTo) != "https://remote.example/users/newalice" ||
 		!reflect.DeepEqual(activityRailsValueOrIDList(update.Object.AlsoKnownAs), []string{"https://old.example/users/alice", " ", "https://old.example/users/alice"}) ||

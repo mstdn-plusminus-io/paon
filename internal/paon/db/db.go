@@ -23,7 +23,10 @@ import (
 	"gorm.io/plugin/dbresolver"
 )
 
-const requiredMastodonSchemaVersion = paonschema.Mastodon4323Version
+const (
+	requiredMastodonSchemaVersion = paonschema.Mastodon4422Version
+	minimumPostgreSQLVersionNum   = 130000
+)
 
 func Open(cfg config.Config) (*gorm.DB, error) {
 	if cfg.DatabaseURL == "" {
@@ -44,7 +47,10 @@ func Open(cfg config.Config) (*gorm.DB, error) {
 	if strings.TrimSpace(cfg.ReplicaDatabaseURL) != "" {
 		replicaDSN := databaseDSNWithLockTimeout(cfg.ReplicaDatabaseURL, cfg.DatabaseLockTimeout)
 		if err := database.Use(dbresolver.Register(dbresolver.Config{
-			Replicas: []gorm.Dialector{postgres.Open(replicaDSN)},
+			Replicas: []gorm.Dialector{postgres.New(postgres.Config{
+				DSN:                  replicaDSN,
+				PreferSimpleProtocol: !cfg.ReplicaPreparedStatements,
+			})},
 		})); err != nil {
 			return nil, err
 		}
@@ -137,6 +143,27 @@ func Available(database *gorm.DB) error {
 	return sqlDB.Ping()
 }
 
+// RequireSupportedVersion rejects PostgreSQL releases that Mastodon 4.4 no
+// longer supports. Keep this separate from Available so callers can report a
+// connectivity failure independently from an unsupported server version.
+func RequireSupportedVersion(database *gorm.DB) error {
+	if database == nil {
+		return errors.New("database connection is not configured; set DATABASE_URL or DB_NAME/DB_HOST")
+	}
+	var version int
+	if err := database.Raw("SHOW server_version_num").Scan(&version).Error; err != nil {
+		return fmt.Errorf("read PostgreSQL server version: %w", err)
+	}
+	return validatePostgreSQLVersionNum(version)
+}
+
+func validatePostgreSQLVersionNum(version int) error {
+	if version < minimumPostgreSQLVersionNum {
+		return fmt.Errorf("PostgreSQL 13.0 or newer is required (server_version_num=%d)", version)
+	}
+	return nil
+}
+
 func RequiredMastodonTables() []string {
 	return []string{
 		"accounts",
@@ -185,6 +212,7 @@ func RequiredMastodonTables() []string {
 		"statuses_tags",
 		"tag_follows",
 		"featured_tags",
+		"tag_trends",
 		"polls",
 		"poll_votes",
 		"preview_cards",
@@ -194,6 +222,7 @@ func RequiredMastodonTables() []string {
 		"relationship_severance_events",
 		"scheduled_statuses",
 		"announcements",
+		"annual_report_statuses_per_account_counts",
 		"announcement_mutes",
 		"announcement_reactions",
 		"appeals",
@@ -217,8 +246,8 @@ func RequiredMastodonTables() []string {
 		"backups",
 		"bulk_imports",
 		"bulk_import_rows",
-		"imports",
 		"identities",
+		"instance_moderation_notes",
 		"instances",
 		"account_summaries",
 		"global_follow_recommendations",
@@ -238,11 +267,19 @@ func RequiredMastodonTables() []string {
 		"oauth_access_tokens",
 		"oauth_access_grants",
 		"settings",
+		"terms_of_services",
+		"quotes",
+		"rule_translations",
+		"fasp_providers",
+		"fasp_debug_callbacks",
+		"fasp_subscriptions",
+		"fasp_backfill_requests",
+		"fasp_follow_recommendations",
 	}
 }
 
 func ForbiddenMastodonRelations() []string {
-	return []string{"devices", "encrypted_messages", "one_time_keys", "system_keys"}
+	return []string{"devices", "encrypted_messages", "one_time_keys", "system_keys", "imports"}
 }
 
 func ForbiddenMastodonColumns() map[string][]string {
@@ -251,7 +288,8 @@ func ForbiddenMastodonColumns() map[string][]string {
 		"accounts":                              {"devices_url"},
 		"notification_requests":                 {"dismissed"},
 		"notification_policies":                 {"filter_not_followers", "filter_not_following", "filter_new_accounts", "filter_private_mentions"},
-		"users":                                 {"admin", "moderator"},
+		"settings":                              {"thing_type", "thing_id"},
+		"users":                                 {"admin", "moderator", "encrypted_otp_secret", "encrypted_otp_secret_iv", "encrypted_otp_secret_salt"},
 	}
 }
 
@@ -836,17 +874,6 @@ func RequiredMastodonColumns() map[string][]string {
 			"bulk_import_id",
 			"data",
 		},
-		"imports": {
-			"id",
-			"account_id",
-			"type",
-			"approved",
-			"data_file_name",
-			"data_content_type",
-			"data_file_size",
-			"data_updated_at",
-			"overwrite",
-		},
 		"identities": {
 			"id",
 			"user_id",
@@ -997,8 +1024,6 @@ func RequiredMastodonColumns() map[string][]string {
 			"id",
 			"var",
 			"value",
-			"thing_type",
-			"thing_id",
 		},
 	}
 	for table, columns := range modelBackedMastodonColumns() {
@@ -1032,7 +1057,6 @@ func RequiredMastodonIndexes() map[string][]string {
 		},
 		"account_aliases": {
 			"index_account_aliases_on_account_id_and_uri",
-			"index_account_aliases_on_account_id",
 		},
 		"account_conversations": {
 			"index_unique_conversations",
@@ -1062,7 +1086,6 @@ func RequiredMastodonIndexes() map[string][]string {
 		},
 		"account_relationship_severance_events": {
 			"idx_on_account_id_relationship_severance_event_id_7bd82bf20e",
-			"index_account_relationship_severance_events_on_account_id",
 			"idx_on_relationship_severance_event_id_403f53e707",
 		},
 		"account_statuses_cleanup_policies": {
@@ -1126,7 +1149,6 @@ func RequiredMastodonIndexes() map[string][]string {
 		"custom_filter_statuses": {
 			"index_custom_filter_statuses_on_custom_filter_id",
 			"index_custom_filter_statuses_on_status_id_and_custom_filter_id",
-			"index_custom_filter_statuses_on_status_id",
 		},
 		"custom_filters": {
 			"index_custom_filters_on_account_id",
@@ -1308,7 +1330,7 @@ func RequiredMastodonIndexes() map[string][]string {
 			"index_severed_relationships_on_remote_account_id",
 		},
 		"settings": {
-			"index_settings_on_thing_type_and_thing_id_and_var",
+			"index_settings_on_var",
 		},
 		"site_uploads": {
 			"index_site_uploads_on_var",
@@ -1340,7 +1362,7 @@ func RequiredMastodonIndexes() map[string][]string {
 			"index_statuses_on_reblog_of_id_and_account_id",
 			"index_statuses_on_uri",
 			"index_statuses_local_20190824",
-			"index_statuses_public_20200119",
+			"index_statuses_public_20250129",
 		},
 		"statuses_tags": {
 			"statuses_tags_pkey",
@@ -1385,8 +1407,18 @@ func RequiredMastodonIndexes() map[string][]string {
 		"webauthn_credentials": {
 			"index_webauthn_credentials_on_external_id",
 			"index_webauthn_credentials_on_user_id_and_nickname",
-			"index_webauthn_credentials_on_user_id",
 		},
+		"annual_report_statuses_per_account_counts": {"idx_on_year_account_id_ff3e167cef"},
+		"tag_trends":                  {"index_tag_trends_on_tag_id_and_language"},
+		"terms_of_services":           {"index_terms_of_services_on_effective_date"},
+		"fasp_providers":              {"index_fasp_providers_on_base_url"},
+		"fasp_debug_callbacks":        {"index_fasp_debug_callbacks_on_fasp_provider_id"},
+		"fasp_subscriptions":          {"index_fasp_subscriptions_on_fasp_provider_id"},
+		"fasp_backfill_requests":      {"index_fasp_backfill_requests_on_fasp_provider_id"},
+		"fasp_follow_recommendations": {"index_fasp_follow_recommendations_on_requesting_account_id", "index_fasp_follow_recommendations_on_recommended_account_id"},
+		"instance_moderation_notes":   {"index_instance_moderation_notes_on_domain"},
+		"quotes":                      {"index_quotes_on_account_id_and_quoted_account_id", "index_quotes_on_activity_uri", "index_quotes_on_approval_uri", "index_quotes_on_quoted_account_id", "index_quotes_on_quoted_status_id", "index_quotes_on_status_id"},
+		"rule_translations":           {"index_rule_translations_on_rule_id_and_language"},
 	}
 }
 
@@ -1440,7 +1472,7 @@ func RequiredMastodonUniqueIndexes() []string {
 		"index_preview_cards_on_url",
 		"index_severed_relationships_on_unique_tuples",
 		"index_session_activations_on_session_id",
-		"index_settings_on_thing_type_and_thing_id_and_var",
+		"index_settings_on_var",
 		"index_site_uploads_on_var",
 		"index_software_updates_on_version",
 		"index_status_pins_on_account_id_and_status_id",
@@ -1460,6 +1492,13 @@ func RequiredMastodonUniqueIndexes() []string {
 		"index_instances_on_domain",
 		"index_account_summaries_on_account_id",
 		"index_global_follow_recommendations_on_account_id",
+		"idx_on_year_account_id_ff3e167cef",
+		"index_tag_trends_on_tag_id_and_language",
+		"index_terms_of_services_on_effective_date",
+		"index_fasp_providers_on_base_url",
+		"index_quotes_on_activity_uri",
+		"index_quotes_on_status_id",
+		"index_rule_translations_on_rule_id_and_language",
 	}
 }
 
@@ -1575,8 +1614,9 @@ func RequiredMastodonIndexDefinitionFragments() map[string][]string {
 			"visibility = 0",
 			"reblog_of_id IS NULL",
 		},
-		"index_statuses_public_20200119": {
-			"id",
+		"index_statuses_public_20250129": {
+			"id DESC",
+			"language",
 			"account_id",
 			"deleted_at IS NULL",
 			"visibility = 0",
@@ -1609,6 +1649,18 @@ func RequiredMastodonIndexDefinitionFragments() map[string][]string {
 		"index_web_push_subscriptions_on_access_token_id": {
 			"access_token_id",
 			"WHERE (access_token_id IS NOT NULL)",
+		},
+		"index_terms_of_services_on_effective_date": {
+			"effective_date",
+			"WHERE (effective_date IS NOT NULL)",
+		},
+		"index_quotes_on_activity_uri": {
+			"activity_uri",
+			"WHERE (activity_uri IS NOT NULL)",
+		},
+		"index_quotes_on_approval_uri": {
+			"approval_uri",
+			"WHERE (approval_uri IS NOT NULL)",
 		},
 	}
 }
@@ -1658,7 +1710,6 @@ func RequiredMastodonPrimaryKeys() map[string][]string {
 		"follows":                               {"id"},
 		"generated_annual_reports":              {"id"},
 		"identities":                            {"id"},
-		"imports":                               {"id"},
 		"invites":                               {"id"},
 		"ip_blocks":                             {"id"},
 		"list_accounts":                         {"id"},
@@ -1708,6 +1759,17 @@ func RequiredMastodonPrimaryKeys() map[string][]string {
 		"web_settings":                          {"id"},
 		"webauthn_credentials":                  {"id"},
 		"webhooks":                              {"id"},
+		"annual_report_statuses_per_account_counts": {"id"},
+		"tag_trends":                  {"id"},
+		"terms_of_services":           {"id"},
+		"fasp_providers":              {"id"},
+		"fasp_debug_callbacks":        {"id"},
+		"fasp_subscriptions":          {"id"},
+		"fasp_backfill_requests":      {"id"},
+		"fasp_follow_recommendations": {"id"},
+		"instance_moderation_notes":   {"id"},
+		"quotes":                      {"id"},
+		"rule_translations":           {"id"},
 	}
 }
 
@@ -1740,8 +1802,14 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "accounts", Column: "attribution_domains", MustBeNullable: true, DataType: "_varchar", DefaultFragments: []string{"'{}'::character varying[]"}},
 		{Table: "accounts_tags", Column: "account_id", NotNull: true},
 		{Table: "accounts_tags", Column: "tag_id", NotNull: true},
+		{Table: "account_aliases", Column: "account_id", NotNull: true},
 		{Table: "account_aliases", Column: "acct", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "account_aliases", Column: "uri", NotNull: true, DefaultFragments: []string{"''::character varying"}},
+		{Table: "account_conversations", Column: "account_id", NotNull: true},
+		{Table: "account_conversations", Column: "conversation_id", NotNull: true},
+		{Table: "account_deletion_requests", Column: "account_id", NotNull: true},
+		{Table: "account_domain_blocks", Column: "account_id", NotNull: true},
+		{Table: "account_domain_blocks", Column: "domain", NotNull: true},
 		{Table: "account_migrations", Column: "acct", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "account_migrations", Column: "followers_count", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "account_moderation_notes", Column: "content", NotNull: true},
@@ -1760,7 +1828,11 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "account_statuses_cleanup_policies", Column: "keep_media", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "account_statuses_cleanup_policies", Column: "keep_self_fav", NotNull: true, DefaultFragments: []string{"true"}},
 		{Table: "account_statuses_cleanup_policies", Column: "keep_self_bookmark", NotNull: true, DefaultFragments: []string{"true"}},
+		{Table: "account_notes", Column: "account_id", NotNull: true},
+		{Table: "account_notes", Column: "target_account_id", NotNull: true},
 		{Table: "account_notes", Column: "comment", NotNull: true},
+		{Table: "account_pins", Column: "account_id", NotNull: true},
+		{Table: "account_pins", Column: "target_account_id", NotNull: true},
 		{Table: "account_relationship_severance_events", Column: "account_id", NotNull: true},
 		{Table: "account_relationship_severance_events", Column: "relationship_severance_event_id", NotNull: true},
 		{Table: "account_relationship_severance_events", Column: "followers_count", NotNull: true, DefaultFragments: []string{"0"}},
@@ -1769,15 +1841,24 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "account_warning_presets", Column: "title", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "account_warnings", Column: "action", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "account_warnings", Column: "text", NotNull: true, DefaultFragments: []string{"''::text"}},
+		{Table: "admin_action_logs", Column: "account_id", NotNull: true},
 		{Table: "admin_action_logs", Column: "action", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "account_conversations", Column: "participant_account_ids", NotNull: true, DefaultFragments: []string{"'{}'::bigint[]"}},
 		{Table: "account_conversations", Column: "status_ids", NotNull: true, DefaultFragments: []string{"'{}'::bigint[]"}},
 		{Table: "account_conversations", Column: "lock_version", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "account_conversations", Column: "unread", NotNull: true, DefaultFragments: []string{"false"}},
+		{Table: "announcement_mutes", Column: "account_id", NotNull: true},
+		{Table: "announcement_mutes", Column: "announcement_id", NotNull: true},
+		{Table: "announcement_reactions", Column: "account_id", NotNull: true},
+		{Table: "announcement_reactions", Column: "announcement_id", NotNull: true},
 		{Table: "announcement_reactions", Column: "name", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "announcements", Column: "text", NotNull: true, DefaultFragments: []string{"''::text"}},
 		{Table: "announcements", Column: "published", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "announcements", Column: "all_day", NotNull: true, DefaultFragments: []string{"false"}},
+		{Table: "announcements", Column: "notification_sent_at", MustBeNullable: true, DataType: "timestamp"},
+		{Table: "annual_report_statuses_per_account_counts", Column: "year", NotNull: true, DataType: "int4"},
+		{Table: "annual_report_statuses_per_account_counts", Column: "account_id", NotNull: true, DataType: "int8"},
+		{Table: "annual_report_statuses_per_account_counts", Column: "statuses_count", NotNull: true, DataType: "int8"},
 		{Table: "appeals", Column: "account_id", NotNull: true},
 		{Table: "appeals", Column: "account_warning_id", NotNull: true},
 		{Table: "appeals", Column: "text", NotNull: true, DefaultFragments: []string{"''::text"}},
@@ -1802,6 +1883,7 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "custom_filter_keywords", Column: "whole_word", NotNull: true, DefaultFragments: []string{"true"}},
 		{Table: "custom_filter_statuses", Column: "custom_filter_id", NotNull: true},
 		{Table: "custom_filter_statuses", Column: "status_id", NotNull: true},
+		{Table: "custom_filters", Column: "account_id", NotNull: true},
 		{Table: "custom_filters", Column: "phrase", NotNull: true, DefaultFragments: []string{"''::text"}},
 		{Table: "custom_filters", Column: "context", NotNull: true, DefaultFragments: []string{"ARRAY[]::character varying[]"}},
 		{Table: "custom_filters", Column: "action", NotNull: true, DefaultFragments: []string{"0"}},
@@ -1831,6 +1913,45 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "generated_annual_reports", Column: "data", NotNull: true, DataType: "jsonb"},
 		{Table: "generated_annual_reports", Column: "schema_version", NotNull: true, DataType: "int4"},
 		{Table: "generated_annual_reports", Column: "viewed_at", MustBeNullable: true, DataType: "timestamp"},
+		{Table: "fasp_providers", Column: "confirmed", NotNull: true, DataType: "bool", DefaultFragments: []string{"false"}},
+		{Table: "fasp_providers", Column: "name", NotNull: true, DataType: "varchar"},
+		{Table: "fasp_providers", Column: "base_url", NotNull: true, DataType: "varchar"},
+		{Table: "fasp_providers", Column: "sign_in_url", MustBeNullable: true, DataType: "varchar"},
+		{Table: "fasp_providers", Column: "remote_identifier", NotNull: true, DataType: "varchar"},
+		{Table: "fasp_providers", Column: "provider_public_key_pem", NotNull: true, DataType: "varchar"},
+		{Table: "fasp_providers", Column: "server_private_key_pem", NotNull: true, DataType: "varchar"},
+		{Table: "fasp_providers", Column: "capabilities", NotNull: true, DataType: "jsonb", DefaultFragments: []string{"'[]'::jsonb"}},
+		{Table: "fasp_providers", Column: "privacy_policy", MustBeNullable: true, DataType: "jsonb"},
+		{Table: "fasp_providers", Column: "contact_email", MustBeNullable: true, DataType: "varchar"},
+		{Table: "fasp_providers", Column: "fediverse_account", MustBeNullable: true, DataType: "varchar"},
+		{Table: "fasp_providers", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "fasp_providers", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "fasp_debug_callbacks", Column: "fasp_provider_id", NotNull: true, DataType: "int8"},
+		{Table: "fasp_debug_callbacks", Column: "ip", NotNull: true, DataType: "varchar"},
+		{Table: "fasp_debug_callbacks", Column: "request_body", NotNull: true, DataType: "text"},
+		{Table: "fasp_debug_callbacks", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "fasp_debug_callbacks", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "fasp_subscriptions", Column: "category", NotNull: true, DataType: "varchar"},
+		{Table: "fasp_subscriptions", Column: "subscription_type", NotNull: true, DataType: "varchar"},
+		{Table: "fasp_subscriptions", Column: "max_batch_size", NotNull: true, DataType: "int4"},
+		{Table: "fasp_subscriptions", Column: "threshold_timeframe", MustBeNullable: true, DataType: "int4"},
+		{Table: "fasp_subscriptions", Column: "threshold_shares", MustBeNullable: true, DataType: "int4"},
+		{Table: "fasp_subscriptions", Column: "threshold_likes", MustBeNullable: true, DataType: "int4"},
+		{Table: "fasp_subscriptions", Column: "threshold_replies", MustBeNullable: true, DataType: "int4"},
+		{Table: "fasp_subscriptions", Column: "fasp_provider_id", NotNull: true, DataType: "int8"},
+		{Table: "fasp_subscriptions", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "fasp_subscriptions", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "fasp_backfill_requests", Column: "category", NotNull: true, DataType: "varchar"},
+		{Table: "fasp_backfill_requests", Column: "max_count", NotNull: true, DataType: "int4", DefaultFragments: []string{"100"}},
+		{Table: "fasp_backfill_requests", Column: "cursor", MustBeNullable: true, DataType: "varchar"},
+		{Table: "fasp_backfill_requests", Column: "fulfilled", NotNull: true, DataType: "bool", DefaultFragments: []string{"false"}},
+		{Table: "fasp_backfill_requests", Column: "fasp_provider_id", NotNull: true, DataType: "int8"},
+		{Table: "fasp_backfill_requests", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "fasp_backfill_requests", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "fasp_follow_recommendations", Column: "requesting_account_id", NotNull: true, DataType: "int8"},
+		{Table: "fasp_follow_recommendations", Column: "recommended_account_id", NotNull: true, DataType: "int8"},
+		{Table: "fasp_follow_recommendations", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "fasp_follow_recommendations", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
 		{Table: "follow_requests", Column: "account_id", NotNull: true},
 		{Table: "follow_requests", Column: "target_account_id", NotNull: true},
 		{Table: "follow_requests", Column: "show_reblogs", NotNull: true, DefaultFragments: []string{"true"}},
@@ -1839,12 +1960,13 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "follows", Column: "target_account_id", NotNull: true},
 		{Table: "follows", Column: "show_reblogs", NotNull: true, DefaultFragments: []string{"true"}},
 		{Table: "follows", Column: "notify", NotNull: true, DefaultFragments: []string{"false"}},
-		{Table: "imports", Column: "type", NotNull: true},
-		{Table: "imports", Column: "approved", NotNull: true, DefaultFragments: []string{"false"}},
-		{Table: "imports", Column: "account_id", NotNull: true},
-		{Table: "imports", Column: "overwrite", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "identities", Column: "provider", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "identities", Column: "uid", NotNull: true, DefaultFragments: []string{"''::character varying"}},
+		{Table: "instance_moderation_notes", Column: "domain", NotNull: true, DataType: "varchar"},
+		{Table: "instance_moderation_notes", Column: "account_id", NotNull: true, DataType: "int8"},
+		{Table: "instance_moderation_notes", Column: "content", MustBeNullable: true, DataType: "text"},
+		{Table: "instance_moderation_notes", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "instance_moderation_notes", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
 		{Table: "invites", Column: "user_id", NotNull: true},
 		{Table: "invites", Column: "code", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "invites", Column: "uses", NotNull: true, DefaultFragments: []string{"0"}},
@@ -1859,6 +1981,7 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "lists", Column: "replies_policy", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "lists", Column: "exclusive", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "login_activities", Column: "user_id", NotNull: true},
+		{Table: "markers", Column: "user_id", NotNull: true},
 		{Table: "markers", Column: "timeline", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "markers", Column: "last_read_id", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "markers", Column: "lock_version", NotNull: true, DefaultFragments: []string{"0"}},
@@ -1904,7 +2027,11 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "oauth_applications", Column: "scopes", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "oauth_applications", Column: "superapp", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "oauth_applications", Column: "confidential", NotNull: true, DefaultFragments: []string{"true"}},
+		{Table: "poll_votes", Column: "account_id", NotNull: true},
+		{Table: "poll_votes", Column: "poll_id", NotNull: true},
 		{Table: "poll_votes", Column: "choice", NotNull: true, DefaultFragments: []string{"0"}},
+		{Table: "polls", Column: "account_id", NotNull: true},
+		{Table: "polls", Column: "status_id", NotNull: true},
 		{Table: "polls", Column: "options", NotNull: true, DefaultFragments: []string{"ARRAY[]::character varying[]"}},
 		{Table: "polls", Column: "cached_tallies", NotNull: true, DefaultFragments: []string{"'{}'::bigint[]"}},
 		{Table: "polls", Column: "multiple", NotNull: true, DefaultFragments: []string{"false"}},
@@ -1936,6 +2063,17 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "relationship_severance_events", Column: "type", NotNull: true, DataType: "int4"},
 		{Table: "relationship_severance_events", Column: "target_name", NotNull: true, DataType: "varchar"},
 		{Table: "relationship_severance_events", Column: "purged", NotNull: true, DataType: "bool", DefaultFragments: []string{"false"}},
+		{Table: "quotes", Column: "id", NotNull: true, DataType: "int8", DefaultFragments: []string{"timestamp_id('quotes'"}},
+		{Table: "quotes", Column: "account_id", NotNull: true, DataType: "int8"},
+		{Table: "quotes", Column: "status_id", NotNull: true, DataType: "int8"},
+		{Table: "quotes", Column: "quoted_status_id", MustBeNullable: true, DataType: "int8"},
+		{Table: "quotes", Column: "quoted_account_id", MustBeNullable: true, DataType: "int8"},
+		{Table: "quotes", Column: "state", NotNull: true, DataType: "int4", DefaultFragments: []string{"0"}},
+		{Table: "quotes", Column: "approval_uri", MustBeNullable: true, DataType: "varchar"},
+		{Table: "quotes", Column: "activity_uri", MustBeNullable: true, DataType: "varchar"},
+		{Table: "quotes", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "quotes", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "quotes", Column: "legacy", NotNull: true, DataType: "bool", DefaultFragments: []string{"false"}},
 		{Table: "reports", Column: "status_ids", NotNull: true, DefaultFragments: []string{"'{}'::bigint[]"}},
 		{Table: "reports", Column: "comment", NotNull: true, DefaultFragments: []string{"''::text"}},
 		{Table: "reports", Column: "account_id", NotNull: true},
@@ -1950,6 +2088,13 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "rules", Column: "priority", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "rules", Column: "text", NotNull: true, DefaultFragments: []string{"''::text"}},
 		{Table: "rules", Column: "hint", NotNull: true, DataType: "text", DefaultFragments: []string{"''::text"}},
+		{Table: "rule_translations", Column: "text", NotNull: true, DataType: "text", DefaultFragments: []string{"''::text"}},
+		{Table: "rule_translations", Column: "hint", NotNull: true, DataType: "text", DefaultFragments: []string{"''::text"}},
+		{Table: "rule_translations", Column: "language", NotNull: true, DataType: "varchar"},
+		{Table: "rule_translations", Column: "rule_id", NotNull: true, DataType: "int8"},
+		{Table: "rule_translations", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "rule_translations", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "scheduled_statuses", Column: "account_id", NotNull: true},
 		{Table: "session_activations", Column: "session_id", NotNull: true},
 		{Table: "session_activations", Column: "user_agent", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "session_activations", Column: "user_id", NotNull: true},
@@ -1969,6 +2114,7 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "status_edits", Column: "status_id", NotNull: true},
 		{Table: "status_edits", Column: "text", NotNull: true, DefaultFragments: []string{"''::text"}},
 		{Table: "status_edits", Column: "spoiler_text", NotNull: true, DefaultFragments: []string{"''::text"}},
+		{Table: "status_edits", Column: "quote_id", MustBeNullable: true, DataType: "int8"},
 		{Table: "status_pins", Column: "account_id", NotNull: true},
 		{Table: "status_pins", Column: "status_id", NotNull: true},
 		{Table: "status_pins", Column: "created_at", NotNull: true, DefaultMustBeNull: true},
@@ -1977,6 +2123,8 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "status_stats", Column: "replies_count", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "status_stats", Column: "reblogs_count", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "status_stats", Column: "favourites_count", NotNull: true, DefaultFragments: []string{"0"}},
+		{Table: "status_stats", Column: "untrusted_favourites_count", MustBeNullable: true, DataType: "int8"},
+		{Table: "status_stats", Column: "untrusted_reblogs_count", MustBeNullable: true, DataType: "int8"},
 		{Table: "status_trends", Column: "status_id", NotNull: true},
 		{Table: "status_trends", Column: "account_id", NotNull: true},
 		{Table: "status_trends", Column: "score", NotNull: true, DefaultFragments: []string{"0"}},
@@ -1988,11 +2136,26 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "statuses", Column: "spoiler_text", NotNull: true, DefaultFragments: []string{"''::text"}},
 		{Table: "statuses", Column: "reply", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "statuses", Column: "account_id", NotNull: true},
+		{Table: "statuses", Column: "fetched_replies_at", MustBeNullable: true, DataType: "timestamp"},
+		{Table: "statuses", Column: "quote_approval_policy", NotNull: true, DataType: "int4", DefaultFragments: []string{"0"}},
 		{Table: "statuses_tags", Column: "status_id", NotNull: true},
 		{Table: "statuses_tags", Column: "tag_id", NotNull: true},
 		{Table: "tag_follows", Column: "tag_id", NotNull: true},
 		{Table: "tag_follows", Column: "account_id", NotNull: true},
+		{Table: "tag_trends", Column: "tag_id", NotNull: true, DataType: "int8"},
+		{Table: "tag_trends", Column: "score", NotNull: true, DataType: "float8", DefaultFragments: []string{"0"}},
+		{Table: "tag_trends", Column: "rank", NotNull: true, DataType: "int4", DefaultFragments: []string{"0"}},
+		{Table: "tag_trends", Column: "allowed", NotNull: true, DataType: "bool", DefaultFragments: []string{"false"}},
+		{Table: "tag_trends", Column: "language", NotNull: true, DataType: "varchar", DefaultFragments: []string{"''::character varying"}},
 		{Table: "tags", Column: "name", NotNull: true, DefaultFragments: []string{"''::character varying"}},
+		{Table: "terms_of_services", Column: "text", NotNull: true, DataType: "text", DefaultFragments: []string{"''::text"}},
+		{Table: "terms_of_services", Column: "changelog", NotNull: true, DataType: "text", DefaultFragments: []string{"''::text"}},
+		{Table: "terms_of_services", Column: "published_at", MustBeNullable: true, DataType: "timestamp"},
+		{Table: "terms_of_services", Column: "notification_sent_at", MustBeNullable: true, DataType: "timestamp"},
+		{Table: "terms_of_services", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "terms_of_services", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "terms_of_services", Column: "effective_date", MustBeNullable: true, DataType: "date"},
+		{Table: "tombstones", Column: "account_id", NotNull: true},
 		{Table: "tombstones", Column: "uri", NotNull: true},
 		{Table: "unavailable_domains", Column: "domain", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "user_roles", Column: "name", NotNull: true, DefaultFragments: []string{"''::character varying"}},
@@ -2000,6 +2163,7 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "user_roles", Column: "position", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "user_roles", Column: "permissions", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "user_roles", Column: "highlighted", NotNull: true, DefaultFragments: []string{"false"}},
+		{Table: "user_invite_requests", Column: "user_id", NotNull: true},
 		{Table: "users", Column: "email", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "users", Column: "encrypted_password", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "users", Column: "sign_in_count", NotNull: true, DefaultFragments: []string{"0"}},
@@ -2008,9 +2172,14 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "users", Column: "account_id", NotNull: true},
 		{Table: "users", Column: "disabled", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "users", Column: "approved", NotNull: true, DefaultFragments: []string{"true"}},
+		{Table: "users", Column: "age_verified_at", MustBeNullable: true, DataType: "timestamp"},
+		{Table: "users", Column: "require_tos_interstitial", NotNull: true, DataType: "bool", DefaultFragments: []string{"false"}},
 		{Table: "web_push_subscriptions", Column: "endpoint", NotNull: true},
 		{Table: "web_push_subscriptions", Column: "key_p256dh", NotNull: true},
 		{Table: "web_push_subscriptions", Column: "key_auth", NotNull: true},
+		{Table: "web_push_subscriptions", Column: "access_token_id", NotNull: true, DataType: "int8"},
+		{Table: "web_push_subscriptions", Column: "user_id", NotNull: true, DataType: "int8"},
+		{Table: "web_push_subscriptions", Column: "standard", NotNull: true, DataType: "bool", DefaultFragments: []string{"false"}},
 		{Table: "web_settings", Column: "user_id", NotNull: true},
 		{Table: "webhooks", Column: "url", NotNull: true},
 		{Table: "webhooks", Column: "events", NotNull: true, DefaultFragments: []string{"ARRAY[]::character varying[]"}},
@@ -2091,8 +2260,8 @@ func RequiredMastodonForeignKeys() []MastodonForeignKey {
 		{Table: "account_domain_blocks", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "account_migrations", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "account_migrations", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "account_moderation_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "a"},
-		{Table: "account_moderation_notes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "a"},
+		{Table: "account_moderation_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
+		{Table: "account_moderation_notes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "account_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "account_notes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "account_pins", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
@@ -2141,9 +2310,14 @@ func RequiredMastodonForeignKeys() []MastodonForeignKey {
 		{Table: "follow_requests", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "follows", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "follows", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
+		{Table: "fasp_backfill_requests", Column: "fasp_provider_id", ForeignTable: "fasp_providers", OnDelete: "a"},
+		{Table: "fasp_debug_callbacks", Column: "fasp_provider_id", ForeignTable: "fasp_providers", OnDelete: "a"},
+		{Table: "fasp_follow_recommendations", Column: "requesting_account_id", ForeignTable: "accounts", OnDelete: "a"},
+		{Table: "fasp_follow_recommendations", Column: "recommended_account_id", ForeignTable: "accounts", OnDelete: "a"},
+		{Table: "fasp_subscriptions", Column: "fasp_provider_id", ForeignTable: "fasp_providers", OnDelete: "a"},
 		{Table: "generated_annual_reports", Column: "account_id", ForeignTable: "accounts", OnDelete: "a"},
 		{Table: "identities", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "imports", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
+		{Table: "instance_moderation_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "invites", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
 		{Table: "list_accounts", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "list_accounts", Column: "follow_id", ForeignTable: "follows", OnDelete: "c"},
@@ -2178,6 +2352,10 @@ func RequiredMastodonForeignKeys() []MastodonForeignKey {
 		{Table: "polls", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
 		{Table: "preview_card_trends", Column: "preview_card_id", ForeignTable: "preview_cards", OnDelete: "c"},
 		{Table: "preview_cards", Column: "author_account_id", ForeignTable: "accounts", OnDelete: "n"},
+		{Table: "quotes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
+		{Table: "quotes", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
+		{Table: "quotes", Column: "quoted_account_id", ForeignTable: "accounts", OnDelete: "n"},
+		{Table: "quotes", Column: "quoted_status_id", ForeignTable: "statuses", OnDelete: "n"},
 		{Table: "report_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "report_notes", Column: "report_id", ForeignTable: "reports", OnDelete: "c"},
 		{Table: "reports", Column: "action_taken_by_account_id", ForeignTable: "accounts", OnDelete: "n"},
@@ -2185,6 +2363,7 @@ func RequiredMastodonForeignKeys() []MastodonForeignKey {
 		{Table: "reports", Column: "assigned_account_id", ForeignTable: "accounts", OnDelete: "n"},
 		{Table: "reports", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "reports", Column: "application_id", ForeignTable: "oauth_applications", OnDelete: "n"},
+		{Table: "rule_translations", Column: "rule_id", ForeignTable: "rules", OnDelete: "c"},
 		{Table: "scheduled_statuses", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "session_activations", Column: "access_token_id", ForeignTable: "oauth_access_tokens", OnDelete: "c"},
 		{Table: "session_activations", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
@@ -2206,6 +2385,7 @@ func RequiredMastodonForeignKeys() []MastodonForeignKey {
 		{Table: "statuses_tags", Column: "tag_id", ForeignTable: "tags", OnDelete: "c"},
 		{Table: "tag_follows", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "tag_follows", Column: "tag_id", ForeignTable: "tags", OnDelete: "c"},
+		{Table: "tag_trends", Column: "tag_id", ForeignTable: "tags", OnDelete: "c"},
 		{Table: "tombstones", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "user_invite_requests", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
 		{Table: "users", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
@@ -2215,7 +2395,7 @@ func RequiredMastodonForeignKeys() []MastodonForeignKey {
 		{Table: "web_push_subscriptions", Column: "access_token_id", ForeignTable: "oauth_access_tokens", OnDelete: "c"},
 		{Table: "web_push_subscriptions", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
 		{Table: "web_settings", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "webauthn_credentials", Column: "user_id", ForeignTable: "users", OnDelete: "a"},
+		{Table: "webauthn_credentials", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
 	}
 }
 
@@ -2236,6 +2416,7 @@ func RequiredMastodonSequences() []string {
 		"accounts_id_seq",
 		"media_attachments_id_seq",
 		"notification_requests_id_seq",
+		"quotes_id_seq",
 		"statuses_id_seq",
 	}
 }
@@ -2310,6 +2491,7 @@ func requiredMastodonColumnModels() []any {
 		paonmodels.AccountWarningPreset{},
 		paonmodels.AdminActionLog{},
 		paonmodels.Announcement{},
+		paonmodels.AnnualReportStatusesPerAccountCount{},
 		paonmodels.AnnouncementMute{},
 		paonmodels.AnnouncementReaction{},
 		paonmodels.Appeal{},
@@ -2330,6 +2512,11 @@ func requiredMastodonColumnModels() []any {
 		paonmodels.DomainBlock{},
 		paonmodels.EmailDomainBlock{},
 		paonmodels.Favourite{},
+		paonmodels.FaspBackfillRequest{},
+		paonmodels.FaspDebugCallback{},
+		paonmodels.FaspFollowRecommendation{},
+		paonmodels.FaspProvider{},
+		paonmodels.FaspSubscription{},
 		paonmodels.FeaturedTag{},
 		paonmodels.Follow{},
 		paonmodels.FollowRecommendationMute{},
@@ -2337,8 +2524,8 @@ func requiredMastodonColumnModels() []any {
 		paonmodels.FollowRequest{},
 		paonmodels.GeneratedAnnualReport{},
 		paonmodels.Identity{},
-		paonmodels.Import{},
 		paonmodels.Instance{},
+		paonmodels.InstanceModerationNote{},
 		paonmodels.Invite{},
 		paonmodels.IPBlock{},
 		paonmodels.List{},
@@ -2366,6 +2553,7 @@ func requiredMastodonColumnModels() []any {
 		paonmodels.Report{},
 		paonmodels.ReportNote{},
 		paonmodels.Rule{},
+		paonmodels.RuleTranslation{},
 		paonmodels.ScheduledStatus{},
 		paonmodels.SessionActivation{},
 		paonmodels.SeveredRelationship{},
@@ -2380,6 +2568,8 @@ func requiredMastodonColumnModels() []any {
 		paonmodels.StatusTrend{},
 		paonmodels.Tag{},
 		paonmodels.TagFollow{},
+		paonmodels.TagTrend{},
+		paonmodels.TermsOfService{},
 		paonmodels.Tombstone{},
 		paonmodels.UnavailableDomain{},
 		paonmodels.User{},
@@ -2389,6 +2579,7 @@ func requiredMastodonColumnModels() []any {
 		paonmodels.Webhook{},
 		paonmodels.WebPushSubscription{},
 		paonmodels.WebSetting{},
+		paonmodels.Quote{},
 	}
 }
 
@@ -2420,7 +2611,7 @@ func SchemaAvailable(database *gorm.DB) error {
 		}
 	}
 	if len(obsoleteRelations) > 0 {
-		return fmt.Errorf("database schema still contains obsolete Mastodon relations: %s; complete the acknowledged 4.3 contract migration before starting paon", strings.Join(obsoleteRelations, ", "))
+		return fmt.Errorf("database schema still contains obsolete Mastodon relations: %s; complete the acknowledged migration contract through Mastodon 4.4 before starting paon", strings.Join(obsoleteRelations, ", "))
 	}
 	wrongRelationKinds := make([]string, 0)
 	for _, relation := range RequiredMastodonRelationKinds() {
@@ -2511,7 +2702,7 @@ func SchemaAvailable(database *gorm.DB) error {
 		}
 	}
 	if len(obsoleteColumns) > 0 {
-		return fmt.Errorf("database schema still contains obsolete Mastodon columns: %s; complete the acknowledged 4.3 contract migration before starting paon", strings.Join(obsoleteColumns, ", "))
+		return fmt.Errorf("database schema still contains obsolete Mastodon columns: %s; complete the acknowledged migration contract through Mastodon 4.4 before starting paon", strings.Join(obsoleteColumns, ", "))
 	}
 	wrongColumnDefinitions := make([]string, 0)
 	for _, definition := range RequiredMastodonColumnDefinitions() {
@@ -2616,15 +2807,25 @@ func mastodonSchemaMigrationApplied(database *gorm.DB, version string) error {
 	}
 	var upgradeVersions []string
 	if err := database.Raw(`SELECT version FROM schema_migrations WHERE version > ? AND version <= ? ORDER BY version`, paonschema.Mastodon4219Version, version).Scan(&upgradeVersions).Error; err != nil {
-		return fmt.Errorf("inspect Mastodon 4.3 database schema_migrations versions: %w", err)
+		return fmt.Errorf("inspect Mastodon 4.3/4.4 database schema_migrations versions: %w", err)
 	}
+	var mastodon43Count int
+	var mastodon44Count int
 	for _, upgradeVersion := range upgradeVersions {
-		if !paonschema.Mastodon43UpgradeVersionKnown(upgradeVersion) {
-			return fmt.Errorf("database schema contains unsupported migration marker %s between Mastodon 4.2 and 4.3", upgradeVersion)
+		switch {
+		case paonschema.Mastodon43UpgradeVersionKnown(upgradeVersion):
+			mastodon43Count++
+		case paonschema.Mastodon44UpgradeVersionKnown(upgradeVersion):
+			mastodon44Count++
+		default:
+			return fmt.Errorf("database schema contains unsupported migration marker %s between Mastodon 4.2 and 4.4", upgradeVersion)
 		}
 	}
-	if len(upgradeVersions) != paonschema.Mastodon43UpgradeVersionCount() {
-		return fmt.Errorf("database schema has final marker %s but only %d of %d reviewed Mastodon 4.3 migration markers", version, len(upgradeVersions), paonschema.Mastodon43UpgradeVersionCount())
+	if mastodon43Count != paonschema.Mastodon43UpgradeVersionCount() {
+		return fmt.Errorf("database schema has final marker %s but only %d of %d reviewed Mastodon 4.3 migration markers", version, mastodon43Count, paonschema.Mastodon43UpgradeVersionCount())
+	}
+	if mastodon44Count != paonschema.Mastodon44UpgradeVersionCount() {
+		return fmt.Errorf("database schema has final marker %s but only %d of %d reviewed Mastodon 4.4 migration markers", version, mastodon44Count, paonschema.Mastodon44UpgradeVersionCount())
 	}
 	var found string
 	err := database.Raw("SELECT version FROM schema_migrations WHERE version = ? LIMIT 1", version).Row().Scan(&found)

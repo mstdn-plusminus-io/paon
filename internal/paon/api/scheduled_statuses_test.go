@@ -60,7 +60,7 @@ func TestScheduledStatusValidationMessagesMatchRailsLocales(t *testing.T) {
 	if !ok || apiErr.status != http.StatusUnprocessableEntity || apiErr.message != railsScheduledStatusTooSoonMessage {
 		t.Fatalf("too soon error = %#v", err)
 	}
-	if railsScheduledStatusTooSoonMessage != "Validation failed: Scheduled at The scheduled date must be in the future" {
+	if railsScheduledStatusTooSoonMessage != "Validation failed: Scheduled at date must be in the future" {
 		t.Fatalf("too soon message drifted: %q", railsScheduledStatusTooSoonMessage)
 	}
 	if railsScheduledStatusTotalLimitMessage != "Validation failed: You have exceeded the limit of 300 scheduled posts" {

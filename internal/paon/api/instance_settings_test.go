@@ -60,6 +60,10 @@ func TestRailsSettingsDefaultsDrivePublicMetadataWithoutDB(t *testing.T) {
 	if got := server.reservedUsernames(); !reflect.DeepEqual(got, defaultReservedUsernames) {
 		t.Fatalf("reserved usernames = %#v, want Rails settings.yml defaults %#v", got, defaultReservedUsernames)
 	}
+	wantReserved := []string{"abuse", "account", "accounts", "admin", "administration", "administrator", "admins", "help", "helpdesk", "instance", "mod", "moderator", "moderators", "mods", "owner", "root", "security", "server", "staff", "support", "webmaster"}
+	if !reflect.DeepEqual(defaultReservedUsernames, wantReserved) {
+		t.Fatalf("default reserved usernames = %#v, want Mastodon 4.4 defaults %#v", defaultReservedUsernames, wantReserved)
+	}
 }
 
 func TestInitialStateServerSettingsUseRailsDefaultsWithoutDB(t *testing.T) {

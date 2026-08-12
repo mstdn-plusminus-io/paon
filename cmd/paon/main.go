@@ -70,6 +70,9 @@ func main() {
 	if err := paondb.Available(database); err != nil {
 		log.Fatalf("check database: %v", err)
 	}
+	if err := paondb.RequireSupportedVersion(database); err != nil {
+		log.Fatalf("check database version: %v", err)
+	}
 	if err := paondb.SchemaAvailable(database); err != nil {
 		log.Fatalf("check database schema: %v", err)
 	}

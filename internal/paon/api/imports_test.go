@@ -34,6 +34,22 @@ func TestParseImportCSVWithRailsHeaders(t *testing.T) {
 	}
 }
 
+func TestLegacyImportWorkerSafelyNoOpsAfterRails44ContractMigration(t *testing.T) {
+	src, err := os.ReadFile("imports.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`SELECT to_regclass('public.imports')`,
+		`if !table.Valid || strings.TrimSpace(table.String) == ""`,
+		`return nil`,
+	} {
+		if !functionBodyContains(t, src, "processLegacyImport", want) {
+			t.Fatalf("processLegacyImport missing post-contract guard %q", want)
+		}
+	}
+}
+
 func TestParseImportCSVFallsBackToDefaultHeaders(t *testing.T) {
 	rows, err := parseImportCSVReader(strings.NewReader("cats.example\n"), "domain_blocking")
 	if err != nil {

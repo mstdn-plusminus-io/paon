@@ -7,6 +7,7 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/telemetry"
 )
 
 type accessLogPrintf func(format string, args ...any)
@@ -32,8 +33,12 @@ func accessLogMiddlewareWithLogger(cfg config.Config, logf accessLogPrintf) echo
 						path = request.URL.Path
 					}
 				}
-				logf("level=INFO event=http_request_started request_id=%q method=%q path=%q remote_ip=%q user_agent=%q",
-					requestID, method, path, c.RealIP(), userAgent)
+				traceID, spanID := "", ""
+				if request != nil {
+					traceID, spanID = telemetry.TraceIDs(request.Context())
+				}
+				logf("level=INFO event=http_request_started request_id=%q trace_id=%q span_id=%q method=%q path=%q remote_ip=%q user_agent=%q",
+					requestID, traceID, spanID, method, path, c.RealIP(), userAgent)
 			}
 			err := next(c)
 			if !cfg.ShouldLog("info") {
@@ -60,8 +65,12 @@ func accessLogMiddlewareWithLogger(cfg config.Config, logf accessLogPrintf) echo
 					path = request.URL.Path
 				}
 			}
-			logf("level=INFO event=http_access request_id=%q method=%q path=%q status=%d duration_ms=%.2f bytes=%d remote_ip=%q user_agent=%q",
-				requestID, method, path, status, time.Since(startedAt).Seconds()*1000, response.Size, c.RealIP(), userAgent)
+			traceID, spanID := "", ""
+			if request != nil {
+				traceID, spanID = telemetry.TraceIDs(request.Context())
+			}
+			logf("level=INFO event=http_access request_id=%q trace_id=%q span_id=%q method=%q path=%q status=%d duration_ms=%.2f bytes=%d remote_ip=%q user_agent=%q",
+				requestID, traceID, spanID, method, path, status, time.Since(startedAt).Seconds()*1000, response.Size, c.RealIP(), userAgent)
 			return err
 		}
 	}

@@ -26,6 +26,8 @@ func TestTrendsRefreshWorkerUsesRailsTrendTables(t *testing.T) {
 		{"recordTagTrendUse", `"INCRBY", usesKey, "1"`},
 		{"recordTagTrendUse", `"PFADD", accountsKey, strconv.FormatInt(accountID, 10)`},
 		{"recordTagTrendUse", `"SADD", usedKey, strconv.FormatInt(tagID, 10)`},
+		{"recordTagTrendUse", `Where("id = ? AND silenced_at IS NULL", accountID)`},
+		{"recordTagTrendUse", `Where("usable IS NULL OR usable = ?", true)`},
 		{"recordStatusTrendUse", `trendUsedKey(s.cfg.RedisNamespace, "trending_statuses", now)`},
 		{"recordStatusTrendUse", `"SADD", usedKey, strconv.FormatInt(statusID, 10)`},
 		{"recordStatusTrendUse", `"EXPIRE", usedKey, "86400"`},
@@ -39,24 +41,34 @@ func TestTrendsRefreshWorkerUsesRailsTrendTables(t *testing.T) {
 		{"recordPreviewCardTrendUseForStatus", `s.recordPreviewCardTrendUse(ctx, accountID, previewCardID, now)`},
 		{"previewCardTrendCandidateIDs", `"SMEMBERS", trendUsedKey(s.cfg.RedisNamespace, "trending_links", now)`},
 		{"previewCardTrendScore", `s.previewCardTrendRedisCounts(ctx, card.ID, now)`},
-		{"refreshTagTrends", `s.replaceTrendZSets(ctx, "trending_tags", items, allowed)`},
-		{"replaceTrendZSets", `s.cfg.RedisNamespace+prefix+":all"`},
-		{"replaceTrendZSets", `s.cfg.RedisNamespace+prefix+":allowed"`},
+		{"tagTrendCandidateIDs", `Model(&models.TagTrend{}).Pluck("tag_id", &existing)`},
+		{"calculateTagTrendScores", `Columns:   []clause.Column{{Name: "tag_id"}, {Name: "language"}}`},
+		{"calculateTagTrendScores", `DoUpdates: clause.AssignmentColumns([]string{"score", "allowed"})`},
 		{"calculateStatusTrendScores", `Columns:   []clause.Column{{Name: "status_id"}}`},
 		{"calculatePreviewCardTrendScores", `Columns:   []clause.Column{{Name: "preview_card_id"}}`},
+		{"recalculateTagTrendRanks", `UPDATE tag_trends SET rank = t0.calculated_rank`},
 		{"recalculateStatusTrendRanks", `UPDATE status_trends SET rank = t0.calculated_rank`},
 		{"recalculatePreviewCardTrendRanks", `UPDATE preview_card_trends SET rank = t0.calculated_rank`},
 		{"requestTrendsReview", `s.requestTagTrendReviews(ctx, now)`},
 		{"requestTrendsReview", `!s.trendsEnabled()`},
 		{"requestTrendsReview", `s.settingBoolValue("trendable_by_default", false)`},
 		{"requestTrendsReview", `s.sendTrendsReviewMails(items)`},
-		{"requestTagTrendReviews", `s.trendZSetMembersWithScores(ctx, "trending_tags:all", 0, -1)`},
+		{"requestTagTrendReviews", `Preload("Tag")`},
+		{"requestTagTrendReviews", `Where("allowed = ? AND score > ?", false, threshold)`},
 		{"requestTagTrendReviews", `"requested_review_at": now`},
+		{"tagTrendReviewScore", `Where("allowed = ? AND rank <= ?", true, trendReviewThresholdRank)`},
 		{"requestStatusTrendReviews", `!statusRequiresTrendReviewNotification(trend.Status)`},
 	}
 	for _, check := range checks {
 		if !functionBodyContains(t, src, check.functionName, check.want) {
 			t.Fatalf("%s missing %q", check.functionName, check.want)
+		}
+	}
+	for _, forbidden := range []string{"trending_tags:all", "trending_tags:allowed", "replaceTrendZSets"} {
+		if functionBodyContains(t, src, "refreshTagTrends", forbidden) ||
+			functionBodyContains(t, src, "requestTagTrendReviews", forbidden) ||
+			functionBodyContains(t, src, "tagTrendReviewScore", forbidden) {
+			t.Fatalf("tag trend runtime must not use retired Redis ranking %q", forbidden)
 		}
 	}
 	startup, err := os.ReadFile("activitypub_retry.go")
@@ -158,6 +170,40 @@ func TestStatusTrendScoreMatchesRailsDecayShape(t *testing.T) {
 	status.Account.SilencedAt = sql.NullTime{Time: now, Valid: true}
 	if got := statusTrendScore(status, now); got != 0 {
 		t.Fatalf("silenced account score = %f", got)
+	}
+}
+
+func TestMastodon44StatusTrendRequiresEligibleQuotedStatus(t *testing.T) {
+	quoted := &models.Status{
+		ID:         20,
+		Visibility: 0,
+		Account: models.Account{
+			Discoverable: sql.NullBool{Bool: true, Valid: true},
+		},
+	}
+	quote := &models.Quote{State: models.QuoteStatePending, QuotedStatus: quoted}
+	if !statusTrendQuoteEligible(quote) {
+		t.Fatal("non-legacy incoming quote with an opted-in public target should be trend-eligible")
+	}
+	quote.Legacy = true
+	if statusTrendQuoteEligible(quote) {
+		t.Fatal("unaccepted legacy quote should not be trend-eligible")
+	}
+	quote.State = models.QuoteStateAccepted
+	if !statusTrendQuoteEligible(quote) {
+		t.Fatal("accepted legacy quote should be trend-eligible")
+	}
+	quoted.Sensitive = true
+	if statusTrendQuoteEligible(quote) {
+		t.Fatal("quote of sensitive content should not be trend-eligible")
+	}
+	quoted.Sensitive = false
+	quoted.Account.SilencedAt = sql.NullTime{Time: time.Now(), Valid: true}
+	if statusTrendQuoteEligible(quote) {
+		t.Fatal("quote of an account excluded from trends should not be trend-eligible")
+	}
+	if !statusTrendQuoteEligible(nil) {
+		t.Fatal("status without a quote should retain normal trend eligibility")
 	}
 }
 

@@ -27,7 +27,7 @@ const (
 )
 
 const (
-	railsScheduledStatusTooSoonMessage    = "Validation failed: Scheduled at The scheduled date must be in the future"
+	railsScheduledStatusTooSoonMessage    = "Validation failed: Scheduled at date must be in the future"
 	railsScheduledStatusTotalLimitMessage = "Validation failed: You have exceeded the limit of 300 scheduled posts"
 	railsScheduledStatusDailyLimitMessage = "Validation failed: You have exceeded the limit of 25 scheduled posts for today"
 )

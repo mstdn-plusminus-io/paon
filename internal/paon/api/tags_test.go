@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
 )
 
 func TestNormalizeTagNameLowercasesAndKeepsDisplayName(t *testing.T) {
@@ -92,11 +93,11 @@ func TestNormalizeTagNameRejectsInvalidCharacters(t *testing.T) {
 
 func TestSerializerTrendingTagIncludesHistory(t *testing.T) {
 	following := true
-	out := serializerTrendingTag(
+	trendHistory := []any{map[string]string{"day": "1781827200", "uses": "12", "accounts": "3"}}
+	out := serializer.TagDetailFromModelWithRelationships(
 		config.Config{Scheme: "https", WebDomain: "example.com", LocalDomain: "example.com"},
-		trendTagRow{ID: 10, Name: "golang", DisplayName: sql.NullString{String: "GoLang", Valid: true}, Uses: 12, Accounts: 3},
-		&following,
-		time.Date(2026, 6, 19, 10, 0, 0, 0, time.UTC),
+		models.Tag{ID: 10, Name: "golang", DisplayName: sql.NullString{String: "GoLang", Valid: true}},
+		&following, nil, trendHistory,
 	)
 	if out.Name != "GoLang" || out.URL != "https://example.com/tags/golang" {
 		t.Fatalf("tag = %#v", out)
@@ -107,9 +108,9 @@ func TestSerializerTrendingTagIncludesHistory(t *testing.T) {
 	if len(out.History) != 1 {
 		t.Fatalf("history = %#v", out.History)
 	}
-	history := out.History[0].(map[string]string)
-	if history["day"] != "1781827200" || history["uses"] != "12" || history["accounts"] != "3" {
-		t.Fatalf("history = %#v", history)
+	historyEntry := out.History[0].(map[string]string)
+	if historyEntry["day"] != "1781827200" || historyEntry["uses"] != "12" || historyEntry["accounts"] != "3" {
+		t.Fatalf("history = %#v", historyEntry)
 	}
 }
 
@@ -191,6 +192,16 @@ func TestPublicTagHTMLRouteMatchesRailsAnonymousCache(t *testing.T) {
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "max-age=15, public, stale-while-revalidate=30, stale-if-error=3600" {
 		t.Fatalf("Cache-Control = %q", got)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<meta name="robots" content="noindex"`,
+		`<link rel="alternate" type="application/rss&#43;xml" href="https://example.com/tags/golang"`,
+		`<link rel="alternate" type="application/activity&#43;json" href="https://example.com/tags/golang"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("tag HTML missing %q: %s", want, body)
+		}
 	}
 }
 
@@ -338,16 +349,16 @@ func TestTagRESTEndpointsMatchRailsRequestSpecSemantics(t *testing.T) {
 	}{
 		{"showTag", `tag, err := s.findOrBuildTag(c.Param("name"))`},
 		{"showTag", `return apiError(c, http.StatusNotFound, "Record not found")`},
-		{"showTag", `s.tagDetailWithHistory(c.Request().Context(), *tag, following)`},
+		{"showTag", `s.tagDetailWithHistoryAndRelationships(c.Request().Context(), *tag, following, featuring)`},
 		{"followTag", `s.requireAccountScope(c, "follow", "write", "write:follows")`},
 		{"followTag", `tag, err := s.findOrCreateTag(c.Param("name"))`},
 		{"followTag", `s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&follow)`},
-		{"followTag", `s.tagDetailWithHistory(c.Request().Context(), *tag, &following)`},
+		{"followTag", `s.tagDetailWithHistoryAndRelationships(c.Request().Context(), *tag, &following, s.tagFeaturing(c, tag.ID))`},
 		{"unfollowTag", `s.requireAccountScope(c, "follow", "write", "write:follows")`},
 		{"unfollowTag", `tag, err := s.findOrBuildTag(c.Param("name"))`},
 		{"unfollowTag", `s.db.Where("account_id = ? AND tag_id = ?", account.ID, tag.ID).Delete(&models.TagFollow{})`},
-		{"unfollowTag", `s.tagDetailWithHistory(c.Request().Context(), *tag, &following)`},
-		{"tagDetailWithHistory", `serializer.TagDetailFromModelWithHistory(s.cfg, tag, following, s.tagHistory(ctx, tag.ID, time.Now().UTC()))`},
+		{"unfollowTag", `s.tagDetailWithHistoryAndRelationships(c.Request().Context(), *tag, &following, s.tagFeaturing(c, tag.ID))`},
+		{"tagDetailWithHistoryAndRelationships", `serializer.TagDetailFromModelWithRelationships(s.cfg, tag, following, featuring, s.tagHistory(ctx, tag.ID, time.Now().UTC()))`},
 	} {
 		if !functionBodyContains(t, src, check.fn, check.want) {
 			t.Fatalf("tags.go:%s does not contain Rails-compatible behavior %q", check.fn, check.want)

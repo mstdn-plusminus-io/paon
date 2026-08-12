@@ -1,9 +1,6 @@
 package api
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/sha1"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -20,7 +17,6 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	paonotp "github.com/mstdn-plusminus-io/paon/internal/paon/otp"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/pbkdf2"
 )
 
 func TestOTPQRCodeDataURIEncodesProvisioningURI(t *testing.T) {
@@ -273,42 +269,7 @@ func TestTOTPMatchesRFCVectorWithSixDigits(t *testing.T) {
 	}
 }
 
-func TestGoOTPSecretFromUserRequiresPrefix(t *testing.T) {
-	user := &models.User{EncryptedOTPSecret: sql.NullString{String: goOTPSecretPrefix + " abcd ef23 ", Valid: true}}
-	secret, ok := goOTPSecretFromUser(user)
-	if !ok || secret != "ABCDEF23" {
-		t.Fatalf("secret = %q ok = %v", secret, ok)
-	}
-	legacy := &models.User{EncryptedOTPSecret: sql.NullString{String: "rails-encrypted-value", Valid: true}}
-	if _, ok := goOTPSecretFromUser(legacy); ok {
-		t.Fatal("legacy Rails encrypted OTP secret should not be treated as Go-managed")
-	}
-}
-
-func TestLegacyOTPSecretDecryptsAttrEncryptedGCM(t *testing.T) {
-	key := "1fc2b87989afa6351912abeebe31ffc5c476ead9bf8b3d74cbc4a302c7b69a45b40b1bbef3506ddad73e942e15ed5ca4b402bf9a66423626051104f4b5f05109"
-	secret := "JBSWY3DPEHPK3PXP"
-	encrypted, iv, salt := legacyOTPEncryptedFixture(t, secret, key)
-	got, err := decryptLegacyOTPSecret(encrypted, iv, salt, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != secret {
-		t.Fatalf("legacy secret = %q, want %q", got, secret)
-	}
-
-	server := &Server{cfg: config.Config{OTPSecret: key}}
-	model := &models.User{
-		EncryptedOTPSecret:     sql.NullString{String: encrypted, Valid: true},
-		EncryptedOTPSecretIV:   sql.NullString{String: iv, Valid: true},
-		EncryptedOTPSecretSalt: sql.NullString{String: salt, Valid: true},
-	}
-	if got, ok := server.legacyOTPSecretFromUser(model); !ok || got != secret {
-		t.Fatalf("legacyOTPSecretFromUser = %q/%v", got, ok)
-	}
-}
-
-func TestOTPSecretFromUserPrefersActiveRecordAndRejectsTampering(t *testing.T) {
+func TestOTPSecretFromUserReadsOnlyActiveRecordAndRejectsTampering(t *testing.T) {
 	credentials := paonotp.Credentials{
 		PrimaryKey:        "primary-key-0123456789abcdef0123456789abcdef",
 		DeterministicKey:  "deterministic-key-0123456789abcdef0123456789abcdef",
@@ -323,37 +284,15 @@ func TestOTPSecretFromUserPrefersActiveRecordAndRejectsTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	user := &models.User{
-		OTPSecret:          sql.NullString{String: encrypted, Valid: true},
-		EncryptedOTPSecret: sql.NullString{String: goOTPSecretPrefix + "KRUGS4ZANFZSAYJA", Valid: true},
-	}
+	user := &models.User{OTPSecret: sql.NullString{String: encrypted, Valid: true}}
 	secret, ok, err := server.otpSecretFromUser(user)
 	if err != nil || !ok || secret != "JBSWY3DPEHPK3PXP" {
 		t.Fatalf("secret = %q ok=%v err=%v", secret, ok, err)
 	}
 	user.OTPSecret.String = strings.Replace(encrypted, `"p":"`, `"p":"A`, 1)
 	if _, _, err := server.otpSecretFromUser(user); err == nil {
-		t.Fatal("tampered Active Record value fell back to a legacy secret")
+		t.Fatal("tampered Active Record value was accepted")
 	}
-}
-
-func legacyOTPEncryptedFixture(t *testing.T, secret string, otpSecretKey string) (string, string, string) {
-	t.Helper()
-	iv := []byte("123456789012")
-	salt := []byte("abcdefghijklmnop")
-	key := pbkdf2.Key([]byte(otpSecretKey), salt, 2000, 32, sha1.New)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ciphertext := gcm.Seal(nil, iv, []byte(secret), []byte(""))
-	return base64.StdEncoding.EncodeToString(ciphertext),
-		base64.StdEncoding.EncodeToString(iv),
-		"$" + base64.StdEncoding.EncodeToString(salt)
 }
 
 func TestRecoveryCodesAreGeneratedAndMatchedByHash(t *testing.T) {

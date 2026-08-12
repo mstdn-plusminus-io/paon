@@ -94,17 +94,14 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 		}
 		return nil, err
 	}
+	if account.User.Disabled {
+		// Mastodon 4.4 destroys the scheduled row before treating a disabled
+		// (frozen) author's publish job as a successful no-op.
+		s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
+		return nil, nil
+	}
 
 	text := payload.Status
-	var quote *models.Status
-	if strings.TrimSpace(payload.QuoteID) != "" {
-		quote, err = s.findQuoteStatusForAccount(&account, payload.QuoteID)
-		if err != nil {
-			s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
-			return nil, nil
-		}
-		text = statusTextWithQuoteURL(text, s.quoteStatusURL(*quote))
-	}
 	normalizeStatusContents(&text, &payload.SpoilerText)
 	if (strings.TrimSpace(text) == "" && len(mediaIDs) == 0 && !hasPoll) || statusLengthTooLong(text, payload.SpoilerText, s.maxStatusChars()) {
 		s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
@@ -234,11 +231,17 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 		return nil, err
 	}
 	notificationIDs = append(notificationIDs, createdNotificationIDs...)
-	s.putStatusQuoteBestEffort(ctx, created.ID, quote)
-	s.applyStatusQuote(created, quote)
 	s.meiliIndexStatusBestEffort(ctx, created.ID)
 	s.meiliIndexTagsBestEffort(ctx, indexedTagIDs)
 	s.recordStatusTrendUse(ctx, created.ID, created.CreatedAt)
+	if err := s.enqueueFASPContentLifecycle(ctx, *created, "new"); err != nil {
+		return nil, err
+	}
+	if created.InReplyToID.Valid {
+		if err := s.enqueueFASPTrendForStatus(ctx, *created, "reply"); err != nil {
+			return nil, err
+		}
+	}
 	if created.InReplyToAccountID.Valid && created.InReplyToAccountID.Int64 != account.ID {
 		s.activityTrackerIncrementBasic(ctx, "activity:interactions", created.CreatedAt, 1)
 		s.recordPotentialFriendship(ctx, account.ID, created.InReplyToAccountID.Int64, "reply")
@@ -271,7 +274,6 @@ func statusCreatePayloadFromScheduledParams(raw models.JSONValue) (statusCreateP
 	payload.SpoilerText = rawJSONString(params["spoiler_text"])
 	payload.Language = rawJSONString(params["language"])
 	payload.InReplyToID = rawJSONString(params["in_reply_to_id"])
-	payload.QuoteID = rawJSONString(params["quote_id"])
 	payload.ApplicationID = rawJSONInt64(params["application_id"])
 	if value, ok := rawJSONBool(params["sensitive"]); ok {
 		payload.Sensitive = value

@@ -15,6 +15,7 @@ type adminDiscoverySettings struct {
 	TrendableByDefault        bool
 	TimelinePreview           bool
 	NoIndex                   bool
+	AllowReferrerOrigin       bool
 	ActivityAPIEnabled        bool
 	PeersAPIEnabled           bool
 	AuthorizedFetch           bool
@@ -74,6 +75,7 @@ func (s *Server) adminDiscoverySettings() adminDiscoverySettings {
 		TrendableByDefault:        s.settingBoolValue("trendable_by_default", false),
 		TimelinePreview:           s.settingBoolValue("timeline_preview", true),
 		NoIndex:                   s.settingBoolValue("noindex", false),
+		AllowReferrerOrigin:       s.settingBoolValue("allow_referrer_origin", false),
 		ActivityAPIEnabled:        s.settingBoolValue("activity_api_enabled", true),
 		PeersAPIEnabled:           s.settingBoolValue("peers_api_enabled", true),
 		AuthorizedFetch:           s.authorizedFetchMode(),
@@ -94,6 +96,7 @@ func parseAdminDiscoverySettings(c *echo.Context) (adminDiscoverySettings, error
 		TrendableByDefault:        adminSettingsCheckbox(req.Form, "form_admin_settings[trendable_by_default]"),
 		TimelinePreview:           adminSettingsCheckbox(req.Form, "form_admin_settings[timeline_preview]"),
 		NoIndex:                   adminSettingsCheckbox(req.Form, "form_admin_settings[noindex]"),
+		AllowReferrerOrigin:       adminSettingsCheckbox(req.Form, "form_admin_settings[allow_referrer_origin]"),
 		ActivityAPIEnabled:        adminSettingsCheckbox(req.Form, "form_admin_settings[activity_api_enabled]"),
 		PeersAPIEnabled:           adminSettingsCheckbox(req.Form, "form_admin_settings[peers_api_enabled]"),
 		AuthorizedFetch:           adminSettingsCheckbox(req.Form, "form_admin_settings[authorized_fetch]"),
@@ -109,6 +112,7 @@ func (s *Server) updateAdminDiscoverySettings(settings adminDiscoverySettings, s
 		"trendable_by_default":        boolSettingValue(settings.TrendableByDefault),
 		"timeline_preview":            boolSettingValue(settings.TimelinePreview),
 		"noindex":                     boolSettingValue(settings.NoIndex),
+		"allow_referrer_origin":       boolSettingValue(settings.AllowReferrerOrigin),
 		"activity_api_enabled":        boolSettingValue(settings.ActivityAPIEnabled),
 		"peers_api_enabled":           boolSettingValue(settings.PeersAPIEnabled),
 		"bootstrap_timeline_accounts": settings.BootstrapTimelineAccounts,
@@ -149,6 +153,7 @@ func adminSettingsDiscoveryHTML(settings adminDiscoverySettings, notice string, 
   <h2>` + html.EscapeString(adminT(loc, "admin.settings.discovery.public_timelines", "Public timelines")) + `</h2>
   <div class="fields-group">` + checkbox("timeline_preview", adminSettingsLabel(loc, "timeline_preview", "Allow unauthenticated access to public timelines"), settings.TimelinePreview) + `</div>
   <div class="fields-group">` + checkbox("noindex", adminT(loc, "admin.settings.default_noindex.title", "Opt users out of search engine indexing by default"), settings.NoIndex) + `</div>
+  <div class="fields-group">` + checkbox("allow_referrer_origin", adminT(loc, "admin.settings.allow_referrer_origin.title", "Allow origin referrer information for external links"), settings.AllowReferrerOrigin) + `<p class="hint">` + html.EscapeString(adminT(loc, "admin.settings.allow_referrer_origin.desc", "When enabled, external sites can see this server as the source of traffic, but never the full page URL.")) + `</p></div>
   <h2>` + html.EscapeString(adminT(loc, "admin.settings.discovery.public_apis", "Public APIs")) + `</h2>
   <div class="fields-group">` + checkbox("activity_api_enabled", adminSettingsLabel(loc, "activity_api_enabled", "Publish aggregate statistics about user activity in the API"), settings.ActivityAPIEnabled) + `</div>
   <div class="fields-group">` + checkbox("peers_api_enabled", adminSettingsLabel(loc, "peers_api_enabled", "Publish list of discovered servers in the API"), settings.PeersAPIEnabled) + `</div>

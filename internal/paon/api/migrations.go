@@ -99,6 +99,7 @@ func (s *Server) createSettingsMigration(c *echo.Context) error {
 		return err
 	}
 	s.triggerAccountWebhook("account.updated", account.ID)
+	_ = s.enqueueFASPAccountLifecycleByID(c.Request().Context(), account.ID, "update")
 	_ = s.enqueueActivityPubAccountUpdate(*account, 0)
 	_ = s.deliverActivityPubMove(*migration)
 	return c.Redirect(http.StatusFound, "/settings/migration?notice="+url.QueryEscape(migrationMovedMessage(locale, target.Acct())))
@@ -159,6 +160,7 @@ func (s *Server) createSettingsMigrationRedirect(c *echo.Context) error {
 		return err
 	}
 	s.triggerAccountWebhook("account.updated", account.ID)
+	_ = s.enqueueFASPAccountLifecycleByID(c.Request().Context(), account.ID, "update")
 	_ = s.enqueueActivityPubAccountUpdate(*account, 0)
 	return c.Redirect(http.StatusFound, "/settings/migration?notice="+url.QueryEscape(migrationRedirectedMessage(locale, target.Acct())))
 }
@@ -181,6 +183,7 @@ func (s *Server) destroySettingsMigrationRedirect(c *echo.Context) error {
 			return err
 		}
 		s.triggerAccountWebhook("account.updated", account.ID)
+		_ = s.enqueueFASPAccountLifecycleByID(c.Request().Context(), account.ID, "update")
 		_ = s.enqueueActivityPubAccountUpdate(*account, 0)
 	}
 	return c.Redirect(http.StatusFound, "/settings/migration?notice="+url.QueryEscape(settingsT(locale, "migrations.cancelled_msg", "Redirect cancelled")))

@@ -46,6 +46,7 @@ func (s *Server) updateSettingsPrivacy(c *echo.Context) error {
 			return err
 		}
 		s.triggerAccountWebhook("account.updated", reloaded.ID)
+		_ = s.enqueueFASPAccountLifecycleUpdate(c.Request().Context(), *account, *reloaded)
 		if payload.Locked != nil && account.Locked && !*payload.Locked {
 			if err := s.authorizePendingFollowRequestsForUnlockedAccount(c.Request().Context(), *reloaded); err != nil {
 				return err

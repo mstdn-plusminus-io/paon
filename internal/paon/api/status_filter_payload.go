@@ -54,18 +54,20 @@ func statusWithStreamingFilterContext(cfg config.Config, status models.Status, c
 }
 
 func statusWithFilterResults(item serializer.Status, filters []streamingFilter, filterContext string) serializer.Status {
-	payload, ok := notificationStatusPayloadMap(item)
-	if !ok {
-		return item
-	}
-	results := streamingFilterResultsFromFilters(payload, filters, filterContext)
-	if len(results) == 0 {
-		return item
-	}
-	filtered := streamingFilterResultsAny(results)
-	item.Filtered = filtered
 	if item.Reblog != nil {
-		item.Reblog.Filtered = filtered
+		reblog := statusWithFilterResults(*item.Reblog, filters, filterContext)
+		item.Reblog = &reblog
+		item.Filtered = reblog.Filtered
+	} else if payload, ok := notificationStatusPayloadMap(item); ok {
+		results := streamingFilterResultsFromFilters(payload, filters, filterContext)
+		if len(results) > 0 {
+			item.Filtered = streamingFilterResultsAny(results)
+		}
+	}
+	if quote, ok := item.Quote.(serializer.Quote); ok && quote.QuotedStatus != nil {
+		quoted := statusWithFilterResults(*quote.QuotedStatus, filters, filterContext)
+		quote.QuotedStatus = &quoted
+		item.Quote = quote
 	}
 	return item
 }

@@ -290,6 +290,9 @@ func TestFilterActionValueRejectsUnknownActions(t *testing.T) {
 	if action, ok := filterActionValue("warn"); !ok || action != 0 {
 		t.Fatalf("warn action = %d, %v", action, ok)
 	}
+	if action, ok := filterActionValue("blur"); !ok || action != 2 {
+		t.Fatalf("blur action = %d, %v", action, ok)
+	}
 	if _, ok := filterActionValue("delete"); ok {
 		t.Fatal("unknown filter action should be invalid")
 	}

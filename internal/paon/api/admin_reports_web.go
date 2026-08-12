@@ -385,6 +385,8 @@ func (s *Server) createAdminReportActionWeb(c *echo.Context) error {
 	if action == "delete" {
 		payload := s.adminStatusBatchRemovalPayload(report.TargetAccountID)
 		if !s.enqueueRemovalTasksForStatusIDs(deletedStatusIDs, payload) {
+			s.enqueueFASPContentDeletionForIDs(context.Background(), s.db, deletedStatusIDs)
+			s.applyDeletedStatusMediaForIDs(context.Background(), deletedStatusIDs, payload)
 			s.applyAdminDeletedStatusSideEffects(context.Background(), s.db, deletedStatusIDs)
 		}
 	}
@@ -406,6 +408,7 @@ func (s *Server) createAdminReportActionWeb(c *echo.Context) error {
 	}
 	if action == "silence" || action == "suspend" {
 		s.triggerAccountWebhook("account.updated", report.TargetAccountID)
+		_ = s.enqueueFASPAccountLifecycleByID(context.Background(), report.TargetAccountID, "update")
 	}
 	s.triggerReportUpdatedWebhook(report.ID)
 	return c.Redirect(http.StatusFound, "/admin/reports?notice="+url.QueryEscape(adminReportProcessedMessage(s.webLocale(c, user), report.ID)))
@@ -477,6 +480,7 @@ func (s *Server) fanOutAdminStatusBatchUpdates(ctx context.Context, statusIDs []
 	for _, status := range statuses {
 		s.invalidateStatusCache(ctx, status.ID)
 		s.meiliIndexStatusBestEffort(ctx, status.ID)
+		_ = s.enqueueFASPContentLifecycle(ctx, status, "update")
 		_ = s.fanOutStatusUpdateToLocalRecipients(ctx, s.db, status)
 		s.publishStatusUpdateEventWithContext(ctx, s.db, "status.update", status)
 		_ = s.enqueueOrDeliverStatusUpdateDistribution(status)
@@ -877,14 +881,15 @@ func adminReportReporterHTML(account models.Account) string {
 func adminReportCommentHTML(cfg config.Config, report models.Report, locale string) string {
 	view := serializer.AccountFromModel(cfg, report.Account)
 	avatar := firstNonEmpty(view.Avatar, view.AvatarStatic, "/avatars/original/missing.png")
-	return `<div class="report-notes__item"><img class="report-notes__item__avatar" src="` + html.EscapeString(avatar) + `" alt=""><div class="report-notes__item__header"><span class="username">` + adminReportReporterHTML(report.Account) + `</span><time class="relative-formatted" datetime="` + html.EscapeString(report.CreatedAt.UTC().Format(time.RFC3339)) + `">` + html.EscapeString(report.CreatedAt.UTC().Format("2006-01-02")) + `</time></div><div class="report-notes__item__content">` + strings.ReplaceAll(html.EscapeString(report.Comment), "\n", "<br>") + `</div></div>`
+	stamp := report.CreatedAt.UTC().Format(time.RFC3339)
+	return `<div class="report-notes__item"><img class="report-notes__item__avatar" src="` + html.EscapeString(avatar) + `" alt=""><div class="report-notes__item__header"><span class="username">` + adminReportReporterHTML(report.Account) + `</span><time class="relative-formatted" datetime="` + html.EscapeString(stamp) + `" title="` + html.EscapeString(stamp) + `">` + html.EscapeString(report.CreatedAt.UTC().Format("2006-01-02")) + `</time></div><div class="report-notes__item__content">` + strings.ReplaceAll(html.EscapeString(report.Comment), "\n", "<br>") + `</div></div>`
 }
 
 func adminReportNoteHTML(cfg config.Config, note models.ReportNote, locale string) string {
 	view := serializer.AccountFromModel(cfg, note.Account)
 	avatar := firstNonEmpty(view.Avatar, view.AvatarStatic, "/avatars/original/missing.png")
 	created := note.CreatedAt.UTC().Format(time.RFC3339)
-	return `<div class="report-notes__item"><img class="report-notes__item__avatar" src="` + html.EscapeString(avatar) + `" alt=""><div class="report-notes__item__header"><span class="username"><a href="/admin/accounts/` + strconv.FormatInt(note.AccountID, 10) + `">` + html.EscapeString(adminReportAccountLabel(note.Account)) + `</a></span><time class="relative-formatted" datetime="` + html.EscapeString(created) + `">` + html.EscapeString(note.CreatedAt.UTC().Format("2006-01-02")) + `</time></div><div class="report-notes__item__content">` + strings.ReplaceAll(html.EscapeString(note.Content), "\n", "<br>") + `</div><div class="report-notes__item__actions">` + adminAccountTableLink("trash", adminT(locale, "admin.reports.notes.delete", "Delete note"), "/admin/report_notes/"+strconv.FormatInt(note.ID, 10), "delete") + `</div></div>`
+	return `<div class="report-notes__item"><img class="report-notes__item__avatar" src="` + html.EscapeString(avatar) + `" alt=""><div class="report-notes__item__header"><span class="username"><a href="/admin/accounts/` + strconv.FormatInt(note.AccountID, 10) + `">` + html.EscapeString(adminReportAccountLabel(note.Account)) + `</a></span><time class="relative-formatted" datetime="` + html.EscapeString(created) + `" title="` + html.EscapeString(created) + `">` + html.EscapeString(note.CreatedAt.UTC().Format("2006-01-02")) + `</time></div><div class="report-notes__item__content">` + strings.ReplaceAll(html.EscapeString(note.Content), "\n", "<br>") + `</div><div class="report-notes__item__actions">` + adminAccountTableLink("trash", adminT(locale, "admin.reports.notes.delete", "Delete note"), "/admin/report_notes/"+strconv.FormatInt(note.ID, 10), "delete") + `</div></div>`
 }
 
 func adminReportReasonHTML(report models.Report, rules []models.Rule, locale ...string) string {

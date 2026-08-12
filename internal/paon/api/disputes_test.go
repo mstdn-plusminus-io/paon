@@ -45,8 +45,8 @@ func TestDisputeStrikeHTMLRendersAppealFormOrExistingAppeal(t *testing.T) {
 	if !strings.Contains(html, `name="appeal[text]"`) || !strings.Contains(html, "please review") || !strings.Contains(html, `flash-message alert`) || strings.Contains(html, `class="report-notes"`) {
 		t.Fatalf("unsaved invalid appeal should re-render the form like Rails: %s", html)
 	}
-	html = disputeStrikeHTML(strike, &models.Appeal{ID: 11, Text: "please review"}, "", "")
-	if !strings.Contains(html, "please review") || !strings.Contains(html, `class="report-notes"`) || !strings.Contains(html, `class="report-notes__item__avatar"`) || !strings.Contains(html, `class="relative-formatted"`) || strings.Contains(html, `name="appeal[text]"`) {
+	html = disputeStrikeHTML(strike, &models.Appeal{ID: 11, Text: "please review", CreatedAt: time.Date(2026, 6, 19, 1, 2, 3, 0, time.UTC)}, "", "")
+	if !strings.Contains(html, "please review") || !strings.Contains(html, `class="report-notes"`) || !strings.Contains(html, `class="report-notes__item__avatar"`) || !strings.Contains(html, `class="relative-formatted"`) || !strings.Contains(html, `title="2026-06-19T01:02:03Z"`) || strings.Contains(html, `name="appeal[text]"`) {
 		t.Fatalf("html missing existing appeal: %s", html)
 	}
 }

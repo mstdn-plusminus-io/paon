@@ -83,6 +83,9 @@ func TestAsynqTaskTypesAndQueueMatchRailsSidekiq(t *testing.T) {
 	if asynqTaskFetchReplies != "fetch:replies" {
 		t.Fatalf("fetch replies task type = %q", asynqTaskFetchReplies)
 	}
+	if asynqTaskFetchAllReplies != "fetch:all_replies" {
+		t.Fatalf("fetch all replies task type = %q", asynqTaskFetchAllReplies)
+	}
 	if asynqTaskThreadResolve != "thread:resolve" {
 		t.Fatalf("thread resolve task type = %q", asynqTaskThreadResolve)
 	}
@@ -281,6 +284,9 @@ func TestAsynqTaskTypesAndQueueMatchRailsSidekiq(t *testing.T) {
 	if asynqQueueMailers != "mailers" {
 		t.Fatalf("mailers queue = %q", asynqQueueMailers)
 	}
+	if asynqQueueFASP != "fasp" {
+		t.Fatalf("FASP queue = %q", asynqQueueFASP)
+	}
 	if asynqQueueIngress != "ingress" {
 		t.Fatalf("ingress queue = %q", asynqQueueIngress)
 	}
@@ -297,6 +303,10 @@ func TestEnqueueAsynqTasksNilSafeWithoutClient(t *testing.T) {
 	s.enqueueRefollowTask(1)
 	if s.enqueueFetchRepliesTask(1, "https://remote.example/statuses/1/replies", "request") {
 		t.Fatal("fetch replies enqueue should report false without asynq client")
+	}
+	s.cfg.FetchRepliesEnabled = true
+	if s.enqueueFetchAllRepliesTask(1, "request") {
+		t.Fatal("fetch all replies enqueue should report false without asynq client")
 	}
 	s.enqueueThreadResolveTask(1, "https://remote.example/statuses/1", "request")
 	s.enqueueBackupTask(1)
@@ -374,6 +384,32 @@ func TestNewAsynqAccountTaskType(t *testing.T) {
 	}
 	if task.Type() != asynqTaskRefollow {
 		t.Fatalf("task type = %q", task.Type())
+	}
+}
+
+func TestUnmergeWorkerSupportsHomeAndListFeeds(t *testing.T) {
+	src, err := os.ReadFile("asynq_workers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for fn, wants := range map[string][]string{
+		"enqueueUnmergeTask": {
+			`s.enqueueUnmergeFeedTask(fromAccountID, intoAccountID, "home")`,
+		},
+		"enqueueListUnmergeTask": {
+			`s.enqueueUnmergeFeedTask(fromAccountID, listID, "list")`,
+		},
+		"handleAsynqUnmerge": {
+			`if p.FeedType == "list"`,
+			`s.unmergeAccountFromListFeed(ctx, s.db.WithContext(ctx), p.AccountID, list)`,
+			`s.unmergeAccountFromHomeFeed(ctx, s.db.WithContext(ctx), p.AccountID, intoAccount)`,
+		},
+	} {
+		for _, want := range wants {
+			if !functionBodyContains(t, src, fn, want) {
+				t.Fatalf("%s missing %q", fn, want)
+			}
+		}
 	}
 }
 

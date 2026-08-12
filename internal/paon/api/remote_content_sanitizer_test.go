@@ -62,3 +62,51 @@ func TestSanitizeRemoteNoteContentEmpty(t *testing.T) {
 		t.Fatalf("blank content = %q", got)
 	}
 }
+
+func TestSanitizeRemoteNoteContentDropsMalformedMathAnnotationsWithoutPanicking(t *testing.T) {
+	for _, input := range []string{
+		`<math><semantics><annotation>x</annotation></semantics></math>`,
+		`<math><semantics><annotation class="foo">x</annotation></semantics></math>`,
+	} {
+		output := sanitizeRemoteNoteContent(input)
+		if strings.Contains(output, "<math") || strings.Contains(output, "<annotation") || strings.Contains(output, ">x<") {
+			t.Fatalf("malformed MathML annotation survived strict sanitization: %q", output)
+		}
+	}
+}
+
+func TestSanitizeRemoteNoteContentUsesMastodon44MathFallbacks(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "inline tex",
+			in:   `<math><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">x^n+y</annotation></semantics></math>`,
+			want: `$x^n+y$`,
+		},
+		{
+			name: "block tex",
+			in:   `<math display="block"><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">x^n+y</annotation></semantics></math>`,
+			want: `$$x^n+y$$`,
+		},
+		{
+			name: "plain text",
+			in:   `<math><semantics><msqrt><mi>x</mi></msqrt><annotation encoding="text/plain">sqrt(x)</annotation></semantics></math>`,
+			want: `sqrt(x)`,
+		},
+		{
+			name: "tex preferred",
+			in:   `<math><semantics><annotation encoding="text/plain">sqrt(x)</annotation><annotation encoding="application/x-tex">\sqrt x</annotation></semantics></math>`,
+			want: `$\sqrt x$`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sanitizeRemoteNoteContent(test.in); got != test.want {
+				t.Fatalf("sanitizeRemoteNoteContent() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

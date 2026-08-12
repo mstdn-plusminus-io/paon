@@ -112,6 +112,20 @@ func TestCriticalSoftwareUpdatesPendingOnlyCountsUrgentFutureVersions(t *testing
 	}
 }
 
+func TestPendingSoftwareUpdatesExcludesCurrentAndOlderVersions(t *testing.T) {
+	updates := []models.SoftwareUpdate{
+		{Version: "3.5.0"},
+		{Version: "4.4.22"},
+		{Version: "4.4.23"},
+		{Version: "4.5.0"},
+	}
+
+	pending := pendingSoftwareUpdates(updates, "4.4.22")
+	if len(pending) != 2 || pending[0].Version != "4.4.23" || pending[1].Version != "4.5.0" {
+		t.Fatalf("pendingSoftwareUpdates() = %#v, want only future versions", pending)
+	}
+}
+
 func TestSoftwareUpdateTypeLabel(t *testing.T) {
 	for value, want := range map[int]string{0: "Patch release", 1: "Minor release", 2: "Major release", 9: "unknown"} {
 		if got := softwareUpdateTypeLabel(value); got != want {

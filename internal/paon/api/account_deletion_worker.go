@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -96,6 +97,16 @@ func (s *Server) purgeAccountDeletionRequestWithOptions(ctx context.Context, acc
 	destroyedUser := false
 	fileCleanup := accountDeletionFileCleanup{}
 	var statusDeleteBroadcasts []batchedAccountDeletionStatusDelete
+	var faspDeletedStatuses []models.Status
+	var faspDeletedAccount *models.Account
+	if s.faspEnabled() {
+		var account models.Account
+		if err := s.db.WithContext(ctx).Where("id = ?", accountID).First(&account).Error; err == nil {
+			faspDeletedAccount = &account
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		accountIDs := adminSingleAccountIDSubquery(tx, accountID)
 		destroyRows, err := accountDeletionShouldDestroyRows(tx, accountID)
@@ -107,6 +118,10 @@ func (s *Server) purgeAccountDeletionRequestWithOptions(ctx context.Context, acc
 			return err
 		}
 		statusIDs, reblogIDs := accountDeletionStatusIDQueries(tx, accountIDs, reportedStatusIDs)
+		faspDeletedStatuses, err = s.faspStatusesForDeletion(ctx, tx, statusIDs, reblogIDs)
+		if err != nil {
+			return err
+		}
 		statusDeleteBroadcasts, err = s.prepareBatchedAccountDeletionStatusDeletes(ctx, tx, now, statusIDs, reblogIDs)
 		if err != nil {
 			return err
@@ -170,6 +185,12 @@ func (s *Server) purgeAccountDeletionRequestWithOptions(ctx context.Context, acc
 	})
 	if err != nil {
 		return err
+	}
+	for _, status := range faspDeletedStatuses {
+		_ = s.enqueueFASPContentLifecycle(ctx, status, "delete")
+	}
+	if faspDeletedAccount != nil {
+		_ = s.enqueueFASPAccountLifecycle(ctx, *faspDeletedAccount, "delete")
 	}
 	fileCleanup.run(s)
 	publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -497,6 +518,9 @@ func accountDeletionProfileUpdates(now time.Time) map[string]any {
 }
 
 func purgeAccountDeletionExtraAssociations(database *gorm.DB, accountIDs *gorm.DB, reportedStatusIDs []int64, destroyRows bool) error {
+	if err := database.Exec("DELETE FROM fasp_follow_recommendations WHERE requesting_account_id IN (?) OR recommended_account_id IN (?)", accountIDs, accountIDs).Error; err != nil {
+		return err
+	}
 	for _, table := range []string{
 		"account_aliases",
 		"account_migrations",
@@ -504,6 +528,7 @@ func purgeAccountDeletionExtraAssociations(database *gorm.DB, accountIDs *gorm.D
 		"custom_filters",
 		"lists",
 		"report_notes",
+		"tag_follows",
 	} {
 		if err := database.Exec("DELETE FROM "+table+" WHERE account_id IN (?)", accountIDs).Error; err != nil {
 			return err

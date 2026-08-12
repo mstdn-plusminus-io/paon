@@ -28,6 +28,7 @@ const (
 type MeiliDeployOptions struct {
 	BatchSize    int
 	Resume       bool
+	OnlyMapping  bool
 	ProgressPath string
 	Writer       io.Writer
 }
@@ -73,6 +74,9 @@ func (s *Server) DeployMeiliIndexes(ctx context.Context, options MeiliDeployOpti
 	}
 	if err := s.syncMeiliIndexes(ctx); err != nil {
 		return MeiliDeployStats{}, err
+	}
+	if options.OnlyMapping {
+		return MeiliDeployStats{}, nil
 	}
 	saveProgress := func(progress meiliDeployProgress) error {
 		if err := writeMeiliDeployProgress(options.ProgressPath, progress); err != nil {
@@ -275,7 +279,8 @@ func (s *Server) meiliStatusDeployQuery(ctx context.Context) *gorm.DB {
 		Preload("Mentions").
 		Preload("Tags").
 		Preload("PreviewCards").
-		Preload("Poll")
+		Preload("Poll").
+		Preload("Quote")
 	if s.cfg.MeiliLibraryOnly {
 		query = query.Where(meiliLibraryOnlyStatusSQL())
 	}
