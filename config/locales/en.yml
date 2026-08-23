@@ -1025,7 +1025,7 @@ en:
         title: Allow origin referrer information for external links
       discovery:
         follow_recommendations: Follow recommendations
-        preamble: Surfacing interesting content is instrumental in onboarding new users who may not know anyone Mastodon. Control how various discovery features work on your server.
+        preamble: Surfacing interesting content is instrumental in onboarding new users who may not know anyone on Mastodon. Control how various discovery features work on your server.
         profile_directory: Profile directory
         public_timelines: Public timelines
         publish_discovered_servers: Publish discovered servers
@@ -1113,10 +1113,14 @@ en:
       no_status_selected: No posts were changed as none were selected
       open: Open post
       original_status: Original post
+      quoted_post: Quoted post
+      quotes: Quotes
       reblogs: Reblogs
       status_changed: Post changed
       title: Account posts
       trending: Trending
+      unknown_author: Unknown author
+      view_quoted_post: View quoted post
       visibility: Visibility
       with_media: With media
     strikes:
@@ -1917,6 +1921,8 @@ en:
       self_vote: You cannot vote in your own polls
       too_few_options: must have more than one item
       too_many_options: can't contain more than %{max} items
+  posting_defaults:
+    explanation: These settings will be used as defaults when you create new posts, but you can edit them per post within the composer.
   preferences:
     other: Other
     posting_defaults: Posting defaults
@@ -2091,6 +2097,10 @@ en:
       limit: You have already pinned the maximum number of posts
       ownership: Someone else's post cannot be pinned
       reblog: A boost cannot be pinned
+    quote_error:
+      not_available: Post unavailable
+      pending_approval: Post pending
+      revoked: Post removed by author
     quote_policies:
       followers: Followers only
       nobody: Just me
@@ -2147,6 +2157,10 @@ en:
       too_late: It is too late to appeal this strike
   tags:
     does_not_match_previous_name: does not match the previous name
+  emoji_styles:
+    auto: Auto
+    native: Native
+    twemoji: Twemoji
   themes:
     contrast: Mastodon (High contrast)
     default: Mastodon (Dark)

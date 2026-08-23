@@ -1099,10 +1099,14 @@ ja:
       no_status_selected: 何も選択されていないため、変更されていません
       open: 投稿を開く
       original_status: オリジナルの投稿
+      quoted_post: 引用された投稿
+      quotes: 引用
       reblogs: ブースト
       status_changed: 投稿を変更しました
       title: 投稿一覧
       trending: トレンド
+      unknown_author: 不明な投稿者
+      view_quoted_post: 引用されている投稿を見る
       visibility: 公開範囲
       with_media: メディアあり
     strikes:
@@ -1890,6 +1894,8 @@ ja:
       self_vote: 自分のアンケートには解答できません
       too_few_options: は複数必要です
       too_many_options: は%{max}個までです
+  posting_defaults:
+    explanation: これらの設定は投稿を新規作成するときにデフォルトとして使用されますが、作成画面で投稿ごとに変更できます。
   preferences:
     other: その他
     posting_defaults: デフォルトの投稿設定
@@ -2060,6 +2066,10 @@ ja:
       limit: 固定できる投稿数の上限に達しました
       ownership: 他人の投稿を固定することはできません
       reblog: ブーストを固定することはできません
+    quote_error:
+      not_available: 投稿を表示できません
+      pending_approval: 承認待ちの投稿
+      revoked: 投稿者により削除されました
     quote_policies:
       followers: フォロワーのみ
       nobody: 自分のみ
@@ -2116,6 +2126,10 @@ ja:
       too_late: 異議申立をするには遅すぎます
   tags:
     does_not_match_previous_name: 以前の名前と一致しません
+  emoji_styles:
+    auto: オート
+    native: ネイティブ
+    twemoji: Twemoji
   themes:
     contrast: Mastodon (ハイコントラスト)
     default: Mastodon (ダーク)

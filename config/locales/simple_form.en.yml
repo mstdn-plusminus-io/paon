@@ -56,11 +56,13 @@ en:
         scopes: Which APIs the application will be allowed to access. If you select a top-level scope, you don't need to select individual ones.
         setting_aggregate_reblogs: Do not show new boosts for posts that have been recently boosted (only affects newly-received boosts)
         setting_always_send_emails: Normally e-mail notifications won't be sent when you are actively using Mastodon
-        setting_default_quote_policy: This setting will only take effect for posts created with the next Mastodon version, but you can select your preference in preparation.
+        setting_default_quote_policy_private: Followers-only posts authored on Paon can't be quoted by others.
+        setting_default_quote_policy_unlisted: When people quote you, their post will also be hidden from trending timelines.
         setting_default_sensitive: Sensitive media is hidden by default and can be revealed with a click
         setting_display_media_default: Hide media marked as sensitive
         setting_display_media_hide_all: Always hide media
         setting_display_media_show_all: Always show media
+        setting_emoji_style: How to display emojis. "Auto" will try using native emoji, but falls back to Twemoji for legacy browsers.
         setting_system_scrollbars_ui: Applies only to desktop browsers based on Safari and Chrome
         setting_use_blurhash: Gradients are based on the colors of the hidden visuals but obfuscate any details
         setting_use_pending_items: Hide timeline updates behind a click instead of automatically scrolling the feed
@@ -236,6 +238,7 @@ en:
         setting_display_media_default: Default
         setting_display_media_hide_all: Hide all
         setting_display_media_show_all: Show all
+        setting_emoji_style: Emoji style
         setting_expand_spoilers: Always expand posts marked with content warnings
         setting_hide_network: Hide your social graph
         setting_reduce_motion: Reduce motion in animations
@@ -317,6 +320,7 @@ en:
         follow_request: Someone requested to follow you
         mention: Someone mentioned you
         pending_account: New account needs review
+        quote: Someone quoted you
         reblog: Someone boosted your post
         report: New report is submitted
         software_updates:
