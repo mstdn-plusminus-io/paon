@@ -103,6 +103,8 @@ const (
 	asynqTaskUnfavourite                 = "unfavourite"
 	asynqTaskAfterUnallowDomain          = "after_unallow_domain"
 	asynqQueueDefault                    = "default"
+	asynqQueueRemoval                    = "removal"
+	asynqQueueRemoteRemoval              = "remote_removal"
 	asynqQueuePull                       = "pull"
 	asynqQueuePush                       = "push"
 	asynqQueueMailers                    = "mailers"
@@ -442,6 +444,7 @@ type asynqRemovalPayload struct {
 	Preserve        bool  `json:"preserve,omitempty"`
 	OriginalRemoved bool  `json:"original_removed,omitempty"`
 	SkipStreaming   bool  `json:"skip_streaming,omitempty"`
+	Remote          bool  `json:"remote,omitempty"`
 }
 
 // asynqConversationPayload mirrors PushConversationWorker.perform.
@@ -1226,20 +1229,45 @@ func (s *Server) enqueueAnnouncementReactionTask(announcementID int64, name stri
 	return err == nil
 }
 
-// enqueueRemovalTask mirrors RemovalWorker.perform_async on Rails' default queue.
+// enqueueRemovalTask routes potentially high-volume status deletion work to Paon's
+// dedicated queues so it cannot build up behind timeline work on default. Remote
+// statuses use the lowest-priority removal queue.
 func (s *Server) enqueueRemovalTask(payload asynqRemovalPayload) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return s.enqueueRemovalTaskContext(ctx, payload) == nil
+}
+
+func (s *Server) enqueueRemovalTaskContext(ctx context.Context, payload asynqRemovalPayload, options ...asynq.Option) error {
 	if s == nil || s.asynqClient == nil || payload.StatusID == 0 {
-		return false
+		return errors.New("removal queue is unavailable")
 	}
 	raw, err := marshalAsynqTaskPayload(payload)
 	if err != nil {
-		return false
+		return err
 	}
-	task := asynq.NewTask(asynqTaskRemoval, raw, asynq.Queue(s.asynqQueue(asynqQueueDefault)), asynq.MaxRetry(25))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	queue := asynqRemovalQueueForPayload(payload)
+	taskOptions := []asynq.Option{
+		asynq.Queue(s.asynqQueue(queue)),
+		asynq.MaxRetry(25),
+	}
+	task := asynq.NewTask(asynqTaskRemoval, raw, append(taskOptions, options...)...)
 	_, err = s.asynqClient.EnqueueContext(ctx, task)
-	return err == nil
+	if asynqEnqueueAccepted(err) {
+		return nil
+	}
+	return err
+}
+
+func removalTaskID(statusID int64) string {
+	return "removal-" + strconv.FormatInt(statusID, 10)
+}
+
+func asynqRemovalQueueForPayload(payload asynqRemovalPayload) string {
+	if payload.Remote || payload.OriginalRemoved {
+		return asynqQueueRemoteRemoval
+	}
+	return asynqQueueRemoval
 }
 
 func (s *Server) enqueueRemovalTasksForStatusIDs(statusIDs []int64, options asynqRemovalPayload) bool {
@@ -2177,12 +2205,14 @@ func asynqRetryExhausted(ctx context.Context) bool {
 
 func paonGoAsynqQueueWeights() map[string]int {
 	return map[string]int{
-		asynqQueueDefault: 8,
-		asynqQueuePush:    6,
-		asynqQueueIngress: 4,
-		asynqQueueMailers: 2,
-		asynqQueuePull:    1,
-		asynqQueueFASP:    1,
+		asynqQueueDefault:       8,
+		asynqQueuePush:          6,
+		asynqQueueIngress:       4,
+		asynqQueueMailers:       2,
+		asynqQueueRemoval:       2,
+		asynqQueuePull:          1,
+		asynqQueueRemoteRemoval: 1,
+		asynqQueueFASP:          1,
 	}
 }
 

@@ -12,7 +12,7 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 )
 
-var adminSidekiqRequiredQueues = []string{"default", "push", "mailers", "pull", "scheduler", "ingress"}
+var adminSidekiqRequiredQueues = []string{"default", "push", "mailers", "pull", "removal", "remote_removal", "scheduler", "ingress"}
 
 const (
 	paonGoWorkerProcessesKey     = "paon:worker:processes"

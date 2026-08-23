@@ -438,7 +438,9 @@ func TestStatusDeleteUnpushesRailsFeedCaches(t *testing.T) {
 	}
 	for _, want := range []string{
 		`_ = s.removeStatusFromRailsFeeds(ctx, s.db, status)`,
-		`Order(clause.Expr{SQL: "CASE WHEN id = ? THEN 0 ELSE 1 END, id", Vars: []any{statusID}})`,
+		`Where("id = ? AND deleted_at IS NULL", statusID)`,
+		`Where("reblog_of_id = ? AND deleted_at IS NULL", statusID)`,
+		`Order("id ASC")`,
 	} {
 		if !strings.Contains(string(serverSrc), want) {
 			t.Fatalf("status deletion missing %q", want)

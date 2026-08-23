@@ -524,7 +524,7 @@ func (s *Server) adminStatusBatchRemovalPayload(targetAccountID int64) asynqRemo
 		return asynqRemovalPayload{}
 	}
 	local := target.Local()
-	return asynqRemovalPayload{Preserve: local, Immediate: !local}
+	return asynqRemovalPayload{Preserve: local, Immediate: !local, Remote: !local}
 }
 
 func createAdminStatusBatchWarning(tx *gorm.DB, actorAccountID int64, targetAccountID int64, reportID int64, action string, statusIDs []int64, text string, now time.Time) (models.AccountWarning, error) {
