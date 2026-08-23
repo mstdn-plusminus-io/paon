@@ -10,7 +10,7 @@ import AutosuggestAccountContainer from '../features/compose/containers/autosugg
 import AutosuggestEmoji from './autosuggest_emoji';
 import { AutosuggestHashtag } from './autosuggest_hashtag';
 
-const textAtCursorMatchesToken = (str, caretPosition, searchTokens) => {
+export const textAtCursorMatchesToken = (str, caretPosition, searchTokens) => {
   let word;
 
   let left  = str.slice(0, caretPosition).search(/\S+$/);
@@ -26,7 +26,7 @@ const textAtCursorMatchesToken = (str, caretPosition, searchTokens) => {
     return [null, null];
   }
 
-  word = word.trim().toLowerCase();
+  word = word.trim();
 
   if (word.length > 0) {
     return [left + 1, word];
@@ -59,7 +59,7 @@ export default class AutosuggestInput extends ImmutablePureComponent {
 
   static defaultProps = {
     autoFocus: true,
-    searchTokens: ['@', ':', '#'],
+    searchTokens: ['@', '＠', ':', '#', '＃'],
   };
 
   state = {

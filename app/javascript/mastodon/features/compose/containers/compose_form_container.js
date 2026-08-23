@@ -11,6 +11,7 @@ import {
   uploadCompose,
   changeComposeVisibility,
   setComposeInstanceLimits,
+  pasteLinkCompose,
 } from '../../../actions/compose';
 import { openModal } from '../../../actions/modal';
 import ComposeForm from '../components/compose_form';
@@ -104,8 +105,21 @@ const mapDispatchToProps = (dispatch, props) => ({
     }
   },
 
-  onPaste (files) {
-    dispatch(uploadCompose(files));
+  onPaste (event) {
+    if (event.clipboardData?.files.length === 1) {
+      dispatch(uploadCompose(event.clipboardData.files));
+      event.preventDefault();
+      return;
+    }
+
+    const text = event.clipboardData?.getData('text/plain')?.trim();
+    if (!/^https?:\/\/[^\s]+\/[^\s]+$/i.test(text || '')) return;
+
+    try {
+      dispatch(pasteLinkCompose(new URL(text).toString()));
+    } catch {
+      // Keep malformed links as ordinary compose text.
+    }
   },
 
   onPickEmoji (position, data, needsSpace) {

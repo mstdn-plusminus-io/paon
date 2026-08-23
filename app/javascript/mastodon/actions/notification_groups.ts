@@ -34,6 +34,15 @@ import { saveSettings } from './settings';
 
 export * from './notification_group_types';
 
+const notificationTypeForFilter = (type: string) =>
+  type === 'quoted_update' ? 'update' : type;
+
+const notificationTypeForQuickFilter = (type: string) => {
+  if (type === 'quoted_update') return 'update';
+  if (type === 'quote') return 'mention';
+  return type;
+};
+
 const groupedTypes = (getState: GetState) => {
   const types = ['favourite', 'reblog'];
   if (
@@ -56,7 +65,9 @@ const excludedTypes = (getState: GetState) => {
       'active',
     ]) as string | undefined) ?? 'all';
   if (active !== 'all') {
-    return allNotificationTypes.filter((type) => type !== active);
+    return allNotificationTypes.filter(
+      (type) => notificationTypeForQuickFilter(type) !== active,
+    );
   }
 
   const shows = getState().getIn(['settings', 'notifications', 'shows']) as
@@ -160,22 +171,23 @@ export const processNewNotificationForGroups =
         'quickFilter',
         'active',
       ]) as string | undefined) ?? 'all';
+    const filterType = notificationTypeForFilter(notification.type);
+    const quickFilterType = notificationTypeForQuickFilter(notification.type);
     const shown =
-      (getState().getIn([
-        'settings',
-        'notifications',
-        'shows',
-        notification.type,
-      ]) as boolean | undefined) ?? true;
+      (getState().getIn(['settings', 'notifications', 'shows', filterType]) as
+        | boolean
+        | undefined) ?? true;
     if (
-      (active !== 'all' && active !== notification.type) ||
+      (active !== 'all' && active !== quickFilterType) ||
       !shown ||
       notification.filtered
     )
       return;
 
     if (
-      (notification.type === 'mention' || notification.type === 'update') &&
+      ['mention', 'quote', 'update', 'quoted_update'].includes(
+        notification.type,
+      ) &&
       notification.status?.filtered
     ) {
       const filters = notification.status.filtered.filter((result) =>

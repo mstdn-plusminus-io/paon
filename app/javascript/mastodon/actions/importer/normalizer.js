@@ -56,8 +56,15 @@ export function normalizeFilterResult(result) {
   return normalResult;
 }
 
-export function normalizeStatus(status, normalOldStatus) {
+export function normalizeStatus(status, normalOldStatus, { bogusQuotePolicy = false } = {}) {
   const normalStatus   = { ...status };
+
+  // Public and hashtag streams do not carry a viewer-personalized policy.
+  // Treat their policy as unknown until a regular REST fetch replaces it.
+  if (bogusQuotePolicy) {
+    normalStatus.quote_approval = null;
+  }
+
   normalStatus.account = status.account.id;
 
   if (status.reblog && status.reblog.id) {
@@ -138,6 +145,8 @@ export function normalizeStatus(status, normalOldStatus) {
   }
 
   if (normalOldStatus) {
+    normalStatus.quote_approval ||= normalOldStatus.get('quote_approval');
+
     const list = normalOldStatus.get('media_attachments');
     if (normalStatus.media_attachments && list) {
       normalStatus.media_attachments.forEach(item => {

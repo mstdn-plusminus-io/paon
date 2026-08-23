@@ -94,6 +94,10 @@ export function Favourites () {
   return import(/* webpackChunkName: "features/favourites" */'../../favourites');
 }
 
+export function Quotes () {
+  return import(/* webpackChunkName: "features/quotes" */'../../quotes');
+}
+
 export function FollowRequests () {
   return import(/* webpackChunkName: "features/follow_requests" */'../../follow_requests');
 }

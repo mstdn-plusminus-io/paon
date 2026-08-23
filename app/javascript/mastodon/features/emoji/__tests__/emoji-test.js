@@ -30,6 +30,12 @@ describe('emoji', () => {
         '<img draggable="false" class="emojione" alt="❗" title=":exclamation:" src="/emoji/2757.svg">');
     });
 
+    it('renders the Unicode 16 additions with Twemoji 16 assets', () => {
+      expect(emojify('🇨🇶🪉🪏🪾🫆🫜🫟🫩')).toEqual(
+        '<img draggable="false" class="emojione" alt="🇨🇶" title=":flag-sark:" src="/emoji/1f1e8-1f1f6.svg"><img draggable="false" class="emojione" alt="🪉" title=":harp:" src="/emoji/1fa89.svg"><img draggable="false" class="emojione" alt="🪏" title=":shovel:" src="/emoji/1fa8f.svg"><img draggable="false" class="emojione" alt="🪾" title=":leafless_tree:" src="/emoji/1fabe.svg"><img draggable="false" class="emojione" alt="🫆" title=":fingerprint:" src="/emoji/1fac6.svg"><img draggable="false" class="emojione" alt="🫜" title=":root_vegetable:" src="/emoji/1fadc.svg"><img draggable="false" class="emojione" alt="🫟" title=":splatter:" src="/emoji/1fadf.svg"><img draggable="false" class="emojione" alt="🫩" title=":face_with_bags_under_eyes:" src="/emoji/1fae9.svg">'
+      );
+    });
+
     it('does multiple unicode', () => {
       expect(emojify('\u2757 #\uFE0F\u20E3')).toEqual(
         '<img draggable="false" class="emojione" alt="❗" title=":exclamation:" src="/emoji/2757.svg"> <img draggable="false" class="emojione" alt="#️⃣" title=":hash:" src="/emoji/23-20e3.svg">');

@@ -30,6 +30,10 @@ const makeGetStatusIds = (pending = false) => createSelector([
       showStatus = showStatus && (statusForId.get('in_reply_to_id') === null || statusForId.get('in_reply_to_account_id') === me);
     }
 
+    if (columnSettings.getIn(['shows', 'quote']) === false) {
+      showStatus = showStatus && statusForId.get('quote') === null;
+    }
+
     if (props.mediaOnly === true) {
       if (statusForId.get('reblog')) {
         showStatus = showStatus && statuses.get(statusForId.get('reblog')).get('media_attachments')?.size > 0;

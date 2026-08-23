@@ -360,6 +360,63 @@ body > [data-popper-placement] {
 .compose-form {
   padding: 15px;
 
+  &__quoted-post {
+    position: relative;
+    margin-top: 10px;
+    padding: 10px;
+    border-top: 1px solid lighten($ui-base-color, 8%);
+
+    .status__quote {
+      margin-top: 0;
+    }
+
+    &--loading {
+      color: $darker-text-color;
+      line-height: 24px;
+      text-align: center;
+    }
+
+    &__remove {
+      position: absolute;
+      z-index: 2;
+      top: 16px;
+      inset-inline-end: 16px;
+      padding: 4px;
+      border-radius: 50%;
+      color: $primary-text-color;
+      background: rgba($ui-base-color, 0.85);
+    }
+  }
+
+  &__quote-policy {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    margin-inline-end: 8px;
+    color: $darker-text-color;
+
+    select {
+      min-width: 0;
+      max-width: 150px;
+      border: 0;
+      color: inherit;
+      background: transparent;
+      font: inherit;
+      cursor: pointer;
+
+      &:focus-visible {
+        outline: $ui-button-focus-outline;
+        border-radius: 4px;
+      }
+
+      &:disabled {
+        cursor: default;
+        opacity: 0.65;
+      }
+    }
+  }
+
   &__sensitive-button {
     padding: 10px;
     padding-top: 0;
@@ -651,6 +708,48 @@ body > [data-popper-placement] {
           rgba($base-shadow-color, 0.8) 0,
           rgba($base-shadow-color, 0.35) 80%,
           transparent
+        );
+      }
+
+      &__audio-preview {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        color: $secondary-text-color;
+        background: radial-gradient(
+          circle,
+          lighten($base-shadow-color, 12%),
+          $base-shadow-color 72%
+        );
+
+        .icon {
+          position: relative;
+          z-index: 1;
+          width: 42px;
+          height: 42px;
+          padding: 12px;
+          border-radius: 50%;
+          color: $primary-text-color;
+          background: rgba($base-shadow-color, 0.6);
+        }
+      }
+
+      &__audio-wave {
+        position: absolute;
+        inset: 24px 12%;
+        opacity: 0.45;
+        background: repeating-linear-gradient(
+          90deg,
+          currentColor 0 3px,
+          transparent 3px 10px
+        );
+        mask-image: radial-gradient(
+          ellipse at center,
+          #000 20%,
+          transparent 72%
         );
       }
     }
@@ -982,6 +1081,7 @@ body > [data-popper-placement] {
 .status__content__read-more-button,
 .status__content__translate-button {
   display: block;
+  width: min-content;
   font-size: 15px;
   line-height: 22px;
   color: $highlight-text-color;
@@ -2284,6 +2384,10 @@ a.account__display-name {
     color: $error-value-color;
   }
 
+  &--highlighted {
+    color: $highlight-text-color;
+  }
+
   a,
   button {
     font: inherit;
@@ -2305,8 +2409,15 @@ a.account__display-name {
     &:focus,
     &:hover,
     &:active {
-      background: var(--dropdown-border-color);
-      outline: 0;
+      &:not([aria-disabled='true']) {
+        background: var(--dropdown-border-color);
+        outline: 0;
+      }
+    }
+
+    &[aria-disabled='true'] {
+      color: $dark-text-color;
+      cursor: default;
     }
   }
 }
@@ -2344,6 +2455,7 @@ a.account__display-name {
     width: 100%;
     height: 100%;
     min-height: 100vh;
+    min-height: 100dvh;
 
     &__pane {
       height: 100%;
@@ -2367,6 +2479,8 @@ a.account__display-name {
     }
 
     &__main {
+      --column-header-height: 62px;
+
       box-sizing: border-box;
       width: 100%;
       flex: 0 0 auto;
@@ -2692,6 +2806,7 @@ $ui-header-height: 55px;
 
   .columns-area__panels {
     min-height: calc(100vh - $ui-header-height);
+    min-height: calc(100dvh - $ui-header-height);
   }
 
   .columns-area__panels.reverse {
@@ -2715,6 +2830,7 @@ $ui-header-height: 55px;
       background: $ui-base-color;
       border-inline-start: 1px solid lighten($ui-base-color, 8%);
       height: 100vh;
+      height: 100dvh;
     }
 
     .navigation-panel__sign-in-banner,
@@ -2764,6 +2880,7 @@ $ui-header-height: 55px;
 
     .columns-area__panels {
       min-height: 100vh !important;
+      min-height: 100dvh !important;
     }
   }
 
@@ -2780,6 +2897,25 @@ $ui-header-height: 55px;
   .scrollable,
   .error-column {
     border-radius: 0 !important;
+  }
+}
+
+.thread-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 10px 16px;
+  border-top: 1px solid lighten($ui-base-color, 8%);
+  border-bottom: 1px solid lighten($ui-base-color, 8%);
+  color: $darker-text-color;
+  font-size: 14px;
+  text-align: center;
+
+  .button {
+    flex: 0 0 auto;
+    padding: 6px 12px;
   }
 }
 
@@ -3702,6 +3838,7 @@ $ui-header-height: 55px;
   border-color: $ui-highlight-color;
 }
 
+.follow_requests-unlocked_explanation,
 .switch-to-advanced {
   color: $light-text-color;
   background-color: $ui-base-color;
@@ -3712,7 +3849,7 @@ $ui-header-height: 55px;
   font-size: 13px;
   line-height: 18px;
 
-  .switch-to-advanced__toggle {
+  a {
     color: $ui-button-tertiary-color;
     font-weight: bold;
   }
@@ -4221,6 +4358,7 @@ a.status-card {
   border-end-start-radius: 8px;
   border-end-end-radius: 8px;
   font-size: 13px;
+  overflow: hidden;
 
   a {
     color: $primary-text-color;
@@ -4956,8 +5094,7 @@ a.status-card {
   }
 }
 
-.empty-column-indicator,
-.follow_requests-unlocked_explanation {
+.empty-column-indicator {
   color: $dark-text-color;
   background: $ui-base-color;
   text-align: center;
@@ -4985,10 +5122,8 @@ a.status-card {
 }
 
 .follow_requests-unlocked_explanation {
-  background: darken($ui-base-color, 4%);
-  border-bottom: 1px solid lighten($ui-base-color, 8%);
-  contain: initial;
-  flex-grow: 0;
+  margin: 16px;
+  margin-bottom: 0;
 }
 
 .error-column {
@@ -9105,20 +9240,17 @@ noscript {
 
     &__shared {
       display: flex;
-      align-items: center;
+      align-items: baseline;
       justify-content: space-between;
       gap: 8px;
       color: $darker-text-color;
 
       & > span {
-        display: flex;
-        align-items: center;
-        gap: 4px;
         min-width: 0;
       }
 
       &__pill {
-        flex: 0 0 auto;
+        flex-shrink: 0;
         padding: 4px 10px;
         border-radius: 4px;
         color: inherit;
@@ -11488,7 +11620,9 @@ noscript {
   }
 
   &__cards {
+    box-sizing: border-box;
     display: flex;
+    min-height: 200px;
     gap: 10px;
     overflow-x: auto;
     scroll-snap-type: x mandatory;

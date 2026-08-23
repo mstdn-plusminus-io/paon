@@ -18,13 +18,14 @@ import { HoverCardController } from 'mastodon/components/hover_card_controller';
 import PictureInPicture from 'mastodon/features/picture_in_picture';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { layoutFromWindow } from 'mastodon/is_mobile';
+import { columnNumberForLayout } from 'mastodon/utils/feed_keyboard_navigation';
 
 import { uploadCompose, resetCompose, changeComposeSpoilerness } from '../../actions/compose';
 import { clearHeight } from '../../actions/height_cache';
 import { expandNotifications } from '../../actions/notifications';
 import { fetchServer, fetchServerTranslationLanguages } from '../../actions/server';
 import { expandHomeTimeline } from '../../actions/timelines';
-import initialState, { disableHoverCards, me, owner, singleUserMode, trendsEnabled, trendsAsLanding } from '../../initial_state';
+import initialState, { disableHoverCards, landingPage, localLiveFeedAccess, me, owner, singleUserMode, trendsEnabled } from '../../initial_state';
 
 import BundleColumnError from './components/bundle_column_error';
 import { HashtagMenuController } from './components/hashtag_menu_controller';
@@ -72,8 +73,10 @@ import {
   About,
   PrivacyPolicy,
   TermsOfService,
+  Quotes,
 } from './util/async-components';
 import { navigateBack } from './util/back_navigation';
+import { publicLandingPath } from './util/landing_page';
 import { WrappedSwitch, WrappedRoute } from './util/react_router_helpers';
 
 // Dummy import, to make sure that <Status /> ends up in the application bundle.
@@ -87,7 +90,7 @@ const messages = defineMessages({
 const mapStateToProps = state => ({
   layout: state.getIn(['meta', 'layout']),
   isComposing: state.getIn(['compose', 'is_composing']),
-  hasComposingContents: state.getIn(['compose', 'text']).trim().length !== 0 || state.getIn(['compose', 'media_attachments']).size > 0 || state.getIn(['compose', 'poll']) !== null,
+  hasComposingContents: state.getIn(['compose', 'text']).trim().length !== 0 || state.getIn(['compose', 'media_attachments']).size > 0 || state.getIn(['compose', 'poll']) !== null || Boolean(state.getIn(['compose', 'quoted_status_id'])),
   canUploadMore: !state.getIn(['compose', 'media_attachments']).some(x => ['audio', 'video'].includes(x.get('type'))) && state.getIn(['compose', 'media_attachments']).size < state.getIn(['compose', 'max_media_attachments']),
   dropdownMenuIsOpen: state.getIn(['dropdown_menu', 'openId']) !== null,
   firstLaunch: state.getIn(['settings', 'introductionVersion'], 0) < INTRODUCTION_VERSION,
@@ -182,10 +185,8 @@ class SwitchingColumnsArea extends PureComponent {
       }
     } else if (singleUserMode && owner && initialState?.accounts[owner]) {
       redirect = <Redirect from='/' to={`/@${initialState.accounts[owner].username}`} exact />;
-    } else if (trendsEnabled && trendsAsLanding) {
-      redirect = <Redirect from='/' to='/explore' exact />;
     } else {
-      redirect = <Redirect from='/' to='/about' exact />;
+      redirect = <Redirect from='/' to={publicLandingPath({ trendsEnabled, landingPage, localLiveFeedAccess })} exact />;
     }
 
     return (
@@ -238,6 +239,7 @@ class SwitchingColumnsArea extends PureComponent {
           <WrappedRoute path='/@:acct/:statusId' exact component={Status} content={children} />
           <WrappedRoute path='/@:acct/:statusId/reblogs' component={Reblogs} content={children} />
           <WrappedRoute path='/@:acct/:statusId/favourites' component={Favourites} content={children} />
+          <WrappedRoute path='/@:acct/:statusId/quotes' component={Quotes} content={children} />
 
           {/* Legacy routes, cannot be easily factored with other routes because they share a param name */}
           <WrappedRoute path='/timelines/tag/:id' component={HashtagTimeline} content={children} />
@@ -245,6 +247,7 @@ class SwitchingColumnsArea extends PureComponent {
           <WrappedRoute path='/statuses/:statusId' exact component={Status} content={children} />
           <WrappedRoute path='/statuses/:statusId/reblogs' component={Reblogs} content={children} />
           <WrappedRoute path='/statuses/:statusId/favourites' component={Favourites} content={children} />
+          <WrappedRoute path='/statuses/:statusId/quotes' component={Quotes} content={children} />
 
           <WrappedRoute path='/follow_requests' component={FollowRequests} content={children} />
           <WrappedRoute path='/blocks' component={Blocks} content={children} />
@@ -479,7 +482,7 @@ class UI extends PureComponent {
   };
 
   handleHotkeyFocusColumn = e => {
-    const index  = (e.key * 1) + 1; // First child is drawer, skip that
+    const index = columnNumberForLayout(e.key, document.body.classList.contains('layout-multiple-columns'));
     const column = this.node.querySelector(`.column:nth-child(${index})`);
     if (!column) return;
     const container = column.querySelector('.scrollable');

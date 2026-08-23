@@ -17,16 +17,22 @@ import { expandHashtagTimeline, clearTimeline } from 'mastodon/actions/timelines
 import Column from 'mastodon/components/column';
 import ColumnHeader from 'mastodon/components/column_header';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
+import { me, remoteTopicFeedAccess } from 'mastodon/initial_state';
 
 import StatusListContainer from '../ui/containers/status_list_container';
 
 import { HashtagHeader } from './components/hashtag_header';
 import ColumnSettingsContainer from './containers/column_settings_container';
 
-const mapStateToProps = (state, props) => ({
-  hasUnread: state.getIn(['timelines', `hashtag:${props.params.id}${props.params.local ? ':local' : ''}`, 'unread']) > 0,
-  tag: state.getIn(['tags', props.params.id]),
-});
+const mapStateToProps = (state, props) => {
+  const local = props.params.local || (!me && remoteTopicFeedAccess !== 'public');
+
+  return {
+    local,
+    hasUnread: state.getIn(['timelines', `hashtag:${props.params.id}${local ? ':local' : ''}`, 'unread']) > 0,
+    tag: state.getIn(['tags', props.params.id]),
+  };
+};
 
 class HashtagTimeline extends PureComponent {
 
@@ -41,6 +47,7 @@ class HashtagTimeline extends PureComponent {
     columnId: PropTypes.string,
     dispatch: PropTypes.func.isRequired,
     hasUnread: PropTypes.bool,
+    local: PropTypes.bool,
     tag: ImmutablePropTypes.map,
     multiColumn: PropTypes.bool,
   };
@@ -120,16 +127,16 @@ class HashtagTimeline extends PureComponent {
   }
 
   _unload () {
-    const { dispatch } = this.props;
-    const { id, local } = this.props.params;
+    const { dispatch, local } = this.props;
+    const { id } = this.props.params;
 
     this._unsubscribe();
     dispatch(clearTimeline(`hashtag:${id}${local ? ':local' : ''}`));
   }
 
   _load() {
-    const { dispatch } = this.props;
-    const { id, tags, local } = this.props.params;
+    const { dispatch, local } = this.props;
+    const { id, tags } = this.props.params;
 
     this._subscribe(dispatch, id, tags, local);
     dispatch(expandHashtagTimeline(id, { tags, local }));
@@ -141,10 +148,10 @@ class HashtagTimeline extends PureComponent {
   }
 
   componentDidUpdate (prevProps) {
-    const { params } = this.props;
-    const { id, tags, local } = prevProps.params;
+    const { params, local } = this.props;
+    const { id, tags } = prevProps.params;
 
-    if (id !== params.id || !isEqual(tags, params.tags) || !isEqual(local, params.local)) {
+    if (id !== params.id || !isEqual(tags, params.tags) || !isEqual(local, prevProps.local)) {
       this._unload();
       this._load();
     }
@@ -159,8 +166,8 @@ class HashtagTimeline extends PureComponent {
   };
 
   handleLoadMore = maxId => {
-    const { dispatch, params } = this.props;
-    const { id, tags, local }  = params;
+    const { dispatch, params, local } = this.props;
+    const { id, tags }  = params;
 
     dispatch(expandHashtagTimeline(id, { maxId, tags, local }));
   };
@@ -198,8 +205,8 @@ class HashtagTimeline extends PureComponent {
   };
 
   render () {
-    const { hasUnread, columnId, multiColumn, tag } = this.props;
-    const { id, local } = this.props.params;
+    const { hasUnread, columnId, multiColumn, tag, local } = this.props;
+    const { id } = this.props.params;
     const pinned = !!columnId;
     const { signedIn } = this.props.identity;
 

@@ -1,7 +1,7 @@
 import api, { getLinks } from '../api';
 
 import { fetchRelationships } from './accounts';
-import { importFetchedAccounts, importFetchedStatus } from './importer';
+import { importFetchedAccounts, importFetchedStatus, importFetchedStatuses } from './importer';
 
 export const REBLOG_REQUEST = 'REBLOG_REQUEST';
 export const REBLOG_SUCCESS = 'REBLOG_SUCCESS';
@@ -34,6 +34,13 @@ export const FAVOURITES_FETCH_FAIL    = 'FAVOURITES_FETCH_FAIL';
 export const FAVOURITES_EXPAND_REQUEST = 'FAVOURITES_EXPAND_REQUEST';
 export const FAVOURITES_EXPAND_SUCCESS = 'FAVOURITES_EXPAND_SUCCESS';
 export const FAVOURITES_EXPAND_FAIL = 'FAVOURITES_EXPAND_FAIL';
+
+export const QUOTES_FETCH_REQUEST = 'QUOTES_FETCH_REQUEST';
+export const QUOTES_FETCH_SUCCESS = 'QUOTES_FETCH_SUCCESS';
+export const QUOTES_FETCH_FAIL = 'QUOTES_FETCH_FAIL';
+export const QUOTES_EXPAND_REQUEST = 'QUOTES_EXPAND_REQUEST';
+export const QUOTES_EXPAND_SUCCESS = 'QUOTES_EXPAND_SUCCESS';
+export const QUOTES_EXPAND_FAIL = 'QUOTES_EXPAND_FAIL';
 
 export const PIN_REQUEST = 'PIN_REQUEST';
 export const PIN_SUCCESS = 'PIN_SUCCESS';
@@ -78,6 +85,54 @@ export function unreblog(status) {
     });
   };
 }
+
+export function revokeQuote(status) {
+  return (dispatch) => {
+    const quotedStatusId = status.getIn(['quote', 'quoted_status']);
+    if (!quotedStatusId) return;
+
+    api().post(`/api/v1/statuses/${quotedStatusId}/quotes/${status.get('id')}/revoke`).then(response => {
+      dispatch(importFetchedStatus(response.data));
+    }).catch(error => {
+      dispatch({ type: 'QUOTE_REVOKE_FAIL', error, skipLoading: true });
+    });
+  };
+}
+
+const quotesRequest = (id, expand) => ({
+  type: expand ? QUOTES_EXPAND_REQUEST : QUOTES_FETCH_REQUEST,
+  id,
+});
+
+const quotesSuccess = (id, statuses, next, expand) => ({
+  type: expand ? QUOTES_EXPAND_SUCCESS : QUOTES_FETCH_SUCCESS,
+  id,
+  statuses,
+  next,
+});
+
+const quotesFail = (id, error, expand) => ({
+  type: expand ? QUOTES_EXPAND_FAIL : QUOTES_FETCH_FAIL,
+  id,
+  error,
+});
+
+export const fetchQuotes = (id, expand = false) => (dispatch, getState) => {
+  const url = expand
+    ? getState().getIn(['status_lists', 'quotes', id, 'next'])
+    : `/api/v1/statuses/${id}/quotes`;
+
+  if (!url) return;
+  dispatch(quotesRequest(id, expand));
+
+  api().get(url).then(response => {
+    const next = getLinks(response).refs.find(link => link.rel === 'next');
+    dispatch(importFetchedStatuses(response.data));
+    dispatch(quotesSuccess(id, response.data, next ? next.uri : null, expand));
+  }).catch(error => dispatch(quotesFail(id, error, expand)));
+};
+
+export const expandQuotes = id => fetchQuotes(id, true);
 
 export function reblogRequest(status) {
   return {

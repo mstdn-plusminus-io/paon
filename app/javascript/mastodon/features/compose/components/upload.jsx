@@ -12,6 +12,7 @@ import spring from 'react-motion/lib/spring';
 import DeleteIcon from '@/material-icons/400-24px/delete.svg?react';
 import EditIcon from '@/material-icons/400-24px/edit.svg?react';
 import MenuIcon from '@/material-icons/400-24px/menu.svg?react';
+import MusicNoteIcon from '@/material-icons/400-24px/music_note.svg?react';
 import WarningIcon from '@/material-icons/400-24px/warning.svg?react';
 import { Icon }  from 'mastodon/components/icon';
 
@@ -50,6 +51,8 @@ const Upload = ({ media, onUndo, onOpenFocalPoint, index }) => {
   const focusY = media.getIn(['meta', 'focus', 'y']);
   const x = ((focusX / 2) + .5) * 100;
   const y = ((focusY / -2) + .5) * 100;
+  const previewUrl = media.get('preview_url') || media.get('preview_remote_url');
+  const showAudioPreview = media.get('type') === 'audio' && !previewUrl;
   const sortableStyle = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -64,7 +67,14 @@ const Upload = ({ media, onUndo, onOpenFocalPoint, index }) => {
     >
       <Motion defaultStyle={{ scale: 0.8 }} style={{ scale: spring(1, { stiffness: 180, damping: 12 }) }}>
         {({ scale }) => (
-          <div className='compose-form__upload-thumbnail' style={{ transform: `scale(${scale})`, backgroundImage: `url(${media.get('preview_url') || media.get('preview_remote_url')})`, backgroundPosition: `${x}% ${y}%` }}>
+          <div className='compose-form__upload-thumbnail' style={{ transform: `scale(${scale})`, backgroundImage: previewUrl ? `url(${previewUrl})` : undefined, backgroundPosition: `${x}% ${y}%` }}>
+            {showAudioPreview && (
+              <div className='compose-form__upload__audio-preview' aria-hidden='true'>
+                <span className='compose-form__upload__audio-wave' />
+                <Icon id='music' icon={MusicNoteIcon} />
+              </div>
+            )}
+
             <div className='compose-form__upload__actions'>
               <button type='button' className='icon-button' onClick={handleUndoClick}><Icon id='times' icon={DeleteIcon} /> <FormattedMessage id='upload_form.undo' defaultMessage='Delete' /></button>
               <button

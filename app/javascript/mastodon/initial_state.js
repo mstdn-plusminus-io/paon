@@ -58,6 +58,7 @@
  * @property {string} display_media
  * @property {string} domain
  * @property {boolean=} expand_spoilers
+ * @property {'auto' | 'native' | 'twemoji'=} emoji_style
  * @property {boolean} limited_federation_mode
  * @property {string} locale
  * @property {string | null} mascot
@@ -74,11 +75,14 @@
  * @property {boolean} single_user_mode
  * @property {string} source_url
  * @property {string} streaming_api_base_url
- * @property {boolean} timeline_preview
+ * @property {'public' | 'authenticated' | 'disabled'} local_live_feed_access
+ * @property {'public' | 'authenticated' | 'disabled'} remote_live_feed_access
+ * @property {'public' | 'authenticated'} local_topic_feed_access
+ * @property {'public' | 'authenticated' | 'disabled'} remote_topic_feed_access
  * @property {boolean} terms_of_service_enabled
  * @property {string} title
  * @property {boolean} show_trends
- * @property {boolean} trends_as_landing_page
+ * @property {'about' | 'trends' | 'local_feed'} landing_page
  * @property {boolean} disable_hover_cards
  * @property {boolean} use_blurhash
  * @property {boolean=} use_pending_items
@@ -100,6 +104,7 @@
  * @typedef InitialState
  * @property {Record<string, Account>} accounts
  * @property {InitialStateLanguage[]} languages
+ * @property {string[]} features
  * @property {boolean=} critical_updates_pending
  * @property {InitialStateMeta} meta
  * @property {Role?} role
@@ -114,6 +119,7 @@ const initialPath = document.querySelector("head meta[name=initialPath]")?.getAt
 /** @type {boolean} */
 export const hasMultiColumnPath = initialPath === '/'
   || initialPath === '/getting-started'
+  || initialPath === '/home'
   || initialPath.startsWith('/deck');
 
 /**
@@ -133,6 +139,7 @@ export const disabledAccountId = getMeta('disabled_account_id');
 export const displayMedia = getMeta('display_media');
 export const domain = getMeta('domain');
 export const expandSpoilers = getMeta('expand_spoilers');
+export const emojiStyle = getMeta('emoji_style') ?? 'auto';
 export const forceSingleColumn = !getMeta('advanced_layout');
 export const limitedFederationMode = getMeta('limited_federation_mode');
 export const mascot = getMeta('mascot');
@@ -149,10 +156,13 @@ export const trendsEnabled = getMeta('trends_enabled');
 export const showTrends = getMeta('show_trends');
 export const singleUserMode = getMeta('single_user_mode');
 export const source_url = getMeta('source_url');
-export const timelinePreview = getMeta('timeline_preview');
+export const localLiveFeedAccess = getMeta('local_live_feed_access');
+export const remoteLiveFeedAccess = getMeta('remote_live_feed_access');
+export const localTopicFeedAccess = getMeta('local_topic_feed_access');
+export const remoteTopicFeedAccess = getMeta('remote_topic_feed_access');
 export const termsOfServiceEnabled = getMeta('terms_of_service_enabled');
 export const title = getMeta('title');
-export const trendsAsLanding = getMeta('trends_as_landing_page');
+export const landingPage = getMeta('landing_page');
 export const disableHoverCards = getMeta('disable_hover_cards');
 export const useBlurhash = getMeta('use_blurhash');
 export const usePendingItems = getMeta('use_pending_items');

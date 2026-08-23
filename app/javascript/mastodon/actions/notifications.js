@@ -61,10 +61,12 @@ export const loadPending = () => ({
 
 export function updateNotifications(notification, intlMessages, intlLocale) {
   return (dispatch, getState) => {
+    const filterType = notification.type === 'quoted_update' ? 'update' : notification.type;
+    const quickFilterType = notification.type === 'quote' ? 'mention' : filterType;
     const activeFilter = getState().getIn(['settings', 'notifications', 'quickFilter', 'active']);
-    const showInColumn = activeFilter === 'all' ? getState().getIn(['settings', 'notifications', 'shows', notification.type], true) : activeFilter === notification.type;
-    const showAlert    = getState().getIn(['settings', 'notifications', 'alerts', notification.type], true);
-    const playSound    = getState().getIn(['settings', 'notifications', 'sounds', notification.type], true);
+    const showInColumn = activeFilter === 'all' ? getState().getIn(['settings', 'notifications', 'shows', filterType], true) : activeFilter === quickFilterType;
+    const showAlert    = getState().getIn(['settings', 'notifications', 'alerts', filterType], true);
+    const playSound    = getState().getIn(['settings', 'notifications', 'sounds', filterType], true);
 
     let filtered = false;
 
@@ -73,7 +75,7 @@ export function updateNotifications(notification, intlMessages, intlLocale) {
       filtered = true;
     }
 
-    if (['mention', 'status'].includes(notification.type) && notification.status.filtered) {
+    if (['mention', 'quote', 'status', 'update', 'quoted_update'].includes(notification.type) && notification.status?.filtered) {
       const filters = notification.status.filtered.filter(result => result.filter.context.includes('notifications'));
 
       if (filters.some(result => result.filter.filter_action === 'hide')) {
@@ -130,24 +132,31 @@ export function updateNotifications(notification, intlMessages, intlLocale) {
   };
 }
 
-const excludeTypesFromSettings = state => state.getIn(['settings', 'notifications', 'shows']).filter(enabled => !enabled).keySeq().toJS();
+const allNotificationTypes = ImmutableList([
+  'follow',
+  'follow_request',
+  'favourite',
+  'reblog',
+  'quote',
+  'mention',
+  'poll',
+  'status',
+  'update',
+  'quoted_update',
+  'admin.sign_up',
+  'admin.report',
+]);
 
-const excludeTypesFromFilter = filter => {
-  const allTypes = ImmutableList([
-    'follow',
-    'follow_request',
-    'favourite',
-    'reblog',
-    'mention',
-    'poll',
-    'status',
-    'update',
-    'admin.sign_up',
-    'admin.report',
-  ]);
+const notificationTypeForFilter = type => type === 'quoted_update' ? 'update' : type;
+const notificationTypeForQuickFilter = type => type === 'quote' ? 'mention' : notificationTypeForFilter(type);
 
-  return allTypes.filterNot(item => item === filter).toJS();
-};
+const excludeTypesFromSettings = state => allNotificationTypes.filter(type => (
+  !state.getIn(['settings', 'notifications', 'shows', notificationTypeForFilter(type)], true)
+)).toJS();
+
+const excludeTypesFromFilter = filter => allNotificationTypes.filterNot(
+  item => notificationTypeForQuickFilter(item) === filter
+).toJS();
 
 const noOp = () => {};
 

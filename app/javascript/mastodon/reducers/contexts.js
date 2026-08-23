@@ -4,29 +4,36 @@ import {
   ACCOUNT_BLOCK_SUCCESS,
   ACCOUNT_MUTE_SUCCESS,
 } from '../actions/accounts';
-import { CONTEXT_FETCH_SUCCESS } from '../actions/statuses';
+import {
+  CONTEXT_FETCH_SUCCESS,
+  CONTEXT_SHOW_PENDING,
+  CONTEXT_CLEAR_PENDING,
+  CONTEXT_REFRESH_COMPLETE,
+} from '../actions/statuses';
 import { TIMELINE_DELETE, TIMELINE_UPDATE } from '../actions/timelines';
 import { compareId } from '../compare_id';
 
 const initialState = ImmutableMap({
   inReplyTos: ImmutableMap(),
   replies: ImmutableMap(),
+  pendingReplies: ImmutableMap(),
+  refreshing: ImmutableMap(),
 });
+
+const addReplyToContext = (inReplyTos, replies, { id, in_reply_to_id }) => {
+  if (!in_reply_to_id || inReplyTos.has(id)) return;
+
+  replies.update(in_reply_to_id, ImmutableList(), siblings => {
+    const index = siblings.findLastIndex(sibling => compareId(sibling, id) < 0);
+    return siblings.insert(index + 1, id);
+  });
+  inReplyTos.set(id, in_reply_to_id);
+};
 
 const normalizeContext = (immutableState, id, ancestors, descendants) => immutableState.withMutations(state => {
   state.update('inReplyTos', immutableAncestors => immutableAncestors.withMutations(inReplyTos => {
     state.update('replies', immutableDescendants => immutableDescendants.withMutations(replies => {
-      function addReply({ id, in_reply_to_id }) {
-        if (in_reply_to_id && !inReplyTos.has(id)) {
-
-          replies.update(in_reply_to_id, ImmutableList(), siblings => {
-            const index = siblings.findLastIndex(sibling => compareId(sibling, id) < 0);
-            return siblings.insert(index + 1, id);
-          });
-
-          inReplyTos.set(id, in_reply_to_id);
-        }
-      }
+      const addReply = item => addReplyToContext(inReplyTos, replies, item);
 
       // We know in_reply_to_id of statuses but `id` itself.
       // So we assume that the status of the id replies to last ancestors.
@@ -41,6 +48,31 @@ const normalizeContext = (immutableState, id, ancestors, descendants) => immutab
     }));
   }));
 });
+
+const storePrefetchedReplies = (state, id, descendants) => {
+  const known = state.get('inReplyTos');
+  const pending = descendants
+    .filter(item => item.in_reply_to_id && !known.has(item.id))
+    .map(item => ({ id: item.id, in_reply_to_id: item.in_reply_to_id }));
+
+  return pending.length > 0
+    ? state.setIn(['pendingReplies', id], ImmutableList(pending))
+    : state;
+};
+
+const applyPendingReplies = (state, id) => {
+  const pending = state.getIn(['pendingReplies', id], ImmutableList());
+  if (pending.isEmpty()) return state;
+
+  return state.withMutations(mutable => {
+    mutable.update('inReplyTos', inReplyTos => inReplyTos.withMutations(inReplyTosMutable => {
+      mutable.update('replies', replies => replies.withMutations(repliesMutable => {
+        pending.forEach(item => addReplyToContext(inReplyTosMutable, repliesMutable, item));
+      }));
+    }));
+    mutable.deleteIn(['pendingReplies', id]);
+  });
+};
 
 const deleteFromContexts = (immutableState, ids) => immutableState.withMutations(state => {
   state.update('inReplyTos', immutableAncestors => immutableAncestors.withMutations(inReplyTos => {
@@ -96,7 +128,24 @@ export default function replies(state = initialState, action) {
   case ACCOUNT_MUTE_SUCCESS:
     return filterContexts(state, action.relationship, action.statuses);
   case CONTEXT_FETCH_SUCCESS:
-    return normalizeContext(state, action.id, action.ancestors, action.descendants);
+    {
+      const hasReplies = state.getIn(['replies', action.id], ImmutableList()).size > 0;
+      let next = action.prefetchOnly && hasReplies
+        ? storePrefetchedReplies(state, action.id, action.descendants)
+        : normalizeContext(state, action.id, action.ancestors, action.descendants);
+
+      if (action.refresh && !action.prefetchOnly) {
+        next = next.setIn(['refreshing', action.id], ImmutableMap(action.refresh));
+      }
+
+      return next;
+    }
+  case CONTEXT_SHOW_PENDING:
+    return applyPendingReplies(state, action.id);
+  case CONTEXT_CLEAR_PENDING:
+    return state.deleteIn(['pendingReplies', action.id]);
+  case CONTEXT_REFRESH_COMPLETE:
+    return state.deleteIn(['refreshing', action.id]);
   case TIMELINE_DELETE:
     return deleteFromContexts(state, [action.id]);
   case TIMELINE_UPDATE:

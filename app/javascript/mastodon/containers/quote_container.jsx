@@ -10,13 +10,13 @@ import { revealAccount } from '../actions/accounts';
 import { openModal } from '../actions/modal';
 import { fetchStatus } from '../actions/statuses';
 import { Quote, QuoteError } from '../components/quote';
-import { makeGetStatus, getAccountHidden } from '../selectors';
+import { makeGetStatusWithExtraInfo, getAccountHidden } from '../selectors';
 import { getQuoteState, getQuotedStatusId } from '../utils/status_quote';
 
 const MAX_QUOTE_POSTS_NESTING_LEVEL = 1;
 
 const makeMapStateToProps = () => {
-  const getStatus = makeGetStatus();
+  const getStatus = makeGetStatusWithExtraInfo();
 
   return (state, props) => {
     const quoteState = props.parentQuotePostId
@@ -28,19 +28,19 @@ const makeMapStateToProps = () => {
     const id = getQuotedStatusId(props.quote);
     const rawStatus = id ? state.getIn(['statuses', id]) : null;
     const isFetchFailure = Boolean(rawStatus?.get('quoteFetchFailed'));
-    const status = id && !isFetchFailure
+    const statusResult = id && !isFetchFailure
       ? getStatus(state, { id, contextType: props.contextType })
-      : null;
+      : { status: null, loadingState: 'not-found' };
+    const { loadingState, status } = statusResult;
     const accountId = rawStatus?.get('account') ?? null;
-    const isLoading = Boolean(rawStatus?.get('isLoading'));
 
     return {
       accountId,
       id,
-      isFiltered: Boolean(rawStatus && !isFetchFailure && !isLoading && !status),
+      isFiltered: loadingState === 'filtered',
       isLimited: Boolean(accountId && getAccountHidden(state, accountId)),
       isFetchFailure,
-      isLoading,
+      isLoading: loadingState === 'loading',
       quoteState,
       status,
     };

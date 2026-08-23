@@ -429,11 +429,10 @@ class ZoomableImage extends PureComponent {
           ref={this.setContainerRef}
           style={{ overflow }}
         >
+          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
           <img
-            role='presentation'
             ref={this.setImageRef}
             alt={alt}
-            title={alt}
             lang={lang}
             src={src}
             width={width}

@@ -59,7 +59,7 @@ describe('importFetchedStatuses', () => {
     });
   });
 
-  it('imports and normalizes an embedded Mastodon 4.4 quote', () => {
+  it('imports and normalizes an embedded Mastodon quote', () => {
     const statusAccount = account('1', 'publisher');
     const quotedAccount = account('2', 'quoted');
     const dispatch = jest.fn();
@@ -112,5 +112,35 @@ describe('importFetchedStatuses', () => {
       quoted_status: 'status-2',
     });
     expect(parent.contentHtml).toBe('<p>My comment</p>');
+  });
+
+  it('drops the non-personalized quote policy received from public streams', () => {
+    const dispatch = jest.fn();
+    const state = { getIn: jest.fn(() => undefined) };
+
+    importFetchedStatuses([
+      {
+        id: 'status-1',
+        account: account('1', 'publisher'),
+        card: null,
+        content: '<p>Post</p>',
+        emojis: [],
+        filtered: [],
+        media_attachments: [],
+        poll: null,
+        quote_approval: { current_user: 'automatic' },
+        reblog: null,
+        sensitive: false,
+        spoiler_text: '',
+        uri: 'https://example.com/statuses/1',
+        url: 'https://example.com/@publisher/1',
+      },
+    ], { bogusQuotePolicy: true })(dispatch, () => state);
+
+    const statusImport = dispatch.mock.calls
+      .map(([action]) => action)
+      .find(action => action.type === STATUSES_IMPORT);
+
+    expect(statusImport.statuses[0].quote_approval).toBeNull();
   });
 });

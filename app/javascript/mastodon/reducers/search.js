@@ -53,6 +53,7 @@ export default function search(state = initialState, action) {
       map.set('isLoading', true);
       map.set('submitted', true);
       map.set('type', action.searchType);
+      map.set('results', ImmutableMap());
     });
   case SEARCH_FETCH_FAIL:
   case SEARCH_EXPAND_FAIL:

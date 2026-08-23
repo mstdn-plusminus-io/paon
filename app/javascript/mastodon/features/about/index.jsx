@@ -18,6 +18,8 @@ import { Skeleton } from 'mastodon/components/skeleton';
 import Account from 'mastodon/containers/account_container';
 import LinkFooter from 'mastodon/features/ui/components/link_footer';
 
+import { ruleLocales, selectRuleLocale } from './rule_locales';
+
 const messages = defineMessages({
   title: { id: 'column.about', defaultMessage: 'About' },
   rules: { id: 'about.rules', defaultMessage: 'Server rules' },
@@ -137,16 +139,10 @@ class About extends PureComponent {
     const { ruleLocale } = this.state;
     const isLoading = server.get('isLoading');
     const rules = server.get('rules', ImmutableList());
-    const availableRuleLocales = new Set();
-    rules.forEach(rule => rule.get('translations')?.keySeq().forEach(value => availableRuleLocales.add(value)));
+    const availableRuleLocales = ruleLocales(rules);
     const requestedRuleLocale = ruleLocale || locale || 'default';
-    const genericRuleLocale = requestedRuleLocale.split('-')[0];
-    const selectedRuleLocale = requestedRuleLocale === 'default' ? 'default' : (
-      availableRuleLocales.has(requestedRuleLocale) ? requestedRuleLocale : (
-        availableRuleLocales.has(genericRuleLocale) ? genericRuleLocale : 'default'
-      )
-    );
-    const sortedRuleLocales = [...availableRuleLocales].sort((left, right) => left.localeCompare(right, intl.locale));
+    const selectedRuleLocale = selectRuleLocale(requestedRuleLocale, availableRuleLocales);
+    const sortedRuleLocales = Array.from(availableRuleLocales).sort((left, right) => left.localeCompare(right, intl.locale));
     let languageNames;
     if (typeof Intl.DisplayNames === 'function') {
       languageNames = new Intl.DisplayNames(intl.locale, { type: 'language' });
@@ -217,15 +213,17 @@ class About extends PureComponent {
                   })}
                 </ol>
 
-                <div className='rules-languages'>
-                  <label htmlFor='about-rules-language'>{intl.formatMessage(messages.languageLabel)}</label>
-                  <select id='about-rules-language' value={selectedRuleLocale} onBlur={this.handleRuleLocaleChange} onChange={this.handleRuleLocaleChange}>
-                    <option value='default'>{intl.formatMessage(messages.defaultLocale)}</option>
-                    {sortedRuleLocales.map(value => (
-                      <option key={value} value={value}>{languageNames?.of(value) || value}</option>
-                    ))}
-                  </select>
-                </div>
+                {sortedRuleLocales.length > 0 && (
+                  <div className='rules-languages'>
+                    <label htmlFor='about-rules-language'>{intl.formatMessage(messages.languageLabel)}</label>
+                    <select id='about-rules-language' value={selectedRuleLocale} onBlur={this.handleRuleLocaleChange} onChange={this.handleRuleLocaleChange}>
+                      <option value='default'>{intl.formatMessage(messages.defaultLocale)}</option>
+                      {sortedRuleLocales.map(value => (
+                        <option key={value} value={value}>{languageNames?.of(value) || value}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </>
             ))}
           </Section>

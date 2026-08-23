@@ -1,4 +1,4 @@
-import api from '../api';
+import api, { getAsyncRefreshHeader } from '../api';
 
 import { ensureComposeIsVisible, setComposeToStatus } from './compose';
 import { importFetchedStatus, importFetchedStatuses, importFetchedAccount } from './importer';
@@ -15,6 +15,9 @@ export const STATUS_DELETE_FAIL    = 'STATUS_DELETE_FAIL';
 export const CONTEXT_FETCH_REQUEST = 'CONTEXT_FETCH_REQUEST';
 export const CONTEXT_FETCH_SUCCESS = 'CONTEXT_FETCH_SUCCESS';
 export const CONTEXT_FETCH_FAIL    = 'CONTEXT_FETCH_FAIL';
+export const CONTEXT_SHOW_PENDING  = 'CONTEXT_SHOW_PENDING';
+export const CONTEXT_CLEAR_PENDING = 'CONTEXT_CLEAR_PENDING';
+export const CONTEXT_REFRESH_COMPLETE = 'CONTEXT_REFRESH_COMPLETE';
 
 export const STATUS_MUTE_REQUEST = 'STATUS_MUTE_REQUEST';
 export const STATUS_MUTE_SUCCESS = 'STATUS_MUTE_SUCCESS';
@@ -38,6 +41,9 @@ export const STATUS_TRANSLATE_REQUEST = 'STATUS_TRANSLATE_REQUEST';
 export const STATUS_TRANSLATE_SUCCESS = 'STATUS_TRANSLATE_SUCCESS';
 export const STATUS_TRANSLATE_FAIL    = 'STATUS_TRANSLATE_FAIL';
 export const STATUS_TRANSLATE_UNDO    = 'STATUS_TRANSLATE_UNDO';
+export const STATUS_QUOTE_POLICY_REQUEST = 'STATUS_QUOTE_POLICY_REQUEST';
+export const STATUS_QUOTE_POLICY_SUCCESS = 'STATUS_QUOTE_POLICY_SUCCESS';
+export const STATUS_QUOTE_POLICY_FAIL = 'STATUS_QUOTE_POLICY_FAIL';
 
 export function fetchStatusRequest(id, skipLoading) {
   return {
@@ -93,7 +99,7 @@ export function fetchStatusFail(id, error, skipLoading, parentQuotePostId = null
   };
 }
 
-export function redraft(status, raw_text) {
+export function redraft(status, raw_text, quotedStatusId = null) {
   return (dispatch, getState) => {
     const maxOptions = getState().getIn(['server', 'server', 'configuration', 'polls', 'max_options'], getState().getIn(['compose', 'max_poll_options'], 4));
 
@@ -101,6 +107,7 @@ export function redraft(status, raw_text) {
       type: REDRAFT,
       status,
       raw_text,
+      quoted_status_id: quotedStatusId,
       maxOptions,
     });
   };
@@ -147,17 +154,20 @@ export function deleteStatus(id, routerHistory, withRedraft = false) {
 
     dispatch(deleteStatusRequest(id));
 
-    api().delete(`/api/v1/statuses/${id}`).then(response => {
+    return api().delete(`/api/v1/statuses/${id}`).then(response => {
       dispatch(deleteStatusSuccess(id));
       dispatch(deleteFromTimelines(id));
       dispatch(importFetchedAccount(response.data.account));
 
       if (withRedraft) {
-        dispatch(redraft(status, response.data.text));
+        dispatch(redraft(status, response.data.text, response.data.quote?.quoted_status?.id ?? null));
         ensureComposeIsVisible(getState, routerHistory);
       }
+
+      return response;
     }).catch(error => {
       dispatch(deleteStatusFail(id, error));
+      throw error;
     });
   };
 }
@@ -184,23 +194,43 @@ export function deleteStatusFail(id, error) {
   };
 }
 
-export const updateStatus = status => dispatch =>
-  dispatch(importFetchedStatus(status));
+export const updateStatus = (status, { bogusQuotePolicy = false } = {}) => dispatch =>
+  dispatch(importFetchedStatus(status, { bogusQuotePolicy }));
 
-export function fetchContext(id) {
+export const setStatusQuotePolicy = (status, policy) => dispatch => {
+  dispatch({ type: STATUS_QUOTE_POLICY_REQUEST, id: status.get('id'), policy, skipLoading: true });
+
+  api().put(`/api/v1/statuses/${status.get('id')}/interaction_policy`, {
+    quote_approval_policy: policy,
+  }).then(response => {
+    dispatch(importFetchedStatus(response.data));
+    dispatch({ type: STATUS_QUOTE_POLICY_SUCCESS, id: status.get('id'), policy, skipLoading: true });
+  }).catch(error => {
+    dispatch({ type: STATUS_QUOTE_POLICY_FAIL, id: status.get('id'), policy, error, skipLoading: true });
+  });
+};
+
+export function fetchContext(id, prefetchOnly = false) {
   return (dispatch) => {
     dispatch(fetchContextRequest(id));
 
-    api().get(`/api/v1/statuses/${id}/context`).then(response => {
+    return api().get(`/api/v1/statuses/${id}/context`).then(response => {
       dispatch(importFetchedStatuses(response.data.ancestors.concat(response.data.descendants)));
-      dispatch(fetchContextSuccess(id, response.data.ancestors, response.data.descendants));
-
+      dispatch(fetchContextSuccess(
+        id,
+        response.data.ancestors,
+        response.data.descendants,
+        getAsyncRefreshHeader(response),
+        prefetchOnly,
+      ));
+      return true;
     }).catch(error => {
       if (error.response && error.response.status === 404) {
         dispatch(deleteFromTimelines(id));
       }
 
       dispatch(fetchContextFail(id, error));
+      return false;
     });
   };
 }
@@ -212,13 +242,15 @@ export function fetchContextRequest(id) {
   };
 }
 
-export function fetchContextSuccess(id, ancestors, descendants) {
+export function fetchContextSuccess(id, ancestors, descendants, refresh = null, prefetchOnly = false) {
   return {
     type: CONTEXT_FETCH_SUCCESS,
     id,
     ancestors,
     descendants,
     statuses: ancestors.concat(descendants),
+    refresh,
+    prefetchOnly,
   };
 }
 
@@ -230,6 +262,10 @@ export function fetchContextFail(id, error) {
     skipAlert: true,
   };
 }
+
+export const showPendingReplies = id => ({ type: CONTEXT_SHOW_PENDING, id });
+export const clearPendingReplies = id => ({ type: CONTEXT_CLEAR_PENDING, id });
+export const completeContextRefresh = id => ({ type: CONTEXT_REFRESH_COMPLETE, id });
 
 export function muteStatus(id) {
   return (dispatch) => {

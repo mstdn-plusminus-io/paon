@@ -81,8 +81,9 @@ export class Poll extends ImmutablePureComponent {
   _setupTimer () {
     const { poll } = this.props;
     clearTimeout(this._timer);
-    if (!this.state.expired) {
-      const delay = (new Date(poll.get('expires_at'))).getTime() - Date.now();
+    const expiresAt = poll.get('expires_at');
+    if (!this.state.expired && expiresAt) {
+      const delay = (new Date(expiresAt)).getTime() - Date.now();
       this._timer = setTimeout(() => {
         this.setState({ expired: true });
       }, delay);

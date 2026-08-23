@@ -17,6 +17,8 @@ import { makeGetAccount } from '../selectors';
 
 const messages = defineMessages({
   unfollowConfirm: { id: 'confirmations.unfollow.confirm', defaultMessage: 'Unfollow' },
+  withdrawFollowRequestConfirm: { id: 'confirmations.withdraw_request.confirm', defaultMessage: 'Withdraw request' },
+  unblockConfirm: { id: 'confirmations.unblock.confirm', defaultMessage: 'Unblock' },
 });
 
 const makeMapStateToProps = () => {
@@ -32,12 +34,21 @@ const makeMapStateToProps = () => {
 const mapDispatchToProps = (dispatch, { intl }) => ({
 
   onFollow (account) {
-    if (account.getIn(['relationship', 'following']) || account.getIn(['relationship', 'requested'])) {
+    if (account.getIn(['relationship', 'following'])) {
       dispatch(openModal({
         modalType: 'CONFIRM',
         modalProps: {
           message: <FormattedMessage id='confirmations.unfollow.message' defaultMessage='Are you sure you want to unfollow {name}?' values={{ name: <strong>@{account.get('acct')}</strong> }} />,
           confirm: intl.formatMessage(messages.unfollowConfirm),
+          onConfirm: () => dispatch(unfollowAccount(account.get('id'))),
+        },
+      }));
+    } else if (account.getIn(['relationship', 'requested'])) {
+      dispatch(openModal({
+        modalType: 'CONFIRM',
+        modalProps: {
+          message: <FormattedMessage id='confirmations.withdraw_request.title' defaultMessage='Withdraw request to follow {name}?' values={{ name: <strong>@{account.get('acct')}</strong> }} />,
+          confirm: intl.formatMessage(messages.withdrawFollowRequestConfirm),
           onConfirm: () => dispatch(unfollowAccount(account.get('id'))),
         },
       }));
@@ -48,7 +59,14 @@ const mapDispatchToProps = (dispatch, { intl }) => ({
 
   onBlock (account) {
     if (account.getIn(['relationship', 'blocking'])) {
-      dispatch(unblockAccount(account.get('id')));
+      dispatch(openModal({
+        modalType: 'CONFIRM',
+        modalProps: {
+          message: <FormattedMessage id='confirmations.unblock.title' defaultMessage='Unblock {name}?' values={{ name: <strong>@{account.get('acct')}</strong> }} />,
+          confirm: intl.formatMessage(messages.unblockConfirm),
+          onConfirm: () => dispatch(unblockAccount(account.get('id'))),
+        },
+      }));
     } else {
       dispatch(blockAccount(account.get('id')));
     }

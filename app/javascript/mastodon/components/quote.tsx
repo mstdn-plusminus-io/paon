@@ -114,6 +114,27 @@ export const QuoteError: React.FC<QuoteErrorProps> = ({
         defaultMessage='This post cannot be displayed as the original author does not allow it to be quoted.'
       />
     );
+  } else if (state === 'blocked_account') {
+    message = (
+      <FormattedMessage
+        id='status.quote_error.blocked_account'
+        defaultMessage='This quoted post is from an account you blocked.'
+      />
+    );
+  } else if (state === 'blocked_domain') {
+    message = (
+      <FormattedMessage
+        id='status.quote_error.blocked_domain'
+        defaultMessage='This quoted post is from a domain you blocked.'
+      />
+    );
+  } else if (state === 'muted_account') {
+    message = (
+      <FormattedMessage
+        id='status.quote_error.muted_account'
+        defaultMessage='This quoted post is from an account you muted.'
+      />
+    );
   } else if (state === 'limited' && accountId) {
     message = (
       <>

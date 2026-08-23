@@ -26,10 +26,13 @@ import { makeGetAccount } from 'mastodon/selectors';
 const messages = defineMessages({
   unfollow: { id: 'account.unfollow', defaultMessage: 'Unfollow' },
   follow: { id: 'account.follow', defaultMessage: 'Follow' },
-  cancel_follow_request: { id: 'account.cancel_follow_request', defaultMessage: 'Withdraw follow request' },
-  cancelFollowRequestConfirm: { id: 'confirmations.cancel_follow_request.confirm', defaultMessage: 'Withdraw request' },
+  followBack: { id: 'account.follow_back', defaultMessage: 'Follow back' },
+  followRequest: { id: 'account.follow_request', defaultMessage: 'Request to follow' },
+  cancel_follow_request: { id: 'account.follow_request_cancel', defaultMessage: 'Cancel request' },
+  cancelFollowRequestConfirm: { id: 'confirmations.withdraw_request.confirm', defaultMessage: 'Withdraw request' },
   requested: { id: 'account.requested', defaultMessage: 'Awaiting approval. Click to cancel follow request' },
   unblock: { id: 'account.unblock_short', defaultMessage: 'Unblock' },
+  unblockConfirm: { id: 'confirmations.unblock.confirm', defaultMessage: 'Unblock' },
   unmute: { id: 'account.unmute_short', defaultMessage: 'Unmute' },
   unfollowConfirm: { id: 'confirmations.unfollow.confirm', defaultMessage: 'Unfollow' },
   edit_profile: { id: 'account.edit_profile', defaultMessage: 'Edit profile' },
@@ -67,7 +70,7 @@ const mapDispatchToProps = (dispatch, { intl }) => ({
       dispatch(openModal({
         modalType: 'CONFIRM',
         modalProps: {
-          message: <FormattedMessage id='confirmations.cancel_follow_request.message' defaultMessage='Are you sure you want to withdraw your request to follow {name}?' values={{ name: <strong>@{account.get('acct')}</strong> }} />,
+          message: <FormattedMessage id='confirmations.withdraw_request.title' defaultMessage='Withdraw request to follow {name}?' values={{ name: <strong>@{account.get('acct')}</strong> }} />,
           confirm: intl.formatMessage(messages.cancelFollowRequestConfirm),
           onConfirm: () => dispatch(unfollowAccount(account.get('id'))),
         },
@@ -79,7 +82,14 @@ const mapDispatchToProps = (dispatch, { intl }) => ({
 
   onBlock(account) {
     if (account.getIn(['relationship', 'blocking'])) {
-      dispatch(unblockAccount(account.get('id')));
+      dispatch(openModal({
+        modalType: 'CONFIRM',
+        modalProps: {
+          message: <FormattedMessage id='confirmations.unblock.title' defaultMessage='Unblock {name}?' values={{ name: <strong>@{account.get('acct')}</strong> }} />,
+          confirm: intl.formatMessage(messages.unblockConfirm),
+          onConfirm: () => dispatch(unblockAccount(account.get('id'))),
+        },
+      }));
     }
   },
 
@@ -156,7 +166,17 @@ class AccountCard extends ImmutablePureComponent {
       } else if (account.getIn(['relationship', 'muting'])) {
         actionBtn = <Button  text={intl.formatMessage(messages.unmute)} onClick={this.handleMute} />;
       } else if (!account.getIn(['relationship', 'blocking'])) {
-        actionBtn = <Button disabled={account.getIn(['relationship', 'blocked_by'])} className={classNames({ 'button--destructive': account.getIn(['relationship', 'following']) })} text={intl.formatMessage(account.getIn(['relationship', 'following']) ? messages.unfollow : messages.follow)} onClick={this.handleFollow} />;
+        let followMessage = messages.follow;
+
+        if (account.getIn(['relationship', 'following'])) {
+          followMessage = messages.unfollow;
+        } else if (account.getIn(['relationship', 'followed_by']) && !account.get('locked')) {
+          followMessage = messages.followBack;
+        } else if (account.get('locked')) {
+          followMessage = messages.followRequest;
+        }
+
+        actionBtn = <Button disabled={account.getIn(['relationship', 'blocked_by'])} className={classNames({ 'button--destructive': account.getIn(['relationship', 'following']) })} text={intl.formatMessage(followMessage)} onClick={this.handleFollow} />;
       } else if (account.getIn(['relationship', 'blocking'])) {
         actionBtn = <Button  text={intl.formatMessage(messages.unblock)} onClick={this.handleBlock} />;
       }

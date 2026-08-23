@@ -53,6 +53,11 @@ import {
   COMPOSE_MAX_MEDIA_ATTACHMENTS,
   COMPOSE_IMAGE_MATRIX_LIMIT,
   COMPOSE_INSTANCE_LIMITS,
+  COMPOSE_QUOTE,
+  COMPOSE_QUOTE_CANCEL,
+  COMPOSE_QUOTE_POLICY_CHANGE,
+  COMPOSE_PASTE_LINK_REQUEST,
+  COMPOSE_PASTE_LINK_COMPLETE,
 } from '../actions/compose';
 import { REDRAFT } from '../actions/statuses';
 import { STORE_HYDRATE } from '../actions/store';
@@ -93,6 +98,10 @@ const initialState = ImmutableMap({
   default_privacy: 'public',
   default_sensitive: false,
   default_language: 'en',
+  quoted_status_id: null,
+  quote_policy: 'public',
+  default_quote_policy: 'public',
+  fetching_link: null,
   resetFileKey: Math.floor((Math.random() * 0x10000)),
   idempotencyKey: null,
   tagHistory: ImmutableList(),
@@ -148,6 +157,9 @@ function clearAll(state) {
     map.update('media_attachments', list => list.clear());
     map.set('progress', 0);
     map.set('poll', null);
+    map.set('quoted_status_id', null);
+    map.set('quote_policy', state.get('default_quote_policy'));
+    map.set('fetching_link', null);
     map.set('idempotencyKey', uuid());
   });
 }
@@ -384,9 +396,19 @@ export default function compose(state = initialState, action) {
       .set('spoiler_text', action.text)
       .set('idempotencyKey', uuid());
   case COMPOSE_VISIBILITY_CHANGE:
-    return state
-      .set('privacy', action.value)
-      .set('idempotencyKey', uuid());
+    return state.withMutations(map => {
+      map.set('privacy', action.value);
+      map.set('idempotencyKey', uuid());
+
+      if (action.value === 'direct' && state.get('quoted_status_id')) {
+        map.set('quoted_status_id', null);
+        if (action.quotedStatusUrl && !state.get('text').includes(action.quotedStatusUrl)) {
+          map.set('text', state.get('text').trim()
+            ? `${state.get('text')}\n\n${action.quotedStatusUrl}`
+            : action.quotedStatusUrl);
+        }
+      }
+    });
   case COMPOSE_CHANGE:
     return state
       .set('text', action.text)
@@ -403,6 +425,7 @@ export default function compose(state = initialState, action) {
       map.set('caretPosition', null);
       map.set('preselectDate', new Date());
       map.set('idempotencyKey', uuid());
+      map.set('quoted_status_id', null);
 
       map.update('media_attachments', list => list.filter(media => media.get('unattached')));
 
@@ -570,6 +593,8 @@ export default function compose(state = initialState, action) {
       map.set('sensitive', action.status.get('sensitive'));
       map.set('language', action.status.get('language'));
       map.set('id', null);
+      map.set('quoted_status_id', action.quoted_status_id);
+      map.set('quote_policy', action.status.getIn(['quote_approval', 'automatic', 0], 'nobody'));
 
       if (action.status.get('spoiler_text').length > 0) {
         map.set('spoiler', true);
@@ -601,6 +626,8 @@ export default function compose(state = initialState, action) {
       map.set('idempotencyKey', uuid());
       map.set('sensitive', action.status.get('sensitive'));
       map.set('language', action.status.get('language'));
+      map.set('quoted_status_id', action.status.getIn(['quote', 'quoted_status'], null));
+      map.set('quote_policy', action.status.getIn(['quote_approval', 'automatic', 0], 'nobody'));
 
       if (action.spoiler_text.length > 0) {
         map.set('spoiler', true);
@@ -634,6 +661,35 @@ export default function compose(state = initialState, action) {
     return state.update('poll', poll => poll.set('expires_in', action.expiresIn).set('multiple', action.isMultiple));
   case COMPOSE_LANGUAGE_CHANGE:
     return state.set('language', action.language);
+  case COMPOSE_QUOTE:
+    return state.withMutations(map => {
+      const status = action.status;
+      map.set('quoted_status_id', status.get('id'));
+      map.set('idempotencyKey', uuid());
+
+      if (['public', 'unlisted'].includes(state.get('privacy')) && status.get('visibility') === 'private') {
+        map.set('privacy', 'private');
+      }
+
+      if (!state.get('spoiler') && status.get('spoiler_text')) {
+        map.set('spoiler', true);
+        map.set('spoiler_text', status.get('spoiler_text'));
+      }
+    });
+  case COMPOSE_QUOTE_CANCEL:
+    return state
+      .set('quoted_status_id', null)
+      .set('idempotencyKey', uuid());
+  case COMPOSE_QUOTE_POLICY_CHANGE:
+    return state
+      .set('quote_policy', action.value)
+      .set('idempotencyKey', uuid());
+  case COMPOSE_PASTE_LINK_REQUEST:
+    return state.set('fetching_link', action.requestId);
+  case COMPOSE_PASTE_LINK_COMPLETE:
+    return state.get('fetching_link') === action.requestId
+      ? state.set('fetching_link', null)
+      : state;
   case COMPOSE_FOCUS:
     return state.set('focusDate', new Date()).update('text', text => text.length > 0 ? text : action.defaultText);
   default:

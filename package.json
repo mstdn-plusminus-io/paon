@@ -2,7 +2,7 @@
   "name": "@mstdn-plusminus-io/paon",
   "license": "AGPL-3.0-or-later",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   },
   "scripts": {
     "build:development": "cross-env RAILS_ENV=development NODE_ENV=development ./bin/rspack",

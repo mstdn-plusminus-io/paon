@@ -8,8 +8,9 @@ import { Link } from 'react-router-dom';
 import { WordmarkLogo } from 'mastodon/components/logo';
 import NavigationPortal from 'mastodon/components/navigation_portal';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
-import { timelinePreview, trendsEnabled } from 'mastodon/initial_state';
+import { localLiveFeedAccess, remoteLiveFeedAccess, trendsEnabled } from 'mastodon/initial_state';
 import { transientSingleColumn } from 'mastodon/is_mobile';
+import { canViewFeed } from 'mastodon/permissions';
 
 import ColumnLink from './column_link';
 import DisabledAccountBanner from './disabled_account_banner';
@@ -23,6 +24,7 @@ const messages = defineMessages({
   notifications: { id: 'tabs_bar.notifications', defaultMessage: 'Notifications' },
   explore: { id: 'explore.title', defaultMessage: 'Trending' },
   firehose: { id: 'column.firehose', defaultMessage: 'Live feeds' },
+  firehose_singular: { id: 'column.firehose_singular', defaultMessage: 'Live feed' },
   direct: { id: 'navigation_bar.direct', defaultMessage: 'Direct messages' },
   favourites: { id: 'navigation_bar.favourites', defaultMessage: 'Favorites' },
   bookmarks: { id: 'navigation_bar.bookmarks', defaultMessage: 'Bookmarks' },
@@ -57,7 +59,9 @@ class NavigationPanel extends Component {
 
   render () {
     const { intl } = this.props;
-    const { signedIn, disabledAccountId } = this.props.identity;
+    const { signedIn, permissions, disabledAccountId } = this.props.identity;
+    const canViewLocalFeed = canViewFeed(signedIn, permissions, localLiveFeedAccess);
+    const canViewRemoteFeed = canViewFeed(signedIn, permissions, remoteLiveFeedAccess);
 
     let banner = undefined;
 
@@ -104,8 +108,14 @@ class NavigationPanel extends Component {
           <ColumnLink transparent to='/search' icon='search' text={intl.formatMessage(messages.search)} />
         )}
 
-        {(signedIn || timelinePreview) && (
-          <ColumnLink transparent to='/public' isActive={this.isFirehoseActive} icon='globe' text={intl.formatMessage(messages.firehose)} />
+        {(canViewLocalFeed || canViewRemoteFeed) && (
+          <ColumnLink
+            transparent
+            to={canViewLocalFeed ? '/public/local' : '/public/remote'}
+            isActive={this.isFirehoseActive}
+            icon='globe'
+            text={intl.formatMessage(canViewLocalFeed && canViewRemoteFeed ? messages.firehose : messages.firehose_singular)}
+          />
         )}
 
         {!signedIn && (

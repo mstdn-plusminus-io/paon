@@ -10,6 +10,7 @@ import { changeSetting } from 'mastodon/actions/settings';
 import { fetchSuggestions } from 'mastodon/actions/suggestions';
 import { FollowSuggestionCard } from 'mastodon/components/follow_suggestion_card';
 import { Icon } from 'mastodon/components/icon';
+import { LoadingIndicator } from 'mastodon/components/loading_indicator';
 import { bannerSettings } from 'mastodon/settings';
 
 const messages = defineMessages({
@@ -77,7 +78,7 @@ export const InlineFollowSuggestions = () => {
       <div className='inline-follow-suggestions__body'>
         {canScrollLeft && <button type='button' className='inline-follow-suggestions__scroll inline-follow-suggestions__scroll--left' aria-label={intl.formatMessage(messages.previous)} onClick={handleScrollLeft}><Icon id='chevron-left' /></button>}
         <div className='inline-follow-suggestions__cards' ref={bodyRef} onScroll={updateScrollButtons}>
-          {suggestions.map(suggestion => <FollowSuggestionCard key={suggestion.get('account')} id={suggestion.get('account')} sources={suggestion.get('sources')} compact />)}
+          {isLoading ? <LoadingIndicator /> : suggestions.map(suggestion => <FollowSuggestionCard key={suggestion.get('account')} id={suggestion.get('account')} sources={suggestion.get('sources')} compact />)}
         </div>
         {canScrollRight && <button type='button' className='inline-follow-suggestions__scroll inline-follow-suggestions__scroll--right' aria-label={intl.formatMessage(messages.next)} onClick={handleScrollRight}><Icon id='chevron-right' /></button>}
       </div>

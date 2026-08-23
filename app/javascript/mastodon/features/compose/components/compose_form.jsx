@@ -35,8 +35,11 @@ import UploadFormContainer from '../containers/upload_form_container';
 import WarningContainer from '../containers/warning_container';
 import { countableText } from '../util/counter';
 import { shouldFocusSpoilerOnToggle } from '../util/focus';
+import { handlePostKeyDown, handleSpoilerKeyDown } from '../util/keyboard';
 
 import CharacterCounter from './character_counter';
+import QuotePolicySelector from './quote_policy_selector';
+import QuotedPost from './quoted_post';
 
 const allowedAroundShortCode = '><\u0085\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u202f\u205f\u3000\u2028\u2029\u0009\u000a\u000b\u000c\u000d';
 
@@ -48,7 +51,7 @@ const messages = defineMessages({
   saveChanges: { id: 'compose_form.save_changes', defaultMessage: 'Save changes' },
 });
 
-class ComposeForm extends ImmutablePureComponent {
+export class ComposeForm extends ImmutablePureComponent {
 
   static contextTypes = {
     router: PropTypes.object,
@@ -107,10 +110,12 @@ class ComposeForm extends ImmutablePureComponent {
     this.props.onChange(e.target.value);
   };
 
-  handleKeyDown = (e) => {
-    if (e.keyCode === 13 && (e.ctrlKey || e.metaKey)) {
-      this.handleSubmit();
-    }
+  handleKeyDownPost = (e) => {
+    handlePostKeyDown(e, this.handleSubmit);
+  };
+
+  handleKeyDownSpoiler = (e) => {
+    handleSpoilerKeyDown(e, this.handleSubmit, () => this.autosuggestTextarea?.textarea?.focus());
   };
 
   getFulltextForCharacterCounting = () => {
@@ -128,7 +133,9 @@ class ComposeForm extends ImmutablePureComponent {
       completedPollOptions.some(option => length(option) > maxPollOptionCharacters)
     );
 
-    return !(isSubmitting || isUploading || isChangingUpload || invalidPoll || length(fulltext) > maxChars || (isOnlyWhitespace && !anyMedia));
+    const isBlank = fulltext.trim().length === 0 && !anyMedia;
+
+    return !(isSubmitting || isUploading || isChangingUpload || invalidPoll || length(fulltext) > maxChars || isOnlyWhitespace || isBlank);
   }
 
   handleSubmit = (e) => {
@@ -345,7 +352,7 @@ class ComposeForm extends ImmutablePureComponent {
                 placeholder={intl.formatMessage(messages.spoiler_placeholder)}
                 value={this.props.spoilerText}
                 onChange={this.handleChangeSpoilerText}
-                onKeyDown={this.handleKeyDown}
+                onKeyDown={this.handleKeyDownSpoiler}
                 disabled={!this.props.spoiler}
                 ref={this.setSpoilerText}
                 suggestions={this.props.suggestions}
@@ -374,7 +381,7 @@ class ComposeForm extends ImmutablePureComponent {
             onChange={this.handleChange}
             suggestions={this.props.suggestions}
             onFocus={this.handleFocus}
-            onKeyDown={this.handleKeyDown}
+            onKeyDown={this.handleKeyDownPost}
             onSuggestionsFetchRequested={this.onSuggestionsFetchRequested}
             onSuggestionsClearRequested={this.onSuggestionsClearRequested}
             onSuggestionSelected={this.onSuggestionSelected}
@@ -385,6 +392,7 @@ class ComposeForm extends ImmutablePureComponent {
             <div className='compose-form__modifiers'>
               <UploadFormContainer />
               <PollFormContainer />
+              <QuotedPost />
               <EmojiPickerDropdown onPickEmoji={this.handleEmojiPick} placement={(isEnabledHalfModal && isSingleColumn) ? 'top' : 'bottom'} />
             </div>
           </AutosuggestTextarea>
@@ -394,6 +402,7 @@ class ComposeForm extends ImmutablePureComponent {
               <UploadButtonContainer />
               <PollButtonContainer />
               <PrivacyDropdownContainer disabled={this.props.isEditing} />
+              <QuotePolicySelector />
               <SpoilerButtonContainer />
               {localStorage.plusminus_config_custom_spoiler_button === 'visible' && (
                 <>

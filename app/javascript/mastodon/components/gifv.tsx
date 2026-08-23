@@ -42,7 +42,6 @@ export const GIFV: React.FC<Props> = ({
           role='button'
           tabIndex={0}
           aria-label={alt}
-          title={alt}
           lang={lang}
           onClick={handleClick}
         />
@@ -53,7 +52,6 @@ export const GIFV: React.FC<Props> = ({
         role='button'
         tabIndex={0}
         aria-label={alt}
-        title={alt}
         lang={lang}
         width={width}
         height={height}

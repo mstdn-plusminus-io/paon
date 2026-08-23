@@ -29,6 +29,7 @@ import {
   replyCompose,
   mentionCompose,
   directCompose,
+  quoteCompose,
 } from '../../actions/compose';
 import {
   initDomainBlockModal,
@@ -43,6 +44,7 @@ import {
   unreblog,
   pin,
   unpin,
+  revokeQuote,
 } from '../../actions/interactions';
 import { openModal } from '../../actions/modal';
 import { initMuteModal } from '../../actions/mutes';
@@ -57,6 +59,7 @@ import {
   revealStatus,
   translateStatus,
   undoStatusTranslation,
+  setStatusQuotePolicy,
 } from '../../actions/statuses';
 import ColumnHeader from '../../components/column_header';
 import { textForScreenReader, defaultMediaVisibility } from '../../components/status';
@@ -69,12 +72,15 @@ import { attachFullscreenListener, detachFullscreenListener, isFullscreen } from
 
 import ActionBar from './components/action_bar';
 import DetailedStatus from './components/detailed_status';
+import RefreshController from './components/refresh_controller';
 
 const messages = defineMessages({
   deleteConfirm: { id: 'confirmations.delete.confirm', defaultMessage: 'Delete' },
   deleteMessage: { id: 'confirmations.delete.message', defaultMessage: 'Are you sure you want to delete this status?' },
   redraftConfirm: { id: 'confirmations.redraft.confirm', defaultMessage: 'Delete & redraft' },
   redraftMessage: { id: 'confirmations.redraft.message', defaultMessage: 'Are you sure you want to delete this status and re-draft it? Favorites and boosts will be lost, and replies to the original post will be orphaned.' },
+  revokeQuoteConfirm: { id: 'confirmations.revoke_quote.confirm', defaultMessage: 'Remove post' },
+  revokeQuoteMessage: { id: 'confirmations.revoke_quote.message', defaultMessage: 'This action cannot be undone.' },
   revealAll: { id: 'status.show_more_all', defaultMessage: 'Show more for all' },
   hideAll: { id: 'status.show_less_all', defaultMessage: 'Show less for all' },
   statusTitleWithAttachments: { id: 'status.title.with_attachments', defaultMessage: '{user} posted {attachmentCount, plural, one {an attachment} other {# attachments}}' },
@@ -327,6 +333,40 @@ class Status extends ImmutablePureComponent {
     }
   };
 
+  handleQuoteClick = (status, router) => {
+    const { dispatch } = this.props;
+    const { signedIn } = this.props.identity;
+
+    if (signedIn) {
+      dispatch(quoteCompose(status, router));
+    } else {
+      dispatch(openModal({
+        modalType: 'INTERACTION',
+        modalProps: {
+          type: 'quote',
+          accountId: status.getIn(['account', 'id']),
+          url: status.get('uri'),
+        },
+      }));
+    }
+  };
+
+  handleRevokeQuote = status => {
+    const { dispatch, intl } = this.props;
+    dispatch(openModal({
+      modalType: 'CONFIRM',
+      modalProps: {
+        message: intl.formatMessage(messages.revokeQuoteMessage),
+        confirm: intl.formatMessage(messages.revokeQuoteConfirm),
+        onConfirm: () => dispatch(revokeQuote(status)),
+      },
+    }));
+  };
+
+  handleQuotePolicy = (status, policy) => {
+    this.props.dispatch(setStatusQuotePolicy(status, policy));
+  };
+
   handleBookmarkClick = (status) => {
     if (status.get('bookmarked')) {
       this.props.dispatch(unbookmark(status));
@@ -338,15 +378,23 @@ class Status extends ImmutablePureComponent {
   handleDeleteClick = (status, history, withRedraft = false) => {
     const { dispatch, intl } = this.props;
 
+    const deleteAndLeaveDetail = () => dispatch(deleteStatus(status.get('id'), history, withRedraft))
+      .then(() => {
+        if (!withRedraft) {
+          history.push('/');
+        }
+      })
+      .catch(() => undefined);
+
     if (!deleteModal) {
-      dispatch(deleteStatus(status.get('id'), history, withRedraft));
+      deleteAndLeaveDetail();
     } else {
       dispatch(openModal({
         modalType: 'CONFIRM',
         modalProps: {
           message: intl.formatMessage(withRedraft ? messages.redraftMessage : messages.deleteMessage),
           confirm: intl.formatMessage(withRedraft ? messages.redraftConfirm : messages.deleteConfirm),
-          onConfirm: () => dispatch(deleteStatus(status.get('id'), history, withRedraft)),
+          onConfirm: deleteAndLeaveDetail,
         },
       }));
     }
@@ -721,6 +769,9 @@ class Status extends ImmutablePureComponent {
                   onReply={this.handleReplyClick}
                   onFavourite={this.handleFavouriteClick}
                   onReblog={this.handleReblogClick}
+                  onQuote={this.handleQuoteClick}
+                  onRevokeQuote={this.handleRevokeQuote}
+                  onQuotePolicy={this.handleQuotePolicy}
                   onBookmark={this.handleBookmarkClick}
                   onDelete={this.handleDeleteClick}
                   onEdit={this.handleEditClick}
@@ -741,6 +792,12 @@ class Status extends ImmutablePureComponent {
             </HotKeys>
 
             {descendants}
+
+            <RefreshController
+              isLocal={isLocal}
+              statusId={status.get('id')}
+              statusCreatedAt={status.get('created_at')}
+            />
           </div>
         </ScrollContainer>
 

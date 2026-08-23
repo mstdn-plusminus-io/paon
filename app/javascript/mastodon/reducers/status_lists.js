@@ -27,6 +27,12 @@ import {
   UNBOOKMARK_SUCCESS,
   PIN_SUCCESS,
   UNPIN_SUCCESS,
+  QUOTES_FETCH_REQUEST,
+  QUOTES_FETCH_SUCCESS,
+  QUOTES_FETCH_FAIL,
+  QUOTES_EXPAND_REQUEST,
+  QUOTES_EXPAND_SUCCESS,
+  QUOTES_EXPAND_FAIL,
 } from '../actions/interactions';
 import {
   PINNED_STATUSES_FETCH_SUCCESS,
@@ -39,8 +45,6 @@ import {
   TRENDS_STATUSES_EXPAND_SUCCESS,
   TRENDS_STATUSES_EXPAND_FAIL,
 } from '../actions/trends';
-
-
 
 const initialState = ImmutableMap({
   favourites: ImmutableMap({
@@ -63,6 +67,7 @@ const initialState = ImmutableMap({
     loaded: false,
     items: ImmutableOrderedSet(),
   }),
+  quotes: ImmutableMap(),
 });
 
 const normalizeList = (state, listType, statuses, next) => {
@@ -81,6 +86,19 @@ const appendToList = (state, listType, statuses, next) => {
     map.set('items', map.get('items').union(statuses.map(item => item.id)));
   }));
 };
+
+const normalizeNestedList = (state, path, statuses, next) => state.setIn(path, ImmutableMap({
+  next,
+  loaded: true,
+  isLoading: false,
+  items: ImmutableOrderedSet(statuses.map(item => item.id)),
+}));
+
+const appendToNestedList = (state, path, statuses, next) => state.updateIn(path, ImmutableMap(), list => list
+  .set('next', next)
+  .set('loaded', true)
+  .set('isLoading', false)
+  .update('items', ImmutableOrderedSet(), items => items.union(statuses.map(item => item.id))));
 
 const prependOneToList = (state, listType, status) => {
   return state.updateIn([listType, 'items'], (list) => {
@@ -128,6 +146,16 @@ export default function statusLists(state = initialState, action) {
     return normalizeList(state, 'trending', action.statuses, action.next);
   case TRENDS_STATUSES_EXPAND_SUCCESS:
     return appendToList(state, 'trending', action.statuses, action.next);
+  case QUOTES_FETCH_REQUEST:
+  case QUOTES_EXPAND_REQUEST:
+    return state.setIn(['quotes', action.id, 'isLoading'], true);
+  case QUOTES_FETCH_FAIL:
+  case QUOTES_EXPAND_FAIL:
+    return state.setIn(['quotes', action.id, 'isLoading'], false);
+  case QUOTES_FETCH_SUCCESS:
+    return normalizeNestedList(state, ['quotes', action.id], action.statuses, action.next);
+  case QUOTES_EXPAND_SUCCESS:
+    return appendToNestedList(state, ['quotes', action.id], action.statuses, action.next);
   case FAVOURITE_SUCCESS:
     return prependOneToList(state, 'favourites', action.status);
   case UNFAVOURITE_SUCCESS:

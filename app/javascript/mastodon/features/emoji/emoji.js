@@ -2,11 +2,27 @@ import Trie from 'substring-trie';
 
 import { assetHost } from 'mastodon/utils/config';
 
-import { autoPlayGif } from '../../initial_state';
+import { autoPlayGif, emojiStyle } from '../../initial_state';
 
+import { determineEmojiMode, shouldRenderUnicodeAsImage } from './emoji_mode';
 import { unicodeMapping } from './emoji_unicode_mapping_light';
 
+// The legacy Paon renderer consumes emoji_map.json, while Mastodon 4.5's new
+// picker/renderer reads Unicode 16 directly from emoji_data.json. Keep the
+// existing renderer and bridge the new code points explicitly.
+Object.assign(unicodeMapping, {
+  '🇨🇶': { filename: '1f1e8-1f1f6', shortCode: 'flag-sark' },
+  '🪉': { filename: '1fa89', shortCode: 'harp' },
+  '🪏': { filename: '1fa8f', shortCode: 'shovel' },
+  '🪾': { filename: '1fabe', shortCode: 'leafless_tree' },
+  '🫆': { filename: '1fac6', shortCode: 'fingerprint' },
+  '🫜': { filename: '1fadc', shortCode: 'root_vegetable' },
+  '🫟': { filename: '1fadf', shortCode: 'splatter' },
+  '🫩': { filename: '1fae9', shortCode: 'face_with_bags_under_eyes' },
+});
+
 const trie = new Trie(Object.keys(unicodeMapping));
+const emojiMode = determineEmojiMode(emojiStyle);
 
 // Convert to file names from emojis. (For different variation selector emojis)
 const emojiFilenames = (emojis) => {
@@ -91,6 +107,11 @@ const emojifyTextNode = (node, customEmojis) => {
       // If the matched character was followed by VS15 (for selecting text presentation), skip it.
       if (str.codePointAt(rend - 1) !== VS16 && str.codePointAt(rend) === VS15) {
         i = rend + 1;
+        continue;
+      }
+
+      if (!shouldRenderUnicodeAsImage(unicode_emoji, emojiMode)) {
+        i = rend;
         continue;
       }
 

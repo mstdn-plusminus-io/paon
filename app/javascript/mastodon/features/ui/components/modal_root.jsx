@@ -33,6 +33,7 @@ import ImageModal from './image_modal';
 import MediaModal from './media_modal';
 import MissingAltTextModal from './missing_alt_text_modal';
 import ModalLoading from './modal_loading';
+import QuietQuoteModal from './quiet_quote_modal';
 import VideoModal from './video_modal';
 
 export const MODAL_COMPONENTS = {
@@ -43,6 +44,7 @@ export const MODAL_COMPONENTS = {
   'BOOST': () => Promise.resolve({ default: BoostModal }),
   'CONFIRM': () => Promise.resolve({ default: ConfirmationModal }),
   'CONFIRM_MISSING_ALT_TEXT': () => Promise.resolve({ default: MissingAltTextModal }),
+  'CONFIRM_QUIET_QUOTE': () => Promise.resolve({ default: QuietQuoteModal }),
   'MUTE': MuteModal,
   'BLOCK': BlockModal,
   'DOMAIN_BLOCK': DomainBlockModal,
@@ -92,7 +94,7 @@ export default class ModalRoot extends PureComponent {
   };
 
   renderLoading = modalId => () => {
-    return ['MEDIA', 'VIDEO', 'BOOST', 'CONFIRM', 'ACTIONS'].indexOf(modalId) === -1 ? <ModalLoading /> : null;
+    return ['MEDIA', 'VIDEO', 'BOOST', 'CONFIRM', 'CONFIRM_QUIET_QUOTE', 'ACTIONS'].indexOf(modalId) === -1 ? <ModalLoading /> : null;
   };
 
   renderError = (props) => {

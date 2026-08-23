@@ -10,6 +10,7 @@ import ImmutablePureComponent from 'react-immutable-pure-component';
 
 import { HotKeys } from 'react-hotkeys';
 
+import FormatQuoteIcon from '@/material-icons/400-24px/format_quote.svg?react';
 import { Icon }  from 'mastodon/components/icon';
 import AccountContainer from 'mastodon/containers/account_container';
 import StatusContainer from 'mastodon/containers/status_container';
@@ -29,8 +30,10 @@ const messages = defineMessages({
   ownPoll: { id: 'notification.own_poll', defaultMessage: 'Your poll has ended' },
   poll: { id: 'notification.poll', defaultMessage: 'A poll you have voted in has ended' },
   reblog: { id: 'notification.reblog', defaultMessage: '{name} boosted your status' },
+  quote: { id: 'notification.label.quote', defaultMessage: '{name} quoted your post' },
   status: { id: 'notification.status', defaultMessage: '{name} just posted' },
   update: { id: 'notification.update', defaultMessage: '{name} edited a post' },
+  quotedUpdate: { id: 'notification.quoted_update', defaultMessage: '{name} edited a post you have quoted' },
   adminSignUp: { id: 'notification.admin.sign_up', defaultMessage: '{name} signed up' },
   adminReport: { id: 'notification.admin.report', defaultMessage: '{name} reported {target}' },
   unknownAccount: { id: 'notification.unknown_account', defaultMessage: 'An unavailable account' },
@@ -261,6 +264,38 @@ class Notification extends ImmutablePureComponent {
     );
   }
 
+  renderQuote (notification, link) {
+    const { intl, unread } = this.props;
+
+    return (
+      <HotKeys handlers={this.getHandlers()}>
+        <div className={classNames('notification notification-quote focusable', { unread })} tabIndex={0} aria-label={notificationForScreenReader(intl, intl.formatMessage(messages.quote, { name: notification.getIn(['account', 'acct']) }), notification.get('created_at'))}>
+          <div className='notification__message'>
+            <div className='notification__favourite-icon-wrapper'>
+              <Icon id='quote-right' icon={FormatQuoteIcon} fixedWidth />
+            </div>
+
+            <span title={notification.get('created_at')}>
+              <FormattedMessage id='notification.label.quote' defaultMessage='{name} quoted your post' values={{ name: link }} />
+            </span>
+          </div>
+
+          <StatusContainer
+            id={notification.get('status')}
+            account={notification.get('account')}
+            muted
+            withDismiss
+            hidden={this.props.hidden}
+            getScrollPosition={this.props.getScrollPosition}
+            updateScrollBottom={this.props.updateScrollBottom}
+            cachedMediaWidth={this.props.cachedMediaWidth}
+            cacheMediaWidth={this.props.cacheMediaWidth}
+          />
+        </div>
+      </HotKeys>
+    );
+  }
+
   renderStatus (notification, link) {
     const { intl, unread, status } = this.props;
 
@@ -315,6 +350,43 @@ class Notification extends ImmutablePureComponent {
 
             <span title={notification.get('created_at')}>
               <FormattedMessage id='notification.update' defaultMessage='{name} edited a post' values={{ name: link }} />
+            </span>
+          </div>
+
+          <StatusContainer
+            id={notification.get('status')}
+            account={notification.get('account')}
+            contextType='notifications'
+            muted
+            withDismiss
+            hidden={this.props.hidden}
+            getScrollPosition={this.props.getScrollPosition}
+            updateScrollBottom={this.props.updateScrollBottom}
+            cachedMediaWidth={this.props.cachedMediaWidth}
+            cacheMediaWidth={this.props.cacheMediaWidth}
+          />
+        </div>
+      </HotKeys>
+    );
+  }
+
+  renderQuotedUpdate (notification, link) {
+    const { intl, unread, status } = this.props;
+
+    if (!status) {
+      return null;
+    }
+
+    return (
+      <HotKeys handlers={this.getHandlers()}>
+        <div className={classNames('notification notification-update focusable', { unread })} tabIndex={0} aria-label={notificationForScreenReader(intl, intl.formatMessage(messages.quotedUpdate, { name: notification.getIn(['account', 'acct']) }), notification.get('created_at'))}>
+          <div className='notification__message'>
+            <div className='notification__favourite-icon-wrapper'>
+              <Icon id='pencil' fixedWidth />
+            </div>
+
+            <span title={notification.get('created_at')}>
+              <FormattedMessage id='notification.quoted_update' defaultMessage='{name} edited a post you have quoted' values={{ name: link }} />
             </span>
           </div>
 
@@ -469,10 +541,14 @@ class Notification extends ImmutablePureComponent {
       return this.renderFavourite(notification, link);
     case 'reblog':
       return this.renderReblog(notification, link);
+    case 'quote':
+      return this.renderQuote(notification, link);
     case 'status':
       return this.renderStatus(notification, link);
     case 'update':
       return this.renderUpdate(notification, link);
+    case 'quoted_update':
+      return this.renderQuotedUpdate(notification, link);
     case 'poll':
       return this.renderPoll(notification, account);
     case 'admin.sign_up':

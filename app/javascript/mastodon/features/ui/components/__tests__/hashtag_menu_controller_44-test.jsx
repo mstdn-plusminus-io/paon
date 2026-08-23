@@ -11,6 +11,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { createMemoryHistory } from 'history';
 
 import { HashtagBar } from 'mastodon/components/hashtag_bar';
+import { IdentityContext } from 'mastodon/identity_context';
 
 import { HashtagMenuController } from '../hashtag_menu_controller';
 
@@ -46,10 +47,12 @@ describe('Mastodon 4.4 hashtag quick menu', () => {
     render(
       <Provider store={store}>
         <IntlProvider locale='en'>
-          <Router history={history}>
-            <HashtagBar hashtags={['paon']} accountId='42' />
-            <HashtagMenuController />
-          </Router>
+          <IdentityContext.Provider value={{ signedIn: true, accountId: '42', permissions: 0 }}>
+            <Router history={history}>
+              <HashtagBar hashtags={['paon']} accountId='42' />
+              <HashtagMenuController />
+            </Router>
+          </IdentityContext.Provider>
         </IntlProvider>
       </Provider>,
     );
@@ -64,5 +67,29 @@ describe('Mastodon 4.4 hashtag quick menu', () => {
     }));
 
     expect(history.location.pathname).toBe('/@alice@example.com/tagged/paon');
+  });
+
+  it('does not offer the authenticated mute action to visitors', () => {
+    const history = createMemoryHistory();
+    const store = createStore(fromJS({
+      accounts: {
+        '42': { id: '42', username: 'alice', acct: 'alice@example.com' },
+      },
+    }));
+
+    render(
+      <Provider store={store}>
+        <IntlProvider locale='en'>
+          <Router history={history}>
+            <HashtagBar hashtags={['paon']} accountId='42' />
+            <HashtagMenuController />
+          </Router>
+        </IntlProvider>
+      </Provider>,
+    );
+
+    fireEvent.click(screen.getByRole('link', { name: '# paon' }));
+    expect(screen.queryByRole('button', { name: 'Mute #paon' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse posts in #paon' })).toBeInTheDocument();
   });
 });

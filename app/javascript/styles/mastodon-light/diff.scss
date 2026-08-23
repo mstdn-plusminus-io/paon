@@ -1,6 +1,12 @@
 // Notes!
 // Sass color functions, "darken" and "lighten" are automatically replaced.
 
+body {
+  // Keep modal surfaces opaque in the light theme so text and controls retain
+  // their contrast over the overlay.
+  --modal-background-color: #{$white};
+}
+
 html.custom-scrollbars {
   scrollbar-color: $ui-base-color rgba($ui-base-color, 0.25);
 }

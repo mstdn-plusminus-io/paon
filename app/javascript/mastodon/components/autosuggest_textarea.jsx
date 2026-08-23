@@ -24,11 +24,11 @@ const textAtCursorMatchesToken = (str, caretPosition) => {
     word = str.slice(left, right + caretPosition);
   }
 
-  if (!word || word.trim().length < 3 || ['@', ':', '#'].indexOf(word[0]) === -1) {
+  if (!word || word.trim().length < 3 || ['@', '＠', ':', '#', '＃'].indexOf(word[0]) === -1) {
     return [null, null];
   }
 
-  word = word.trim().toLowerCase();
+  word = word.trim();
 
   if (word.length > 0) {
     return [left + 1, word];
@@ -181,8 +181,9 @@ export default class AutosuggestTextarea extends ImmutablePureComponent {
 
   onPaste = (e) => {
     if (e.clipboardData && e.clipboardData.files.length === 1) {
-      this.props.onPaste(e.clipboardData.files);
-      e.preventDefault();
+      this.props.onPaste(e);
+    } else if (e.clipboardData && e.clipboardData.files.length === 0) {
+      this.props.onPaste(e);
     }
   };
 

@@ -5,11 +5,12 @@ import { throttle } from 'lodash';
 
 import api from 'mastodon/api';
 import { search as emojiSearch } from 'mastodon/features/emoji/emoji_mart_search_light';
+import { me } from 'mastodon/initial_state';
 import { tagHistory } from 'mastodon/settings';
 
 import { showAlert, showAlertForError } from './alerts';
 import { useEmoji } from './emojis';
-import { importFetchedAccounts, importFetchedStatus } from './importer';
+import { importFetchedAccounts, importFetchedStatus, importFetchedStatuses } from './importer';
 import { openModal } from './modal';
 import { updateTimeline } from './timelines';
 
@@ -58,6 +59,11 @@ export const COMPOSE_SPOILER_TEXT_CHANGE = 'COMPOSE_SPOILER_TEXT_CHANGE';
 export const COMPOSE_VISIBILITY_CHANGE   = 'COMPOSE_VISIBILITY_CHANGE';
 export const COMPOSE_COMPOSING_CHANGE    = 'COMPOSE_COMPOSING_CHANGE';
 export const COMPOSE_LANGUAGE_CHANGE     = 'COMPOSE_LANGUAGE_CHANGE';
+export const COMPOSE_QUOTE               = 'COMPOSE_QUOTE';
+export const COMPOSE_QUOTE_CANCEL        = 'COMPOSE_QUOTE_CANCEL';
+export const COMPOSE_QUOTE_POLICY_CHANGE = 'COMPOSE_QUOTE_POLICY_CHANGE';
+export const COMPOSE_PASTE_LINK_REQUEST  = 'COMPOSE_PASTE_LINK_REQUEST';
+export const COMPOSE_PASTE_LINK_COMPLETE = 'COMPOSE_PASTE_LINK_COMPLETE';
 
 export const COMPOSE_EMOJI_INSERT = 'COMPOSE_EMOJI_INSERT';
 
@@ -86,6 +92,14 @@ export const COMPOSE_FOCUS = 'COMPOSE_FOCUS';
 const messages = defineMessages({
   uploadErrorLimit: { id: 'upload_error.limit', defaultMessage: 'File upload limit exceeded.' },
   uploadErrorPoll:  { id: 'upload_error.poll', defaultMessage: 'File upload not allowed with polls.' },
+  uploadErrorQuote: { id: 'upload_error.quote', defaultMessage: 'File upload not allowed with quotes.' },
+  blankPostError: { id: 'compose.error.blank_post', defaultMessage: 'Post can\'t be blank.' },
+  quoteErrorEdit: { id: 'quote_error.edit', defaultMessage: 'Quotes cannot be added when editing a post.' },
+  quoteErrorUpload: { id: 'quote_error.upload', defaultMessage: 'Quoting is not allowed with media attachments.' },
+  quoteErrorPoll: { id: 'quote_error.poll', defaultMessage: 'Quoting is not allowed with polls.' },
+  quoteErrorQuote: { id: 'quote_error.quote', defaultMessage: 'Only one quote at a time is allowed.' },
+  quoteErrorUnauthorized: { id: 'quote_error.unauthorized', defaultMessage: 'You are not authorized to quote this post.' },
+  quoteErrorPrivateMention: { id: 'quote_error.private_mentions', defaultMessage: 'Quoting is not allowed with private mentions.' },
   open: { id: 'compose.published.open', defaultMessage: 'Open' },
   published: { id: 'compose.published.body', defaultMessage: 'Post published.' },
   saved: { id: 'compose.saved.body', defaultMessage: 'Post saved.' },
@@ -179,7 +193,13 @@ export function submitCompose(routerHistory, successCallback) {
     const statusId = getState().getIn(['compose', 'id'], null);
     const pollState = getState().getIn(['compose', 'poll'], null);
     const poll = pollState?.update('options', options => options.filter(option => option.trim().length > 0));
-    if (((!status || !status.length) && media.size === 0) || (poll && poll.get('options').size < 2)) {
+    const quotedStatusId = getState().getIn(['compose', 'quoted_status_id'], null);
+    const spoilerText = getState().getIn(['compose', 'spoiler']) ? getState().getIn(['compose', 'spoiler_text'], '') : '';
+    const hasText = `${spoilerText}${status}`.trim().length > 0;
+
+    if ((!hasText && media.size === 0) || (poll && poll.get('options').size < 2)) {
+      dispatch(showAlert({ message: messages.blankPostError }));
+      dispatch(focusCompose(routerHistory));
       return;
     }
 
@@ -211,10 +231,14 @@ export function submitCompose(routerHistory, successCallback) {
       media_ids: media.map(item => item.get('id')),
       media_attributes,
       sensitive: getState().getIn(['compose', 'sensitive']),
-      spoiler_text: getState().getIn(['compose', 'spoiler']) ? getState().getIn(['compose', 'spoiler_text'], '') : '',
+      spoiler_text: spoilerText,
       visibility: getState().getIn(['compose', 'privacy']),
       poll,
       language: getState().getIn(['compose', 'language']),
+      quoted_status_id: quotedStatusId,
+      quote_approval_policy: ['private', 'direct'].includes(getState().getIn(['compose', 'privacy']))
+        ? 'nobody'
+        : getState().getIn(['compose', 'quote_policy'], 'public'),
     };
 
     api().request({
@@ -294,6 +318,11 @@ export function submitComposeFail(error) {
 
 export function uploadCompose(files) {
   return function (dispatch, getState) {
+    if (getState().getIn(['compose', 'quoted_status_id'])) {
+      dispatch(showAlert({ message: messages.uploadErrorQuote }));
+      return;
+    }
+
     const uploadLimit = getState().getIn(['compose', 'max_media_attachments']);
     const media  = getState().getIn(['compose', 'media_attachments']);
     const pending  = getState().getIn(['compose', 'pending_media_attachments']);
@@ -600,6 +629,7 @@ export function fetchComposeSuggestions(token) {
       fetchComposeSuggestionsEmojis(dispatch, getState, token);
       break;
     case '#':
+    case '＃':
       fetchComposeSuggestionsTags(dispatch, getState, token);
       break;
     default:
@@ -641,11 +671,17 @@ export function selectComposeSuggestion(position, token, suggestion, path) {
 
       dispatch(useEmoji(suggestion));
     } else if (suggestion.type === 'hashtag') {
-      completion    = `#${suggestion.name}`;
+      const tokenName = token.slice(1);
+      const suggestionPrefix = suggestion.name.slice(0, tokenName.length);
+      const prefixMatchesSuggestion = suggestionPrefix.localeCompare(tokenName, undefined, { sensitivity: 'accent' }) === 0;
+
+      completion = prefixMatchesSuggestion
+        ? token + suggestion.name.slice(tokenName.length)
+        : `${token.slice(0, 1)}${suggestion.name}`;
       startPosition = position - 1;
     } else if (suggestion.type === 'account') {
-      completion    = getState().getIn(['accounts', suggestion.id, 'acct']);
-      startPosition = position;
+      completion    = `@${getState().getIn(['accounts', suggestion.id, 'acct'])}`;
+      startPosition = position - 1;
     }
 
     // We don't want to replace hashtags that vary only in case due to accessibility, but we need to fire off an event so that
@@ -705,7 +741,7 @@ function insertIntoTagHistory(recognizedTags, text) {
     // complicated because of new normalization rules, it's no longer just
     // a case sensitivity issue
     const names = recognizedTags.map(tag => {
-      const matches = text.match(new RegExp(`#${tag.name}`, 'i'));
+      const matches = text.match(new RegExp(`[#＃]${tag.name}`, 'i'));
 
       if (matches && matches.length > 0) {
         return matches[0].slice(1);
@@ -762,11 +798,120 @@ export function changeComposeSpoilerText(text) {
 }
 
 export function changeComposeVisibility(value) {
-  return {
-    type: COMPOSE_VISIBILITY_CHANGE,
-    value,
+  return (dispatch, getState) => {
+    const quotedStatusId = getState().getIn(['compose', 'quoted_status_id']);
+    const quotedStatusUrl = quotedStatusId
+      ? getState().getIn(['statuses', quotedStatusId, 'url'])
+      : null;
+
+    dispatch({
+      type: COMPOSE_VISIBILITY_CHANGE,
+      value,
+      quotedStatusUrl,
+    });
   };
 }
+
+export const cancelQuoteCompose = () => ({ type: COMPOSE_QUOTE_CANCEL });
+
+export const changeComposeQuotePolicy = value => ({
+  type: COMPOSE_QUOTE_POLICY_CHANGE,
+  value,
+});
+
+/**
+ * Prepare an official Mastodon quote post while preserving the current draft.
+ * Quote policy is evaluated from the REST Status `quote_approval` entity and
+ * therefore fails closed when a server omits the 4.5 contract.
+ * @param {import('immutable').Map} status Status selected as the quote target.
+ * @param {object} routerHistory Router history used to reveal the composer.
+ * @param {boolean} skipQuietHint Whether the quiet-post warning was accepted.
+ * @param {boolean} quotePolicyFetched Whether a complete REST Status was already fetched.
+ */
+export const quoteCompose = (status, routerHistory, skipQuietHint = false, quotePolicyFetched = false) => (dispatch, getState) => {
+  const compose = getState().get('compose');
+  const media = compose.get('media_attachments');
+  const approval = status.getIn(['quote_approval', 'current_user']);
+
+  let message;
+  if (compose.get('id')) message = messages.quoteErrorEdit;
+  else if (compose.get('privacy') === 'direct') message = messages.quoteErrorPrivateMention;
+  else if (compose.get('poll')) message = messages.quoteErrorPoll;
+  else if (compose.get('is_uploading') || media.size > 0) message = messages.quoteErrorUpload;
+  else if (compose.get('quoted_status_id')) message = messages.quoteErrorQuote;
+  else if (approval == null && !quotePolicyFetched) {
+    api().get(`/api/v1/statuses/${status.get('id')}`).then(response => {
+      dispatch(importFetchedStatus(response.data));
+
+      const fetchedStatus = getState().getIn(['statuses', response.data.id]);
+      if (fetchedStatus) {
+        dispatch(quoteCompose(fetchedStatus, routerHistory, skipQuietHint, true));
+      } else {
+        dispatch(showAlert({ message: messages.quoteErrorUnauthorized }));
+      }
+    }).catch(error => {
+      dispatch(showAlertForError(error));
+    });
+    return;
+  } else if (!['automatic', 'manual'].includes(approval)) message = messages.quoteErrorUnauthorized;
+
+  if (message) {
+    dispatch(showAlert({ message }));
+    return;
+  }
+
+  const quietHintDismissed = getState().getIn([
+    'settings',
+    'dismissed_banners',
+    'quote/quiet_post_hint',
+  ], false);
+
+  if (status.get('visibility') === 'unlisted' && status.getIn(['account', 'id']) !== me && !quietHintDismissed && !skipQuietHint) {
+    dispatch(openModal({
+      modalType: 'CONFIRM_QUIET_QUOTE',
+      modalProps: { status, routerHistory },
+    }));
+    return;
+  }
+
+  dispatch({ type: COMPOSE_QUOTE, status });
+  dispatch(focusCompose(routerHistory));
+};
+
+const composeForbidsQuoteLink = compose => Boolean(
+  compose.get('quoted_status_id') ||
+  compose.get('is_submitting') ||
+  compose.get('poll') ||
+  compose.get('is_uploading') ||
+  compose.get('id') ||
+  compose.get('privacy') === 'direct'
+);
+
+export const pasteLinkCompose = url => (dispatch, getState) => {
+  const compose = getState().get('compose');
+  if (composeForbidsQuoteLink(compose) || compose.get('fetching_link')) return;
+
+  const requestId = `${Date.now()}-${Math.random()}`;
+  dispatch({ type: COMPOSE_PASTE_LINK_REQUEST, requestId });
+
+  api().get('/api/v2/search', {
+    params: { q: url, type: 'statuses', resolve: true, limit: 2 },
+  }).then(response => {
+    if (getState().getIn(['compose', 'fetching_link']) !== requestId) return;
+    dispatch(importFetchedStatuses(response.data.statuses || []));
+
+    if (response.data.statuses?.length === 1) {
+      const fetched = getState().getIn(['statuses', response.data.statuses[0].id]);
+      if (fetched && ['automatic', 'manual'].includes(fetched.getIn(['quote_approval', 'current_user']))) {
+        dispatch(quoteCompose(fetched));
+      }
+    }
+  }).catch(() => {
+    // A pasted URL remains ordinary text when discovery fails.
+  }).finally(() => {
+    dispatch({ type: COMPOSE_PASTE_LINK_COMPLETE, requestId });
+  });
+};
 
 export function insertEmojiCompose(position, emoji, needsSpace) {
   return {

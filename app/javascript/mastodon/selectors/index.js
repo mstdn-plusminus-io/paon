@@ -32,55 +32,78 @@ const getFilters = (state, { contextType }) => {
   return state.get('filters').filter((filter) => filter.get('context').includes(serverSideType) && (filter.get('expires_at') === null || filter.get('expires_at') > now));
 };
 
-export const makeGetStatus = () => {
-  return createSelector(
-    [
-      (state, { id }) => state.getIn(['statuses', id]),
-      (state, { id }) => state.getIn(['statuses', state.getIn(['statuses', id, 'reblog'])]),
-      (state, { id }) => state.getIn(['accounts', state.getIn(['statuses', id, 'account'])]),
-      (state, { id }) => state.getIn(['accounts', state.getIn(['statuses', state.getIn(['statuses', id, 'reblog']), 'account'])]),
-      getFilters,
-    ],
+const getStatusInputSelectors = [
+  (state, { id }) => state.getIn(['statuses', id]),
+  (state, { id }) => state.getIn(['statuses', state.getIn(['statuses', id, 'reblog'])]),
+  (state, { id }) => state.getIn(['accounts', state.getIn(['statuses', id, 'account'])]),
+  (state, { id }) => state.getIn(['accounts', state.getIn(['statuses', state.getIn(['statuses', id, 'reblog']), 'account'])]),
+  getFilters,
+  (_, { contextType }) => ['detailed', 'bookmarks', 'favourites'].includes(contextType),
+];
 
-    (statusBase, statusReblog, accountBase, accountReblog, filters) => {
-      if (!statusBase || statusBase.get('isLoading')) {
-        return null;
-      }
+const getStatusResult = (
+  statusBase,
+  statusReblog,
+  accountBase,
+  accountReblog,
+  filters,
+  warnInsteadOfHide,
+) => {
+  if (!statusBase) {
+    return { status: null, loadingState: 'not-found' };
+  }
 
-      if (statusReblog) {
-        statusReblog = statusReblog.set('account', accountReblog);
-      } else {
-        statusReblog = null;
-      }
+  // Keep an already-known post visible while a refresh is in flight. A new
+  // loading stub has no visibility and remains represented by a loader.
+  if (statusBase.get('isLoading') && !statusBase.get('visibility')) {
+    return { status: null, loadingState: 'loading' };
+  }
 
-      let filtered = false;
-      let mediaFiltered = false;
-      if ((accountReblog || accountBase).get('id') !== me && filters) {
-        let filterResults = statusReblog?.get('filtered') || statusBase.get('filtered') || ImmutableList();
-        if (filterResults.some((result) => filters.getIn([result.get('filter'), 'filter_action']) === 'hide')) {
-          return null;
-        }
+  if (statusReblog) {
+    statusReblog = statusReblog.set('account', accountReblog);
+  } else {
+    statusReblog = null;
+  }
 
-        const mediaFilters = filterResults.filter(result => filters.getIn([result.get('filter'), 'filter_action']) === 'blur');
-        if (!mediaFilters.isEmpty()) {
-          mediaFiltered = mediaFilters.map(result => filters.getIn([result.get('filter'), 'title']));
-        }
+  let filtered = false;
+  let mediaFiltered = false;
+  if ((accountReblog || accountBase).get('id') !== me && filters) {
+    let filterResults = statusReblog?.get('filtered') || statusBase.get('filtered') || ImmutableList();
+    if (!warnInsteadOfHide && filterResults.some((result) => filters.getIn([result.get('filter'), 'filter_action']) === 'hide')) {
+      return { status: null, loadingState: 'filtered' };
+    }
 
-        filterResults = filterResults.filter(result => filters.has(result.get('filter')) && filters.getIn([result.get('filter'), 'filter_action']) !== 'blur');
-        if (!filterResults.isEmpty()) {
-          filtered = filterResults.map(result => filters.getIn([result.get('filter'), 'title']));
-        }
-      }
+    const mediaFilters = filterResults.filter(result => filters.getIn([result.get('filter'), 'filter_action']) === 'blur');
+    if (!mediaFilters.isEmpty()) {
+      mediaFiltered = mediaFilters.map(result => filters.getIn([result.get('filter'), 'title']));
+    }
 
-      return statusBase.withMutations(map => {
-        map.set('reblog', statusReblog);
-        map.set('account', accountBase);
-        map.set('matched_filters', filtered);
-        map.set('matched_media_filters', mediaFiltered);
-      });
-    },
-  );
+    filterResults = filterResults.filter(result => filters.has(result.get('filter')) && filters.getIn([result.get('filter'), 'filter_action']) !== 'blur');
+    if (!filterResults.isEmpty()) {
+      filtered = filterResults.map(result => filters.getIn([result.get('filter'), 'title']));
+    }
+  }
+
+  return {
+    status: statusBase.withMutations(map => {
+      map.set('reblog', statusReblog);
+      map.set('account', accountBase);
+      map.set('matched_filters', filtered ? filtered.toJS() : false);
+      map.set('matched_media_filters', mediaFiltered ? mediaFiltered.toJS() : false);
+    }),
+    loadingState: statusBase.get('isLoading') ? 'loading' : 'complete',
+  };
 };
+
+export const makeGetStatus = () => createSelector(
+  getStatusInputSelectors,
+  (...args) => getStatusResult(...args).status,
+);
+
+export const makeGetStatusWithExtraInfo = () => createSelector(
+  getStatusInputSelectors,
+  getStatusResult,
+);
 
 export const makeGetPictureInPicture = () => {
   return createSelector([

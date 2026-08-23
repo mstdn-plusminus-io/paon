@@ -15,6 +15,51 @@ export const getLinks = (response: AxiosResponse) => {
   return LinkHeader.parse(value);
 };
 
+export interface AsyncRefreshHeader {
+  id: string;
+  retry: number;
+}
+
+/**
+ * Parse Mastodon's structured `Mastodon-Async-Refresh` response header.
+ *
+ * A malformed header is deliberately ignored. In particular, do not start a
+ * polling loop unless both the opaque refresh id and a finite retry interval
+ * are present.
+ * @param response Axios response containing the optional refresh header.
+ * @returns The validated refresh instructions, or null when unavailable.
+ */
+export const getAsyncRefreshHeader = (
+  response: AxiosResponse,
+): AsyncRefreshHeader | null => {
+  const value = response.headers['mastodon-async-refresh'] as
+    | string
+    | undefined;
+
+  if (!value) return null;
+
+  const fields: Partial<AsyncRefreshHeader> = {};
+
+  value.split(/,\s*/).forEach((pair) => {
+    const [rawKey, rawValue] = pair.split('=', 2);
+    const key = rawKey?.trim();
+    const valuePart = rawValue?.trim();
+
+    if (!key || !valuePart) return;
+
+    if (key === 'id') {
+      fields.id = valuePart.replace(/^"|"$/g, '');
+    } else if (key === 'retry') {
+      const retry = Number.parseInt(valuePart, 10);
+      if (Number.isFinite(retry) && retry > 0) fields.retry = retry;
+    }
+  });
+
+  return fields.id && fields.retry
+    ? { id: fields.id, retry: fields.retry }
+    : null;
+};
+
 const csrfHeader: RawAxiosRequestHeaders = {};
 
 const setCSRFHeader = () => {

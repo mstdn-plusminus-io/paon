@@ -49,8 +49,12 @@ export class DropdownMenu extends PureComponent {
     document.addEventListener('keydown', this.handleKeyDown, { capture: true });
     document.addEventListener('touchend', this.handleDocumentClick, listenerOptions);
 
-    if (this.focusedItem && this.props.openedViaKeyboard) {
-      this.focusedItem.focus({ preventScroll: true });
+    if (this.props.openedViaKeyboard) {
+      // Custom renderers do not receive setFocusRef. Resolve the first item
+      // from the mounted menu, as Mastodon 4.5 does, so keyboard-opened edit
+      // history and other custom dropdowns still receive initial focus.
+      const firstMenuItem = this.node?.querySelector('li:first-child > a, li:first-child > button');
+      (firstMenuItem || this.focusedItem)?.focus({ preventScroll: true });
     }
   }
 
@@ -121,11 +125,11 @@ export class DropdownMenu extends PureComponent {
       return <li key={`sep-${i}`} className='dropdown-menu__separator' />;
     }
 
-    const { text, href = '#', target = '_blank', method, dangerous } = option;
+    const { text, href = '#', target = '_blank', method, dangerous, disabled, highlighted, active } = option;
 
     return (
-      <li className={classNames('dropdown-menu__item', { 'dropdown-menu__item--dangerous': dangerous })} key={`${text}-${i}`}>
-        <a href={href} target={target} data-method={method} rel='noopener noreferrer' role='button' tabIndex={0} ref={i === 0 ? this.setFocusRef : null} onClick={this.handleClick} onKeyPress={this.handleItemKeyPress} data-index={i}>
+      <li className={classNames('dropdown-menu__item', { 'dropdown-menu__item--dangerous': dangerous, 'dropdown-menu__item--highlighted': highlighted || active })} key={`${text}-${i}`}>
+        <a href={href} target={target} data-method={method} rel='noopener noreferrer' role='button' tabIndex={0} aria-disabled={disabled} ref={i === 0 ? this.setFocusRef : null} onClick={this.handleClick} onKeyPress={this.handleItemKeyPress} data-index={i}>
           {text}
         </a>
       </li>
@@ -211,7 +215,13 @@ export default class Dropdown extends PureComponent {
   handleItemClick = e => {
     const { onItemClick } = this.props;
     const i = Number(e.currentTarget.getAttribute('data-index'));
-    const item = this.props.items[i];
+    const item = typeof this.props.items.get === 'function' ? this.props.items.get(i) : this.props.items[i];
+    const itemDisabled = item && (typeof item.get === 'function' ? item.get('disabled') : item.disabled);
+
+    if (!item || itemDisabled) {
+      e.preventDefault();
+      return;
+    }
 
     this.handleClose();
 
@@ -220,7 +230,7 @@ export default class Dropdown extends PureComponent {
       onItemClick(item, i);
     } else if (item && typeof item.action === 'function') {
       e.preventDefault();
-      item.action();
+      item.action(e);
     } else if (item && item.to) {
       e.preventDefault();
       this.context.router.history.push(item.to);

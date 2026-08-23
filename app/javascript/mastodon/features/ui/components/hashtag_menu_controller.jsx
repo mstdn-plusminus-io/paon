@@ -9,6 +9,7 @@ import { useSelector } from 'react-redux';
 import Overlay from 'react-overlays/Overlay';
 
 import { DropdownMenu } from 'mastodon/components/dropdown_menu';
+import { useIdentity } from 'mastodon/identity_context';
 
 const messages = defineMessages({
   browseHashtag: {
@@ -25,11 +26,11 @@ const messages = defineMessages({
 export const isHashtagMenuLink = element =>
   element instanceof HTMLAnchorElement && element.matches('[data-menu-hashtag]');
 
-export const buildHashtagMenu = (intl, hashtag, account) => {
+export const buildHashtagMenu = (intl, hashtag, account, signedIn) => {
   const tagPath = `/tags/${hashtag}`;
   const accountTagPath = `/@${account?.get('acct')}/tagged/${hashtag}`;
 
-  return [
+  const menu = [
     {
       text: intl.formatMessage(messages.browseHashtag, { hashtag }),
       href: tagPath,
@@ -43,17 +44,22 @@ export const buildHashtagMenu = (intl, hashtag, account) => {
       href: accountTagPath,
       to: accountTagPath,
     },
-    null,
-    {
+  ];
+
+  if (signedIn) {
+    menu.push(null, {
       text: intl.formatMessage(messages.muteHashtag, { hashtag }),
       href: '/filters',
       dangerous: true,
-    },
-  ];
+    });
+  }
+
+  return menu;
 };
 
 export const HashtagMenuController = () => {
   const intl = useIntl();
+  const { signedIn } = useIdentity();
   const history = useHistory();
   const location = useLocation();
   const [open, setOpen] = useState(false);
@@ -104,8 +110,8 @@ export const HashtagMenuController = () => {
   }, []);
 
   const menu = useMemo(
-    () => targetParams.hashtag ? buildHashtagMenu(intl, targetParams.hashtag, account) : [],
-    [account, intl, targetParams.hashtag],
+    () => targetParams.hashtag ? buildHashtagMenu(intl, targetParams.hashtag, account, signedIn) : [],
+    [account, intl, signedIn, targetParams.hashtag],
   );
 
   const handleItemClick = useCallback(event => {

@@ -6,6 +6,9 @@ const OFFICIAL_QUOTE_STATES = new Set([
   'rejected',
   'revoked',
   'unauthorized',
+  'blocked_account',
+  'blocked_domain',
+  'muted_account',
 ]);
 
 const readQuoteValue = (quote, key) => {

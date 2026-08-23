@@ -20,9 +20,11 @@ import { Icon }  from 'mastodon/components/icon';
 import PollContainer from 'mastodon/containers/poll_container';
 import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { autoPlayGif, languages as preloadedLanguages } from 'mastodon/initial_state';
+import { compareUrls } from 'mastodon/utils/compare_urls';
 import { decodeAme } from 'mastodon/utils/kaiwai';
 import { komifloLinkify } from 'mastodon/utils/komiflo';
 import { decodeMorse } from 'mastodon/utils/morse';
+import { markStatusExternalLink } from 'mastodon/utils/status_external_link';
 
 import { getStatusContent } from './status_content_helper';
 
@@ -84,13 +86,13 @@ class TranslateButton extends PureComponent {
 
       return (
         <div className='translate-button'>
-          <div className='translate-button__meta'>
-            <FormattedMessage id='status.translated_from_with' defaultMessage='Translated from {lang} using {provider}' values={{ lang: languageName, provider }} />
-          </div>
-
           <button className='link-button' onClick={onClick}>
             <FormattedMessage id='status.show_original' defaultMessage='Show original' />
           </button>
+
+          <div className='translate-button__meta'>
+            <FormattedMessage id='status.translated_from_with' defaultMessage='Translated from {lang} using {provider}' values={{ lang: languageName, provider }} />
+          </div>
         </div>
       );
     }
@@ -147,21 +149,20 @@ class StatusContent extends PureComponent {
 
       link.classList.add('status-link');
 
-      mention = this.props.status.get('mentions').find(item => link.href === item.get('url'));
+      mention = this.props.status.get('mentions').find(item => compareUrls(link.href, item.get('url')));
 
       if (mention) {
         link.addEventListener('click', this.onMentionClick.bind(this, mention), false);
         link.setAttribute('data-hover-card-account', mention.get('id'));
         link.setAttribute('title', `@${mention.get('acct')}`);
         link.setAttribute('href', `/@${mention.get('acct')}`);
-      } else if (link.textContent[0] === '#' || (link.previousSibling && link.previousSibling.textContent && link.previousSibling.textContent[link.previousSibling.textContent.length - 1] === '#')) {
-        link.addEventListener('click', this.onHashtagClick.bind(this, link.text), false);
-        link.setAttribute('href', `/tags/${link.text.replace(/^#/, '')}`);
+      } else if (this.isLocalHashtagLink(link)) {
+        const hashtag = link.textContent.replace(/^[#＃]/, '').trim();
+        link.addEventListener('click', this.onHashtagClick.bind(this, hashtag), false);
+        link.setAttribute('href', `/tags/${encodeURIComponent(hashtag)}`);
         link.setAttribute('data-menu-hashtag', this.props.status.getIn(['account', 'id']));
       } else {
-        link.setAttribute('title', link.href);
-        link.setAttribute('target', '_blank');
-        link.classList.add('unhandled-link');
+        markStatusExternalLink(link);
       }
     }
 
@@ -212,6 +213,19 @@ class StatusContent extends PureComponent {
     this._updateStatusLinks();
   }
 
+  isLocalHashtagLink = link => {
+    const text = link.textContent || '';
+    const previousText = link.previousSibling?.textContent || '';
+    const hashtagLike = text.startsWith('#')
+      || text.startsWith('＃')
+      || previousText.endsWith('#')
+      || previousText.endsWith('＃');
+
+    // A percent sign may be part of a remote tag URL encoding. Treat such
+    // links as ordinary external links rather than decoding them as routes.
+    return hashtagLike && !text.includes('%');
+  };
+
   onMentionClick = (mention, e) => {
     if (this.context.router && e.button === 0 && !(e.ctrlKey || e.metaKey)) {
       e.preventDefault();
@@ -220,11 +234,11 @@ class StatusContent extends PureComponent {
   };
 
   onHashtagClick = (hashtag, e) => {
-    hashtag = hashtag.replace(/^#/, '');
+    hashtag = hashtag.replace(/^[#＃]/, '');
 
     if (this.context.router && e.button === 0 && !(e.ctrlKey || e.metaKey)) {
       e.preventDefault();
-      this.context.router.history.push(`/tags/${hashtag}`);
+      this.context.router.history.push(`/tags/${encodeURIComponent(hashtag)}`);
     }
   };
 

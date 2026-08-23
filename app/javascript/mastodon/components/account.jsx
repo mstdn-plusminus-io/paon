@@ -25,8 +25,10 @@ import { RelativeTimestamp } from './relative_timestamp';
 
 const messages = defineMessages({
   follow: { id: 'account.follow', defaultMessage: 'Follow' },
+  followBack: { id: 'account.follow_back', defaultMessage: 'Follow back' },
+  followRequest: { id: 'account.follow_request', defaultMessage: 'Request to follow' },
   unfollow: { id: 'account.unfollow', defaultMessage: 'Unfollow' },
-  cancel_follow_request: { id: 'account.cancel_follow_request', defaultMessage: 'Withdraw follow request' },
+  cancel_follow_request: { id: 'account.follow_request_cancel', defaultMessage: 'Cancel request' },
   unblock: { id: 'account.unblock_short', defaultMessage: 'Unblock' },
   unmute: { id: 'account.unmute_short', defaultMessage: 'Unmute' },
   mute_notifications: { id: 'account.mute_notifications_short', defaultMessage: 'Mute notifications' },
@@ -149,7 +151,17 @@ export class Account extends ImmutablePureComponent {
       } else if (defaultAction === 'block') {
         buttons = <Button text={intl.formatMessage(messages.block)} onClick={this.handleBlock} />;
       } else if (!account.get('moved') || following) {
-        buttons = <Button text={intl.formatMessage(following ? messages.unfollow : messages.follow)} onClick={this.handleFollow} />;
+        let followMessage = messages.follow;
+
+        if (following) {
+          followMessage = messages.unfollow;
+        } else if (account.getIn(['relationship', 'followed_by']) && !account.get('locked')) {
+          followMessage = messages.followBack;
+        } else if (account.get('locked')) {
+          followMessage = messages.followRequest;
+        }
+
+        buttons = <Button text={intl.formatMessage(followMessage)} onClick={this.handleFollow} />;
       }
     }
 

@@ -8,6 +8,7 @@ import { debounce } from 'lodash';
 import { TIMELINE_GAP, TIMELINE_SUGGESTIONS } from 'mastodon/actions/timelines';
 import RegenerationIndicator from 'mastodon/components/regeneration_indicator';
 import { InlineFollowSuggestions } from 'mastodon/features/home_timeline/components/inline_follow_suggestions';
+import { focusAdjacentFeedItem } from 'mastodon/utils/feed_keyboard_navigation';
 
 import StatusContainer from '../containers/status_container';
 
@@ -40,6 +41,12 @@ export default class StatusList extends ImmutablePureComponent {
     trackScroll: true,
   };
 
+  componentDidMount () {
+    this.columnHeaderHeight = this.node?.node
+      ? parseFloat(getComputedStyle(this.node.node).getPropertyValue('--column-header-height')) || 0
+      : 0;
+  }
+
   getFeaturedStatusCount = () => {
     return this.props.featuredStatusIds ? this.props.featuredStatusIds.size : 0;
   };
@@ -53,13 +60,13 @@ export default class StatusList extends ImmutablePureComponent {
   };
 
   handleMoveUp = (id, featured) => {
-    const elementIndex = this.getCurrentStatusIndex(id, featured) - 1;
-    this._selectChild(elementIndex, true);
+    const index = this.getCurrentStatusIndex(id, featured);
+    this._selectChild(index, -1);
   };
 
   handleMoveDown = (id, featured) => {
-    const elementIndex = this.getCurrentStatusIndex(id, featured) + 1;
-    this._selectChild(elementIndex, false);
+    const index = this.getCurrentStatusIndex(id, featured);
+    this._selectChild(index, 1);
   };
 
   handleLoadOlder = debounce(() => {
@@ -67,18 +74,8 @@ export default class StatusList extends ImmutablePureComponent {
     onLoadMore(lastId || (statusIds.size > 0 ? statusIds.last() : undefined));
   }, 300, { leading: true });
 
-  _selectChild (index, align_top) {
-    const container = this.node.node;
-    const element = container.querySelector(`article:nth-of-type(${index + 1}) .focusable`);
-
-    if (element) {
-      if (align_top && container.scrollTop > element.offsetTop) {
-        element.scrollIntoView(true);
-      } else if (!align_top && container.scrollTop + container.clientHeight < element.offsetTop + element.offsetHeight) {
-        element.scrollIntoView(false);
-      }
-      element.focus();
-    }
+  _selectChild (index, direction) {
+    focusAdjacentFeedItem(this.node?.node, index, direction, this.columnHeaderHeight);
   }
 
   setRef = c => {

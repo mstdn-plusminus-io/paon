@@ -19,7 +19,8 @@ const messages = defineMessages({
 export const hasComposeDraft = state => (
   state.getIn(['compose', 'text']).trim().length !== 0 ||
   state.getIn(['compose', 'media_attachments']).size > 0 ||
-  state.getIn(['compose', 'poll']) !== null
+  state.getIn(['compose', 'poll']) !== null ||
+  Boolean(state.getIn(['compose', 'quoted_status_id']))
 );
 
 export const discardDraftModalProps = (intl, isEditing) => {

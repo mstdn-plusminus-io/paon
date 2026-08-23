@@ -136,6 +136,7 @@ class DetailedStatus extends ImmutablePureComponent {
     let applicationLink = '';
     let reblogLink = '';
     let reblogIcon = 'retweet';
+    let quoteLink = '';
     let favouriteLink = '';
     let edited = '';
 
@@ -265,6 +266,20 @@ class DetailedStatus extends ImmutablePureComponent {
       );
     }
 
+    if (this.context.router && !['private', 'direct'].includes(status.get('visibility'))) {
+      quoteLink = (
+        <>
+          {' · '}
+          <Link to={`/@${status.getIn(['account', 'acct'])}/${status.get('id')}/quotes`} className='detailed-status__link'>
+            <Icon id='quote-right' />
+            <span className='detailed-status__quotes'>
+              <AnimatedNumber value={status.get('quotes_count', 0)} />
+            </span>
+          </Link>
+        </>
+      );
+    }
+
     if (status.get('edited_at')) {
       edited = (
         <>
@@ -316,7 +331,7 @@ class DetailedStatus extends ImmutablePureComponent {
           <div className='detailed-status__meta'>
             <a className='detailed-status__datetime' href={`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`} target='_blank' rel='noopener noreferrer'>
               <FormattedDateWrapper value={new Date(status.get('created_at'))} hour12={false} year='numeric' month='short' day='2-digit' hour='2-digit' minute='2-digit' />
-            </a>{edited}{visibilityLink}{applicationLink}{reblogLink} · {favouriteLink}
+            </a>{edited}{visibilityLink}{applicationLink}{reblogLink}{quoteLink} · {favouriteLink}
           </div>
         </div>
       </div>

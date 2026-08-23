@@ -32,7 +32,8 @@ const messages = defineMessages({
   unfollow: { id: 'account.unfollow', defaultMessage: 'Unfollow' },
   follow: { id: 'account.follow', defaultMessage: 'Follow' },
   followBack: { id: 'account.follow_back', defaultMessage: 'Follow back' },
-  cancel_follow_request: { id: 'account.cancel_follow_request', defaultMessage: 'Withdraw follow request' },
+  followRequest: { id: 'account.follow_request', defaultMessage: 'Request to follow' },
+  cancel_follow_request: { id: 'account.follow_request_cancel', defaultMessage: 'Cancel request' },
   requested: { id: 'account.requested', defaultMessage: 'Awaiting approval. Click to cancel follow request' },
   unblock: { id: 'account.unblock', defaultMessage: 'Unblock @{name}' },
   edit_profile: { id: 'account.edit_profile', defaultMessage: 'Edit profile' },
@@ -324,8 +325,19 @@ class Header extends ImmutablePureComponent {
         actionBtn = '';
       } else if (account.getIn(['relationship', 'requested'])) {
         actionBtn = <Button text={intl.formatMessage(messages.cancel_follow_request)} title={intl.formatMessage(messages.requested)} onClick={this.props.onFollow} />;
+      } else if (account.getIn(['relationship', 'muting'])) {
+        actionBtn = <Button text={intl.formatMessage(messages.unmute, { name: account.get('username') })} onClick={this.props.onMute} />;
       } else if (!account.getIn(['relationship', 'blocking'])) {
-        const actionMessage = account.getIn(['relationship', 'following']) ? messages.unfollow : (account.getIn(['relationship', 'followed_by']) ? messages.followBack : messages.follow);
+        let actionMessage = messages.follow;
+
+        if (account.getIn(['relationship', 'following'])) {
+          actionMessage = messages.unfollow;
+        } else if (account.getIn(['relationship', 'followed_by']) && !account.get('locked')) {
+          actionMessage = messages.followBack;
+        } else if (account.get('locked')) {
+          actionMessage = messages.followRequest;
+        }
+
         actionBtn = <Button disabled={account.getIn(['relationship', 'blocked_by'])} className={classNames({ 'button--destructive': account.getIn(['relationship', 'following']) })} text={intl.formatMessage(actionMessage)} onClick={signedIn ? this.props.onFollow : this.props.onInteractionModal} />;
       } else if (account.getIn(['relationship', 'blocking'])) {
         actionBtn = <Button text={intl.formatMessage(messages.unblock, { name: account.get('username') })} onClick={this.props.onBlock} />;

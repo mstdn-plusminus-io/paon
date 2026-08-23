@@ -5,7 +5,7 @@ import UploadButton from '../components/upload_button';
 
 const mapStateToProps = state => ({
   disabled: state.getIn(['compose', 'is_uploading']) || (state.getIn(['compose', 'media_attachments']).size + state.getIn(['compose', 'pending_media_attachments']) > state.getIn(['compose', 'max_media_attachments']) - 1 || state.getIn(['compose', 'media_attachments']).some(m => ['video', 'audio'].includes(m.get('type')))),
-  unavailable: state.getIn(['compose', 'poll']) !== null,
+  unavailable: state.getIn(['compose', 'poll']) !== null || Boolean(state.getIn(['compose', 'quoted_status_id'])),
   resetFileKey: state.getIn(['compose', 'resetFileKey']),
 });
 

@@ -26,8 +26,9 @@ import { makeGetAccount, getAccountHidden } from '../../../selectors';
 import Header from '../components/header';
 
 const messages = defineMessages({
-  cancelFollowRequestConfirm: { id: 'confirmations.cancel_follow_request.confirm', defaultMessage: 'Withdraw request' },
+  cancelFollowRequestConfirm: { id: 'confirmations.withdraw_request.confirm', defaultMessage: 'Withdraw request' },
   unfollowConfirm: { id: 'confirmations.unfollow.confirm', defaultMessage: 'Unfollow' },
+  unblockConfirm: { id: 'confirmations.unblock.confirm', defaultMessage: 'Unblock' },
   removeFromFollowersTitle: { id: 'confirmations.remove_from_followers.title', defaultMessage: 'Remove follower?' },
   removeFromFollowersConfirm: { id: 'confirmations.remove_from_followers.confirm', defaultMessage: 'Remove follower' },
 });
@@ -60,7 +61,7 @@ const mapDispatchToProps = (dispatch, { intl }) => ({
       dispatch(openModal({
         modalType: 'CONFIRM',
         modalProps: {
-          message: <FormattedMessage id='confirmations.cancel_follow_request.message' defaultMessage='Are you sure you want to withdraw your request to follow {name}?' values={{ name: <strong>@{account.get('acct')}</strong> }} />,
+          message: <FormattedMessage id='confirmations.withdraw_request.title' defaultMessage='Withdraw request to follow {name}?' values={{ name: <strong>@{account.get('acct')}</strong> }} />,
           confirm: intl.formatMessage(messages.cancelFollowRequestConfirm),
           onConfirm: () => dispatch(unfollowAccount(account.get('id'))),
         },
@@ -95,7 +96,14 @@ const mapDispatchToProps = (dispatch, { intl }) => ({
 
   onBlock (account) {
     if (account.getIn(['relationship', 'blocking'])) {
-      dispatch(unblockAccount(account.get('id')));
+      dispatch(openModal({
+        modalType: 'CONFIRM',
+        modalProps: {
+          message: <FormattedMessage id='confirmations.unblock.title' defaultMessage='Unblock {name}?' values={{ name: <strong>@{account.get('acct')}</strong> }} />,
+          confirm: intl.formatMessage(messages.unblockConfirm),
+          onConfirm: () => dispatch(unblockAccount(account.get('id'))),
+        },
+      }));
     } else {
       dispatch(initBlockModal(account));
     }
