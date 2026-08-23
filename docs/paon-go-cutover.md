@@ -1,4 +1,4 @@
-# Paon Mastodon 4.4 drain cutover runbook
+# Paon Mastodon 4.5 drain cutover runbook
 
 Paon supports a drain cutover. Sidekiq and Asynq are intentionally not treated as wire-compatible queues. Do not run Rails producers and Go producers at the same time.
 
@@ -52,13 +52,15 @@ Abort when any of these conditions is true:
    prefix. Remove `REDIS_NAMESPACE` after the confirmed cutover; 4.4 runtime
    configuration rejects it.
 
-7. For either supported source (`20241007071624` or `20230907150100`), apply
-   expand. Before backfill, verify that every old web/worker/streaming process is
-   stopped. For a 4.2 source, pin `OTP_SECRET` and the three
-   `ACTIVE_RECORD_ENCRYPTION_*` values in the backup/restore inventory; the
-   phase sequence completes the reviewed 4.3 inventory before 4.4. Complete the
-   idempotent backfill/validation phases, verify all 539 target markers and
-   captured row counts, then explicitly acknowledge the irreversible contract:
+7. For a supported 4.4.22 (`20250627132728`), 4.3.23 (`20241007071624`), or
+   4.2.19 (`20230907150100`) source, apply expand. Before backfill, verify that
+   every old web/worker/streaming process is stopped. For a 4.2 source, pin
+   `OTP_SECRET` and the three `ACTIVE_RECORD_ENCRYPTION_*` values in the
+   backup/restore inventory; the phase sequence completes the reviewed 4.3 and
+   4.4 inventories before 4.5. Complete the idempotent backfill/validation
+   phases, verify all 554 target markers, schema SHA-1
+   `801766beefdd9b1d55fe6f8bf3bed91392aebab1`, and captured row counts, then
+   explicitly acknowledge every pending irreversible contract:
 
    ```sh
    paon-migrate --phase=expand
@@ -68,7 +70,10 @@ Abort when any of these conditions is true:
    ```
 
    Each phase holds the advisory lock in a separate transaction and verifies
-   all prior phase markers. The 4.4 backfill imports unnamespaced
+   all prior phase markers. A 4.3/4.2 source may require the same command for
+   each successive version; re-running a completed phase is a no-op and the
+   migration runner advances only after the preceding inventory is complete.
+   The 4.4 backfill imports unnamespaced
    `trending_tags:all` and `trending_tags:allowed`, commits PostgreSQL, and then
    removes those Redis sources. Use `MIGRATION_SKIP_TAG_TREND_BACKFILL=true`
    only with recorded proof that both sets are empty or intentionally
@@ -78,7 +83,7 @@ Abort when any of these conditions is true:
 
 8. If this installation used Paon's legacy DynamoDB quote extension, keep all
    writers fenced and perform the one-way, read-only-source cutover after the
-   PostgreSQL 4.4 schema is final:
+   PostgreSQL 4.5 schema is final:
 
    ```sh
    paon-admin quotes cutover --dry-run
@@ -86,7 +91,7 @@ Abort when any of these conditions is true:
    ```
 
    Reconcile candidates/imported/skipped with the source count and investigate
-   every skipped row. PostgreSQL `quotes` is the only 4.4 runtime source of
+   every skipped row. PostgreSQL `quotes` is the only 4.5 runtime source of
    truth. Retain DynamoDB only for the approved rollback window; never enable a
    dual-write path.
 
@@ -119,7 +124,8 @@ Abort when any of these conditions is true:
    specifically rehearsed additive window; do not remove added objects during
    rollback. Once backfill moves tag-trend state or OTP ciphertext, Redis keys
    are unprefixed, legacy quotes are imported, or contract drops imports,
-   settings ownership, legacy OTP, E2EE, or other obsolete objects,
+   settings ownership, legacy OTP, E2EE, superseded quote/follow indexes, or
+   other obsolete objects,
    application-only rollback is unsafe. Restore the matching pre-upgrade
    PostgreSQL and Redis backups and secret set; restore the DynamoDB source only
    if it was separately modified outside Paon's read-only importer.

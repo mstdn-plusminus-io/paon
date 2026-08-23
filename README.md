@@ -17,9 +17,11 @@ The former Ruby application, RSpec suite, Sidekiq workers, Rails migrations, and
 ### Toot
 
 - Toot length limit is increase to 5000 characters
-- Verify and display remote quotes through Mastodon 4.4's official FEP-044f
-  contract (including the Misskey fallback). Mastodon 4.4 does not expose a
-  quote composer or outgoing quote API.
+- Create, authorize, federate, notify, and display quotes through Mastodon
+  4.5's official PostgreSQL-backed Quote and FEP-044f/FEP-7888 contracts
+  (including the Misskey fallback). The older DynamoDB extension is retained
+  only as read-only input to the explicit offline one-way cutover command; no
+  runtime request, federation, serializer, notification, or worker path uses it.
 
 ### User interfaces
 
@@ -49,10 +51,10 @@ The former Ruby application, RSpec suite, Sidekiq workers, Rails migrations, and
 Before developing, you need to install the following software.
 
 - Go 1.25.x
-- Node.js 22.x
+- Node.js 20.19 or newer (Node.js 24 recommended)
 - Yarn 1.22.x
-- PostgreSQL 13.x or newer
-- Redis 6.2.x or newer
+- PostgreSQL 14.x or newer
+- Redis or Valkey 7.x or newer
 - libvips 8.16.1 or newer and pkg-config (recommended for fast image processing)
 - FFmpeg and ffprobe
 
@@ -73,7 +75,7 @@ task dev
 
 ## Go runtime
 
-`paon` uses the existing Mastodon PostgreSQL schema and serves the existing built UI assets. Mastodon 4.4 compatibility requires PostgreSQL 13 or newer and Redis 6.2 or newer; startup and readiness checks reject older servers. The same web listener on port 3000 serves HTML, REST, ActivityPub, SSE, and WebSocket traffic; the worker role runs Asynq jobs.
+`paon` uses the existing Mastodon PostgreSQL schema and serves the existing built UI assets. Mastodon 4.5 compatibility requires PostgreSQL 14 or newer and Redis/Valkey 7 or newer; startup and readiness checks reject older servers. The same web listener on port 3000 serves HTML, REST, ActivityPub, SSE, and WebSocket traffic; the worker role runs Asynq jobs.
 
 Build and validate the local binaries:
 
@@ -118,7 +120,7 @@ See [docs/paon-go.md](docs/paon-go.md) for compatibility notes, environment vari
 ## License
 
 ```
-Copyright (C) Paon contributors  
+Copyright (C) Paon contributors
 Copyright (C) 2016-2023 Eugen Rochko & other Mastodon and contributors (see [AUTHORS.md](AUTHORS.md))
 
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.

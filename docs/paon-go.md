@@ -15,15 +15,24 @@ Paon is a Go 1.25 + labstack/echo/v5 drop-in replacement for this Mastodon fork.
 The web process serves HTML, REST, ActivityPub, SSE, and WebSocket traffic on the same listener. `PAON_GO_ADDR` is the explicit listen override; otherwise `SOCKET` or `BIND`/`PORT` is used. The default TCP port is `3000`.
 
 Worker processes subscribe to all Asynq queues by default. Set `ASYNQ_QUEUES`
-to a comma-separated subset of `default`, `push`, `ingress`, `mailers`, and
-`pull` to dedicate a process to specific queues. Mastodon 4.4 removed
+to a comma-separated subset of `default`, `push`, `ingress`, `mailers`, `pull`,
+`removal`, `remote_removal`, and `fasp` to dedicate a process to specific
+queues. The removal queues contain potentially high-volume status deletion
+work. Local removal has weight 2 and `remote_removal` has the lowest weight 1.
+Keep both out of the normal worker's queue list and run a dedicated removal
+worker when strict capacity isolation is required. Mastodon 4.4 removed
 `REDIS_NAMESPACE`, so Paon rejects it at runtime; use the documented namespace
 cutover command before upgrading installations that previously configured it:
 
 ```bash
-PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=push ASYNQ_CONCURRENCY=20 paon
-PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=pull ASYNQ_CONCURRENCY=5 paon
+PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=default,push,ingress,mailers,pull,fasp ASYNQ_CONCURRENCY=20 paon
+PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=removal,remote_removal ASYNQ_CONCURRENCY=2 paon
 ```
+
+Leaving `ASYNQ_QUEUES` unset still consumes every queue, including both removal
+queues, with one shared concurrency limit. Existing removal tasks already
+queued on `default` or `removal` are not migrated automatically; only newly
+enqueued remote tasks use `remote_removal`.
 
 When `STREAMING_API_BASE_URL` is unset, streaming uses `ws://LOCAL_DOMAIN` in development and `ws://` or `wss://WEB_DOMAIN` in production. A separate port 4000 process is neither required nor supported.
 
@@ -113,10 +122,11 @@ The standard `docker-compose.yml` defines PostgreSQL, Redis, Meilisearch, Go web
 
 GORM AutoMigrate is disabled. `internal/paon/migrate/schema.sql` is embedded into `paon-migrate`.
 
-- Empty database: the complete Mastodon 4.4.22-compatible schema and seed rows are created atomically.
-- Mastodon 4.4.22 version `20250627132728`: the full schema guard runs without modifying data.
-- Mastodon 4.3.23 version `20241007071624`: run `paon-migrate --phase=expand`; after all 4.3 writers are stopped run `--phase=backfill`, `--phase=validate`, and `--phase=contract --acknowledge-contract`. Backfill moves the legacy Redis tag-trend source into PostgreSQL; `MIGRATION_SKIP_TAG_TREND_BACKFILL=true` is accepted only after proving those Redis sets are empty or intentionally disposable.
-- Mastodon 4.2.19 version `20230907150100`: the same phase sequence first completes the reviewed 4.3 inventory and then the 4.4 inventory. The acknowledged contract invocation can finish both contracts in one maintenance window. A bare `paon-migrate` always defaults to expand; acknowledgment is only a gate and never selects a destructive phase by itself.
+- Empty database: the complete Mastodon 4.5.15-compatible schema, 554 reviewed migration markers, and seed rows are created atomically.
+- Mastodon 4.5.15 version `20251023210145`: the full schema guard and official schema SHA-1 check run without modifying data.
+- Mastodon 4.4.22 version `20250627132728`: run `paon-migrate --phase=expand`, then `--phase=backfill` and `--phase=validate`; after all 4.4 writers are stopped run `--phase=contract --acknowledge-contract`. The phases install the reviewed 15-marker 4.5 inventory, including official quote counters/indexes, conversation context, username blocks, numeric account identifiers, and timeline/landing/default-quote-policy backfills.
+- Mastodon 4.3.23 version `20241007071624`: the same phase sequence first completes the reviewed 4.4 inventory and then the 4.5 inventory. Backfill moves the legacy Redis tag-trend source into PostgreSQL; `MIGRATION_SKIP_TAG_TREND_BACKFILL=true` is accepted only after proving those Redis sets are empty or intentionally disposable.
+- Mastodon 4.2.19 version `20230907150100`: the phase sequence completes the reviewed 4.3, 4.4, and 4.5 inventories in order. The acknowledged contract invocation can finish the older contracts in one maintenance window. A bare `paon-migrate` always defaults to expand; acknowledgment is only a gate and never selects a destructive phase by itself.
 - Partial or unsupported version: startup and migration are refused.
 
 See `docs/paon-go-schema-compatibility.md` for schema change requirements.
@@ -128,7 +138,7 @@ task check-config:bin
 task meili-deploy:check-config:bin
 ```
 
-`--check-config` validates environment values, PostgreSQL 13+ and the schema shape/version, Redis 6.2+ for every configured role topology, enabled Meilisearch, UI pack assets, locale dictionaries, media tools, and optional integrations before opening the HTTP listener. The same dependency floors are enforced by readiness and the database administration, migration, and Meilisearch deployment commands.
+`--check-config` validates environment values, PostgreSQL 14+ and the schema shape/version, Redis 7.0+ for every configured role topology, enabled Meilisearch, UI pack assets, locale dictionaries, media tools, and optional integrations before opening the HTTP listener. The same dependency floors are enforced by readiness and the database administration, migration, and Meilisearch deployment commands.
 
 `/health` is a lightweight liveness endpoint. `/health/ready` checks the deployable runtime and is used by Docker and Compose. Worker-only containers do not require an HTTP health probe.
 
