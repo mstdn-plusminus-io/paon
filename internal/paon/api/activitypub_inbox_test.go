@@ -55,6 +55,88 @@ func TestActivityPubProcessingFailuresReturnForAsynqRetry(t *testing.T) {
 	}
 }
 
+func TestActivityPubPeerTubeViewIsAcceptedWithoutApplyingState(t *testing.T) {
+	server := &Server{db: &gorm.DB{}}
+	actor := &models.Account{
+		ID:     106836212681004967,
+		URI:    "https://video.blender.org/accounts/peertube",
+		Domain: sql.NullString{String: "video.blender.org", Valid: true},
+	}
+	body := []byte(`{
+		"@context":[
+			"https://www.w3.org/ns/activitystreams",
+			"https://w3id.org/security/v1",
+			{"RsaSignature2017":"https://w3id.org/security#RsaSignature2017"},
+			{
+				"pt":"https://joinpeertube.org/ns#",
+				"sc":"http://schema.org/",
+				"WatchAction":"sc:WatchAction",
+				"InteractionCounter":"sc:InteractionCounter",
+				"interactionType":"sc:interactionType",
+				"userInteractionCount":"sc:userInteractionCount"
+			}
+		],
+		"to":[
+			"https://www.w3.org/ns/activitystreams#Public",
+			"https://video.blender.org/video-channels/blender_open_movies"
+		],
+		"cc":["https://video.blender.org/accounts/blender/followers"],
+		"id":"https://video.blender.org/accounts/peertube/views/videos/24061/ff8fe61b-026f-4f07-b66b-2a790d6f6ab1",
+		"type":"View",
+		"actor":"https://video.blender.org/accounts/peertube",
+		"object":"https://video.blender.org/videos/watch/ff8fe61b-026f-4f07-b66b-2a790d6f6ab1",
+		"expires":"2026-08-23T15:32:23.631Z",
+		"result":{
+			"interactionType":"WatchAction",
+			"type":"InteractionCounter",
+			"userInteractionCount":1
+		},
+		"signature":{
+			"type":"RsaSignature2017",
+			"creator":"https://video.blender.org/accounts/peertube",
+			"created":"2026-08-23T15:30:23.667Z",
+			"signatureValue":"test-signature"
+		}
+	}`)
+
+	verificationBody := activityPubCompactCollectionBody(body)
+	payload, err := parseActivityPayload(verificationBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Type != "View" {
+		t.Fatalf("PeerTube activity type = %q, want View", payload.Type)
+	}
+	if fields := activityPubLogFieldsFromBody(body); fields.Type != "View" {
+		t.Fatalf("PeerTube activity log type = %q, want View", fields.Type)
+	}
+	graphPayload, err := parseActivityPayload([]byte(`{
+		"@context":"https://www.w3.org/ns/activitystreams",
+		"@graph":[
+			{
+				"id":"https://video.blender.org/views/counters/1",
+				"type":"InteractionCounter"
+			},
+			{
+				"id":"https://video.blender.org/accounts/peertube/views/videos/24061/ff8fe61b-026f-4f07-b66b-2a790d6f6ab1",
+				"type":"View",
+				"actor":"https://video.blender.org/accounts/peertube",
+				"object":"https://video.blender.org/videos/watch/ff8fe61b-026f-4f07-b66b-2a790d6f6ab1"
+			}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if graphPayload.Type != "View" || graphPayload.Actor != actor.URI {
+		t.Fatalf("graph-wrapped PeerTube activity = type %q actor %q", graphPayload.Type, graphPayload.Actor)
+	}
+
+	if err := server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, actor, nil, 0); err != nil {
+		t.Fatalf("PeerTube View processing error = %v, want nil", err)
+	}
+}
+
 func TestActivityPubRelayLinkedDataSignatureSurvivesUntilForwardingFinalization(t *testing.T) {
 	privateKey, publicKeyPEM, err := generateAccountKeyPair()
 	if err != nil {
