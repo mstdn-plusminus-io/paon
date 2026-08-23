@@ -39,7 +39,7 @@ func TestAdminSidekiqProcessCheckRequiresLiveWorkerHeartbeat(t *testing.T) {
 
 func TestAdminSidekiqQueueCoverageTracksAsynqRuntimeQueues(t *testing.T) {
 	asynqQueues := paonGoAsynqQueueWeights()
-	for _, want := range []string{"default", "push", "mailers", "pull", "ingress"} {
+	for _, want := range []string{"default", "push", "mailers", "pull", "removal", "remote_removal", "ingress"} {
 		if asynqQueues[want] <= 0 {
 			t.Fatalf("paon-go asynq runtime queues missing %q: %#v", want, asynqQueues)
 		}

@@ -150,8 +150,8 @@ func TestFromEnvParsesAsynqQueueSelection(t *testing.T) {
 		t.Fatalf("unset ASYNQ_QUEUES = %#v, want nil for all queues", got)
 	}
 
-	t.Setenv("ASYNQ_QUEUES", " push, pull, PUSH, ,mailers ")
-	want := []string{"push", "pull", "mailers"}
+	t.Setenv("ASYNQ_QUEUES", " push, pull, PUSH, ,mailers, removal, remote_removal ")
+	want := []string{"push", "pull", "mailers", "removal", "remote_removal"}
 	if got := FromEnv().AsynqQueues; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ASYNQ_QUEUES parsed as %#v, want %#v", got, want)
 	}
@@ -168,6 +168,15 @@ func TestValidateRuntimeRejectsUnsupportedAsynqQueue(t *testing.T) {
 	err := cfg.ValidateRuntime()
 	if err == nil || !strings.Contains(err.Error(), `ASYNQ_QUEUES contains unsupported queue "unknown"`) {
 		t.Fatalf("ValidateRuntime error = %v", err)
+	}
+}
+
+func TestValidateRuntimeAcceptsRemovalAsynqQueue(t *testing.T) {
+	cfg := FromEnv()
+	cfg.ProcessRole = "worker"
+	cfg.AsynqQueues = []string{"removal", "remote_removal"}
+	if err := cfg.ValidateRuntime(); err != nil {
+		t.Fatalf("ValidateRuntime rejected removal queue: %v", err)
 	}
 }
 

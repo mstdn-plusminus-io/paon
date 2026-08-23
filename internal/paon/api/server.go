@@ -5418,6 +5418,8 @@ func (s *Server) updateStatus(c *echo.Context) error {
 	return c.JSON(http.StatusOK, statusWithFilterContext(s.cfg, *updated, account, s.accountFilters(account), "public"))
 }
 
+const localStatusDeleteEnqueueTimeout = time.Second
+
 func (s *Server) deleteStatus(c *echo.Context) error {
 	account, _, err := s.requireAccountScope(c, "write", "write:statuses")
 	if err != nil {
@@ -5430,26 +5432,15 @@ func (s *Server) deleteStatus(c *echo.Context) error {
 	if status.AccountID != account.ID {
 		return apiError(c, http.StatusForbidden, "This action is outside the authorized account")
 	}
-	if err := s.refreshStatusAccount(status); err != nil {
-		return err
-	}
-	acquired, releaseDistributionLock, err := s.acquireStatusDistributionRedisLock(c.Request().Context(), status.ID)
-	if err != nil {
-		return err
-	}
-	if !acquired {
+	removal := asynqRemovalPayload{StatusID: status.ID, Redraft: true}
+	enqueueCtx, cancel := context.WithTimeout(c.Request().Context(), localStatusDeleteEnqueueTimeout)
+	defer cancel()
+	if err := s.enqueueRemovalTaskContext(enqueueCtx, removal, asynq.TaskID(removalTaskID(status.ID))); err != nil {
 		return apiError(c, http.StatusServiceUnavailable, "There was a temporary problem serving your request, please try again")
 	}
-	defer releaseDistributionLock()
-	discardedRows, err := s.discardStatusRowsForRemoval(c.Request().Context(), status.ID, time.Now().UTC())
-	if err != nil {
-		return err
-	}
+	deletedAt := time.Now().UTC()
+	status.DeletedAt = sql.NullTime{Time: deletedAt, Valid: true}
 	decrementDeletedStatusAccountCountForResponse(status)
-	if !s.enqueueRemovalTask(asynqRemovalPayload{StatusID: status.ID, Redraft: true}) {
-		s.applyDiscardedStatusRowSideEffects(c.Request().Context(), discardedRows)
-		s.applyDeletedStatusRemovalSideEffects(c.Request().Context(), *status, asynqRemovalPayload{StatusID: status.ID, Redraft: true})
-	}
 	return c.JSON(http.StatusOK, statusWithSourceAndFilterContext(s.cfg, *status, account, s.accountFilters(account), "public"))
 }
 
@@ -5458,13 +5449,6 @@ func decrementDeletedStatusAccountCountForResponse(status *models.Status) {
 		return
 	}
 	status.Account.AccountStat.StatusesCount--
-}
-
-func (s *Server) refreshStatusAccount(status *models.Status) error {
-	if s == nil || s.db == nil || status == nil || status.AccountID == 0 {
-		return nil
-	}
-	return s.db.Preload("AccountStat").Preload("User.Role").Where("id = ?", status.AccountID).First(&status.Account).Error
 }
 
 func (s *Server) deleteStatusRecord(ctx context.Context, statusID int64, now time.Time) error {
@@ -5481,61 +5465,66 @@ type discardedStatusRowsResult struct {
 	IndexedTagIDs []int64
 }
 
+type statusRemovalRow struct {
+	ID             int64
+	InReplyToID    sql.NullInt64
+	ReblogOfID     sql.NullInt64
+	AccountID      int64
+	Visibility     int
+	ConversationID sql.NullInt64
+}
+
 func (s *Server) discardStatusRowsForRemoval(ctx context.Context, statusID int64, now time.Time) (discardedStatusRowsResult, error) {
 	var deletedFeedStatuses []models.Status
 	var indexedTagIDs []int64
 	var removedStatusPins []models.StatusPin
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		const notUnresolvedReportedStatusSQL = "NOT EXISTS (SELECT 1 FROM reports WHERE reports.target_account_id = statuses.account_id AND reports.action_taken_at IS NULL AND statuses.id = ANY(reports.status_ids))"
-		type accountDeletionCount struct {
-			AccountID int64
-			Count     int64
-		}
-		type statusDeletionCounter struct {
-			ID             int64
-			InReplyToID    sql.NullInt64
-			ReblogOfID     sql.NullInt64
-			AccountID      int64
-			Visibility     int
-			ConversationID sql.NullInt64
-		}
-		var counts []accountDeletionCount
-		if err := tx.Model(&models.Status{}).
-			Select("account_id, COUNT(*) AS count").
-			Where("(id = ? OR reblog_of_id = ?) AND deleted_at IS NULL AND visibility <> ?", statusID, statusID, 3).
-			Where(notUnresolvedReportedStatusSQL).
-			Group("account_id").
-			Scan(&counts).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&models.Status{}).
-			Select("id, account_id, reblog_of_id").
-			Where("(id = ? OR reblog_of_id = ?) AND deleted_at IS NULL", statusID, statusID).
-			Order(clause.Expr{SQL: "CASE WHEN id = ? THEN 0 ELSE 1 END, id", Vars: []any{statusID}}).
-			Scan(&deletedFeedStatuses).Error; err != nil {
-			return err
-		}
-		var reblogCount int64
-		if err := tx.Model(&models.Status{}).
-			Where("reblog_of_id = ? AND deleted_at IS NULL", statusID).
-			Where(notUnresolvedReportedStatusSQL).
-			Count(&reblogCount).Error; err != nil {
-			return err
-		}
-		var counter statusDeletionCounter
+		var counter statusRemovalRow
 		if err := tx.Model(&models.Status{}).
 			Select("id, in_reply_to_id, reblog_of_id, account_id, visibility, conversation_id").
 			Where("id = ? AND deleted_at IS NULL", statusID).
 			Scan(&counter).Error; err != nil {
 			return err
 		}
-		counterReported := false
+		var reblogs []statusRemovalRow
+		if err := tx.Model(&models.Status{}).
+			Select("id, in_reply_to_id, reblog_of_id, account_id, visibility, conversation_id").
+			Where("reblog_of_id = ? AND deleted_at IS NULL", statusID).
+			Order("id ASC").
+			Find(&reblogs).Error; err != nil {
+			return err
+		}
+		rows := make([]statusRemovalRow, 0, 1+len(reblogs))
 		if counter.ID != 0 {
-			reported, err := statusUnresolvedReported(tx, counter.ID, counter.AccountID)
-			if err != nil {
-				return err
+			rows = append(rows, counter)
+		}
+		rows = append(rows, reblogs...)
+		candidates := make([]statusRemovalReportCandidate, 0, len(rows))
+		for _, row := range rows {
+			candidates = append(candidates, statusRemovalReportCandidate{StatusID: row.ID, AccountID: row.AccountID})
+		}
+		reportedIDs, err := unresolvedReportedStatusIDs(tx, candidates)
+		if err != nil {
+			return err
+		}
+		countsByAccount := make(map[int64]int64)
+		for _, row := range rows {
+			deletedFeedStatuses = append(deletedFeedStatuses, models.Status{ID: row.ID, AccountID: row.AccountID, ReblogOfID: row.ReblogOfID})
+			if row.Visibility != 3 && !statusRemovalReported(reportedIDs, row.ID) {
+				countsByAccount[row.AccountID]++
 			}
-			counterReported = reported
+		}
+		accountIDs := make([]int64, 0, len(countsByAccount))
+		for accountID := range countsByAccount {
+			accountIDs = append(accountIDs, accountID)
+		}
+		sort.Slice(accountIDs, func(i int, j int) bool { return accountIDs[i] < accountIDs[j] })
+		counterReported := statusRemovalReported(reportedIDs, counter.ID)
+		var reblogCount int64
+		for _, reblog := range reblogs {
+			if !statusRemovalReported(reportedIDs, reblog.ID) {
+				reblogCount++
+			}
 		}
 		tagIDs, err := statusTagIDs(tx, statusID)
 		if err != nil {
@@ -5557,8 +5546,8 @@ func (s *Server) discardStatusRowsForRemoval(ctx context.Context, statusID int64
 		if err := tx.Where("status_id = ?", statusID).Delete(&models.StatusPin{}).Error; err != nil {
 			return err
 		}
-		for _, count := range counts {
-			if err := decrementAccountStatCounter(tx, count.AccountID, accountStatCounterStatuses, count.Count); err != nil {
+		for _, accountID := range accountIDs {
+			if err := decrementAccountStatCounter(tx, accountID, accountStatCounterStatuses, countsByAccount[accountID]); err != nil {
 				return err
 			}
 		}
@@ -5594,13 +5583,11 @@ func statusUnresolvedReported(tx *gorm.DB, statusID int64, accountID int64) (boo
 	if tx == nil || statusID == 0 || accountID == 0 {
 		return false, nil
 	}
-	var count int64
-	if err := tx.Model(&models.Report{}).
-		Where("target_account_id = ? AND action_taken_at IS NULL AND ? = ANY(status_ids)", accountID, statusID).
-		Count(&count).Error; err != nil {
+	reported, err := unresolvedReportedStatusIDs(tx, []statusRemovalReportCandidate{{StatusID: statusID, AccountID: accountID}})
+	if err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	return statusRemovalReported(reported, statusID), nil
 }
 
 func (s *Server) applyDiscardedStatusRowSideEffects(ctx context.Context, result discardedStatusRowsResult) {
