@@ -59,6 +59,48 @@ func TestParseActivityResourcePayloadAcceptsDirectNote(t *testing.T) {
 	}
 }
 
+func TestParseActivityResourcePayloadAcceptsMstdnJPMediaOnlyNote(t *testing.T) {
+	payload, err := parseActivityResourcePayload([]byte(`{
+		"@context":["https://www.w3.org/ns/activitystreams",{
+			"sensitive":"as:sensitive",
+			"blurhash":"http://joinmastodon.org/ns#blurhash"
+		}],
+		"id":"https://mstdn.jp/users/6v8/statuses/117142074050939161",
+		"type":"Note",
+		"published":"2026-08-23T00:49:58Z",
+		"url":"https://mstdn.jp/@6v8/117142074050939161",
+		"attributedTo":"https://mstdn.jp/users/6v8",
+		"to":["https://www.w3.org/ns/activitystreams#Public"],
+		"cc":["https://mstdn.jp/users/6v8/followers"],
+		"content":"",
+		"contentMap":{"ja":""},
+		"attachment":[{
+			"type":"Document",
+			"mediaType":"image/png",
+			"url":"https://img.mstdn.jp/media_attachments/files/117/142/073/581/577/316/original/79c7beb10c686d78.png",
+			"name":null,
+			"blurhash":"UgKw:@~p01IUV[WBoej[M{WBofoeRkWVofbH",
+			"width":1491,
+			"height":1055
+		}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Type != "Create" || !payload.ObjectDocument || payload.Actor != "https://mstdn.jp/users/6v8" {
+		t.Fatalf("media-only Note payload = %#v", payload)
+	}
+	if payload.Object.Content != "" || len(payload.Object.Attachments) != 1 {
+		t.Fatalf("media-only Note content=%q attachments=%#v", payload.Object.Content, payload.Object.Attachments)
+	}
+	attachment := payload.Object.Attachments[0]
+	if attachment.MediaType != "image/png" ||
+		attachment.URL != "https://img.mstdn.jp/media_attachments/files/117/142/073/581/577/316/original/79c7beb10c686d78.png" ||
+		attachment.Blurhash != "UgKw:@~p01IUV[WBoej[M{WBofoeRkWVofbH" {
+		t.Fatalf("media-only Note attachment = %#v", attachment)
+	}
+}
+
 func TestParseActivityResourcePayloadAcceptsCreateNote(t *testing.T) {
 	payload, err := parseActivityResourcePayload([]byte(activityTestJSON(`{
 		"id":"https://remote.example/activities/1",
