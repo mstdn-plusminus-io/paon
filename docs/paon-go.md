@@ -15,14 +15,23 @@ Paon is a Go 1.25 + labstack/echo/v5 drop-in replacement for this Mastodon fork.
 The web process serves HTML, REST, ActivityPub, SSE, and WebSocket traffic on the same listener. `PAON_GO_ADDR` is the explicit listen override; otherwise `SOCKET` or `BIND`/`PORT` is used. The default TCP port is `3000`.
 
 Worker processes subscribe to all Asynq queues by default. Set `ASYNQ_QUEUES`
-to a comma-separated subset of `default`, `push`, `ingress`, `mailers`, and
-`pull` to dedicate a process to specific queues. `REDIS_NAMESPACE` is applied
-automatically, so queue names remain logical:
+to a comma-separated subset of `default`, `push`, `ingress`, `mailers`, `pull`,
+`removal`, and `remote_removal` to dedicate a process to specific queues. The
+removal queues contain potentially high-volume status deletion work. Local
+removal has weight 2 and `remote_removal` has the lowest weight 1. Keep both out
+of the normal worker's queue list and run a dedicated removal worker when strict
+capacity isolation is required. `REDIS_NAMESPACE` is applied automatically, so
+queue names remain logical:
 
 ```bash
-PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=push ASYNQ_CONCURRENCY=20 paon
-PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=pull ASYNQ_CONCURRENCY=5 paon
+PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=default,push,ingress,mailers,pull ASYNQ_CONCURRENCY=20 paon
+PAON_PROCESS_ROLE=worker ASYNQ_QUEUES=removal,remote_removal ASYNQ_CONCURRENCY=2 paon
 ```
+
+Leaving `ASYNQ_QUEUES` unset still consumes every queue, including both removal
+queues, with one shared concurrency limit. Existing removal tasks already queued
+on `default` or `removal` are not migrated automatically; only newly enqueued
+remote tasks use `remote_removal`.
 
 When `STREAMING_API_BASE_URL` is unset, streaming uses `ws://LOCAL_DOMAIN` in development and `ws://` or `wss://WEB_DOMAIN` in production. A separate port 4000 process is neither required nor supported.
 
