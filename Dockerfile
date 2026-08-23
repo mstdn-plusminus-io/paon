@@ -36,7 +36,7 @@ RUN set -eux; \
 		cp /out/native/* /out/libvips/; \
 	fi
 
-FROM ${BASE_REGISTRY}/node:22-bookworm-slim AS assets
+FROM ${BASE_REGISTRY}/node:24-trixie-slim AS assets
 
 WORKDIR /src
 

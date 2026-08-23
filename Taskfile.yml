@@ -93,14 +93,14 @@ tasks:
       - go run -mod=mod ./cmd/paon-routes > tmp/go-routes.json
 
   routes:audit:
-    desc: Compare Go routes with a Mastodon 4.4.22 Rails route manifest
+    desc: Compare Go routes with a Mastodon 4.5.15 Rails route manifest
     deps:
       - routes:go
     vars:
-      RAILS_ROUTES: '{{default "tmp/rails-routes-4.4.22.json" .PAON_RAILS_ROUTE_MANIFEST}}'
+      RAILS_ROUTES: '{{default "tmp/rails-routes-4.5.15.json" .PAON_RAILS_ROUTE_MANIFEST}}'
     preconditions:
       - sh: test -f "{{.RAILS_ROUTES}}"
-        msg: Set PAON_RAILS_ROUTE_MANIFEST to a generated Mastodon 4.4.22 Rails route manifest
+        msg: Set PAON_RAILS_ROUTE_MANIFEST to a generated Mastodon 4.5.15 Rails route manifest
     cmds:
       - go run -mod=mod ./cmd/paon-route-audit --rails "{{.RAILS_ROUTES}}" --go tmp/go-routes.json
 
@@ -115,7 +115,7 @@ tasks:
       - go run -mod=mod ./cmd/paon-differential --cases testdata/differential/core.json
 
   test:differential:
-    desc: Compare the complete public and seeded authenticated Mastodon 4.4.22 contract matrix
+    desc: Compare the complete public and seeded authenticated Mastodon 4.5.15 contract matrix
     deps:
       - test:differential:core
     preconditions:
@@ -145,6 +145,42 @@ tasks:
         msg: PAON_DIFF_SEARCH_MAX_ID is required
       - sh: test -n "$PAON_DIFF_LINK_URL_QUERY"
         msg: PAON_DIFF_LINK_URL_QUERY is required and must be URL-encoded
+      - sh: test -n "$PAON_DIFF_CONTEXT_ID"
+        msg: PAON_DIFF_CONTEXT_ID is required (the seeded FEP-7888 account-status context identifier)
+      - sh: test -n "$PAON_DIFF_NUMERIC_ACCOUNT_ID"
+        msg: PAON_DIFF_NUMERIC_ACCOUNT_ID is required
+      - sh: test -n "$PAON_DIFF_NUMERIC_STATUS_ID"
+        msg: PAON_DIFF_NUMERIC_STATUS_ID is required
+      - sh: test -n "$PAON_DIFF_ACCEPTED_QUOTE_ID"
+        msg: PAON_DIFF_ACCEPTED_QUOTE_ID is required
+      - sh: test -n "$PAON_DIFF_QUOTED_STATUS_ID"
+        msg: PAON_DIFF_QUOTED_STATUS_ID is required
+      - sh: test -n "$PAON_DIFF_ACCEPTED_QUOTE_STATUS_ID"
+        msg: PAON_DIFF_ACCEPTED_QUOTE_STATUS_ID is required
+      - sh: test -n "$PAON_DIFF_QUOTE_POLICY_STATUS_ID"
+        msg: PAON_DIFF_QUOTE_POLICY_STATUS_ID is required
+      - sh: test -n "$PAON_DIFF_QUOTE_TARGET_STATUS_ID"
+        msg: PAON_DIFF_QUOTE_TARGET_STATUS_ID is required
+      - sh: test -n "$PAON_DIFF_TOPIC_TAG"
+        msg: PAON_DIFF_TOPIC_TAG is required and must be URL-encoded
+      - sh: test -n "$PAON_DIFF_USERNAME_BLOCK"
+        msg: PAON_DIFF_USERNAME_BLOCK is required and must be a unique ASCII username fragment
+      - sh: test -n "$PAON_DIFF_RAILS_USER_COOKIE"
+        msg: PAON_DIFF_RAILS_USER_COOKIE is required
+      - sh: test -n "$PAON_DIFF_RAILS_USER_CSRF_TOKEN"
+        msg: PAON_DIFF_RAILS_USER_CSRF_TOKEN is required
+      - sh: test -n "$PAON_DIFF_GO_USER_COOKIE"
+        msg: PAON_DIFF_GO_USER_COOKIE is required
+      - sh: test -n "$PAON_DIFF_GO_USER_CSRF_TOKEN"
+        msg: PAON_DIFF_GO_USER_CSRF_TOKEN is required
+      - sh: test -n "$PAON_DIFF_RAILS_ADMIN_COOKIE"
+        msg: PAON_DIFF_RAILS_ADMIN_COOKIE is required
+      - sh: test -n "$PAON_DIFF_RAILS_ADMIN_CSRF_TOKEN"
+        msg: PAON_DIFF_RAILS_ADMIN_CSRF_TOKEN is required
+      - sh: test -n "$PAON_DIFF_GO_ADMIN_COOKIE"
+        msg: PAON_DIFF_GO_ADMIN_COOKIE is required
+      - sh: test -n "$PAON_DIFF_GO_ADMIN_CSRF_TOKEN"
+        msg: PAON_DIFF_GO_ADMIN_CSRF_TOKEN is required
     cmds:
       - go run -mod=mod ./cmd/paon-differential --cases testdata/differential/authenticated.json
 

@@ -21,6 +21,7 @@
 /node_modules/
 /build/
 /.go-buildcache/
+/.codex-go-cache/
 /.go-cache/
 /.go-modcache/
 /.go-tmp/
