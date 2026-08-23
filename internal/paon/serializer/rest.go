@@ -21,8 +21,8 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
-var hashtagPattern = regexp.MustCompile(`#([\pL\pN_·・‌]+)`)
-var statusLinkPattern = regexp.MustCompile(`(?:https?|dat|dweb|ipfs|ipns|ssb|gopher|gemini)://[^\s<]+|xmpp:[^\s<]+|magnet:\?[^\s<]+|[#@][\pL\pN_@.\-·・‌]+`)
+var hashtagPattern = regexp.MustCompile(`[#＃]([\pL\pN_·・‌]+)`)
+var statusLinkPattern = regexp.MustCompile(`(?:https?|dat|dweb|ipfs|ipns|ssb|gopher|gemini)://[^\s<]+|xmpp:[^\s<]+|magnet:\?[^\s<]+|[#＃@][\pL\pN_@.\-·・‌]+`)
 var previewCardOEmbedAttrPattern = regexp.MustCompile(`(?is)([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>` + "`" + `=]+))`)
 var previewCardOEmbedHTMLTagPattern = regexp.MustCompile(`(?is)<\s*(/?)\s*([a-zA-Z0-9]+)\b([^>]*)>`)
 var previewCardOEmbedScriptBlockPattern = regexp.MustCompile(`(?is)<\s*(script|style|noscript|template)\b[^>]*>.*?<\s*/\s*(script|style|noscript|template)\s*>`)
@@ -167,6 +167,7 @@ var supportedLanguages = []SupportedLanguage{
 	{Code: "mk", Name: "Macedonian", NativeName: "македонски јазик"},
 	{Code: "ml", Name: "Malayalam", NativeName: "മലയാളം"},
 	{Code: "mn", Name: "Mongolian", NativeName: "Монгол хэл"},
+	{Code: "mn-Mong", Name: "Traditional Mongolian", NativeName: "ᠮᠣᠩᠭᠣᠯ ᠬᠡᠯᠡ"},
 	{Code: "mr", Name: "Marathi", NativeName: "मराठी"},
 	{Code: "ms", Name: "Malay", NativeName: "Bahasa Melayu"},
 	{Code: "mt", Name: "Maltese", NativeName: "Malti"},
@@ -370,6 +371,7 @@ type CredentialSource struct {
 	Privacy             string        `json:"privacy"`
 	Sensitive           bool          `json:"sensitive"`
 	Language            *string       `json:"language"`
+	QuotePolicy         string        `json:"quote_policy"`
 	Note                string        `json:"note"`
 	Fields              []SourceField `json:"fields"`
 	FollowRequestsCount int64         `json:"follow_requests_count"`
@@ -436,44 +438,46 @@ type CustomEmoji struct {
 }
 
 type Status struct {
-	ID                 string             `json:"id"`
-	CreatedAt          string             `json:"created_at"`
-	InReplyToID        *string            `json:"in_reply_to_id"`
-	InReplyToAccountID *string            `json:"in_reply_to_account_id"`
-	Sensitive          bool               `json:"sensitive"`
-	SpoilerText        string             `json:"spoiler_text"`
-	Visibility         string             `json:"visibility"`
-	Language           *string            `json:"language"`
-	URI                string             `json:"uri"`
-	URL                string             `json:"-"`
-	URLNull            bool               `json:"-"`
-	RepliesCount       int64              `json:"replies_count"`
-	ReblogsCount       int64              `json:"reblogs_count"`
-	FavouritesCount    int64              `json:"favourites_count"`
-	EditedAt           *string            `json:"edited_at"`
-	Content            string             `json:"content"`
-	Text               *string            `json:"text,omitempty"`
-	Reblog             *Status            `json:"reblog"`
-	Application        *StatusApplication `json:"application,omitempty"`
-	ApplicationPresent bool               `json:"-"`
-	Account            Account            `json:"account"`
-	MediaAttachments   []MediaAttachment  `json:"media_attachments"`
-	Mentions           []Mention          `json:"mentions"`
-	Tags               []Tag              `json:"tags"`
-	Emojis             []CustomEmoji      `json:"emojis"`
-	Card               any                `json:"card"`
-	Poll               any                `json:"poll"`
-	Quote              any                `json:"quote"`
-	Favourited         *bool              `json:"favourited,omitempty"`
-	Reblogged          *bool              `json:"reblogged,omitempty"`
-	Muted              *bool              `json:"muted,omitempty"`
-	Bookmarked         *bool              `json:"bookmarked,omitempty"`
-	Pinned             *bool              `json:"pinned,omitempty"`
-	Filtered           []any              `json:"-"`
-	FilteredPresent    bool               `json:"-"`
+	ID                 string              `json:"id"`
+	CreatedAt          string              `json:"created_at"`
+	InReplyToID        *string             `json:"in_reply_to_id"`
+	InReplyToAccountID *string             `json:"in_reply_to_account_id"`
+	Sensitive          bool                `json:"sensitive"`
+	SpoilerText        string              `json:"spoiler_text"`
+	Visibility         string              `json:"visibility"`
+	Language           *string             `json:"language"`
+	URI                string              `json:"uri"`
+	URL                string              `json:"-"`
+	URLNull            bool                `json:"-"`
+	RepliesCount       int64               `json:"replies_count"`
+	ReblogsCount       int64               `json:"reblogs_count"`
+	FavouritesCount    int64               `json:"favourites_count"`
+	QuotesCount        int64               `json:"quotes_count"`
+	EditedAt           *string             `json:"edited_at"`
+	Content            string              `json:"content"`
+	Text               *string             `json:"text,omitempty"`
+	Reblog             *Status             `json:"reblog"`
+	Application        *StatusApplication  `json:"application,omitempty"`
+	ApplicationPresent bool                `json:"-"`
+	Account            Account             `json:"account"`
+	MediaAttachments   []MediaAttachment   `json:"media_attachments"`
+	Mentions           []Mention           `json:"mentions"`
+	Tags               []Tag               `json:"tags"`
+	Emojis             []CustomEmoji       `json:"emojis"`
+	Card               any                 `json:"card"`
+	Poll               any                 `json:"poll"`
+	Quote              any                 `json:"quote"`
+	QuoteApproval      StatusQuoteApproval `json:"quote_approval"`
+	Favourited         *bool               `json:"favourited,omitempty"`
+	Reblogged          *bool               `json:"reblogged,omitempty"`
+	Muted              *bool               `json:"muted,omitempty"`
+	Bookmarked         *bool               `json:"bookmarked,omitempty"`
+	Pinned             *bool               `json:"pinned,omitempty"`
+	Filtered           []any               `json:"-"`
+	FilteredPresent    bool                `json:"-"`
 }
 
-// Quote is the full Mastodon 4.4 quote representation used on a top-level
+// Quote is the full official Mastodon quote representation used on a top-level
 // status and in edit history. QuotedStatus is deliberately a shallow status to
 // keep quote chains finite.
 type Quote struct {
@@ -485,6 +489,12 @@ type Quote struct {
 type ShallowQuote struct {
 	State          string  `json:"state"`
 	QuotedStatusID *string `json:"quoted_status_id"`
+}
+
+type StatusQuoteApproval struct {
+	Automatic   []string `json:"automatic"`
+	Manual      []string `json:"manual"`
+	CurrentUser string   `json:"current_user"`
 }
 
 type StatusApplication struct {
@@ -1005,12 +1015,13 @@ type Marker struct {
 }
 
 type Preferences struct {
-	PostingDefaultVisibility string `json:"posting:default:visibility"`
-	PostingDefaultSensitive  bool   `json:"posting:default:sensitive"`
-	PostingDefaultLanguage   string `json:"posting:default:language"`
-	ReadingExpandMedia       string `json:"reading:expand:media"`
-	ReadingExpandSpoilers    bool   `json:"reading:expand:spoilers"`
-	ReadingAutoplayGIFs      bool   `json:"reading:autoplay:gifs"`
+	PostingDefaultVisibility  string `json:"posting:default:visibility"`
+	PostingDefaultSensitive   bool   `json:"posting:default:sensitive"`
+	PostingDefaultLanguage    string `json:"posting:default:language"`
+	PostingDefaultQuotePolicy string `json:"posting:default:quote_policy"`
+	ReadingExpandMedia        string `json:"reading:expand:media"`
+	ReadingExpandSpoilers     bool   `json:"reading:expand:spoilers"`
+	ReadingAutoplayGIFs       bool   `json:"reading:autoplay:gifs"`
 }
 
 type WebPushSubscription struct {
@@ -1188,6 +1199,7 @@ type InitialState struct {
 	MediaAttachments       map[string]any       `json:"media_attachments"`
 	Settings               map[string]any       `json:"settings"`
 	Languages              [][]string           `json:"languages"`
+	Features               []string             `json:"features"`
 	PushSubscription       *WebPushSubscription `json:"push_subscription"`
 	CriticalUpdatesPending *bool                `json:"critical_updates_pending,omitempty"`
 	Role                   *Role                `json:"role"`
@@ -1235,26 +1247,36 @@ type Role struct {
 }
 
 type InitialStateServerSettings struct {
-	ProfileDirectory    bool
-	TrendsEnabled       bool
-	TimelinePreview     bool
-	ActivityAPIEnabled  bool
-	TrendsAsLandingPage bool
-	StatusPageURL       string
-	AutoPlayGIF         any
-	DisplayMedia        any
-	ReduceMotion        any
-	UseBlurhash         any
-	CropImages          any
+	ProfileDirectory      bool
+	TrendsEnabled         bool
+	TimelinePreview       bool
+	ActivityAPIEnabled    bool
+	TrendsAsLandingPage   bool
+	LandingPage           string
+	LocalLiveFeedAccess   string
+	RemoteLiveFeedAccess  string
+	LocalTopicFeedAccess  string
+	RemoteTopicFeedAccess string
+	StatusPageURL         string
+	AutoPlayGIF           any
+	DisplayMedia          any
+	ReduceMotion          any
+	UseBlurhash           any
+	CropImages            any
 }
 
 func DefaultInitialStateServerSettings() InitialStateServerSettings {
 	return InitialStateServerSettings{
-		ProfileDirectory:    true,
-		TrendsEnabled:       true,
-		TimelinePreview:     true,
-		ActivityAPIEnabled:  true,
-		TrendsAsLandingPage: true,
+		ProfileDirectory:      true,
+		TrendsEnabled:         true,
+		TimelinePreview:       true,
+		ActivityAPIEnabled:    true,
+		TrendsAsLandingPage:   true,
+		LandingPage:           "trends",
+		LocalLiveFeedAccess:   "public",
+		RemoteLiveFeedAccess:  "public",
+		LocalTopicFeedAccess:  "public",
+		RemoteTopicFeedAccess: "public",
 	}
 }
 
@@ -1688,6 +1710,7 @@ func CredentialAccountFromModelWithRole(cfg config.Config, account models.Accoun
 			Privacy:             UserDefaultPrivacy(settings, account),
 			Sensitive:           boolSetting(settings, "default_sensitive", false),
 			Language:            stringSettingPtr(settings, "default_language"),
+			QuotePolicy:         stringSetting(settings, "default_quote_policy", "public"),
 			Note:                account.Note,
 			Fields:              sourceFieldsFromJSON(account.Fields),
 			FollowRequestsCount: followRequestsCount,
@@ -1703,12 +1726,13 @@ func CredentialAccountFromModelWithRole(cfg config.Config, account models.Accoun
 func PreferencesFromModel(cfg config.Config, user models.User, account models.Account) Preferences {
 	settings := userSettings(user)
 	return Preferences{
-		PostingDefaultVisibility: UserDefaultPrivacy(settings, account),
-		PostingDefaultSensitive:  boolSetting(settings, "default_sensitive", false),
-		PostingDefaultLanguage:   preferredPostingLanguage(settings, user, cfg),
-		ReadingExpandMedia:       stringSetting(settings, "web.display_media", "default"),
-		ReadingExpandSpoilers:    boolSetting(settings, "web.expand_content_warnings", false),
-		ReadingAutoplayGIFs:      boolSetting(settings, "web.auto_play", false),
+		PostingDefaultVisibility:  UserDefaultPrivacy(settings, account),
+		PostingDefaultSensitive:   boolSetting(settings, "default_sensitive", false),
+		PostingDefaultLanguage:    preferredPostingLanguage(settings, user, cfg),
+		PostingDefaultQuotePolicy: stringSetting(settings, "default_quote_policy", "public"),
+		ReadingExpandMedia:        stringSetting(settings, "web.display_media", "default"),
+		ReadingExpandSpoilers:     boolSetting(settings, "web.expand_content_warnings", false),
+		ReadingAutoplayGIFs:       boolSetting(settings, "web.auto_play", false),
 	}
 }
 
@@ -1752,6 +1776,14 @@ func StatusFromModel(cfg config.Config, status models.Status, currentAccount *mo
 func statusFromModel(cfg config.Config, status models.Status, currentAccount *models.Account, shallow bool) Status {
 	statusURL, statusURLNull := statusURLValue(cfg, status)
 	reblogsCount, favouritesCount := statusInteractionCounts(status)
+	policyStatus := status
+	if status.Reblog != nil && status.Reblog.ID != 0 {
+		policyStatus = *status.Reblog
+	}
+	currentQuotePolicy := policyStatus.QuotePolicyCurrentUser
+	if currentQuotePolicy == "" {
+		currentQuotePolicy = "denied"
+	}
 	item := Status{
 		ID:                 strconv.FormatInt(status.ID, 10),
 		CreatedAt:          restTimestamp(status.CreatedAt),
@@ -1767,6 +1799,7 @@ func statusFromModel(cfg config.Config, status models.Status, currentAccount *mo
 		RepliesCount:       statusStatCount(status.StatusStat.RepliesCount),
 		ReblogsCount:       reblogsCount,
 		FavouritesCount:    favouritesCount,
+		QuotesCount:        statusStatCount(status.StatusStat.QuotesCount),
 		EditedAt:           timePtr(status.EditedAt),
 		Content:            statusContentHTML(cfg, status),
 		Account:            AccountFromModel(cfg, status.Account),
@@ -1778,6 +1811,11 @@ func statusFromModel(cfg config.Config, status models.Status, currentAccount *mo
 		Emojis:             customEmojis(cfg, status.CustomEmojis),
 		Card:               previewCardFromStatus(cfg, status),
 		Poll:               PollFromModel(cfg, status.Poll, currentAccount),
+		QuoteApproval: StatusQuoteApproval{
+			Automatic:   quotePolicyKeyNames(policyStatus.QuoteApprovalPolicy >> 16),
+			Manual:      quotePolicyKeyNames(policyStatus.QuoteApprovalPolicy & 0xffff),
+			CurrentUser: currentQuotePolicy,
+		},
 	}
 	item.Quote = quoteFromModel(cfg, status.Quote, currentAccount, shallow)
 
@@ -1821,18 +1859,33 @@ func statusInteractionCounts(status models.Status) (int64, int64) {
 }
 
 func quoteFromModel(cfg config.Config, quote *models.Quote, currentAccount *models.Account, shallow bool) any {
+	return quoteFromModelWithSource(cfg, quote, currentAccount, shallow, false)
+}
+
+func quoteFromModelWithSource(cfg config.Config, quote *models.Quote, currentAccount *models.Account, shallow bool, sourceRequested bool) any {
 	if quote == nil || (quote.State != models.QuoteStateAccepted && quote.Legacy) {
 		return nil
 	}
 	state := quoteStateName(quote)
-	available := quote.State == models.QuoteStateAccepted && quote.QuotedStatus != nil && quote.QuotedStatus.ID != 0 && !quote.QuotedStatus.DeletedAt.Valid && !quote.QuotedStatus.ReblogOfID.Valid
-	visible := available && quoteStatusVisibleWithoutDatabase(*quote.QuotedStatus, currentAccount)
+	accepted := quote.State == models.QuoteStateAccepted
+	targetAvailable := quote.QuotedStatus != nil && quote.QuotedStatus.ID != 0 && !quote.QuotedStatus.DeletedAt.Valid && !quote.QuotedStatus.ReblogOfID.Valid
+	available := targetAvailable && (accepted || sourceRequested)
+	visible := targetAvailable && quoteStatusVisibleWithoutDatabase(*quote.QuotedStatus, currentAccount)
 	if quote.QuotedStatusVisibilityChecked {
 		visible = quote.QuotedStatusVisible
 	}
-	if available && !visible {
-		state = "unauthorized"
-		available = false
+	if targetAvailable && !visible {
+		filterState := quote.QuotedStatusFilterState
+		if filterState == "" {
+			filterState = "unauthorized"
+		}
+		if accepted {
+			state = filterState
+		}
+		// Mastodon exposes the nested status/ID for viewer-owned block, domain
+		// block, and mute states so clients can offer an explicit reveal action.
+		// An author-side visibility denial remains opaque.
+		available = available && (filterState == "blocked_account" || filterState == "blocked_domain" || filterState == "muted_account")
 	}
 	if shallow {
 		var quotedStatusID *string
@@ -1848,6 +1901,24 @@ func quoteFromModel(cfg config.Config, quote *models.Quote, currentAccount *mode
 		quotedStatus = &value
 	}
 	return Quote{State: state, QuotedStatus: quotedStatus}
+}
+
+func quotePolicyKeyNames(policy int) []string {
+	out := make([]string, 0, 4)
+	for _, item := range []struct {
+		name string
+		flag int
+	}{
+		{"unsupported_policy", 1 << 0},
+		{"public", 1 << 1},
+		{"followers", 1 << 2},
+		{"following", 1 << 3},
+	} {
+		if policy&item.flag != 0 {
+			out = append(out, item.name)
+		}
+	}
+	return out
 }
 
 func quoteStatusVisibleWithoutDatabase(status models.Status, currentAccount *models.Account) bool {
@@ -1894,6 +1965,7 @@ func quoteStateName(quote *models.Quote) string {
 func StatusFromModelWithSource(cfg config.Config, status models.Status, currentAccount *models.Account) Status {
 	item := StatusFromModel(cfg, status, currentAccount)
 	item.Text = &status.Text
+	item.Quote = quoteFromModelWithSource(cfg, status.Quote, currentAccount, false, true)
 	return item
 }
 
@@ -2066,6 +2138,7 @@ type InstanceMetadata struct {
 	Rules             []models.Rule
 	StatusPageURL     string
 	TermsOfServiceURL string
+	TimelinesAccess   map[string]any
 }
 
 func InstanceFromConfig(cfg config.Config, stats map[string]string) Instance {
@@ -2160,6 +2233,7 @@ func InstanceFromConfigWithOptions(cfg config.Config, stats map[string]string, r
 			"translation": map[string]any{
 				"enabled": translationEnabled(cfg),
 			},
+			"timelines_access":   metadata.TimelinesAccess,
 			"limited_federation": cfg.LimitedFederationMode,
 		},
 		Registrations: map[string]any{
@@ -2175,7 +2249,7 @@ func InstanceFromConfigWithOptions(cfg config.Config, stats map[string]string, r
 			"account": contactAccount,
 		},
 		Rules:       InstanceRulesFromModels(metadata.Rules),
-		APIVersions: map[string]int{"mastodon": 6},
+		APIVersions: map[string]int{"mastodon": 7},
 		Stats:       stats,
 		URI:         cfg.LocalDomain,
 	}
@@ -2560,6 +2634,13 @@ func ScheduledStatusFromModel(cfg config.Config, status models.ScheduledStatus) 
 	if len(status.Params) > 0 {
 		_ = json.Unmarshal(status.Params, &params)
 	}
+	// Rails stores these values in scheduled_statuses.params using the model
+	// representation (numeric IDs and a quote-policy bitmask), while the 4.5
+	// REST entity exposes client-facing strings. Paon-created rows already use
+	// strings, so accept both forms to keep the shared PostgreSQL schema
+	// drop-in compatible in either direction.
+	params["quoted_status_id"] = scheduledStatusQuotedStatusID(params["quoted_status_id"])
+	params["quote_approval_policy"] = scheduledStatusQuoteApprovalPolicy(params["quote_approval_policy"])
 	var scheduledAt *string
 	if status.ScheduledAt.Valid {
 		value := restTimestamp(status.ScheduledAt.Time)
@@ -2571,6 +2652,60 @@ func ScheduledStatusFromModel(cfg config.Config, status models.ScheduledStatus) 
 		Params:           params,
 		MediaAttachments: mediaAttachments(cfg, mediaAttachmentsSortedByID(status.MediaAttachments)),
 	}
+}
+
+func scheduledStatusQuotedStatusID(value any) any {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return typed
+	case float64:
+		integer := int64(typed)
+		if float64(integer) == typed {
+			return strconv.FormatInt(integer, 10)
+		}
+	}
+	return nil
+}
+
+func scheduledStatusQuoteApprovalPolicy(value any) string {
+	if text, ok := value.(string); ok {
+		text = strings.TrimSpace(text)
+		switch text {
+		case "public", "followers", "nobody", "unsupported_policy", "following":
+			return text
+		}
+		if parsed, err := strconv.ParseInt(text, 10, 64); err == nil {
+			return scheduledStatusQuoteApprovalPolicyFromBits(parsed)
+		}
+		return "nobody"
+	}
+	if number, ok := value.(float64); ok {
+		integer := int64(number)
+		if float64(integer) == number {
+			return scheduledStatusQuoteApprovalPolicyFromBits(integer)
+		}
+	}
+	return "nobody"
+}
+
+func scheduledStatusQuoteApprovalPolicyFromBits(value int64) string {
+	automatic := value >> 16
+	for _, item := range []struct {
+		name string
+		flag int64
+	}{
+		{"unsupported_policy", 1 << 0},
+		{"public", 1 << 1},
+		{"followers", 1 << 2},
+		{"following", 1 << 3},
+	} {
+		if automatic&item.flag != 0 {
+			return item.name
+		}
+	}
+	return "nobody"
 }
 
 func NotificationFromModel(cfg config.Config, notification models.Notification, currentAccount *models.Account) Notification {
@@ -2660,7 +2795,7 @@ func accountWarningAction(value int) string {
 
 func notificationStatusType(kind string) bool {
 	switch kind {
-	case "favourite", "reblog", "status", "mention", "poll", "update":
+	case "favourite", "reblog", "status", "mention", "poll", "quote", "update", "quoted_update":
 		return true
 	default:
 		return false
@@ -2910,6 +3045,11 @@ func InitialStateFromConfigWithOptions(cfg config.Config, current *models.Accoun
 		"activity_api_enabled":     serverSettings.ActivityAPIEnabled,
 		"single_user_mode":         cfg.SingleUserMode,
 		"trends_as_landing_page":   serverSettings.TrendsAsLandingPage,
+		"landing_page":             serverSettings.LandingPage,
+		"local_live_feed_access":   serverSettings.LocalLiveFeedAccess,
+		"remote_live_feed_access":  serverSettings.RemoteLiveFeedAccess,
+		"local_topic_feed_access":  serverSettings.LocalTopicFeedAccess,
+		"remote_topic_feed_access": serverSettings.RemoteTopicFeedAccess,
 		"status_page_url":          serverSettings.StatusPageURL,
 		"sso_redirect":             optionalStringAny(cfg.SSORedirect),
 		"terms_of_service_enabled": options.TermsOfServiceEnabled,
@@ -2973,6 +3113,7 @@ func InitialStateFromConfigWithOptions(cfg config.Config, current *models.Accoun
 		compose["default_privacy"] = UserDefaultPrivacy(settings, *current)
 		compose["default_sensitive"] = boolSetting(settings, "default_sensitive", false)
 		compose["default_language"] = preferredPostingLanguage(settings, *options.User, cfg)
+		compose["default_quote_policy"] = stringSetting(settings, "default_quote_policy", "public")
 	}
 	if options.ComposeVisibility != "" {
 		compose["default_privacy"] = options.ComposeVisibility
@@ -2998,6 +3139,7 @@ func InitialStateFromConfigWithOptions(cfg config.Config, current *models.Accoun
 		},
 		Settings:               settings,
 		Languages:              SupportedLanguageRows(),
+		Features:               append([]string{}, cfg.ExperimentalFeatures...),
 		CriticalUpdatesPending: options.CriticalUpdatesPending,
 		Role:                   role,
 	}
@@ -3024,7 +3166,7 @@ const (
 	roleIDEveryone       = int64(-99)
 	rolePermissionAdmin  = int64(1 << 0)
 	rolePermissionInvite = int64(1 << 16)
-	rolePermissionsAll   = int64((1 << 20) - 1)
+	rolePermissionsAll   = int64((1 << 21) - 1)
 )
 
 func computedRolePermissions(role models.UserRole, everyone *models.UserRole) int64 {
@@ -3174,6 +3316,7 @@ func applyAuthenticatedMetaSettings(meta map[string]any, settings map[string]any
 	meta["delete_modal"] = boolSetting(settings, "web.delete_modal", metaBoolDefault(meta, "delete_modal", true))
 	meta["missing_alt_text_modal"] = boolSetting(settings, "web.missing_alt_text_modal", metaBoolDefault(meta, "missing_alt_text_modal", true))
 	meta["auto_play_gif"] = boolSetting(settings, "web.auto_play", false)
+	meta["emoji_style"] = stringSetting(settings, "web.emoji_style", "auto")
 	meta["display_media"] = stringSetting(settings, "web.display_media", "default")
 	meta["expand_spoilers"] = boolSetting(settings, "web.expand_content_warnings", metaBoolDefault(meta, "expand_spoilers", false))
 	meta["reduce_motion"] = boolSetting(settings, "web.reduce_motion", false)
@@ -3706,12 +3849,16 @@ func statusLinkHTMLWithRelMe(cfg config.Config, token string, mentions statusMen
 			return statusFullURLLinkWithRelMe(token, relMe)
 		}
 		return statusShortURLLinkWithRelMe(token, relMe)
-	case strings.HasPrefix(token, "#"):
-		tag := strings.TrimPrefix(token, "#")
+	case strings.HasPrefix(token, "#") || strings.HasPrefix(token, "＃"):
+		prefix := "#"
+		if strings.HasPrefix(token, "＃") {
+			prefix = "＃"
+		}
+		tag := strings.TrimPrefix(strings.TrimPrefix(token, "#"), "＃")
 		if !mastodonHashtagNameValid(tag) {
 			return html.EscapeString(token)
 		}
-		return `<a href="` + html.EscapeString(cfg.BaseURL()+"/tags/"+url.PathEscape(strings.ToLower(tag))) + `" class="mention hashtag" rel="tag">#<span>` + html.EscapeString(tag) + `</span></a>`
+		return `<a href="` + html.EscapeString(cfg.BaseURL()+"/tags/"+url.PathEscape(strings.ToLower(tag))) + `" class="mention hashtag" rel="tag">` + prefix + `<span>` + html.EscapeString(tag) + `</span></a>`
 	case strings.HasPrefix(token, "@"):
 		acct := strings.TrimPrefix(token, "@")
 		account, display, ok := mentions.resolve(cfg, acct)
@@ -3800,6 +3947,9 @@ func accountURL(cfg config.Config, account models.Account) string {
 }
 
 func accountURI(cfg config.Config, account models.Account) string {
+	if account.Local() && account.ID > 0 && account.IDScheme.Valid && account.IDScheme.Int64 == 1 {
+		return cfg.BaseURL() + "/ap/users/" + strconv.FormatInt(account.ID, 10)
+	}
 	if account.URI != "" {
 		return account.URI
 	}
@@ -3835,6 +3985,9 @@ func statusLocal(status models.Status) bool {
 }
 
 func statusURI(cfg config.Config, status models.Status) string {
+	if statusLocal(status) && status.Account.ID > 0 && status.Account.IDScheme.Valid && status.Account.IDScheme.Int64 == 1 {
+		return cfg.BaseURL() + "/ap/users/" + strconv.FormatInt(status.Account.ID, 10) + "/statuses/" + strconv.FormatInt(status.ID, 10)
+	}
 	if status.URI.Valid && status.URI.String != "" {
 		return status.URI.String
 	}
@@ -4198,7 +4351,7 @@ func announcementContentHTML(cfg config.Config, announcement models.Announcement
 }
 
 func mastodonLinkTokenBoundaryOK(text string, index int, token string) bool {
-	if strings.HasPrefix(token, "#") {
+	if strings.HasPrefix(token, "#") || strings.HasPrefix(token, "＃") {
 		return mastodonHashtagBoundaryOK(text, index)
 	}
 	if strings.HasPrefix(token, "@") {

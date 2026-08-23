@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -317,6 +320,54 @@ func TestDefaultWebPushDelivererRequiresVAPIDKeys(t *testing.T) {
 	}
 }
 
+func TestMastodon45WebPushSubscriptionValidationRejectsLegacyInvalidRowsBeforeDelivery(t *testing.T) {
+	if webPushSubscriptionValid(models.WebPushSubscription{Endpoint: "https://push.example/send", KeyP256dh: "invalid", KeyAuth: "invalid"}) {
+		t.Fatal("invalid persisted web push keys were accepted")
+	}
+	_, x, y, err := elliptic.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := models.WebPushSubscription{
+		Endpoint:  "https://push.example/send",
+		KeyP256dh: base64.RawURLEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), x, y)),
+		KeyAuth:   base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef")),
+	}
+	if !webPushSubscriptionValid(valid) {
+		t.Fatal("valid persisted web push subscription was rejected")
+	}
+	valid.Endpoint = "http://push.example/send"
+	if webPushSubscriptionValid(valid) {
+		t.Fatal("non-HTTPS endpoint was accepted")
+	}
+
+	called := false
+	server := &Server{webPushDeliverer: func(context.Context, config.Config, models.WebPushSubscription, []byte) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: http.StatusCreated, Body: http.NoBody}, nil
+	}}
+	if err := server.deliverWebPushTargetForWorker(context.Background(), models.WebPushSubscription{ID: 7, Endpoint: "https://push.example/send", KeyP256dh: "invalid", KeyAuth: "invalid"}, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("invalid persisted subscription reached outbound delivery")
+	}
+}
+
+func validWebPushTestSubscription(t *testing.T, id int64, endpoint string) models.WebPushSubscription {
+	t.Helper()
+	_, x, y, err := elliptic.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return models.WebPushSubscription{
+		ID:        id,
+		Endpoint:  endpoint,
+		KeyP256dh: base64.RawURLEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), x, y)),
+		KeyAuth:   base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef")),
+	}
+}
+
 func TestWebPushDelivererReceivesVAPIDHeaderInputs(t *testing.T) {
 	src, err := os.ReadFile("web_push_delivery.go")
 	if err != nil {
@@ -339,12 +390,7 @@ func TestWebPushDelivererReceivesVAPIDHeaderInputs(t *testing.T) {
 	}
 
 	payload := []byte(`{"title":"hello"}`)
-	subscription := models.WebPushSubscription{
-		ID:        42,
-		Endpoint:  "https://push.example/send/42",
-		KeyAuth:   "auth-secret",
-		KeyP256dh: "client-public-key",
-	}
+	subscription := validWebPushTestSubscription(t, 42, "https://push.example/send/42")
 	var capturedCfg config.Config
 	var capturedSubscription models.WebPushSubscription
 	var capturedPayload []byte
@@ -379,10 +425,7 @@ func TestWebPushDelivererReceivesVAPIDHeaderInputs(t *testing.T) {
 }
 
 func TestWebPushWorkerErrorsIdentifyRemoteEndpointHost(t *testing.T) {
-	subscription := models.WebPushSubscription{
-		ID:       42,
-		Endpoint: "https://push.example/send/private-subscription-token",
-	}
+	subscription := validWebPushTestSubscription(t, 42, "https://push.example/send/private-subscription-token")
 	server := &Server{
 		webPushDeliverer: func(context.Context, config.Config, models.WebPushSubscription, []byte) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusInternalServerError, Body: http.NoBody}, nil

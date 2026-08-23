@@ -19,7 +19,7 @@ import (
 
 const (
 	LegacySchemaVersion  = paonschema.Mastodon4219Version
-	CurrentSchemaVersion = paonschema.Mastodon4422Version
+	CurrentSchemaVersion = paonschema.Mastodon4515Version
 )
 const migrationAdvisoryLockID int64 = 0x50616f6e4d696772
 const statementSeparator = "-- paon:statement"
@@ -86,6 +86,7 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 	applied := false
 	legacy42Schema := false
 	mastodon43Schema := false
+	mastodon44Schema := false
 	err = database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", migrationAdvisoryLockID).Error; err != nil {
 			return fmt.Errorf("acquire migration lock: %w", err)
@@ -105,7 +106,15 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 			return nil
 		}
 		if !empty {
-			previous, err := mastodon4323SchemaState(tx)
+			previous, err := mastodon4422SchemaState(tx)
+			if err != nil {
+				return err
+			}
+			if previous {
+				mastodon44Schema = true
+				return nil
+			}
+			previous, err = mastodon4323SchemaState(tx)
 			if err != nil {
 				return err
 			}
@@ -113,7 +122,7 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 				mastodon43Schema = true
 				return nil
 			}
-			return fmt.Errorf("unsupported existing database schema; expected version %s, %s, or %s", LegacySchemaVersion, Mastodon4323SchemaVersion, CurrentSchemaVersion)
+			return fmt.Errorf("unsupported existing database schema; expected version %s, %s, %s, or %s", LegacySchemaVersion, Mastodon4323SchemaVersion, Mastodon4422SchemaVersion, CurrentSchemaVersion)
 		}
 		snapshot, err := schemaFiles.ReadFile("schema.sql")
 		if err != nil {
@@ -169,6 +178,20 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 				return applied, err
 			}
 		}
+		previous, err := mastodon4422SchemaState(database.WithContext(ctx))
+		if err != nil {
+			return applied, err
+		}
+		mastodon44Schema = previous
+	}
+	if mastodon44Schema {
+		for _, phase := range upgradePhasesThrough(targetPhase) {
+			phaseApplied, err := runMastodon45Phase(ctx, database, phase, options)
+			applied = applied || phaseApplied
+			if err != nil {
+				return applied, err
+			}
+		}
 	}
 
 	_, current, _, err := databaseSchemaState(database.WithContext(ctx))
@@ -204,25 +227,26 @@ func databaseSchemaState(tx *gorm.DB) (empty bool, current bool, legacy bool, er
 		return false, false, false, nil
 	}
 	var versions struct {
-		Current  int64
-		Previous int64
-		Legacy   int64
-		Future   int64
+		Current    int64
+		Mastodon44 int64
+		Mastodon43 int64
+		Legacy     int64
+		Future     int64
 	}
-	if err := tx.Raw(`SELECT COUNT(*) FILTER (WHERE version = ?) AS current, COUNT(*) FILTER (WHERE version = ?) AS previous, COUNT(*) FILTER (WHERE version = ?) AS legacy, COUNT(*) FILTER (WHERE version > ?) AS future FROM schema_migrations`, CurrentSchemaVersion, Mastodon4323SchemaVersion, LegacySchemaVersion, CurrentSchemaVersion).Scan(&versions).Error; err != nil {
+	if err := tx.Raw(`SELECT COUNT(*) FILTER (WHERE version = ?) AS current, COUNT(*) FILTER (WHERE version = ?) AS mastodon44, COUNT(*) FILTER (WHERE version = ?) AS mastodon43, COUNT(*) FILTER (WHERE version = ?) AS legacy, COUNT(*) FILTER (WHERE version > ?) AS future FROM schema_migrations`, CurrentSchemaVersion, Mastodon4422SchemaVersion, Mastodon4323SchemaVersion, LegacySchemaVersion, CurrentSchemaVersion).Scan(&versions).Error; err != nil {
 		return false, false, false, fmt.Errorf("read schema version: %w", err)
 	}
 	if versions.Future != 0 {
 		return false, false, false, fmt.Errorf("database schema is newer than supported Mastodon version %s; found %d future migration marker(s)", CurrentSchemaVersion, versions.Future)
 	}
-	if versions.Current == 1 || versions.Previous == 1 || versions.Legacy == 1 {
+	if versions.Current == 1 || versions.Mastodon44 == 1 || versions.Mastodon43 == 1 || versions.Legacy == 1 {
 		var upgradeVersions []string
 		if err := tx.Raw(`SELECT version FROM schema_migrations WHERE version > ? AND version <= ? ORDER BY version`, LegacySchemaVersion, CurrentSchemaVersion).Scan(&upgradeVersions).Error; err != nil {
 			return false, false, false, fmt.Errorf("inspect reviewed Mastodon migration markers: %w", err)
 		}
 		for _, version := range upgradeVersions {
-			if !mastodon43UpgradeVersionKnown(version) && !paonschema.Mastodon44UpgradeVersionKnown(version) {
-				return false, false, false, fmt.Errorf("database schema contains unsupported migration marker %s between Mastodon 4.2 and 4.4", version)
+			if !mastodon43UpgradeVersionKnown(version) && !paonschema.Mastodon44UpgradeVersionKnown(version) && !paonschema.Mastodon45UpgradeVersionKnown(version) {
+				return false, false, false, fmt.Errorf("database schema contains unsupported migration marker %s between Mastodon 4.2 and 4.5", version)
 			}
 		}
 		if versions.Current == 1 {
@@ -244,9 +268,20 @@ func databaseSchemaState(tx *gorm.DB) (empty bool, current bool, legacy bool, er
 			if mastodon44Count != int64(paonschema.Mastodon44UpgradeVersionCount()) {
 				return false, false, false, fmt.Errorf("database schema has final marker %s but only %d of %d reviewed Mastodon 4.4 migration markers", CurrentSchemaVersion, mastodon44Count, paonschema.Mastodon44UpgradeVersionCount())
 			}
+			var mastodon45Count int64
+			for version := range mastodon45UpgradeVersionSet() {
+				var count int64
+				if err := tx.Raw(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&count).Error; err != nil {
+					return false, false, false, fmt.Errorf("inspect Mastodon 4.5 migration marker %s: %w", version, err)
+				}
+				mastodon45Count += count
+			}
+			if mastodon45Count != int64(paonschema.Mastodon45UpgradeVersionCount()) {
+				return false, false, false, fmt.Errorf("database schema has final marker %s but only %d of %d reviewed Mastodon 4.5 migration markers", CurrentSchemaVersion, mastodon45Count, paonschema.Mastodon45UpgradeVersionCount())
+			}
 		}
 	}
-	return false, versions.Current == 1, versions.Current == 0 && versions.Previous == 0 && versions.Legacy == 1, nil
+	return false, versions.Current == 1, versions.Current == 0 && versions.Mastodon44 == 0 && versions.Mastodon43 == 0 && versions.Legacy == 1, nil
 }
 
 func mastodon4323SchemaState(tx *gorm.DB) (bool, error) {
@@ -260,6 +295,32 @@ func mastodon4323SchemaState(tx *gorm.DB) (bool, error) {
 	}
 	if count != int64(paonschema.Mastodon43UpgradeVersionCount()) {
 		return false, fmt.Errorf("database schema has marker %s but only %d of %d reviewed Mastodon 4.3 migration markers", Mastodon4323SchemaVersion, count, paonschema.Mastodon43UpgradeVersionCount())
+	}
+	return true, nil
+}
+
+func mastodon4422SchemaState(tx *gorm.DB) (bool, error) {
+	applied, err := upgradeVersionApplied(tx, Mastodon4422SchemaVersion)
+	if err != nil || !applied {
+		return false, err
+	}
+	mastodon43Count, err := mastodon43AppliedCount(tx)
+	if err != nil {
+		return false, err
+	}
+	if mastodon43Count != int64(paonschema.Mastodon43UpgradeVersionCount()) {
+		return false, fmt.Errorf("database schema has marker %s but only %d of %d reviewed Mastodon 4.3 migration markers", Mastodon4422SchemaVersion, mastodon43Count, paonschema.Mastodon43UpgradeVersionCount())
+	}
+	var mastodon44Count int64
+	for version := range mastodon44UpgradeVersionSet() {
+		var count int64
+		if err := tx.Raw(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&count).Error; err != nil {
+			return false, fmt.Errorf("inspect Mastodon 4.4 migration marker %s: %w", version, err)
+		}
+		mastodon44Count += count
+	}
+	if mastodon44Count != int64(paonschema.Mastodon44UpgradeVersionCount()) {
+		return false, fmt.Errorf("database schema has marker %s but only %d of %d reviewed Mastodon 4.4 migration markers", Mastodon4422SchemaVersion, mastodon44Count, paonschema.Mastodon44UpgradeVersionCount())
 	}
 	return true, nil
 }
@@ -290,6 +351,16 @@ func mastodon44UpgradeVersionSet() map[string]struct{} {
 	return versions
 }
 
+func mastodon45UpgradeVersionSet() map[string]struct{} {
+	versions := map[string]struct{}{}
+	for _, phase := range []UpgradePhase{UpgradePhaseExpand, UpgradePhaseBackfill, UpgradePhaseValidate, UpgradePhaseContract} {
+		for _, version := range mastodon45PhaseVersions(phase) {
+			versions[version] = struct{}{}
+		}
+	}
+	return versions
+}
+
 func seedFreshDatabase(tx *gorm.DB) error {
 	now := time.Now().UTC()
 	roles := []struct {
@@ -299,8 +370,8 @@ func seedFreshDatabase(tx *gorm.DB) error {
 		permissions int64
 	}{
 		{id: -99, name: "", position: -1, permissions: 1 << 16},
-		{id: 1, name: "Moderator", position: 10, permissions: 1308},
-		{id: 2, name: "Admin", position: 100, permissions: 983036},
+		{id: 1, name: "Moderator", position: 10, permissions: 1308 | (1 << 20)},
+		{id: 2, name: "Admin", position: 100, permissions: 983036 | (1 << 20)},
 		{id: 3, name: "Owner", position: 1000, permissions: 1},
 	}
 	for _, role := range roles {
@@ -324,6 +395,9 @@ func seedFreshDatabase(tx *gorm.DB) error {
 	}
 	if err := tx.Exec(`INSERT INTO oauth_applications (name, uid, secret, redirect_uri, scopes, superapp, confidential, created_at, updated_at) VALUES ('Web', ?, ?, 'urn:ietf:wg:oauth:2.0:oob', 'read write follow push', true, true, ?, ?)`, uid, secret, now, now).Error; err != nil {
 		return fmt.Errorf("seed web OAuth application: %w", err)
+	}
+	if err := seedMastodon45UsernameBlocks(tx, now); err != nil {
+		return err
 	}
 	return nil
 }

@@ -273,7 +273,8 @@ func (s *Server) adminMeasureDailyTotal(key string, day time.Time, params adminM
 	case "interactions":
 		return s.adminActivityTrackerDailyTotal("activity:interactions", false, day)
 	case "new_users":
-		return countBetween(s.db.Model(&models.User{}), "created_at", day, next)
+		earliestAccountID, latestAccountID := adminMetricAccountIDRange(day, next)
+		return countRows(s.db.Model(&models.User{}).Where("account_id >= ? AND account_id < ?", earliestAccountID, latestAccountID))
 	case "opened_reports":
 		return countBetween(s.db.Model(&models.Report{}), "created_at", day, next)
 	case "resolved_reports":
@@ -419,8 +420,8 @@ func (s *Server) adminSoftwareVersionsDimension() []serializer.AdminDimensionDat
 	if version := s.adminPostgreSQLVersion(); version != "" {
 		out = append(out, adminVersionDimensionItem("postgresql", "PostgreSQL", version))
 	}
-	if version := s.adminRedisVersion(); version != "" {
-		out = append(out, adminVersionDimensionItem("redis", "Redis", version))
+	if name, version := s.adminRedisVersion(); version != "" {
+		out = append(out, adminVersionDimensionItem("redis", name, version))
 	}
 	if version := s.adminMeiliVersion(); version != "" {
 		out = append(out, adminVersionDimensionItem("meilisearch", "Meilisearch", version))
@@ -456,15 +457,15 @@ func postgreSQLVersionFromBanner(value string) string {
 	return fields[0]
 }
 
-func (s *Server) adminRedisVersion() string {
+func (s *Server) adminRedisVersion() (string, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	value, err := s.redisCommand(ctx, "INFO")
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	info, _ := value.(string)
-	return redisInfoValue(info, "redis_version")
+	return redisStoreIdentity(info)
 }
 
 func (s *Server) adminMeiliVersion() string {
@@ -867,14 +868,27 @@ func (s *Server) adminMediaStorageBytes() int64 {
 		return 0
 	}
 	total := int64(0)
-	total += s.adminStorageSum("media_attachments", "COALESCE(file_file_size, 0) + COALESCE(thumbnail_file_size, 0)")
-	total += s.adminStorageSum("custom_emojis", "COALESCE(image_file_size, 0)")
-	total += s.adminStorageSum("preview_cards", "COALESCE(image_file_size, 0)")
-	total += s.adminStorageSum("accounts", "COALESCE(avatar_file_size, 0) + COALESCE(header_file_size, 0)")
-	total += s.adminStorageSum("backups", "COALESCE(dump_file_size, 0)")
-	total += s.adminStorageSum("imports", "COALESCE(data_file_size, 0)")
-	total += s.adminStorageSum("site_uploads", "COALESCE(file_file_size, 0)")
+	for _, source := range adminMediaStorageSources {
+		total += s.adminStorageSum(source.table, source.expression)
+	}
 	return total
+}
+
+type adminMediaStorageSource struct {
+	table      string
+	expression string
+}
+
+// Mastodon 4.4 and 4.5 count these attachment-backed records as media storage.
+// Bulk imports store their rows in PostgreSQL and have no attached-file size;
+// that storage is already represented by the PostgreSQL space-usage metric.
+var adminMediaStorageSources = [...]adminMediaStorageSource{
+	{table: "media_attachments", expression: "COALESCE(file_file_size, 0) + COALESCE(thumbnail_file_size, 0)"},
+	{table: "custom_emojis", expression: "COALESCE(image_file_size, 0)"},
+	{table: "preview_cards", expression: "COALESCE(image_file_size, 0)"},
+	{table: "accounts", expression: "COALESCE(avatar_file_size, 0) + COALESCE(header_file_size, 0)"},
+	{table: "backups", expression: "COALESCE(dump_file_size, 0)"},
+	{table: "site_uploads", expression: "COALESCE(file_file_size, 0)"},
 }
 
 func (s *Server) adminStorageSum(table string, expression string) int64 {
@@ -1003,7 +1017,8 @@ CROSS JOIN LATERAL (
   WITH new_users AS (
     SELECT users.id
     FROM users
-    WHERE date_trunc(?, users.created_at)::date = axis.cohort_period
+    WHERE users.account_id >= (date_part('epoch', date_trunc(?, axis.cohort_period)::date) * 1000)::bigint << 16
+      AND users.account_id < ((date_part('epoch', date_trunc(?, axis.cohort_period)::date + ('1 ' || ?)::interval)) * 1000)::bigint << 16
   ),
   retained_users AS (
     SELECT users.id
@@ -1015,7 +1030,7 @@ CROSS JOIN LATERAL (
   FROM retained_users
 ) AS retention
 ORDER BY axis.cohort_period ASC, axis.retention_period ASC`
-	if err := s.db.Raw(query, frequency, start, frequency, end, frequency, frequency, frequency).Scan(&rows).Error; err != nil {
+	if err := s.db.Raw(query, frequency, start, frequency, end, frequency, frequency, frequency, frequency, frequency).Scan(&rows).Error; err != nil {
 		return nil, false
 	}
 	return adminRetentionRowsToCohorts(rows, frequency), true
@@ -1134,6 +1149,10 @@ func countRows(query *gorm.DB) int64 {
 }
 
 func adminMetricStatusIDRange(start time.Time, end time.Time) (int64, int64) {
+	return mastodonSnowflakeIDAt(start, false), mastodonSnowflakeIDAt(end, false)
+}
+
+func adminMetricAccountIDRange(start time.Time, end time.Time) (int64, int64) {
 	return mastodonSnowflakeIDAt(start, false), mastodonSnowflakeIDAt(end, false)
 }
 

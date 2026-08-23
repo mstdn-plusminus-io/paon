@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,6 +41,13 @@ func TestPublicStatusLinkHeaderMatchesRailsAlternateLink(t *testing.T) {
 	want := `<https://example.com/users/alice/statuses/123>; rel="alternate"; type="application/activity+json"`
 	if got != want {
 		t.Fatalf("Link = %q, want %q", got, want)
+	}
+
+	status.Account.IDScheme = sql.NullInt64{Int64: 1, Valid: true}
+	got = publicStatusLinkHeader(cfg, status)
+	want = `<https://example.com/ap/users/10/statuses/123>; rel="alternate"; type="application/activity+json"`
+	if got != want {
+		t.Fatalf("numeric Link = %q, want %q", got, want)
 	}
 }
 
@@ -152,6 +160,47 @@ func TestApplyPublicStatusHeadOmitsLocaleWhenStatusLanguageIsMissing(t *testing.
 	}, "en")
 	if got := publicStatusMetaProperty(options.HeadMeta, "og:locale"); got != "" {
 		t.Fatalf("missing status language produced og:locale %q", got)
+	}
+}
+
+func TestMastodon45PublicStatusHeadIncludesSchemaOrgSocialMediaPostingUnlessNoIndex(t *testing.T) {
+	s := &Server{cfg: config.Config{Scheme: "https", WebDomain: "web.example", LocalDomain: "example.com", Title: "Paon"}}
+	createdAt := time.Date(2026, time.August, 13, 1, 2, 3, 0, time.UTC)
+	status := models.Status{
+		ID:         123,
+		Text:       "Hello <world>",
+		CreatedAt:  createdAt,
+		Visibility: 0,
+		Account: models.Account{
+			ID:          10,
+			Username:    "alice",
+			DisplayName: "Alice",
+			AccountStat: models.AccountStat{FollowersCount: 7},
+		},
+		StatusStat: models.StatusStat{FavouritesCount: 3, ReblogsCount: 2, RepliesCount: 1},
+	}
+	options := web.AppOptions{}
+	s.applyPublicStatusHead(&options, status, "en")
+	if len(options.HeadJSONLD) != 1 {
+		t.Fatalf("JSON-LD documents = %d, want 1: %#v", len(options.HeadJSONLD), options)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(options.HeadJSONLD[0]), &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema["@context"] != "https://schema.org" || schema["@type"] != "SocialMediaPosting" || schema["url"] != "https://web.example/@alice/123" || schema["datePublished"] != "2026-08-13T01:02:03Z" {
+		t.Fatalf("schema identity = %#v", schema)
+	}
+	author, _ := schema["author"].(map[string]any)
+	if author["@type"] != "Person" || author["identifier"] != "alice@example.com" {
+		t.Fatalf("schema author = %#v", author)
+	}
+
+	status.Account.User.Settings = sql.NullString{String: `{"noindex":true}`, Valid: true}
+	options = web.AppOptions{}
+	s.applyPublicStatusHead(&options, status, "en")
+	if len(options.HeadJSONLD) != 0 || publicStatusMetaName(options.HeadMeta, "robots") != "noindex, noarchive" {
+		t.Fatalf("noindex status SEO metadata = %#v", options)
 	}
 }
 

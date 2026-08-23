@@ -108,6 +108,10 @@ func ipBlockAuditLogTarget(block models.IPBlock) adminAuditLogTarget {
 	}
 }
 
+func usernameBlockAuditLogTarget(block models.UsernameBlock) adminAuditLogTarget {
+	return adminAuditLogTarget{Type: "UsernameBlock", ID: block.ID, HumanIdentifier: block.Username}
+}
+
 func appealAuditLogTarget(appeal models.Appeal) adminAuditLogTarget {
 	target := adminAuditLogTarget{
 		Type: "Appeal",

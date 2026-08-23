@@ -1015,7 +1015,8 @@ func (s *Server) tagRelationship(c *echo.Context, tagID int64, featuring bool) *
 }
 
 func normalizeTagName(raw string) (string, string, bool) {
-	decoded := strings.TrimPrefix(strings.TrimSpace(raw), "#")
+	decoded := strings.TrimSpace(raw)
+	decoded = strings.TrimPrefix(strings.TrimPrefix(decoded, "#"), "＃")
 	decoded = norm.NFC.String(strings.TrimSpace(decoded))
 	if !railsValidTagName(decoded) {
 		return "", "", false

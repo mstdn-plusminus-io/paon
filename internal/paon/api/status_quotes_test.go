@@ -304,13 +304,40 @@ func TestLegacyDynamoCutoverHasOneValidatedAcceptedSQLImportPath(t *testing.T) {
 	}
 }
 
-func TestMastodon44DoesNotExposeLaterQuotesCollectionRoute(t *testing.T) {
+func TestMastodon45ExposesOfficialQuoteRoutes(t *testing.T) {
 	src, err := os.ReadFile("server.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(src), "/api/v1/statuses/:id/quotes") || strings.Contains(string(src), "statusQuotes") {
-		t.Fatal("Mastodon 4.4 must not expose the later quotes collection endpoint")
+	for _, route := range []string{
+		`e.GET("/api/v1/statuses/:status_id/quotes", s.statusQuotes)`,
+		`e.POST("/api/v1/statuses/:status_id/quotes/:id/revoke", s.revokeStatusQuote)`,
+		`e.PUT("/api/v1/statuses/:id/interaction_policy", s.updateStatusInteractionPolicy)`,
+		`e.PATCH("/api/v1/statuses/:id/interaction_policy", s.updateStatusInteractionPolicy)`,
+	} {
+		if !strings.Contains(string(src), route) {
+			t.Fatalf("Mastodon 4.5 official quote route missing %q", route)
+		}
+	}
+}
+
+func TestMastodon45QuoteListAcceptsScopedApplicationTokens(t *testing.T) {
+	source, err := os.ReadFile("official_quotes_45.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, source, "statusQuotes")
+	requireScopeAt := strings.Index(body, `s.requireAccessTokenScope(c, "read", "read:statuses")`)
+	optionalAccountAt := strings.Index(body, "s.currentAccountForOptionalRequestToken(c)")
+	visibleStatusAt := strings.Index(body, "s.findVisibleStatusForAccount(account")
+	if requireScopeAt < 0 || optionalAccountAt < requireScopeAt || visibleStatusAt < optionalAccountAt {
+		t.Fatalf("quote list must authorize a required token, then resolve its optional resource owner before visibility filtering: %s", body)
+	}
+	if strings.Contains(body, "requireAccountScope") {
+		t.Fatalf("quote list rejects client-credentials tokens by requiring a resource owner: %s", body)
+	}
+	if !strings.Contains(body, "limitParam(c, 20, 40)") {
+		t.Fatalf("quote list must use Mastodon's DEFAULT_STATUSES_LIMIT=20 and maximum=40: %s", body)
 	}
 }
 

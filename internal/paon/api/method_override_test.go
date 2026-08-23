@@ -177,6 +177,7 @@ func TestRailsMethodOverrideReachesExistingSingletonUpdateRoutes(t *testing.T) {
 		"/settings/profile",
 		"/settings/preferences/appearance",
 		"/settings/preferences/notifications",
+		"/settings/preferences/posting_defaults",
 		"/settings/preferences/other",
 		"/settings/privacy",
 	} {

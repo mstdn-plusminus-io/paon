@@ -64,9 +64,12 @@ func mastodon4219UpgradePrerequisites() map[string][]string {
 		"rule_translations":                         {},
 		"tag_trends":                                {},
 		"terms_of_services":                         {},
+		// Mastodon 4.5 creates username_blocks after the v4.4.22 base.
+		"username_blocks": {},
 	}
 	addedColumns := map[string]map[string]struct{}{
-		"accounts":               {"attribution_domains": {}},
+		"accounts":               {"attribution_domains": {}, "following_url": {}, "id_scheme": {}},
+		"conversations":          {"parent_status_id": {}, "parent_account_id": {}},
 		"email_domain_blocks":    {"allow_with_approval": {}},
 		"notifications":          {"filtered": {}, "group_key": {}},
 		"oauth_access_grants":    {"code_challenge": {}, "code_challenge_method": {}},
@@ -77,7 +80,7 @@ func mastodon4219UpgradePrerequisites() map[string][]string {
 		"users":                  {"otp_secret": {}, "age_verified_at": {}, "require_tos_interstitial": {}},
 		"announcements":          {"notification_sent_at": {}},
 		"status_edits":           {"quote_id": {}},
-		"status_stats":           {"untrusted_favourites_count": {}, "untrusted_reblogs_count": {}},
+		"status_stats":           {"untrusted_favourites_count": {}, "untrusted_reblogs_count": {}, "quotes_count": {}},
 		"statuses":               {"fetched_replies_at": {}, "quote_approval_policy": {}},
 		"web_push_subscriptions": {"standard": {}},
 	}

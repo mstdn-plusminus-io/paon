@@ -27,6 +27,7 @@ type adminBrandingSettings struct {
 	FaviconURL           string
 	AppIconUploadID      int64
 	AppIconURL           string
+	LandingPage          string
 }
 
 type adminExistingUsernameEntry struct {
@@ -117,6 +118,7 @@ func (s *Server) adminBrandingSettings() adminBrandingSettings {
 		SiteContactUsername:  s.settingStringValue("site_contact_username", ""),
 		SiteContactEmail:     s.settingStringValue("site_contact_email", ""),
 		SiteShortDescription: s.settingStringValue("site_short_description", ""),
+		LandingPage:          normalizeLandingPage(s.settingStringValue("landing_page", "trends")),
 	})
 }
 
@@ -146,6 +148,7 @@ func parseAdminBrandingSettings(c *echo.Context) (adminBrandingSettings, error) 
 		SiteContactUsername:  lastFormValue(req.Form, "form_admin_settings[site_contact_username]"),
 		SiteContactEmail:     lastFormValue(req.Form, "form_admin_settings[site_contact_email]"),
 		SiteShortDescription: lastFormValue(req.Form, "form_admin_settings[site_short_description]"),
+		LandingPage:          lastFormValue(req.Form, "form_admin_settings[landing_page]"),
 	}, nil
 }
 
@@ -178,6 +181,9 @@ func validateAdminBrandingSettings(settings adminBrandingSettings) error {
 	}
 	if len([]rune(settings.SiteShortDescription)) > 200 {
 		return errAdminSetting("Short description is too long")
+	}
+	if settings.LandingPage != "" && normalizeLandingPage(settings.LandingPage) != strings.TrimSpace(settings.LandingPage) {
+		return errAdminSetting("Landing page is invalid")
 	}
 	return nil
 }
@@ -239,6 +245,7 @@ func (s *Server) updateAdminBrandingSettings(settings adminBrandingSettings) err
 		"site_contact_username":  settings.SiteContactUsername,
 		"site_contact_email":     settings.SiteContactEmail,
 		"site_short_description": settings.SiteShortDescription,
+		"landing_page":           normalizeLandingPage(settings.LandingPage),
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		for name, value := range values {
@@ -384,6 +391,20 @@ func adminSettingsBrandingHTML(settings adminBrandingSettings, notice string, er
 	loc := settingsLocaleArgOrEnglish(localeAndTheme...)
 	theme := settingsThemeArg(localeAndTheme...)
 	title := adminT(loc, "admin.settings.branding.title", "Branding")
+	landingPage := normalizeLandingPage(settings.LandingPage)
+	var landingOptions strings.Builder
+	for _, page := range []string{"trends", "about", "local_feed"} {
+		selected := ""
+		if page == landingPage {
+			selected = " selected"
+		}
+		label := map[string]string{
+			"trends":     adminT(loc, "admin.settings.landing_page.values.trends", "Trending content"),
+			"about":      adminT(loc, "admin.settings.landing_page.values.about", "About this server"),
+			"local_feed": adminT(loc, "admin.settings.landing_page.values.local_feed", "Local feed"),
+		}[page]
+		landingOptions.WriteString(`<option value="` + page + `"` + selected + `>` + html.EscapeString(label) + `</option>`)
+	}
 	body := `<form class="simple_form new_form_admin_settings" id="new_form_admin_settings" method="post" action="/admin/settings/branding" enctype="multipart/form-data" novalidate="novalidate">
   <input type="hidden" name="_method" value="patch">
   <p class="lead">` + html.EscapeString(adminT(loc, "admin.settings.branding.preamble", "Manage the public identity shown on your instance profile and about pages.")) + `</p>
@@ -397,6 +418,7 @@ func adminSettingsBrandingHTML(settings adminBrandingSettings, notice string, er
   <div class="fields-row__column fields-row__column-6 fields-group">` + adminSiteUploadPreviewDeleteHTML(settings.FaviconUploadID, settings.FaviconURL, loc) + `</div></div>
   <div class="fields-row"><div class="fields-row__column fields-row__column-6 fields-group">` + adminSettingsBlockFileInputWithAccept(loc, "app_icon", "App icon", "image/jpeg,image/png,image/gif,image/webp") + `</div>
   <div class="fields-row__column fields-row__column-6 fields-group">` + adminSiteUploadPreviewDeleteHTML(settings.AppIconUploadID, settings.AppIconURL, loc) + `</div></div>
+  <div class="fields-group"><label>` + html.EscapeString(adminSettingsLabel(loc, "landing_page", "Landing page for new visitors")) + ` <select name="form_admin_settings[landing_page]">` + landingOptions.String() + `</select></label></div>
   <div class="actions"><button name="button" type="submit" class="btn">` + html.EscapeString(settingsT(loc, "generic.save_changes", "Save changes")) + `</button></div>
 </form>`
 	return adminSettingsPageHTML(title, "branding", notice, errorText, body, loc, theme)

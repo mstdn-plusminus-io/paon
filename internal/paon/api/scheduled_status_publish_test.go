@@ -59,6 +59,7 @@ func TestStatusCreatePayloadFromScheduledParamsAcceptsRailsLikeJSON(t *testing.T
 		"spoiler_text":"",
 		"in_reply_to_id":123,
 		"quoted_status_id":456,
+		"quote_approval_policy":131072,
 		"application_id":"99",
 		"allowed_mentions":[123,"456"],
 		"media_ids":[7,"8"],
@@ -70,6 +71,9 @@ func TestStatusCreatePayloadFromScheduledParamsAcceptsRailsLikeJSON(t *testing.T
 	}
 	if payload.Status != "queued" || payload.Visibility != "unlisted" || payload.InReplyToID != "123" || payload.Sensitive || !payload.HasSensitive {
 		t.Fatalf("payload = %#v", payload)
+	}
+	if payload.QuotedStatusID != "456" || !payload.HasQuoteApprovalPolicy || payload.QuoteApprovalPolicy != "public" {
+		t.Fatalf("quote payload = %#v", payload)
 	}
 	if !reflect.DeepEqual(mediaIDs, []string{"7", "8"}) {
 		t.Fatalf("media IDs = %#v", mediaIDs)
@@ -85,6 +89,16 @@ func TestStatusCreatePayloadFromScheduledParamsAcceptsRailsLikeJSON(t *testing.T
 	}
 }
 
+func TestStatusCreatePayloadFromScheduledParamsKeepsPaonQuotePolicyName(t *testing.T) {
+	payload, _, err := statusCreatePayloadFromScheduledParams(models.JSONValue(`{"quote_approval_policy":"followers"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !payload.HasQuoteApprovalPolicy || payload.QuoteApprovalPolicy != "followers" {
+		t.Fatalf("quote policy = %#v", payload)
+	}
+}
+
 func TestScheduledStatusPublishUsesRailsDefaultPrivacyFallback(t *testing.T) {
 	src, err := os.ReadFile("scheduled_status_publish.go")
 	if err != nil {
@@ -94,7 +108,8 @@ func TestScheduledStatusPublishUsesRailsDefaultPrivacyFallback(t *testing.T) {
 		`if !scheduled.AccountID.Valid || scheduled.AccountID.Int64 == 0`,
 		`accountID := scheduled.AccountID.Int64`,
 		`Preload("User").Where("id = ? AND suspended_at IS NULL", accountID)`,
-		`Visibility:    s.statusVisibility(account, payload.Visibility)`,
+		`visibility := s.statusVisibility(account, payload.Visibility)`,
+		`Visibility:          visibility`,
 	} {
 		if !strings.Contains(string(src), want) {
 			t.Fatalf("scheduled publish missing %q", want)
@@ -109,7 +124,7 @@ func TestScheduledStatusPublishRestoresRailsApplicationID(t *testing.T) {
 	}
 	for _, want := range []string{
 		`payload.ApplicationID = rawJSONInt64(params["application_id"])`,
-		`ApplicationID: payload.ApplicationID`,
+		`ApplicationID:       payload.ApplicationID`,
 	} {
 		if !strings.Contains(string(src), want) {
 			t.Fatalf("scheduled publish missing %q", want)
@@ -141,7 +156,7 @@ func TestStatusCreatePersistsApplicationIDLikePostStatusService(t *testing.T) {
 	}
 	for _, want := range []string{
 		`payload.ApplicationID = s.requestApplicationID(c)`,
-		`ApplicationID: payload.ApplicationID`,
+		`ApplicationID:       payload.ApplicationID`,
 		`params["application_id"] = payload.ApplicationID.Int64`,
 	} {
 		if !strings.Contains(string(src), want) {

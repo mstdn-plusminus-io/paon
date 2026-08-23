@@ -4,6 +4,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/labstack/echo/v5"
 	"gorm.io/gorm"
@@ -11,9 +12,11 @@ import (
 
 type adminDiscoverySettings struct {
 	Trends                    bool
-	TrendsAsLandingPage       bool
 	TrendableByDefault        bool
-	TimelinePreview           bool
+	LocalLiveFeedAccess       string
+	RemoteLiveFeedAccess      string
+	LocalTopicFeedAccess      string
+	RemoteTopicFeedAccess     string
 	NoIndex                   bool
 	AllowReferrerOrigin       bool
 	ActivityAPIEnabled        bool
@@ -51,6 +54,9 @@ func (s *Server) updateAdminSettingsDiscovery(c *echo.Context) error {
 		}
 		return c.HTML(http.StatusOK, adminSettingsDiscoveryHTML(s.adminDiscoverySettings(), "", adminSettingsInvalidMessage(locale, "discovery"), locale, theme))
 	}
+	if err := validateAdminDiscoverySettings(settings); err != nil {
+		return c.HTML(http.StatusOK, adminSettingsDiscoveryHTML(settings, "", adminSettingErrorText(locale, err), locale, theme))
+	}
 	if s.db == nil {
 		return c.HTML(http.StatusOK, adminSettingsDiscoveryHTML(settings, "", adminSettingsDatabaseUnavailableMessage(locale), locale, theme))
 	}
@@ -71,9 +77,11 @@ func (s *Server) updateAdminSettingsDiscovery(c *echo.Context) error {
 func (s *Server) adminDiscoverySettings() adminDiscoverySettings {
 	return adminDiscoverySettings{
 		Trends:                    s.settingBoolValue("trends", true),
-		TrendsAsLandingPage:       s.settingBoolValue("trends_as_landing_page", true),
 		TrendableByDefault:        s.settingBoolValue("trendable_by_default", false),
-		TimelinePreview:           s.settingBoolValue("timeline_preview", true),
+		LocalLiveFeedAccess:       normalizeTimelineAccess(s.settingStringValue("local_live_feed_access", timelineAccessPublic)),
+		RemoteLiveFeedAccess:      normalizeTimelineAccess(s.settingStringValue("remote_live_feed_access", timelineAccessPublic)),
+		LocalTopicFeedAccess:      normalizeTimelineAccess(s.settingStringValue("local_topic_feed_access", timelineAccessPublic)),
+		RemoteTopicFeedAccess:     normalizeTimelineAccess(s.settingStringValue("remote_topic_feed_access", timelineAccessPublic)),
 		NoIndex:                   s.settingBoolValue("noindex", false),
 		AllowReferrerOrigin:       s.settingBoolValue("allow_referrer_origin", false),
 		ActivityAPIEnabled:        s.settingBoolValue("activity_api_enabled", true),
@@ -92,9 +100,11 @@ func parseAdminDiscoverySettings(c *echo.Context) (adminDiscoverySettings, error
 	}
 	return adminDiscoverySettings{
 		Trends:                    adminSettingsCheckbox(req.Form, "form_admin_settings[trends]"),
-		TrendsAsLandingPage:       adminSettingsCheckbox(req.Form, "form_admin_settings[trends_as_landing_page]"),
 		TrendableByDefault:        adminSettingsCheckbox(req.Form, "form_admin_settings[trendable_by_default]"),
-		TimelinePreview:           adminSettingsCheckbox(req.Form, "form_admin_settings[timeline_preview]"),
+		LocalLiveFeedAccess:       lastFormValue(req.Form, "form_admin_settings[local_live_feed_access]"),
+		RemoteLiveFeedAccess:      lastFormValue(req.Form, "form_admin_settings[remote_live_feed_access]"),
+		LocalTopicFeedAccess:      lastFormValue(req.Form, "form_admin_settings[local_topic_feed_access]"),
+		RemoteTopicFeedAccess:     lastFormValue(req.Form, "form_admin_settings[remote_topic_feed_access]"),
 		NoIndex:                   adminSettingsCheckbox(req.Form, "form_admin_settings[noindex]"),
 		AllowReferrerOrigin:       adminSettingsCheckbox(req.Form, "form_admin_settings[allow_referrer_origin]"),
 		ActivityAPIEnabled:        adminSettingsCheckbox(req.Form, "form_admin_settings[activity_api_enabled]"),
@@ -105,12 +115,25 @@ func parseAdminDiscoverySettings(c *echo.Context) (adminDiscoverySettings, error
 	}, nil
 }
 
+func validateAdminDiscoverySettings(settings adminDiscoverySettings) error {
+	valid := func(value string, allowDisabled bool) bool {
+		value = strings.TrimSpace(value)
+		return value == timelineAccessPublic || value == timelineAccessAuthenticated || (allowDisabled && value == timelineAccessDisabled)
+	}
+	if !valid(settings.LocalLiveFeedAccess, true) || !valid(settings.RemoteLiveFeedAccess, true) || !valid(settings.LocalTopicFeedAccess, false) || !valid(settings.RemoteTopicFeedAccess, true) {
+		return errAdminSetting("Feed access mode is invalid")
+	}
+	return nil
+}
+
 func (s *Server) updateAdminDiscoverySettings(settings adminDiscoverySettings, skipAuthorizedFetch bool) error {
 	values := map[string]string{
 		"trends":                      boolSettingValue(settings.Trends),
-		"trends_as_landing_page":      boolSettingValue(settings.TrendsAsLandingPage),
 		"trendable_by_default":        boolSettingValue(settings.TrendableByDefault),
-		"timeline_preview":            boolSettingValue(settings.TimelinePreview),
+		"local_live_feed_access":      settings.LocalLiveFeedAccess,
+		"remote_live_feed_access":     settings.RemoteLiveFeedAccess,
+		"local_topic_feed_access":     settings.LocalTopicFeedAccess,
+		"remote_topic_feed_access":    settings.RemoteTopicFeedAccess,
 		"noindex":                     boolSettingValue(settings.NoIndex),
 		"allow_referrer_origin":       boolSettingValue(settings.AllowReferrerOrigin),
 		"activity_api_enabled":        boolSettingValue(settings.ActivityAPIEnabled),
@@ -142,16 +165,38 @@ func adminSettingsDiscoveryHTML(settings adminDiscoverySettings, notice string, 
 		return `<input type="hidden" name="form_admin_settings[` + key + `]" value="0">
   <label><input type="checkbox" name="form_admin_settings[` + key + `]" value="1"` + attr + `> ` + html.EscapeString(label) + `</label>`
 	}
+	selectAccess := func(key string, label string, value string, allowDisabled bool) string {
+		modes := []string{timelineAccessPublic, timelineAccessAuthenticated}
+		if allowDisabled {
+			modes = append(modes, timelineAccessDisabled)
+		}
+		var options strings.Builder
+		for _, mode := range modes {
+			selected := ""
+			if mode == value {
+				selected = " selected"
+			}
+			label := map[string]string{
+				timelineAccessPublic:        adminT(loc, "admin.settings.feed_access.modes.public", "Everyone"),
+				timelineAccessAuthenticated: adminT(loc, "admin.settings.feed_access.modes.authenticated", "Logged-in local users"),
+				timelineAccessDisabled:      adminT(loc, "admin.settings.feed_access.modes.disabled", "Moderators only"),
+			}[mode]
+			options.WriteString(`<option value="` + mode + `"` + selected + `>` + html.EscapeString(label) + `</option>`)
+		}
+		return `<label>` + html.EscapeString(label) + ` <select name="form_admin_settings[` + key + `]">` + options.String() + `</select></label>`
+	}
 	title := adminT(loc, "admin.settings.discovery.title", "Discovery")
 	body := `<p class="lead">` + html.EscapeString(adminT(loc, "admin.settings.discovery.preamble", "Tune public discovery surfaces, searchability, public APIs, and ActivityPub fetch policy.")) + `</p>
 <form class="simple_form" method="post" action="/admin/settings/discovery">
   <input type="hidden" name="_method" value="patch">
   <h2>` + html.EscapeString(adminT(loc, "admin.settings.discovery.trends", "Trends")) + `</h2>
   <div class="fields-group">` + checkbox("trends", adminSettingsLabel(loc, "trends", "Enable trends"), settings.Trends) + `</div>
-  <div class="fields-group">` + checkbox("trends_as_landing_page", adminSettingsLabel(loc, "trends_as_landing_page", "Use trends as the landing page"), settings.TrendsAsLandingPage) + `</div>
   <div class="fields-group">` + checkbox("trendable_by_default", adminSettingsLabel(loc, "trendable_by_default", "Allow trends without prior review"), settings.TrendableByDefault) + `</div>
   <h2>` + html.EscapeString(adminT(loc, "admin.settings.discovery.public_timelines", "Public timelines")) + `</h2>
-  <div class="fields-group">` + checkbox("timeline_preview", adminSettingsLabel(loc, "timeline_preview", "Allow unauthenticated access to public timelines"), settings.TimelinePreview) + `</div>
+  <div class="fields-row"><div class="fields-group">` + selectAccess("local_live_feed_access", adminSettingsLabel(loc, "local_live_feed_access", "Access to live feeds featuring local posts"), settings.LocalLiveFeedAccess, true) + `</div>
+  <div class="fields-group">` + selectAccess("remote_live_feed_access", adminSettingsLabel(loc, "remote_live_feed_access", "Access to live feeds featuring remote posts"), settings.RemoteLiveFeedAccess, true) + `</div></div>
+  <div class="fields-row"><div class="fields-group">` + selectAccess("local_topic_feed_access", adminSettingsLabel(loc, "local_topic_feed_access", "Access to hashtag feeds featuring local posts"), settings.LocalTopicFeedAccess, false) + `</div>
+  <div class="fields-group">` + selectAccess("remote_topic_feed_access", adminSettingsLabel(loc, "remote_topic_feed_access", "Access to hashtag feeds featuring remote posts"), settings.RemoteTopicFeedAccess, true) + `</div></div>
   <div class="fields-group">` + checkbox("noindex", adminT(loc, "admin.settings.default_noindex.title", "Opt users out of search engine indexing by default"), settings.NoIndex) + `</div>
   <div class="fields-group">` + checkbox("allow_referrer_origin", adminT(loc, "admin.settings.allow_referrer_origin.title", "Allow origin referrer information for external links"), settings.AllowReferrerOrigin) + `<p class="hint">` + html.EscapeString(adminT(loc, "admin.settings.allow_referrer_origin.desc", "When enabled, external sites can see this server as the source of traffic, but never the full page URL.")) + `</p></div>
   <h2>` + html.EscapeString(adminT(loc, "admin.settings.discovery.public_apis", "Public APIs")) + `</h2>

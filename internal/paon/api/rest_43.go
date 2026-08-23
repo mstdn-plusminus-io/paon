@@ -128,13 +128,14 @@ func (s *Server) linkTimeline(c *echo.Context) error {
 	if err := s.authorizeTokenScopeIfPresent(c, "read", "read:statuses"); err != nil {
 		return err
 	}
-	if err := s.requireTimelinePreviewAccess(c); err != nil {
-		return err
-	}
-	current, err := s.currentAccountForOptionalRequestToken(c)
+	access, err := s.timelineAccessForRequest(c, true, false, false)
 	if err != nil {
 		return err
 	}
+	if access.incompatible {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	current := access.account
 	var card models.PreviewCard
 	if err := s.db.Joins("JOIN preview_card_trends ON preview_card_trends.preview_card_id = preview_cards.id AND preview_card_trends.allowed = true").
 		Where("preview_cards.url = ?", c.QueryParam("url")).First(&card).Error; err != nil {
@@ -147,7 +148,13 @@ func (s *Server) linkTimeline(c *echo.Context) error {
 		Where("COALESCE(timeline_accounts.discoverable, FALSE) = TRUE").
 		Joins("JOIN preview_cards_statuses ON preview_cards_statuses.status_id = statuses.id").
 		Where("preview_cards_statuses.preview_card_id = ?", card.ID)
-	query = applyPublicTimelineAccountFilters(query, current, false)
+	if access.localOnly {
+		query = query.Where("(statuses.local = true OR statuses.uri IS NULL)")
+	}
+	if access.remoteOnly {
+		query = query.Where("statuses.local = false AND statuses.uri IS NOT NULL")
+	}
+	query = applyPublicTimelineAccountFilters(query, current, access.localOnly)
 	return s.statusList(c, query)
 }
 

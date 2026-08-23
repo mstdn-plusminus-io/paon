@@ -121,7 +121,11 @@ func (s *Server) createAccount(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	ipRestriction.RequiresApproval = ipRestriction.RequiresApproval || emailRequiresApproval
+	usernameRequiresApproval, err := s.usernameSignUpRequiresApproval(c.Request().Context(), payload.Username)
+	if err != nil {
+		return err
+	}
+	ipRestriction.RequiresApproval = ipRestriction.RequiresApproval || emailRequiresApproval || usernameRequiresApproval
 
 	token := &models.OAuthAccessToken{}
 	var createdUser *models.User
@@ -166,14 +170,14 @@ func (s *Server) registrationForm(c *echo.Context) error {
 	if blocked, err := s.webSignUpIPBlocked(c); err != nil {
 		return err
 	} else if blocked {
-		return c.Redirect(http.StatusFound, "/")
+		return s.redirectClosedWebRegistration(c, locale)
 	}
 	invite, err := s.findUsableInvite(c.QueryParam("invite_code"), time.Now().UTC())
 	if err != nil {
 		invite = nil
 	}
 	if !s.webRegistrationsAllowedForInvite(invite) {
-		return c.Redirect(http.StatusFound, "/")
+		return s.redirectClosedWebRegistration(c, locale)
 	}
 	inviteCode := c.QueryParam("invite_code")
 	if handled, err := s.registrationRulesGateForInvite(c, inviteCode, invite); handled || err != nil {
@@ -196,7 +200,7 @@ func (s *Server) publicInvite(c *echo.Context) error {
 	if blocked, err := s.webSignUpIPBlocked(c); err != nil {
 		return err
 	} else if blocked {
-		return c.Redirect(http.StatusFound, "/")
+		return s.redirectClosedWebRegistration(c, locale)
 	}
 	code := publicShortAccountParam(c, "invite_code")
 	invite, err := s.findUsableInvite(code, time.Now().UTC())
@@ -210,7 +214,7 @@ func (s *Server) publicInvite(c *echo.Context) error {
 		if inviteWantsJSON(c) {
 			return apiError(c, http.StatusForbidden, "This action is not allowed")
 		}
-		return c.Redirect(http.StatusFound, "/")
+		return s.redirectClosedWebRegistration(c, locale)
 	}
 	if inviteWantsJSON(c) {
 		return c.JSON(http.StatusOK, map[string]string{"invite_code": invite.Code, "instance_api_url": s.cfg.BaseURL() + "/api/v2/instance"})
@@ -230,6 +234,12 @@ func (s *Server) webSignUpIPBlocked(c *echo.Context) (bool, error) {
 	return ipRestriction.Blocked, nil
 }
 
+func (s *Server) redirectClosedWebRegistration(c *echo.Context, locale string) error {
+	email := strings.TrimSpace(s.settingStringValue("site_contact_email", ""))
+	message := settingsTVars(locale, "devise.failure.closed_registrations", "Your registration attempt has been blocked due to a network policy. If you believe this is an error, contact %{email}.", map[string]string{"email": email})
+	return c.Redirect(http.StatusFound, "/auth/sign_in?alert="+url.QueryEscape(message))
+}
+
 func (s *Server) createWebRegistration(c *echo.Context) error {
 	locale := s.webLocale(c, nil)
 	if s.db == nil {
@@ -244,7 +254,7 @@ func (s *Server) createWebRegistration(c *echo.Context) error {
 		return c.HTML(http.StatusUnprocessableEntity, s.registrationPageHTML(registrationErrorMessage(locale, "invite_invalid", registrationInviteInvalidFallback), payload.InviteCode, locale, c.FormValue("accept")))
 	}
 	if !s.webRegistrationsAllowedForInvite(invite) {
-		return c.Redirect(http.StatusFound, "/")
+		return s.redirectClosedWebRegistration(c, locale)
 	}
 	if err := s.checkCloudflareTurnstile(c, payload.TurnstileResponse); err != nil {
 		return c.HTML(http.StatusUnprocessableEntity, s.registrationPageHTMLForInvite(registrationWebErrorMessage(locale, err), invite, payload.InviteCode, locale, c.FormValue("accept")))
@@ -260,13 +270,17 @@ func (s *Server) createWebRegistration(c *echo.Context) error {
 		return err
 	}
 	if ipRestriction.Blocked {
-		return c.Redirect(http.StatusFound, "/")
+		return s.redirectClosedWebRegistration(c, locale)
 	}
 	emailRequiresApproval, err := s.emailSignUpRequiresApproval(c.Request().Context(), payload.Email, c.RealIP())
 	if err != nil {
 		return err
 	}
-	ipRestriction.RequiresApproval = ipRestriction.RequiresApproval || emailRequiresApproval
+	usernameRequiresApproval, err := s.usernameSignUpRequiresApproval(c.Request().Context(), payload.Username)
+	if err != nil {
+		return err
+	}
+	ipRestriction.RequiresApproval = ipRestriction.RequiresApproval || emailRequiresApproval || usernameRequiresApproval
 	if confirm := strings.TrimSpace(c.FormValue("user[password_confirmation]")); confirm != "" && confirm != payload.Password {
 		return c.HTML(http.StatusUnprocessableEntity, s.registrationPageHTMLForInvite(registrationErrorMessage(locale, "password_confirmation_mismatch", registrationPasswordConfirmationMismatchFallback), invite, payload.InviteCode, locale, c.FormValue("accept")))
 	}
@@ -707,6 +721,13 @@ func (s *Server) validateAccountUsernameAvailable(username string) error {
 		return apiHTTPError{status: http.StatusUnprocessableEntity, message: registrationValidationUsernameReserved}
 	}
 	if s != nil && s.db != nil {
+		blocked, _, err := s.usernameSignUpRestriction(context.Background(), username)
+		if err != nil {
+			return err
+		}
+		if blocked {
+			return apiHTTPError{status: http.StatusUnprocessableEntity, message: registrationValidationUsernameReserved}
+		}
 		normalized := railsAccountUsernameValue(username)
 		if strings.TrimSpace(normalized) != "" {
 			var count int64
@@ -799,6 +820,7 @@ func (s *Server) createLocalUserAccount(tx *gorm.DB, payload accountCreatePayloa
 		Username:   railsAccountUsernameValue(payload.Username),
 		PrivateKey: sql.NullString{String: privateKey, Valid: true},
 		PublicKey:  publicKey,
+		IDScheme:   sql.NullInt64{Int64: 1, Valid: true},
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}

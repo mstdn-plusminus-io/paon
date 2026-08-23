@@ -11,6 +11,7 @@ const (
 	statusStatCounterReplies    = "replies_count"
 	statusStatCounterReblogs    = "reblogs_count"
 	statusStatCounterFavourites = "favourites_count"
+	statusStatCounterQuotes     = "quotes_count"
 )
 
 func incrementStatusStatCounter(tx *gorm.DB, statusID int64, counter string, value int64) error {
@@ -111,6 +112,8 @@ func decrementLoadedStatusStatCounter(status *models.Status, counter string, val
 func statusStatCounterAllowed(counter string) bool {
 	switch counter {
 	case statusStatCounterReplies, statusStatCounterReblogs, statusStatCounterFavourites:
+		return true
+	case statusStatCounterQuotes:
 		return true
 	default:
 		return false

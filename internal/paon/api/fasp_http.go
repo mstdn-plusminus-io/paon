@@ -34,6 +34,7 @@ const (
 var (
 	errFASPDisabled            = errors.New("fasp is disabled")
 	errFASPAuthentication      = errors.New("fasp authentication failed")
+	errFASPProviderDelivery    = errors.New("fasp provider delivery failed")
 	errFASPUnconfirmedProvider = errors.New("fasp provider is not confirmed")
 )
 
@@ -495,9 +496,11 @@ func (s *Server) faspRequest(ctx context.Context, provider models.FaspProvider, 
 	}
 	response, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("FASP provider request failed")
+		s.updateFASPProviderAvailability(ctx, provider.ID, true)
+		return nil, fmt.Errorf("%w: request failed", errFASPProviderDelivery)
 	}
 	defer response.Body.Close()
+	s.updateFASPProviderAvailability(ctx, provider.ID, false)
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, faspResponseBodyLimit+1))
 	if err != nil || int64(len(responseBody)) > faspResponseBodyLimit {
 		return nil, fmt.Errorf("invalid FASP provider response")
@@ -506,4 +509,32 @@ func (s *Server) faspRequest(ctx context.Context, provider models.FaspProvider, 
 		return nil, err
 	}
 	return responseBody, nil
+}
+
+const faspProviderRetryInterval = time.Hour
+
+func faspProviderAvailable(provider models.FaspProvider, now time.Time) bool {
+	return !provider.DeliveryLastFailedAt.Valid || provider.DeliveryLastFailedAt.Time.Before(now.Add(-faspProviderRetryInterval))
+}
+
+func (s *Server) updateFASPProviderAvailability(ctx context.Context, providerID int64, failed bool) {
+	if s == nil || s.db == nil || providerID == 0 {
+		return
+	}
+	value := any(nil)
+	if failed {
+		value = time.Now().UTC()
+	}
+	_ = s.db.WithContext(ctx).Model(&models.FaspProvider{}).Where("id = ?", providerID).Updates(map[string]any{"delivery_last_failed_at": value, "updated_at": time.Now().UTC()}).Error
+}
+
+func (s *Server) faspWorkerRequest(ctx context.Context, provider models.FaspProvider, method, endpoint string, payload any) ([]byte, bool, error) {
+	if !provider.Confirmed || !faspProviderAvailable(provider, time.Now().UTC()) {
+		return nil, false, nil
+	}
+	body, err := s.faspRequest(ctx, provider, method, endpoint, payload)
+	if errors.Is(err, errFASPProviderDelivery) {
+		return nil, false, nil
+	}
+	return body, err == nil, err
 }

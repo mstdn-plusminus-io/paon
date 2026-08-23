@@ -252,6 +252,58 @@ func TestRunnerMaterializesAuthenticatedFixtureFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunnerKeepsTargetSpecificSessionAndCSRFHeadersOutOfManifestResults(t *testing.T) {
+	server := func(cookie, csrf string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if request.Header.Get("Cookie") != cookie || request.Header.Get("X-CSRF-Token") != csrf {
+				http.Error(w, "target authentication mismatch", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+	}
+	rails := server("_mastodon_session=rails", "rails-csrf")
+	defer rails.Close()
+	goServer := server("paon_session=go", "go-csrf")
+	defer goServer.Close()
+
+	environment := map[string]string{
+		"PAON_DIFF_RAILS_USER_COOKIE":     "_mastodon_session=rails",
+		"PAON_DIFF_RAILS_USER_CSRF_TOKEN": "rails-csrf",
+		"PAON_DIFF_GO_USER_COOKIE":        "paon_session=go",
+		"PAON_DIFF_GO_USER_CSRF_TOKEN":    "go-csrf",
+	}
+	lookup := func(name string) (string, bool) {
+		value, exists := environment[name]
+		return value, exists
+	}
+	manifest := Manifest{Cases: []Case{{
+		ID:       "SETTINGS-WEB-CSRF-001",
+		Contract: "SETTINGS-WEB",
+		Method:   http.MethodPatch,
+		Path:     "/settings/preferences/posting_defaults",
+		RailsHeadersFromEnv: map[string]string{
+			"Cookie":       "PAON_DIFF_RAILS_USER_COOKIE",
+			"X-CSRF-Token": "PAON_DIFF_RAILS_USER_CSRF_TOKEN",
+		},
+		GoHeadersFromEnv: map[string]string{
+			"Cookie":       "PAON_DIFF_GO_USER_COOKIE",
+			"X-CSRF-Token": "PAON_DIFF_GO_USER_CSRF_TOKEN",
+		},
+	}}}
+	results := (Runner{RailsBaseURL: rails.URL, GoBaseURL: goServer.URL, Env: lookup}).Run(context.Background(), manifest)
+	if len(results) != 1 || results[0].Error != "" {
+		t.Fatalf("Run results = %#v", results)
+	}
+
+	delete(environment, "PAON_DIFF_GO_USER_CSRF_TOKEN")
+	results = (Runner{RailsBaseURL: rails.URL, GoBaseURL: goServer.URL, Env: lookup}).Run(context.Background(), manifest)
+	if len(results) != 1 || !strings.Contains(results[0].Error, "PAON_DIFF_GO_USER_CSRF_TOKEN") || strings.Contains(results[0].Error, "rails-csrf") {
+		t.Fatalf("missing target environment result = %#v", results)
+	}
+}
+
 func TestAuthenticatedManifestCoversReleaseMatrix(t *testing.T) {
 	file, err := os.Open("../../../testdata/differential/authenticated.json")
 	if err != nil {
@@ -262,8 +314,8 @@ func TestAuthenticatedManifestCoversReleaseMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Cases) < 20 {
-		t.Fatalf("authenticated differential cases = %d, want at least 20", len(manifest.Cases))
+	if len(manifest.Cases) < 40 {
+		t.Fatalf("authenticated differential cases = %d, want at least 40", len(manifest.Cases))
 	}
 	wantContracts := map[string]bool{
 		"ACCOUNT-LOCAL":         false,
@@ -276,6 +328,16 @@ func TestAuthenticatedManifestCoversReleaseMatrix(t *testing.T) {
 		"ADMIN-PAGINATION":      false,
 		"NOTIFICATIONS-GROUPED": false,
 		"SEARCH":                false,
+		"QUOTE-CREATE":          false,
+		"QUOTE-LIST":            false,
+		"QUOTE-REVOKE":          false,
+		"QUOTE-POLICY":          false,
+		"FEP-7888":              false,
+		"ACTIVITYPUB-NUMERIC":   false,
+		"FEED-ACCESS":           false,
+		"ADMIN-DISCOVERY":       false,
+		"ADMIN-USERNAME-BLOCKS": false,
+		"POSTING-DEFAULTS":      false,
 	}
 	for _, item := range manifest.Cases {
 		if _, exists := wantContracts[item.Contract]; exists {
@@ -284,10 +346,70 @@ func TestAuthenticatedManifestCoversReleaseMatrix(t *testing.T) {
 		if len(item.GoOnlyJSONPointers) > 0 {
 			t.Errorf("authenticated case %s has an undeclared Go-only JSON exception", item.ID)
 		}
+		if item.CompareBody != nil && !*item.CompareBody {
+			switch item.Contract {
+			case "ADMIN-DISCOVERY", "ADMIN-USERNAME-BLOCKS", "POSTING-DEFAULTS":
+			default:
+				t.Errorf("authenticated case %s skips body comparison outside retained Paon web UI", item.ID)
+			}
+		}
 	}
 	for contract, found := range wantContracts {
 		if !found {
 			t.Errorf("authenticated differential manifest is missing contract %s", contract)
+		}
+	}
+}
+
+func TestMastodon45StatefulDifferentialSequenceIsDeterministic(t *testing.T) {
+	file, err := os.Open("../../../testdata/differential/authenticated.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	manifest, err := Load(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]Case, len(manifest.Cases))
+	positions := make(map[string]int, len(manifest.Cases))
+	for index, item := range manifest.Cases {
+		byID[item.ID] = item
+		positions[item.ID] = index
+	}
+	ordered := [][]string{
+		{"AP-QUOTE-AUTHORIZATION-001", "QUOTE-LIST-001", "QUOTE-REVOKE-001"},
+		{"ADMIN-DISCOVERY-UPDATE-001", "FEED-LOCAL-ANONYMOUS-001", "FEED-LOCAL-AUTHORIZED-001"},
+		{"POSTING-DEFAULTS-UPDATE-001", "POSTING-DEFAULTS-POST-001", "POSTING-DEFAULTS-SHOW-001"},
+		{"USERNAME-BLOCK-CREATE-001", "USERNAME-BLOCK-INDEX-001"},
+	}
+	for _, sequence := range ordered {
+		for index, id := range sequence {
+			_, exists := byID[id]
+			if !exists {
+				t.Fatalf("authenticated differential manifest is missing stateful case %s", id)
+			}
+			if index > 0 && positions[sequence[index-1]] >= positions[id] {
+				t.Fatalf("stateful cases are out of order: %s must precede %s", sequence[index-1], id)
+			}
+		}
+	}
+	for _, id := range []string{"QUOTE-CREATE-001", "POSTING-DEFAULTS-POST-001"} {
+		item, exists := byID[id]
+		if !exists || item.Headers["Idempotency-Key"] == "" {
+			t.Fatalf("state-creating case %s must declare an idempotency key", id)
+		}
+	}
+	for _, item := range manifest.Cases {
+		for name := range item.RailsHeaders {
+			if name == "Cookie" || name == "Authorization" || name == "X-CSRF-Token" {
+				t.Errorf("case %s embeds a Rails credential in the manifest", item.ID)
+			}
+		}
+		for name := range item.GoHeaders {
+			if name == "Cookie" || name == "Authorization" || name == "X-CSRF-Token" {
+				t.Errorf("case %s embeds a Go credential in the manifest", item.ID)
+			}
 		}
 	}
 }

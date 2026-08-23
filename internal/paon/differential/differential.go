@@ -22,18 +22,22 @@ type Manifest struct {
 }
 
 type Case struct {
-	ID                 string            `json:"id"`
-	Contract           string            `json:"contract"`
-	Method             string            `json:"method"`
-	Path               string            `json:"path"`
-	Headers            map[string]string `json:"headers,omitempty"`
-	HeadersFromEnv     map[string]string `json:"headers_from_env,omitempty"`
-	Body               string            `json:"body,omitempty"`
-	CompareHeaders     []string          `json:"compare_headers,omitempty"`
-	VolatileHeaders    []string          `json:"volatile_headers,omitempty"`
-	JSONReplacements   map[string]any    `json:"json_replacements,omitempty"`
-	GoOnlyJSONPointers []string          `json:"go_only_json_pointers,omitempty"`
-	CompareBody        *bool             `json:"compare_body,omitempty"`
+	ID                  string            `json:"id"`
+	Contract            string            `json:"contract"`
+	Method              string            `json:"method"`
+	Path                string            `json:"path"`
+	Headers             map[string]string `json:"headers,omitempty"`
+	HeadersFromEnv      map[string]string `json:"headers_from_env,omitempty"`
+	RailsHeaders        map[string]string `json:"rails_headers,omitempty"`
+	RailsHeadersFromEnv map[string]string `json:"rails_headers_from_env,omitempty"`
+	GoHeaders           map[string]string `json:"go_headers,omitempty"`
+	GoHeadersFromEnv    map[string]string `json:"go_headers_from_env,omitempty"`
+	Body                string            `json:"body,omitempty"`
+	CompareHeaders      []string          `json:"compare_headers,omitempty"`
+	VolatileHeaders     []string          `json:"volatile_headers,omitempty"`
+	JSONReplacements    map[string]any    `json:"json_replacements,omitempty"`
+	GoOnlyJSONPointers  []string          `json:"go_only_json_pointers,omitempty"`
+	CompareBody         *bool             `json:"compare_body,omitempty"`
 }
 
 type Result struct {
@@ -105,11 +109,11 @@ func (runner Runner) runCase(ctx context.Context, item Case) error {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 	}
-	rails, err := execute(ctx, client, runner.RailsBaseURL, item)
+	rails, err := execute(ctx, client, runner.RailsBaseURL, caseWithTargetHeaders(item, item.RailsHeaders))
 	if err != nil {
 		return fmt.Errorf("Rails request: %w", err)
 	}
-	goResponse, err := execute(ctx, client, runner.GoBaseURL, item)
+	goResponse, err := execute(ctx, client, runner.GoBaseURL, caseWithTargetHeaders(item, item.GoHeaders))
 	if err != nil {
 		return fmt.Errorf("Go request: %w", err)
 	}
@@ -145,26 +149,19 @@ func materializeCaseEnvironment(item Case, lookup func(string) (string, bool)) (
 		lookup = os.LookupEnv
 	}
 	resolved := item
-	resolved.Headers = make(map[string]string, len(item.Headers)+len(item.HeadersFromEnv))
-	for name, raw := range item.Headers {
-		value, err := expandRequiredEnvironment(raw, lookup)
-		if err != nil {
-			return Case{}, fmt.Errorf("case %s header %s: %w", item.ID, name, err)
-		}
-		resolved.Headers[name] = value
-	}
-	for name, variable := range item.HeadersFromEnv {
-		variable = strings.TrimSpace(variable)
-		if !differentialEnvironmentName(variable) {
-			return Case{}, fmt.Errorf("case %s header %s has invalid environment variable name", item.ID, name)
-		}
-		value, exists := lookup(variable)
-		if !exists || strings.TrimSpace(value) == "" {
-			return Case{}, fmt.Errorf("case %s requires environment variable %s", item.ID, variable)
-		}
-		resolved.Headers[name] = value
-	}
 	var err error
+	resolved.Headers, err = materializeHeaders(item.ID, "", item.Headers, item.HeadersFromEnv, lookup)
+	if err != nil {
+		return Case{}, err
+	}
+	resolved.RailsHeaders, err = materializeHeaders(item.ID, "Rails ", item.RailsHeaders, item.RailsHeadersFromEnv, lookup)
+	if err != nil {
+		return Case{}, err
+	}
+	resolved.GoHeaders, err = materializeHeaders(item.ID, "Go ", item.GoHeaders, item.GoHeadersFromEnv, lookup)
+	if err != nil {
+		return Case{}, err
+	}
 	resolved.Path, err = expandRequiredEnvironment(item.Path, lookup)
 	if err != nil {
 		return Case{}, fmt.Errorf("case %s path: %w", item.ID, err)
@@ -174,6 +171,41 @@ func materializeCaseEnvironment(item Case, lookup func(string) (string, bool)) (
 		return Case{}, fmt.Errorf("case %s body: %w", item.ID, err)
 	}
 	return resolved, nil
+}
+
+func materializeHeaders(caseID string, target string, headers map[string]string, fromEnv map[string]string, lookup func(string) (string, bool)) (map[string]string, error) {
+	resolved := make(map[string]string, len(headers)+len(fromEnv))
+	for name, raw := range headers {
+		value, err := expandRequiredEnvironment(raw, lookup)
+		if err != nil {
+			return nil, fmt.Errorf("case %s %sheader %s: %w", caseID, target, name, err)
+		}
+		resolved[name] = value
+	}
+	for name, variable := range fromEnv {
+		variable = strings.TrimSpace(variable)
+		if !differentialEnvironmentName(variable) {
+			return nil, fmt.Errorf("case %s %sheader %s has invalid environment variable name", caseID, target, name)
+		}
+		value, exists := lookup(variable)
+		if !exists || strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("case %s requires environment variable %s", caseID, variable)
+		}
+		resolved[name] = value
+	}
+	return resolved, nil
+}
+
+func caseWithTargetHeaders(item Case, targetHeaders map[string]string) Case {
+	resolved := item
+	resolved.Headers = make(map[string]string, len(item.Headers)+len(targetHeaders))
+	for name, value := range item.Headers {
+		resolved.Headers[name] = value
+	}
+	for name, value := range targetHeaders {
+		resolved.Headers[name] = value
+	}
+	return resolved
 }
 
 func expandRequiredEnvironment(raw string, lookup func(string) (string, bool)) (string, error) {

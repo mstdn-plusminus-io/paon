@@ -39,6 +39,9 @@ func (s *Server) filterStreamingMessage(session streamingSession, message redisM
 	if err := json.Unmarshal(message.Payload, &payload); err != nil {
 		return message, true
 	}
+	if local, known := streamingPayloadIsLocal(payload); known && ((local && session.FilterLocal) || (!local && session.FilterRemote)) {
+		return message, false
+	}
 	if !streamingLanguageAllowed(session.ChosenLanguages, payload) {
 		return message, false
 	}
@@ -63,6 +66,19 @@ func (s *Server) filterStreamingMessage(session streamingSession, message redisM
 	}
 	message.Payload = encoded
 	return message, true
+}
+
+func streamingPayloadIsLocal(payload map[string]any) (bool, bool) {
+	account, ok := payload["account"].(map[string]any)
+	if !ok {
+		return false, false
+	}
+	username, usernameOK := account["username"].(string)
+	acct, acctOK := account["acct"].(string)
+	if !usernameOK || !acctOK {
+		return false, false
+	}
+	return username == acct, true
 }
 
 func streamingLanguageAllowed(chosen []string, payload map[string]any) bool {

@@ -132,6 +132,32 @@ func renderSignInFormForTest(t *testing.T, cfg config.Config) string {
 	return rec.Body.String()
 }
 
+func TestSignInFormDoesNotLinkAwayFromOAuthAuthorizationFlow(t *testing.T) {
+	s := &Server{cfg: config.Config{DefaultLocale: "en"}}
+	req := httptest.NewRequest(http.MethodGet, "/auth/sign_in?redirect_to=%2Foauth%2Fauthorize%3Fclient_id%3Dtest", nil)
+	rec := httptest.NewRecorder()
+	c := echo.NewContext(req, rec, echo.New())
+	if err := s.signInForm(c); err != nil {
+		t.Fatal(err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="logo logo--wordmark"`) || strings.Contains(body, `<h1><a href="/">`) {
+		t.Fatalf("OAuth authorization sign-in must show a non-linking wordmark: %s", body)
+	}
+	if strings.Contains(body, `class="form-footer"`) {
+		t.Fatalf("OAuth authorization sign-in must not link to unrelated auth pages: %s", body)
+	}
+	if !strings.Contains(body, `name="redirect_to" value="/oauth/authorize?client_id=test"`) {
+		t.Fatalf("OAuth authorization redirect was not preserved: %s", body)
+	}
+
+	for _, unsafe := range []string{"https://evil.example/oauth/authorize", "//evil.example/oauth/authorize"} {
+		if signInWithinOAuthAuthorizationFlow(unsafe) {
+			t.Fatalf("external redirect %q must not be treated as an authorization flow", unsafe)
+		}
+	}
+}
+
 func TestTwoFactorSignInHTMLMatchesRailsWebAuthnPackContract(t *testing.T) {
 	html := twoFactorSignInHTML("/packs/js/two_factor_authentication-hash.js", "en", true, true)
 	for _, want := range []string{
@@ -649,6 +675,25 @@ func TestCASHTTPClientForConfigUsesRailsTLSOptions(t *testing.T) {
 	transport, ok = client.Transport.(*http.Transport)
 	if !ok || transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatalf("CAS_DISABLE_SSL_VERIFICATION did not configure TLS skip verify: %#v", client.Transport)
+	}
+}
+
+func TestLDAPTLSConfigForConfigKeepsPerConnectionVerificationState(t *testing.T) {
+	insecure := ldapTLSConfigForConfig(config.Config{LDAPHost: "ldap-insecure.example", LDAPTLSNoVerify: true})
+	secure := ldapTLSConfigForConfig(config.Config{LDAPHost: "ldap-secure.example"})
+
+	if insecure == secure {
+		t.Fatal("LDAP connections unexpectedly share mutable TLS configuration")
+	}
+	if !insecure.InsecureSkipVerify {
+		t.Fatal("explicit LDAP_TLS_NO_VERIFY=true was ignored")
+	}
+	if secure.InsecureSkipVerify {
+		t.Fatal("certificate verification leaked from another LDAP connection")
+	}
+	insecure.ServerName = "mutated.example"
+	if secure.ServerName != "ldap-secure.example" {
+		t.Fatalf("LDAP TLS state leaked between connections: %#v", secure)
 	}
 }
 

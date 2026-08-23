@@ -714,9 +714,25 @@ func fetchActivityResourceWithMetadataAndUserAgentSignedWithAcceptAndContext(ctx
 			return fetchedActivityResource{}, err
 		}
 	}
-	resp, err := activityHTTPClientForActivityFetch(s, signer).Do(req)
+	client := activityHTTPClientForActivityFetch(s, signer)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fetchedActivityResource{}, taskTargetError("failed to fetch remote activity", "remote", parsed.Hostname(), err)
+	}
+	if signer != nil && signer.PrivateKey.Valid && activityPubShouldRetryWithHTTPMessageSignature(resp.StatusCode) {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxActivityResourceBodySize+1))
+		_ = resp.Body.Close()
+		retry := req.Clone(ctx)
+		retry.Header = req.Header.Clone()
+		retry.Header.Del("Signature")
+		retry.Header.Del("Signature-Input")
+		if err := s.signActivityPubHTTPMessageRequest(retry, *signer, nil); err != nil {
+			return fetchedActivityResource{}, err
+		}
+		resp, err = client.Do(retry)
+		if err != nil {
+			return fetchedActivityResource{}, taskTargetError("failed to fetch remote activity", "remote", parsed.Hostname(), err)
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -778,12 +794,21 @@ func activityHTTPClientForActivityFetch(s *Server, signer *models.Account) *http
 		if s == nil || signer == nil || !signer.PrivateKey.Valid || strings.TrimSpace(signer.PrivateKey.String) == "" {
 			return nil
 		}
+		rfc9421 := strings.TrimSpace(req.Header.Get("Signature-Input")) != ""
 		req.Header.Del("Signature")
+		req.Header.Del("Signature-Input")
 		// Mastodon 4.4.15 deliberately leaves Accept out when re-signing a
 		// redirected GET because redirect handling may have changed its value.
+		if rfc9421 {
+			return s.signActivityPubHTTPMessageRequest(req, *signer, nil)
+		}
 		return s.signActivityPubFetchRequestWithAccept(req, *signer, false)
 	}
 	return &client
+}
+
+func activityPubShouldRetryWithHTTPMessageSignature(status int) bool {
+	return status == http.StatusBadRequest || status == http.StatusUnauthorized
 }
 
 func parseActivityResourcePayload(body []byte) (activityPayload, error) {

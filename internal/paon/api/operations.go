@@ -446,7 +446,7 @@ func NewOperations(cfg config.Config, database *gorm.DB) *Operations {
 }
 
 // CutoverLegacyStatusQuotes is the only supported DynamoDB quote access after
-// the 4.4 upgrade. It reads and revalidates legacy metadata, writes accepted
+// the official Quote cutover. It reads and revalidates legacy metadata, writes accepted
 // PostgreSQL Quote rows only when dryRun is false, and never mutates DynamoDB.
 func (operations *Operations) CutoverLegacyStatusQuotes(ctx context.Context, dryRun bool) (QuoteCutoverResult, error) {
 	var result QuoteCutoverResult

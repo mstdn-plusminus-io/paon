@@ -1342,7 +1342,7 @@ func generateVideoThumbnailFile(source string, target string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), mediaFFmpegThumbnailTimeout)
 	defer cancel()
 	binary := mediaFFmpegBinary()
-	output, err := exec.CommandContext(ctx, binary, "-y", "-i", source, "-frames:v", "1", "-vf", "thumbnail,scale=480:-2", target).CombinedOutput()
+	output, err := exec.CommandContext(ctx, binary, mediaVideoThumbnailFFmpegArgs(source, target)...).CombinedOutput()
 	if err != nil {
 		return mediaCommandExecutionError(binary, err, output)
 	}
@@ -1356,7 +1356,7 @@ func generateAudioThumbnailFile(source string, target string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), mediaFFmpegThumbnailTimeout)
 	defer cancel()
 	binary := mediaFFmpegBinary()
-	output, err := exec.CommandContext(ctx, binary, "-y", "-i", source, "-loglevel", "fatal", target).CombinedOutput()
+	output, err := exec.CommandContext(ctx, binary, mediaAudioThumbnailFFmpegArgs(source, target)...).CombinedOutput()
 	if err != nil {
 		return mediaCommandExecutionError(binary, err, output)
 	}
@@ -1660,7 +1660,7 @@ func mediaMetaForStoredFile(path string, mediaType int) []byte {
 func mediaMetaFromFFProbe(path string) []byte {
 	ctx, cancel := context.WithTimeout(context.Background(), mediaFFProbeTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, mediaFFprobeBinary(), "-i", path, "-print_format", "json", "-show_format", "-show_streams", "-show_error", "-loglevel", "fatal").Output()
+	output, err := exec.CommandContext(ctx, mediaFFprobeBinary(), mediaFFprobeArgs(path)...).Output()
 	if err != nil {
 		return nil
 	}

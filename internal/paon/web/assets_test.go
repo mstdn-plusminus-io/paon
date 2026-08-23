@@ -686,6 +686,7 @@ func defaultRequiredPackEntries(locale string) map[string]string {
 		"features/following.js":                              "/packs/js/features/following-hash.chunk.js",
 		"features/reblogs.js":                                "/packs/js/features/reblogs-hash.chunk.js",
 		"features/favourites.js":                             "/packs/js/features/favourites-hash.chunk.js",
+		"features/quotes.js":                                 "/packs/js/features/quotes-hash.chunk.js",
 		"features/follow_requests.js":                        "/packs/js/features/follow_requests-hash.chunk.js",
 		"features/favourited_statuses.js":                    "/packs/js/features/favourited_statuses-hash.chunk.js",
 		"features/followed_tags.js":                          "/packs/js/features/followed_tags-hash.chunk.js",
@@ -1015,6 +1016,7 @@ func TestAppHTMLIncludesEscapedHeadMetadataAndLinks(t *testing.T) {
 		HeadLinks: []HeadLink{
 			{Rel: "alternate", Type: "application/activity+json", Href: `https://example.test/statuses/123?x=1&y=2`},
 		},
+		HeadJSONLD: []string{`{"@context":"https://schema.org","@type":"SocialMediaPosting","text":"<script>unsafe</script>"}`},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1023,6 +1025,7 @@ func TestAppHTMLIncludesEscapedHeadMetadataAndLinks(t *testing.T) {
 		`<meta property="og:title" content="Alice &lt;Admin&gt; &amp; &#34;friends&#34;">`,
 		`<meta name="description" content="A &lt;post&gt; &amp; &#34;quote&#34;">`,
 		`<link rel="alternate" type="application/activity&#43;json" href="https://example.test/statuses/123?x=1&amp;y=2">`,
+		`<script type="application/ld+json">{"@context":"https://schema.org","@type":"SocialMediaPosting","text":"\u003cscript\u003eunsafe\u003c/script\u003e"}</script>`,
 		`<title>Alice &lt;Admin&gt;: &#34;hello&#34;</title>`,
 	} {
 		if !strings.Contains(html, want) {

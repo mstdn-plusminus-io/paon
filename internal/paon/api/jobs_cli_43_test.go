@@ -57,7 +57,7 @@ func TestJob43PayloadVersionsEmitCurrentAndAcceptLegacy(t *testing.T) {
 	}
 	for _, want := range []string{
 		`asynqMediaAttachmentPayload{Version: asynqPayloadVersion43, MediaAttachmentID: mediaAttachmentID}`,
-		`asynqFollowersSynchronizationPayload{Version: asynqPayloadVersion43, AccountID: accountID, URL: collectionURL}`,
+		`asynqFollowersSynchronizationPayload{Version: asynqPayloadVersion43, AccountID: accountID, URL: collectionURL, Digest: firstNonEmpty(expectedDigest...)}`,
 	} {
 		if !bytes.Contains(src, []byte(want)) {
 			t.Fatalf("JOB43 payload producer is missing explicit version: %s", want)

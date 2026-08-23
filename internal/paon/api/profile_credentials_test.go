@@ -82,8 +82,15 @@ func TestFollowRequestsCountExcludesSuspendedRequestersLikeMastodon44(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !functionBodyContains(t, src, "followRequestsCount", `accounts.suspended_at IS NULL`) {
-		t.Fatal("credential follow_requests_count must exclude suspended requester accounts")
+	for _, want := range []string{
+		`accounts.suspended_at IS NULL`,
+		`Limit(40)`,
+		`Pluck("accounts.id", &requesterIDs)`,
+		`return int64(len(requesterIDs)), err`,
+	} {
+		if !functionBodyContains(t, src, "followRequestsCount", want) {
+			t.Fatalf("credential follow_requests_count missing Mastodon 4.5.14 constraint %q", want)
+		}
 	}
 }
 

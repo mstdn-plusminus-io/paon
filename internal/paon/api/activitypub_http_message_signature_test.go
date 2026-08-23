@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -11,6 +12,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -208,12 +210,9 @@ func TestMastodon44HTTPMessageSignatureParsersAreRequestLocalAndRejectDuplicates
 	}
 }
 
-func TestMastodon44HTTPMessageSignatureFeatureAndTemporaryFailureStatuses(t *testing.T) {
-	if (&Server{cfg: config.Config{}}).activityHTTPMessageSignaturesEnabled() {
-		t.Fatal("HTTP message signatures unexpectedly enabled")
-	}
-	if !(&Server{cfg: config.Config{ExperimentalFeatures: []string{"HTTP_MESSAGE_SIGNATURES"}}}).activityHTTPMessageSignaturesEnabled() {
-		t.Fatal("HTTP message signatures feature was not enabled")
+func TestMastodon45HTTPMessageSignaturesAreAlwaysEnabledAndTemporaryFailureStatuses(t *testing.T) {
+	if !(&Server{cfg: config.Config{}}).activityHTTPMessageSignaturesEnabled() {
+		t.Fatal("HTTP message signatures must be enabled without an experimental feature flag")
 	}
 	temporary := activityPubSignatureActorResolutionError(activityFetchHTTPError{StatusCode: http.StatusServiceUnavailable, URL: "https://remote.example/key"})
 	if activityPubSignatureErrorStatus(temporary) != http.StatusServiceUnavailable {
@@ -248,6 +247,150 @@ func TestMastodon44RedirectedLegacySignatureDoesNotCoverAccept(t *testing.T) {
 	}
 	if stringSliceContains(activitySignedHeaders(params, activitySignatureAlgorithm(params)), "accept") {
 		t.Fatalf("redirect signature covers Accept: %s", request.Header.Get("Signature"))
+	}
+}
+
+func TestMastodon45DefaultFetchSignatureDoesNotCoverAccept(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER := x509.MarshalPKCS1PrivateKey(privateKey)
+	account := models.Account{
+		ID:         1,
+		Username:   "alice",
+		PrivateKey: sql.NullString{String: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: privateDER})), Valid: true},
+	}
+	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "local.example", LocalDomain: "local.example"}}
+	request, err := http.NewRequest(http.MethodGet, "https://remote.example/actor", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Accept", activityResourceAcceptHeader)
+	if err := server.signActivityPubFetchRequest(request, account); err != nil {
+		t.Fatal(err)
+	}
+	params, err := parseActivitySignature(request.Header.Get("Signature"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringSliceContains(activitySignedHeaders(params, activitySignatureAlgorithm(params)), "accept") {
+		t.Fatalf("default fetch signature covers Accept: %s", request.Header.Get("Signature"))
+	}
+}
+
+func TestMastodon45OutgoingHTTPMessageSignatureCoversBody(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER := x509.MarshalPKCS1PrivateKey(privateKey)
+	account := models.Account{
+		ID:         1,
+		Username:   "alice",
+		PrivateKey: sql.NullString{String: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: privateDER})), Valid: true},
+	}
+	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "local.example", LocalDomain: "local.example"}}
+	body := []byte(`{"type":"Create"}`)
+	request := httptest.NewRequest(http.MethodPost, "https://remote.example/inbox", strings.NewReader(string(body)))
+	if err := server.signActivityPubHTTPMessageRequest(request, account, body); err != nil {
+		t.Fatal(err)
+	}
+	input, err := parseActivityHTTPMessageSignatureInput(request.Header.Get("Signature-Input"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !activityHTTPMessageSignatureHasComponent(input, "@method") || !activityHTTPMessageSignatureHasComponent(input, "@target-uri") || !activityHTTPMessageSignatureHasComponent(input, "content-digest") {
+		t.Fatalf("covered components = %#v", input.Components)
+	}
+	if err := validateActivityContentDigest(request, input, body); err != nil {
+		t.Fatal(err)
+	}
+	signature, err := parseActivityHTTPMessageSignature(request.Header.Get("Signature"), input.Label)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := buildActivityHTTPMessageSignatureBase(request, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyActivityHTTPMessageSignature(&privateKey.PublicKey, signature, base); err != nil {
+		t.Fatalf("outgoing RFC 9421 signature failed verification: %v\nbase=%s", err, base)
+	}
+}
+
+func TestMastodon45OutboundRequestsRetryWithHTTPMessageSignatures(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER := x509.MarshalPKCS1PrivateKey(privateKey)
+	account := models.Account{
+		ID:         1,
+		Username:   "alice",
+		PrivateKey: sql.NullString{String: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: privateDER})), Valid: true},
+	}
+	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "local.example", LocalDomain: "local.example"}}
+	previousClient := activityHTTPClient
+	t.Cleanup(func() { activityHTTPClient = previousClient })
+
+	for _, test := range []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "fetch",
+			run: func() error {
+				_, err := fetchActivityResourceWithMetadataAndUserAgentSigned("https://remote.example/actor", "", server, &account)
+				return err
+			},
+		},
+		{
+			name: "delivery",
+			run: func() error {
+				return server.deliverActivityPubOnce(context.Background(), account, "https://remote.example/inbox", []byte(`{"type":"Create"}`), "remote.example", false)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			activityHTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				calls++
+				if calls == 1 {
+					if request.Header.Get("Signature") == "" || request.Header.Get("Signature-Input") != "" {
+						t.Fatalf("first request is not a legacy HTTP Signature: %#v", request.Header)
+					}
+					return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("retry"))}, nil
+				}
+				input, err := parseActivityHTTPMessageSignatureInput(request.Header.Get("Signature-Input"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				signature, err := parseActivityHTTPMessageSignature(request.Header.Get("Signature"), input.Label)
+				if err != nil {
+					t.Fatal(err)
+				}
+				base, err := buildActivityHTTPMessageSignatureBase(request, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := verifyActivityHTTPMessageSignature(&privateKey.PublicKey, signature, base); err != nil {
+					t.Fatal(err)
+				}
+				if request.Method == http.MethodPost {
+					if err := validateActivityContentDigest(request, input, []byte(`{"type":"Create"}`)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/activity+json"}}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+			})}
+			if err := test.run(); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 {
+				t.Fatalf("requests = %d, want legacy plus RFC 9421 retry", calls)
+			}
+		})
 	}
 }
 

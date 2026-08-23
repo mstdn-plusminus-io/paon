@@ -309,6 +309,30 @@ func TestAdminInstanceMediaAttachmentsDailyTotalUsesRailsByteSum(t *testing.T) {
 	}
 }
 
+func TestMastodon4515AdminMediaStorageMetricMatchesOfficialSources(t *testing.T) {
+	want := [...]adminMediaStorageSource{
+		{table: "media_attachments", expression: "COALESCE(file_file_size, 0) + COALESCE(thumbnail_file_size, 0)"},
+		{table: "custom_emojis", expression: "COALESCE(image_file_size, 0)"},
+		{table: "preview_cards", expression: "COALESCE(image_file_size, 0)"},
+		{table: "accounts", expression: "COALESCE(avatar_file_size, 0) + COALESCE(header_file_size, 0)"},
+		{table: "backups", expression: "COALESCE(dump_file_size, 0)"},
+		{table: "site_uploads", expression: "COALESCE(file_file_size, 0)"},
+	}
+	if len(adminMediaStorageSources) != len(want) {
+		t.Fatalf("media storage sources = %#v, want %#v", adminMediaStorageSources, want)
+	}
+	for index := range want {
+		if adminMediaStorageSources[index] != want[index] {
+			t.Fatalf("media storage source %d = %#v, want %#v", index, adminMediaStorageSources[index], want[index])
+		}
+	}
+	for _, source := range adminMediaStorageSources {
+		if source.table == "imports" || source.table == "bulk_imports" {
+			t.Fatalf("database-backed import state must not be counted as attached media: %#v", source)
+		}
+	}
+}
+
 func TestAdminDashboardDimensionsUseRailsTimeAndStatusScopes(t *testing.T) {
 	src, err := os.ReadFile("admin_metrics.go")
 	if err != nil {
@@ -380,7 +404,7 @@ func TestAdminSoftwareVersionsDimensionUsesRailsCompatibleKeys(t *testing.T) {
 	}
 	for _, want := range []string{
 		`adminVersionDimensionItem("postgresql", "PostgreSQL", version)`,
-		`adminVersionDimensionItem("redis", "Redis", version)`,
+		`adminVersionDimensionItem("redis", name, version)`,
 		`adminVersionDimensionItem("meilisearch", "Meilisearch", version)`,
 		`strings.TrimRight(s.cfg.MeiliHost, "/")+"/version"`,
 		`req.Header.Set("Authorization", "Bearer "+s.cfg.MeiliMasterKey)`,
@@ -483,6 +507,20 @@ func TestAdminSoftwareVersionParsers(t *testing.T) {
 	if got := redisInfoValue(info, "redis_version"); got != "7.2.5" {
 		t.Fatalf("redis version = %q", got)
 	}
+	for _, test := range []struct {
+		info        string
+		wantName    string
+		wantVersion string
+	}{
+		{"redis_version:7.2.5\r\n", "Redis", "7.2.5"},
+		{"redis_version:7.2.5\r\nvalkey_version:8.1.3\r\n", "Valkey", "8.1.3"},
+		{"redis_version:7.2.5\r\ndragonfly_version:1.30.0\r\n", "Dragonfly", "1.30.0"},
+	} {
+		name, version := redisStoreIdentity(test.info)
+		if name != test.wantName || version != test.wantVersion {
+			t.Fatalf("store identity = %q %q, want %q %q", name, version, test.wantName, test.wantVersion)
+		}
+	}
 }
 
 func TestAdminMetricStatusIDRangeUsesMastodonSnowflakeIDs(t *testing.T) {
@@ -491,6 +529,24 @@ func TestAdminMetricStatusIDRangeUsesMastodonSnowflakeIDs(t *testing.T) {
 	earliest, latest := adminMetricStatusIDRange(start, end)
 	if earliest != mastodonSnowflakeIDAt(start, false) || latest != mastodonSnowflakeIDAt(end, false) {
 		t.Fatalf("status id range = %d..%d", earliest, latest)
+	}
+	earliest, latest = adminMetricAccountIDRange(start, end)
+	if earliest != mastodonSnowflakeIDAt(start, false) || latest != mastodonSnowflakeIDAt(end, false) {
+		t.Fatalf("account id range = %d..%d", earliest, latest)
+	}
+
+	src, err := os.ReadFile("admin_metrics.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, src, "adminMeasureDailyTotal")
+	for _, want := range []string{
+		`adminMetricAccountIDRange(day, next)`,
+		`Where("account_id >= ? AND account_id < ?", earliestAccountID, latestAccountID)`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("new-users measure missing Mastodon 4.5.14 query constraint %q", want)
+		}
 	}
 }
 
@@ -525,7 +581,8 @@ func TestAdminRetentionUsesRailsStylePostgreSQLGridQuery(t *testing.T) {
 		`s.db.Dialector.Name() != "postgres"`,
 		`generate_series(date_trunc(?, ?::timestamp)::date, date_trunc(?, ?::timestamp)::date, ('1 ' || ?)::interval)`,
 		`retention_period >= cohort_period`,
-		`date_trunc(?, users.created_at)::date = axis.cohort_period`,
+		`users.account_id >= (date_part('epoch', date_trunc(?, axis.cohort_period)::date) * 1000)::bigint << 16`,
+		`users.account_id < ((date_part('epoch', date_trunc(?, axis.cohort_period)::date + ('1 ' || ?)::interval)) * 1000)::bigint << 16`,
 		`date_trunc(?, users.current_sign_in_at) >= axis.retention_period`,
 		`GREATEST(count(*), 1) FROM new_users`,
 	} {

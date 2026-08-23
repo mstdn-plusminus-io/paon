@@ -467,7 +467,7 @@ func TestActivityPubNoteContentFormatsParagraphs(t *testing.T) {
 	}
 }
 
-func TestActivityPubNoteDoesNotSerializeQuoteCreationFieldsOn44(t *testing.T) {
+func TestActivityPubNoteSerializesOfficialQuoteAndInteractionPolicyOn45(t *testing.T) {
 	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "example.com", LocalDomain: "example.com"}}
 	quoted := &models.Status{
 		ID:        77,
@@ -494,23 +494,26 @@ func TestActivityPubNoteDoesNotSerializeQuoteCreationFieldsOn44(t *testing.T) {
 	}
 
 	note := activityPubNote(server, status)
-	for _, key := range []string{"quote", "quoteAuthorization", "quoteUrl", "_misskey_quote", "interactionPolicy"} {
-		if _, ok := note[key]; ok {
-			t.Fatalf("Mastodon 4.4 outbound Note unexpectedly contains %q: %#v", key, note)
+	for _, key := range []string{"quote", "quoteAuthorization", "quoteUri", "_misskey_quote", "interactionPolicy"} {
+		if _, ok := note[key]; !ok {
+			t.Fatalf("Mastodon 4.5 outbound Note is missing %q: %#v", key, note)
 		}
+	}
+	if note["quote"] != quoted.URI.String || note["quoteAuthorization"] != status.Quote.ApprovalURI.String {
+		t.Fatalf("Mastodon 4.5 quote values = %#v", note)
 	}
 	create := activityPubCreate(server, status)
 	contexts, ok := create["@context"].([]any)
 	if !ok || len(contexts) != 2 {
-		t.Fatalf("Mastodon 4.4 Create context = %#v", create["@context"])
+		t.Fatalf("Mastodon 4.5 Create context = %#v", create["@context"])
 	}
 	extension, ok := contexts[1].(map[string]any)
 	if !ok {
-		t.Fatalf("Mastodon 4.4 Create context extension = %#v", contexts[1])
+		t.Fatalf("Mastodon 4.5 Create context extension = %#v", contexts[1])
 	}
-	for _, key := range []string{"misskey", "_misskey_quote", "fedibird", "quoteUri", "fep", "quote", "quoteAuthorization", "QuoteAuthorization", "QuoteRequest", "gts", "interactionPolicy", "canQuote", "automaticApproval", "manualApproval", "interactingObject", "interactionTarget"} {
-		if _, ok := extension[key]; ok {
-			t.Fatalf("Mastodon 4.4 outbound Create context unexpectedly contains %q: %#v", key, extension)
+	for _, key := range []string{"_misskey_quote", "quoteUri", "fep", "quote", "quoteAuthorization", "QuoteAuthorization", "QuoteRequest", "gts", "interactionPolicy", "canQuote", "automaticApproval", "manualApproval", "interactingObject", "interactionTarget"} {
+		if _, ok := extension[key]; !ok {
+			t.Fatalf("Mastodon 4.5 outbound Create context is missing %q: %#v", key, extension)
 		}
 	}
 }
@@ -1038,7 +1041,7 @@ func TestActivityPubHandlersNormalizeRailsJSONFormatParams(t *testing.T) {
 		fn   string
 		want string
 	}{
-		{fn: "activityPubActor", want: `s.findAccountByAcct(activityPubFormatParam(c, "username"))`},
+		{fn: "activityPubActor", want: `s.localActivityPubAccountWithSuspensionMode(c, true)`},
 		{fn: "activityPubCollection", want: `collectionID := activityPubFormatParam(c, "id")`},
 		{fn: "localActivityPubAccountWithSuspensionMode", want: `s.findAccountByAcct(activityPubFormatParam(c, "username"))`},
 		{fn: "findActivityPubStatus", want: `s.findStatus(activityPubFormatParam(c, "id"))`},
@@ -1314,8 +1317,8 @@ func TestAccountMatchesMentionRef(t *testing.T) {
 }
 
 func TestStatusHashtagRefs(t *testing.T) {
-	refs := statusHashtagRefs("hello #GoLang and #golang plus #日本語 and #bad-tag")
-	if len(refs) != 3 {
+	refs := statusHashtagRefs("hello #GoLang and #golang plus #日本語 and #bad-tag and ＃全角")
+	if len(refs) != 4 {
 		t.Fatalf("refs = %#v", refs)
 	}
 	if refs[0] != (statusHashtagRef{Normalized: "golang", Display: "GoLang"}) {
@@ -1326,6 +1329,9 @@ func TestStatusHashtagRefs(t *testing.T) {
 	}
 	if refs[2] != (statusHashtagRef{Normalized: "bad", Display: "bad"}) {
 		t.Fatalf("refs[2] = %#v", refs[2])
+	}
+	if refs[3] != (statusHashtagRef{Normalized: "全角", Display: "全角"}) {
+		t.Fatalf("refs[3] = %#v", refs[3])
 	}
 }
 

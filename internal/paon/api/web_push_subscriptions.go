@@ -72,6 +72,8 @@ var webPushAlertTypeList = []string{
 	"follow_request",
 	"favourite",
 	"poll",
+	"quote",
+	"quoted_update",
 	"update",
 	"severed_relationships",
 	"moderation_warning",

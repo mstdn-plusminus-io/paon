@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -1727,10 +1728,31 @@ func (s *Server) deliverActivityPubOnce(ctx context.Context, local models.Accoun
 	if err := s.signActivityPubRequest(req, local, key, headers); err != nil {
 		return fmt.Errorf("activitypub delivery sign request source_account_id=%d inbox=%q: %w", local.ID, inboxURL, err)
 	}
-	resp, err := activityHTTPClientForActivityDelivery(s, local, key, headers).Do(req)
+	client := activityHTTPClientForActivityDelivery(s, local, key, headers, body)
+	resp, err := client.Do(req)
 	if err != nil {
 		s.trackActivityPubDeliveryStoplightFailure(inboxURL)
 		return fmt.Errorf("activitypub delivery request source_account_id=%d inbox=%q: %w", local.ID, inboxURL, err)
+	}
+	if activityPubShouldRetryWithHTTPMessageSignature(resp.StatusCode) {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxActivityResourceBodySize+1))
+		_ = resp.Body.Close()
+		retry, retryErr := http.NewRequestWithContext(ctx, http.MethodPost, inboxURL, bytes.NewReader(body))
+		if retryErr != nil {
+			return fmt.Errorf("activitypub delivery create RFC 9421 retry request inbox=%q: %w", inboxURL, retryErr)
+		}
+		retry.Header = req.Header.Clone()
+		retry.Header.Del("Signature")
+		retry.Header.Del("Signature-Input")
+		retry.Host = activityPubRequestHost(retry)
+		if err := s.signActivityPubHTTPMessageRequestWithKey(retry, local, key, body); err != nil {
+			return fmt.Errorf("activitypub delivery RFC 9421 sign request source_account_id=%d inbox=%q: %w", local.ID, inboxURL, err)
+		}
+		resp, err = client.Do(retry)
+		if err != nil {
+			s.trackActivityPubDeliveryStoplightFailure(inboxURL)
+			return fmt.Errorf("activitypub delivery RFC 9421 request source_account_id=%d inbox=%q: %w", local.ID, inboxURL, err)
+		}
 	}
 	defer resp.Body.Close()
 	statusCode = resp.StatusCode
@@ -1758,7 +1780,7 @@ func (s *Server) deliverActivityPubOnce(ctx context.Context, local models.Accoun
 	return fmt.Errorf("activitypub delivery failed source_account_id=%d inbox=%q status=%d response=%q", local.ID, inboxURL, resp.StatusCode, responseSnippet)
 }
 
-func activityHTTPClientForActivityDelivery(s *Server, signer models.Account, key *rsa.PrivateKey, headers []string) *http.Client {
+func activityHTTPClientForActivityDelivery(s *Server, signer models.Account, key *rsa.PrivateKey, headers []string, body []byte) *http.Client {
 	if activityHTTPClient == nil {
 		return nil
 	}
@@ -1770,12 +1792,21 @@ func activityHTTPClientForActivityDelivery(s *Server, signer models.Account, key
 		if !activityRedirectAllowed(req, via) {
 			return fmt.Errorf("remote host is not allowed")
 		}
+		rfc9421 := strings.TrimSpace(req.Header.Get("Signature-Input")) != ""
 		req.Header.Del("Signature")
+		req.Header.Del("Signature-Input")
 		req.Host = activityPubRequestHost(req)
 		req.Header.Set("Host", req.Host)
 		req.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
 		if s == nil || key == nil {
 			return fmt.Errorf("activitypub redirect signing key is missing")
+		}
+		if rfc9421 {
+			var signedBody []byte
+			if req.Method != http.MethodGet && req.Method != http.MethodHead {
+				signedBody = body
+			}
+			return s.signActivityPubHTTPMessageRequestWithKey(req, signer, key, signedBody)
 		}
 		return s.signActivityPubRequest(req, signer, key, headers)
 	}
@@ -1868,7 +1899,7 @@ func activityPubDeliveryAuthorizationFailureUnsalvageable(status int, sourcePerm
 }
 
 func (s *Server) signActivityPubFetchRequest(req *http.Request, account models.Account) error {
-	return s.signActivityPubFetchRequestWithAccept(req, account, true)
+	return s.signActivityPubFetchRequestWithAccept(req, account, false)
 }
 
 func (s *Server) signActivityPubFetchRequestWithAccept(req *http.Request, account models.Account, signAccept bool) error {

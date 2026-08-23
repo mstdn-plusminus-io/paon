@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
@@ -16,8 +17,6 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
-
-const activityHTTPMessageSignaturesFeature = "http_message_signatures"
 
 type activityHTTPMessageSignatureComponent struct {
 	Name       string
@@ -51,7 +50,57 @@ type activityStructuredFieldParser struct {
 }
 
 func (s *Server) activityHTTPMessageSignaturesEnabled() bool {
-	return s != nil && s.cfg.ExperimentalFeatureEnabled(activityHTTPMessageSignaturesFeature)
+	return s != nil
+}
+
+// signActivityPubHTTPMessageRequest emits an RFC 9421 signature using the
+// component set Mastodon 4.5 uses for outbound federation requests. The
+// caller passes a non-nil body for requests that must cover Content-Digest.
+func (s *Server) signActivityPubHTTPMessageRequest(req *http.Request, account models.Account, body []byte) error {
+	key, err := activityPrivateKey(account.PrivateKey.String)
+	if err != nil {
+		return err
+	}
+	return s.signActivityPubHTTPMessageRequestWithKey(req, account, key, body)
+}
+
+func (s *Server) signActivityPubHTTPMessageRequestWithKey(req *http.Request, account models.Account, key *rsa.PrivateKey, body []byte) error {
+	if s == nil || req == nil || req.URL == nil || key == nil {
+		return errors.New("HTTP message signature request is incomplete")
+	}
+	keyID := activityPubActorID(s, account) + "#main-key"
+	if strings.ContainsAny(keyID, "\"\\\r\n") {
+		return errors.New("HTTP message signature key id is invalid")
+	}
+	components := []activityHTTPMessageSignatureComponent{
+		{Name: "@method", Serialized: `"@method"`},
+		{Name: "@target-uri", Serialized: `"@target-uri"`},
+	}
+	serialized := []string{`"@method"`, `"@target-uri"`}
+	if body != nil {
+		digest := sha256.Sum256(body)
+		req.Header.Set("Content-Digest", "sha-256=:"+base64.StdEncoding.EncodeToString(digest[:])+":")
+		components = append(components, activityHTTPMessageSignatureComponent{Name: "content-digest", Serialized: `"content-digest"`})
+		serialized = append(serialized, `"content-digest"`)
+	}
+	created := time.Now().UTC().Unix()
+	parameters := "(" + strings.Join(serialized, " ") + ");created=" + strconv.FormatInt(created, 10) + `;keyid="` + keyID + `"`
+	input := activityHTTPMessageSignatureInput{
+		Label: "sig1", Components: components, Parameters: parameters,
+		Created: created, CreatedSet: true, KeyID: keyID,
+	}
+	base, err := buildActivityHTTPMessageSignatureBase(req, input)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256([]byte(base))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Signature-Input", input.Label+"="+parameters)
+	req.Header.Set("Signature", input.Label+"=:"+base64.StdEncoding.EncodeToString(signature)+":")
+	return nil
 }
 
 func (s *Server) verifyActivityPubHTTPMessageSignature(c *echo.Context, body []byte) (*models.Account, error) {

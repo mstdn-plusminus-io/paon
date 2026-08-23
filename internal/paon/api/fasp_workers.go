@@ -266,8 +266,10 @@ func (s *Server) handleAsynqFASPBackfill(ctx context.Context, task *asynq.Task) 
 		"objectUris":           uris,
 		"moreObjectsAvailable": more,
 	}
-	if _, err := s.faspRequest(ctx, request.FaspProvider, http.MethodPost, "/data_sharing/v0/announcements", body); err != nil {
+	if _, delivered, err := s.faspWorkerRequest(ctx, request.FaspProvider, http.MethodPost, "/data_sharing/v0/announcements", body); err != nil {
 		return err
+	} else if !delivered {
+		return nil
 	}
 	updates := map[string]any{"updated_at": time.Now().UTC()}
 	if more {
@@ -369,9 +371,12 @@ func (s *Server) handleAsynqFASPAccountSearch(ctx context.Context, task *asynq.T
 	}
 	for _, provider := range providers {
 		endpoint := "/account_search/v0/search?" + url.Values{"term": []string{query}, "limit": []string{"10"}}.Encode()
-		body, err := s.faspRequest(ctx, provider, http.MethodGet, endpoint, nil)
+		body, delivered, err := s.faspWorkerRequest(ctx, provider, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return err
+		}
+		if !delivered {
+			continue
 		}
 		uris, err := faspURIList(body, 100)
 		if err != nil {
@@ -414,9 +419,12 @@ func (s *Server) handleAsynqFASPFollowRecommendation(ctx context.Context, task *
 	accountURI := activityPubAccountTagManagerURI(s, account)
 	for _, provider := range providers {
 		endpoint := "/follow_recommendation/v0/accounts?" + url.Values{"accountUri": []string{accountURI}}.Encode()
-		body, err := s.faspRequest(ctx, provider, http.MethodGet, endpoint, nil)
+		body, delivered, err := s.faspWorkerRequest(ctx, provider, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return err
+		}
+		if !delivered {
+			continue
 		}
 		uris, err := faspURIList(body, 100)
 		if err != nil {
@@ -524,7 +532,7 @@ func (s *Server) handleAsynqFASPLifecycle(ctx context.Context, task *asynq.Task,
 			"eventType":  payload.EventType,
 			"objectUris": []string{payload.URI},
 		}
-		if _, err := s.faspRequest(ctx, subscription.FaspProvider, http.MethodPost, "/data_sharing/v0/announcements", body); err != nil {
+		if _, _, err := s.faspWorkerRequest(ctx, subscription.FaspProvider, http.MethodPost, "/data_sharing/v0/announcements", body); err != nil {
 			return err
 		}
 	}
@@ -574,7 +582,7 @@ func (s *Server) handleAsynqFASPTrend(ctx context.Context, task *asynq.Task) err
 			"eventType":  "trending",
 			"objectUris": []string{activityPubStatusURI(s, status)},
 		}
-		if _, err := s.faspRequest(ctx, subscription.FaspProvider, http.MethodPost, "/data_sharing/v0/announcements", body); err != nil {
+		if _, _, err := s.faspWorkerRequest(ctx, subscription.FaspProvider, http.MethodPost, "/data_sharing/v0/announcements", body); err != nil {
 			return err
 		}
 	}

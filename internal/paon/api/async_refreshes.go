@@ -11,8 +11,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v5"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -133,6 +135,58 @@ func (s *Server) incrementAsyncRefreshResult(ctx context.Context, key string, by
 	return err
 }
 
+func (s *Server) addAsyncRefreshPendingJob(ctx context.Context, key string) error {
+	_, err := s.redisCommand(ctx, "HINCRBY", key, "pending_jobs", "1")
+	return err
+}
+
+func (s *Server) completeAsyncRefreshJob(ctx context.Context, key string) error {
+	value, err := s.redisCommand(ctx, "HINCRBY", key, "pending_jobs", "-1")
+	if err != nil {
+		return err
+	}
+	pending := int64(0)
+	switch raw := value.(type) {
+	case int64:
+		pending = raw
+	case string:
+		pending, _ = strconv.ParseInt(raw, 10, 64)
+	}
+	if pending <= 0 {
+		return s.finishAsyncRefresh(ctx, key)
+	}
+	return nil
+}
+
+func (s *Server) prepareContextReplyRefresh(c *echo.Context, status *models.Status, account *models.Account, requestID string) {
+	if s == nil || c == nil || status == nil {
+		return
+	}
+	key := "context:" + strconv.FormatInt(status.ID, 10) + ":refresh"
+	statusValue, _ := s.redisCommand(c.Request().Context(), "HGET", key, "status")
+	if current, ok := statusValue.(string); ok && current == "running" {
+		if id, ok := asyncRefreshID(key, s.cfg.SecretKeyBase); ok {
+			s.setAsyncRefreshHeader(c, id, 3)
+		}
+		return
+	}
+	if account == nil || !s.shouldFetchAllReplies(*status, time.Now().UTC()) {
+		return
+	}
+	id, err := s.createAsyncRefresh(c.Request().Context(), key, true)
+	if err != nil {
+		return
+	}
+	if _, err := s.redisCommand(c.Request().Context(), "HSET", key, "pending_jobs", "1"); err != nil {
+		_ = s.finishAsyncRefresh(c.Request().Context(), key)
+		return
+	}
+	if !s.enqueueFetchAllRepliesTask(status.ID, requestID, key) {
+		_ = s.finishAsyncRefresh(c.Request().Context(), key)
+	}
+	s.setAsyncRefreshHeader(c, id, 3)
+}
+
 func (s *Server) setAsyncRefreshHeader(c *echo.Context, id string, retrySeconds int) {
 	if strings.TrimSpace(id) == "" {
 		return
@@ -140,5 +194,18 @@ func (s *Server) setAsyncRefreshHeader(c *echo.Context, id string, retrySeconds 
 	if retrySeconds <= 0 {
 		retrySeconds = 3
 	}
-	c.Response().Header().Set("Mastodon-Async-Refresh", `id="`+id+`", retry=`+strconv.Itoa(retrySeconds))
+	value := `id="` + id + `", retry=` + strconv.Itoa(retrySeconds)
+	if key, ok := asyncRefreshKeyFromID(id, s.cfg.SecretKeyBase); ok {
+		if countValue, err := s.redisCommand(c.Request().Context(), "HGET", key, "result_count"); err == nil {
+			switch raw := countValue.(type) {
+			case string:
+				if _, err := strconv.ParseInt(raw, 10, 64); err == nil {
+					value += `, result_count=` + raw
+				}
+			case int64:
+				value += `, result_count=` + strconv.FormatInt(raw, 10)
+			}
+		}
+	}
+	c.Response().Header().Set("Mastodon-Async-Refresh", value)
 }

@@ -23,8 +23,9 @@ const (
 )
 
 type asynqFetchAllRepliesPayload struct {
-	RootStatusID int64  `json:"root_status_id"`
-	RequestID    string `json:"request_id,omitempty"`
+	RootStatusID    int64  `json:"root_status_id"`
+	RequestID       string `json:"request_id,omitempty"`
+	AsyncRefreshKey string `json:"async_refresh_key,omitempty"`
 }
 
 type fetchRepliesLimits struct {
@@ -65,7 +66,7 @@ func (s *Server) fetchRepliesLimits() fetchRepliesLimits {
 }
 
 func (s *Server) shouldFetchAllReplies(status models.Status, now time.Time) bool {
-	if s == nil || !s.cfg.FetchRepliesEnabled || status.ID == 0 || status.Account.Local() || !status.URI.Valid || strings.TrimSpace(status.URI.String) == "" {
+	if s == nil || status.ID == 0 || status.Account.Local() || !status.URI.Valid || strings.TrimSpace(status.URI.String) == "" {
 		return false
 	}
 	limits := s.fetchRepliesLimits()
@@ -78,11 +79,15 @@ func (s *Server) shouldFetchAllReplies(status models.Status, now time.Time) bool
 // enqueueFetchAllRepliesTask mirrors ActivityPub::FetchAllRepliesWorker. The
 // database cooldown claim in the worker is the idempotency boundary when
 // concurrent context requests enqueue the same remote status.
-func (s *Server) enqueueFetchAllRepliesTask(rootStatusID int64, requestID string) bool {
-	if s == nil || s.asynqClient == nil || !s.cfg.FetchRepliesEnabled || rootStatusID == 0 {
+func (s *Server) enqueueFetchAllRepliesTask(rootStatusID int64, requestID string, asyncRefreshKeys ...string) bool {
+	if s == nil || s.asynqClient == nil || rootStatusID == 0 {
 		return false
 	}
-	payload, err := marshalAsynqTaskPayload(asynqFetchAllRepliesPayload{RootStatusID: rootStatusID, RequestID: requestID})
+	asyncRefreshKey := ""
+	if len(asyncRefreshKeys) > 0 {
+		asyncRefreshKey = strings.TrimSpace(asyncRefreshKeys[0])
+	}
+	payload, err := marshalAsynqTaskPayload(asynqFetchAllRepliesPayload{RootStatusID: rootStatusID, RequestID: requestID, AsyncRefreshKey: asyncRefreshKey})
 	if err != nil {
 		return false
 	}
@@ -118,13 +123,20 @@ func (s *Server) claimFetchAllReplies(ctx context.Context, status models.Status,
 	return result.RowsAffected == 1, nil
 }
 
-func (s *Server) handleAsynqFetchAllReplies(ctx context.Context, task *asynq.Task) error {
+func (s *Server) handleAsynqFetchAllReplies(ctx context.Context, task *asynq.Task) (resultErr error) {
 	var payload asynqFetchAllRepliesPayload
 	if err := json.Unmarshal(task.Payload(), &payload); err != nil {
 		return fmt.Errorf("fetch all replies: %w", err)
 	}
-	if s == nil || s.db == nil || !s.cfg.FetchRepliesEnabled || payload.RootStatusID == 0 {
+	if s == nil || s.db == nil || payload.RootStatusID == 0 {
 		return nil
+	}
+	if payload.AsyncRefreshKey != "" {
+		defer func() {
+			if resultErr == nil || asynqRetryExhausted(ctx) {
+				_ = s.completeAsyncRefreshJob(context.Background(), payload.AsyncRefreshKey)
+			}
+		}()
 	}
 
 	var root models.Status
@@ -160,8 +172,8 @@ func (s *Server) handleAsynqFetchAllReplies(ctx context.Context, task *asynq.Tas
 	// Mastodon updates the root status from the prefetched representation. Paon
 	// keeps FetchReplyWorker as the single persistence path, at the cost of one
 	// extra conditional request, so all existing status validation stays shared.
-	s.enqueueFetchReplyTask(rootURI, payload.RequestID)
-	count, pages, err := s.walkActivityPubReplies(ctx, rootURI, rootPayload.Object, payload.RequestID, userAgent, fetcher)
+	s.enqueueFetchReplyTask(rootURI, payload.RequestID, payload.AsyncRefreshKey)
+	count, pages, err := s.walkActivityPubRepliesForRefresh(ctx, rootURI, rootPayload.Object, payload.RequestID, payload.AsyncRefreshKey, userAgent, fetcher)
 	if err != nil {
 		return fmt.Errorf("fetch all replies traversal: %w", err)
 	}
@@ -173,11 +185,15 @@ type activityReplyCandidateFilter func(context.Context, string, []string, int) (
 type activityReplyEnqueuer func(string)
 
 func (s *Server) walkActivityPubReplies(ctx context.Context, rootURI string, rootObject activityObject, requestID string, userAgent string, fetcher activityResourceFetcher) (int, int, error) {
+	return s.walkActivityPubRepliesForRefresh(ctx, rootURI, rootObject, requestID, "", userAgent, fetcher)
+}
+
+func (s *Server) walkActivityPubRepliesForRefresh(ctx context.Context, rootURI string, rootObject activityObject, requestID string, asyncRefreshKey string, userAgent string, fetcher activityResourceFetcher) (int, int, error) {
 	limits := s.fetchRepliesLimits()
 	filter := func(ctx context.Context, parentURI string, candidates []string, limit int) ([]string, error) {
 		return s.filterActivityPubReplyCandidates(ctx, parentURI, candidates, limit, time.Now().UTC())
 	}
-	enqueue := func(uri string) { s.enqueueFetchReplyTask(uri, requestID) }
+	enqueue := func(uri string) { s.enqueueFetchReplyTask(uri, requestID, asyncRefreshKey) }
 	return walkActivityPubRepliesWithFetcher(ctx, rootURI, rootObject, limits, userAgent, fetcher, filter, enqueue)
 }
 

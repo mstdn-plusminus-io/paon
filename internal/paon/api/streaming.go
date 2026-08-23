@@ -18,6 +18,9 @@ type streamingSession struct {
 	AccessTokenID   int64
 	Scopes          string
 	ChosenLanguages []string
+	CanViewFeeds    bool
+	FilterLocal     bool
+	FilterRemote    bool
 }
 
 func (s *Server) streamingHealth(c *echo.Context) error {
@@ -43,6 +46,7 @@ func (s *Server) streaming(c *echo.Context) error {
 		return apiError(c, http.StatusNotFound, "Not found")
 	}
 	channelIDs = streamingChannelIDsForSession(channel, channelIDs, session)
+	session.FilterLocal, session.FilterRemote = s.streamingFeedFilters(channel, session)
 	systemChannelIDs := streamingSystemChannelIDs(session)
 	channelIDs = append(channelIDs, systemChannelIDs...)
 
@@ -203,8 +207,32 @@ func (s *Server) currentStreamingSession(c *echo.Context) (streamingSession, err
 	}
 	var accessToken models.OAuthAccessToken
 	_ = s.db.Select("id, scopes").Where("token = ? AND revoked_at IS NULL", token).First(&accessToken).Error
-	session := streamingSession{Account: &account, AccessTokenID: accessToken.ID, Scopes: string(accessToken.Scopes), ChosenLanguages: []string(user.ChosenLanguages)}
+	session := streamingSession{Account: &account, AccessTokenID: accessToken.ID, Scopes: string(accessToken.Scopes), ChosenLanguages: []string(user.ChosenLanguages), CanViewFeeds: s.userCan(user, rolePermissionViewFeeds)}
 	return session, nil
+}
+
+func (s *Server) streamingFeedFilters(channel string, session streamingSession) (bool, bool) {
+	if session.CanViewFeeds {
+		return false, false
+	}
+	kind := ""
+	switch {
+	case strings.HasPrefix(channel, "public"):
+		kind = "live"
+	case strings.HasPrefix(channel, "hashtag"):
+		kind = "topic"
+	default:
+		return false, false
+	}
+	localDisabled := normalizeTimelineAccess(s.settingStringValue("local_"+kind+"_feed_access", timelineAccessPublic)) == timelineAccessDisabled
+	remoteDisabled := normalizeTimelineAccess(s.settingStringValue("remote_"+kind+"_feed_access", timelineAccessPublic)) == timelineAccessDisabled
+	if strings.Contains(channel, ":local") {
+		remoteDisabled = false
+	}
+	if strings.Contains(channel, ":remote") {
+		localDisabled = false
+	}
+	return localDisabled, remoteDisabled
 }
 
 func streamingChannel(c *echo.Context) string {

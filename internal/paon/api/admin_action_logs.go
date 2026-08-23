@@ -45,6 +45,7 @@ var adminActionLogActionTypes = map[string]adminActionType{
 	"create_domain_block":           {TargetType: "DomainBlock", Action: "create"},
 	"create_email_domain_block":     {TargetType: "EmailDomainBlock", Action: "create"},
 	"create_ip_block":               {TargetType: "IpBlock", Action: "create"},
+	"create_username_block":         {TargetType: "UsernameBlock", Action: "create"},
 	"create_relay":                  {TargetType: "Relay", Action: "create"},
 	"create_unavailable_domain":     {TargetType: "UnavailableDomain", Action: "create"},
 	"create_user_role":              {TargetType: "UserRole", Action: "create"},
@@ -55,6 +56,7 @@ var adminActionLogActionTypes = map[string]adminActionType{
 	"destroy_domain_allow":          {TargetType: "DomainAllow", Action: "destroy"},
 	"destroy_domain_block":          {TargetType: "DomainBlock", Action: "destroy"},
 	"destroy_ip_block":              {TargetType: "IpBlock", Action: "destroy"},
+	"destroy_username_block":        {TargetType: "UsernameBlock", Action: "destroy"},
 	"destroy_email_domain_block":    {TargetType: "EmailDomainBlock", Action: "destroy"},
 	"destroy_instance":              {TargetType: "Instance", Action: "destroy"},
 	"destroy_relay":                 {TargetType: "Relay", Action: "destroy"},
@@ -88,6 +90,7 @@ var adminActionLogActionTypes = map[string]adminActionType{
 	"update_status":                 {TargetType: "Status", Action: "update"},
 	"update_user_role":              {TargetType: "UserRole", Action: "update"},
 	"update_ip_block":               {TargetType: "IpBlock", Action: "update"},
+	"update_username_block":         {TargetType: "UsernameBlock", Action: "update"},
 	"unblock_email_account":         {TargetType: "Account", Action: "unblock_email"},
 }
 
@@ -107,6 +110,7 @@ var adminActionLogActionTypeOrder = []string{
 	"create_domain_block",
 	"create_email_domain_block",
 	"create_ip_block",
+	"create_username_block",
 	"create_relay",
 	"create_unavailable_domain",
 	"create_user_role",
@@ -117,6 +121,7 @@ var adminActionLogActionTypeOrder = []string{
 	"destroy_domain_allow",
 	"destroy_domain_block",
 	"destroy_ip_block",
+	"destroy_username_block",
 	"destroy_email_domain_block",
 	"destroy_instance",
 	"destroy_relay",
@@ -150,6 +155,7 @@ var adminActionLogActionTypeOrder = []string{
 	"update_status",
 	"update_user_role",
 	"update_ip_block",
+	"update_username_block",
 	"unblock_email_account",
 }
 
@@ -428,6 +434,8 @@ func adminActionLogLocaleTargetSuffix(targetType string) string {
 		return "user"
 	case "UserRole":
 		return "user_role"
+	case "UsernameBlock":
+		return "username_block"
 	default:
 		return strings.ToLower(targetType)
 	}

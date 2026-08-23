@@ -215,6 +215,15 @@ func (s *Server) userApprovedAfterConfirmation(user models.User, now time.Time) 
 		return false, err
 	}
 	restriction.RequiresApproval = restriction.RequiresApproval || emailRequiresApproval
+	var account models.Account
+	if err := s.db.Select("username").Where("id = ?", user.AccountID).First(&account).Error; err != nil {
+		return false, err
+	}
+	usernameRequiresApproval, err := s.usernameSignUpRequiresApproval(context.Background(), account.Username)
+	if err != nil {
+		return false, err
+	}
+	restriction.RequiresApproval = restriction.RequiresApproval || usernameRequiresApproval
 	return confirmationApprovesUserForRailsConfirm(registrationMode, restriction), nil
 }
 

@@ -119,6 +119,36 @@ func TestLimitedFederationInstanceAPIsRemainPublicLikeMastodon44(t *testing.T) {
 	}
 }
 
+func TestMastodon45InstanceTimelineAccessShape(t *testing.T) {
+	s := &Server{cfg: config.Config{
+		Scheme:      "https",
+		LocalDomain: "example.test",
+		WebDomain:   "example.test",
+	}}
+	access := s.instanceMetadata().TimelinesAccess
+	for _, key := range []string{"live_feeds", "hashtag_feeds", "trending_link_feeds"} {
+		values, ok := access[key].(map[string]string)
+		if !ok {
+			t.Fatalf("timelines_access.%s = %#v", key, access[key])
+		}
+		if values["local"] != timelineAccessPublic || values["remote"] != timelineAccessPublic {
+			t.Fatalf("timelines_access.%s = %#v", key, values)
+		}
+	}
+
+	v1 := instanceV1Configuration(map[string]any{
+		"statuses":           map[string]any{"max_characters": 500},
+		"timelines_access":   access,
+		"limited_federation": false,
+	})
+	if _, ok := v1["timelines_access"]; ok {
+		t.Fatalf("legacy v1 instance leaked v2 timelines_access: %#v", v1)
+	}
+	if _, ok := v1["limited_federation"]; ok {
+		t.Fatalf("legacy v1 instance leaked v2 limited_federation: %#v", v1)
+	}
+}
+
 func TestLimitedFederationGenericAPIRoutesRequireAuthentication(t *testing.T) {
 	s, err := NewServer(config.Config{Title: "Paon", LocalDomain: "example.com", LimitedFederationMode: true}, nil)
 	if err != nil {

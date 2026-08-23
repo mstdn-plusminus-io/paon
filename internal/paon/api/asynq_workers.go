@@ -103,6 +103,8 @@ const (
 	asynqTaskUnfavourite                 = "unfavourite"
 	asynqTaskAfterUnallowDomain          = "after_unallow_domain"
 	asynqQueueDefault                    = "default"
+	asynqQueueRemoval                    = "removal"
+	asynqQueueRemoteRemoval              = "remote_removal"
 	asynqQueuePull                       = "pull"
 	asynqQueuePush                       = "push"
 	asynqQueueMailers                    = "mailers"
@@ -137,8 +139,9 @@ type asynqAccountPayload struct {
 // asynqFetchReplyPayload mirrors Rails FetchReplyWorker.perform(child_url, options):
 // it fetches a single remote reply status by URI with retry semantics.
 type asynqFetchReplyPayload struct {
-	URI       string `json:"uri"`
-	RequestID string `json:"request_id,omitempty"`
+	URI             string `json:"uri"`
+	RequestID       string `json:"request_id,omitempty"`
+	AsyncRefreshKey string `json:"async_refresh_key,omitempty"`
 }
 
 // asynqFetchRepliesPayload mirrors ActivityPub::FetchRepliesWorker.perform:
@@ -362,6 +365,7 @@ type asynqFollowersSynchronizationPayload struct {
 	Version   int    `json:"version"`
 	AccountID int64  `json:"account_id"`
 	URL       string `json:"url"`
+	Digest    string `json:"digest,omitempty"`
 }
 
 // asynqMigrationPayload is used by account-migration workers such as
@@ -442,6 +446,7 @@ type asynqRemovalPayload struct {
 	Preserve        bool  `json:"preserve,omitempty"`
 	OriginalRemoved bool  `json:"original_removed,omitempty"`
 	SkipStreaming   bool  `json:"skip_streaming,omitempty"`
+	Remote          bool  `json:"remote,omitempty"`
 }
 
 // asynqConversationPayload mirrors PushConversationWorker.perform.
@@ -683,18 +688,32 @@ func (s *Server) enqueueRefollowTask(accountID int64) {
 }
 
 // enqueueFetchReplyTask mirrors FetchReplyWorker.perform_async (queue pull, retry 3).
-func (s *Server) enqueueFetchReplyTask(uri string, requestID string) {
+func (s *Server) enqueueFetchReplyTask(uri string, requestID string, asyncRefreshKeys ...string) bool {
 	if s == nil || s.asynqClient == nil || strings.TrimSpace(uri) == "" {
-		return
+		return false
 	}
-	payload, err := marshalAsynqTaskPayload(asynqFetchReplyPayload{URI: uri, RequestID: requestID})
+	asyncRefreshKey := ""
+	if len(asyncRefreshKeys) > 0 {
+		asyncRefreshKey = strings.TrimSpace(asyncRefreshKeys[0])
+	}
+	payload, err := marshalAsynqTaskPayload(asynqFetchReplyPayload{URI: uri, RequestID: requestID, AsyncRefreshKey: asyncRefreshKey})
 	if err != nil {
-		return
+		return false
 	}
 	task := asynq.NewTask(asynqTaskFetchReply, payload, asynq.Queue(s.asynqQueue(asynqQueuePull)), asynq.MaxRetry(3))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = s.asynqClient.EnqueueContext(ctx, task)
+	if asyncRefreshKey != "" {
+		if err := s.addAsyncRefreshPendingJob(ctx, asyncRefreshKey); err != nil {
+			return false
+		}
+	}
+	_, err = s.asynqClient.EnqueueContext(ctx, task)
+	accepted := asynqEnqueueAccepted(err)
+	if !accepted && asyncRefreshKey != "" {
+		_ = s.completeAsyncRefreshJob(ctx, asyncRefreshKey)
+	}
+	return accepted
 }
 
 // enqueueFetchRepliesTask mirrors ActivityPub::FetchRepliesWorker.perform_async
@@ -1226,20 +1245,45 @@ func (s *Server) enqueueAnnouncementReactionTask(announcementID int64, name stri
 	return err == nil
 }
 
-// enqueueRemovalTask mirrors RemovalWorker.perform_async on Rails' default queue.
+// enqueueRemovalTask routes potentially high-volume status deletion work to Paon's
+// dedicated queues so it cannot build up behind timeline work on default. Remote
+// statuses use the lowest-priority removal queue.
 func (s *Server) enqueueRemovalTask(payload asynqRemovalPayload) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return s.enqueueRemovalTaskContext(ctx, payload) == nil
+}
+
+func (s *Server) enqueueRemovalTaskContext(ctx context.Context, payload asynqRemovalPayload, options ...asynq.Option) error {
 	if s == nil || s.asynqClient == nil || payload.StatusID == 0 {
-		return false
+		return errors.New("removal queue is unavailable")
 	}
 	raw, err := marshalAsynqTaskPayload(payload)
 	if err != nil {
-		return false
+		return err
 	}
-	task := asynq.NewTask(asynqTaskRemoval, raw, asynq.Queue(s.asynqQueue(asynqQueueDefault)), asynq.MaxRetry(25))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	queue := asynqRemovalQueueForPayload(payload)
+	taskOptions := []asynq.Option{
+		asynq.Queue(s.asynqQueue(queue)),
+		asynq.MaxRetry(25),
+	}
+	task := asynq.NewTask(asynqTaskRemoval, raw, append(taskOptions, options...)...)
 	_, err = s.asynqClient.EnqueueContext(ctx, task)
-	return err == nil
+	if asynqEnqueueAccepted(err) {
+		return nil
+	}
+	return err
+}
+
+func removalTaskID(statusID int64) string {
+	return "removal-" + strconv.FormatInt(statusID, 10)
+}
+
+func asynqRemovalQueueForPayload(payload asynqRemovalPayload) string {
+	if payload.Remote || payload.OriginalRemoved {
+		return asynqQueueRemoteRemoval
+	}
+	return asynqQueueRemoval
 }
 
 func (s *Server) enqueueRemovalTasksForStatusIDs(statusIDs []int64, options asynqRemovalPayload) bool {
@@ -1964,11 +2008,11 @@ func (s *Server) enqueuePostUpgradeTask(domain string) bool {
 
 // enqueueFollowersSynchronizationTask mirrors ActivityPub::FollowersSynchronizationWorker
 // on the push queue with an until-executed uniqueness lock.
-func (s *Server) enqueueFollowersSynchronizationTask(accountID int64, collectionURL string) bool {
+func (s *Server) enqueueFollowersSynchronizationTask(accountID int64, collectionURL string, expectedDigest ...string) bool {
 	if s == nil || s.asynqClient == nil || accountID == 0 || strings.TrimSpace(collectionURL) == "" {
 		return false
 	}
-	payload, err := marshalAsynqTaskPayload(asynqFollowersSynchronizationPayload{Version: asynqPayloadVersion43, AccountID: accountID, URL: collectionURL})
+	payload, err := marshalAsynqTaskPayload(asynqFollowersSynchronizationPayload{Version: asynqPayloadVersion43, AccountID: accountID, URL: collectionURL, Digest: firstNonEmpty(expectedDigest...)})
 	if err != nil {
 		return false
 	}
@@ -2177,12 +2221,14 @@ func asynqRetryExhausted(ctx context.Context) bool {
 
 func paonGoAsynqQueueWeights() map[string]int {
 	return map[string]int{
-		asynqQueueDefault: 8,
-		asynqQueuePush:    6,
-		asynqQueueIngress: 4,
-		asynqQueueMailers: 2,
-		asynqQueuePull:    1,
-		asynqQueueFASP:    1,
+		asynqQueueDefault:       8,
+		asynqQueuePush:          6,
+		asynqQueueIngress:       4,
+		asynqQueueMailers:       2,
+		asynqQueueRemoval:       2,
+		asynqQueuePull:          1,
+		asynqQueueRemoteRemoval: 1,
+		asynqQueueFASP:          1,
 	}
 }
 
@@ -2437,16 +2483,32 @@ func (s *Server) handleAsynqRefollow(ctx context.Context, t *asynq.Task) error {
 // handleAsynqFetchReply mirrors FetchReplyWorker: resolve the child URL through
 // FetchRemoteStatusService, including FetchResourceService discovery, and retry
 // via asynq's MaxRetry(3) semantics like Rails retry: 3.
-func (s *Server) handleAsynqFetchReply(ctx context.Context, t *asynq.Task) error {
+func (s *Server) handleAsynqFetchReply(ctx context.Context, t *asynq.Task) (resultErr error) {
 	var p asynqFetchReplyPayload
 	if err := json.Unmarshal(t.Payload(), &p); err != nil {
 		return fmt.Errorf("fetch reply: %w", err)
 	}
+	if s != nil && p.AsyncRefreshKey != "" {
+		defer func() {
+			if resultErr == nil || asynqRetryExhausted(ctx) {
+				_ = s.completeAsyncRefreshJob(context.Background(), p.AsyncRefreshKey)
+			}
+		}()
+	}
 	if s == nil || s.db == nil || strings.TrimSpace(p.URI) == "" {
 		return nil
 	}
-	_, err := s.fetchRemoteStatusFromResolvableURLForRequest(p.URI, p.RequestID)
-	return err
+	before, _ := s.statusFromActivityURIWithContext(ctx, p.URI)
+	status, err := s.fetchRemoteStatusFromResolvableURLForRequest(p.URI, p.RequestID)
+	if err != nil {
+		return err
+	}
+	if p.AsyncRefreshKey != "" {
+		if before == nil && status != nil {
+			_ = s.incrementAsyncRefreshResult(ctx, p.AsyncRefreshKey, 1)
+		}
+	}
+	return nil
 }
 
 // handleAsynqFetchReplies mirrors ActivityPub::FetchRepliesWorker: load the
@@ -2967,6 +3029,12 @@ func (s *Server) localNotificationFromAccountID(ctx context.Context, activityTyp
 			return 0, workerLookupError("notification favourite lookup", err)
 		}
 		return favourite.AccountID, nil
+	case "Quote":
+		var quote models.Quote
+		if err := s.db.WithContext(ctx).Select("account_id").Where("id = ?", activityID).First(&quote).Error; err != nil {
+			return 0, workerLookupError("notification quote lookup", err)
+		}
+		return quote.AccountID, nil
 	case "Follow":
 		var follow models.Follow
 		if err := s.db.WithContext(ctx).Select("account_id").Where("id = ?", activityID).First(&follow).Error; err != nil {
@@ -3645,7 +3713,7 @@ func (s *Server) handleAsynqFollowersSynchronization(ctx context.Context, t *asy
 	if err := s.db.WithContext(ctx).Where("id = ?", p.AccountID).First(&account).Error; err != nil {
 		return workerLookupError("followers synchronization account lookup", err)
 	}
-	return activityFetchWorkerError(s.synchronizeActivityPubFollowers(ctx, account, p.URL))
+	return activityFetchWorkerError(s.synchronizeActivityPubFollowers(ctx, account, p.URL, p.Digest))
 }
 
 // handleAsynqActivityPubProcessing mirrors ActivityPub::ProcessingWorker: reload the
@@ -4380,6 +4448,12 @@ func (s *Server) notificationStatusID(ctx context.Context, notification models.N
 			return poll.StatusID.Int64
 		}
 		return 0
+	case "Quote":
+		var quote models.Quote
+		if err := s.db.WithContext(ctx).Select("status_id").Where("id = ?", notification.ActivityID).First(&quote).Error; err != nil {
+			return 0
+		}
+		return quote.StatusID
 	default:
 		return 0
 	}

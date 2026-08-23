@@ -171,6 +171,7 @@ func (s *Server) subscribeWebSocketStream(ctx context.Context, ws *websocketConn
 		return errStreamingBadRequest("Not authorized to stream this channel")
 	}
 	channelIDs = streamingChannelIDsForSession(channel, channelIDs, session)
+	session.FilterLocal, session.FilterRemote = s.streamingFeedFilters(channel, session)
 	key := strings.Join(channelIDs, ";")
 	if _, ok := subscriptions[key]; ok {
 		return nil

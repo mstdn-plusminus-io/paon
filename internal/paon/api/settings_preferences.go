@@ -49,6 +49,8 @@ func (s *Server) renderSettingsPreferencesError(c *echo.Context, account models.
 	switch settingsPreferencesRedirectPath(c) {
 	case "/settings/preferences/notifications":
 		return c.HTML(http.StatusOK, settingsPreferencesNotificationsHTMLWithMessages(settings, "", errorText, locale, theme))
+	case "/settings/preferences/posting_defaults":
+		return c.HTML(http.StatusOK, settingsPreferencesPostingDefaultsHTMLWithMessages(account, settings, "", errorText, locale, theme))
 	case "/settings/preferences/other":
 		return c.HTML(http.StatusOK, settingsPreferencesOtherHTMLWithMessages(*user, account, settings, "", errorText, locale, theme))
 	default:
@@ -112,6 +114,9 @@ func preferencesSettingsFromForm(values map[string][]string) (map[string]any, er
 		}
 		settings[key] = value
 	}
+	if settings["default_privacy"] == "private" {
+		settings["default_quote_policy"] = "nobody"
+	}
 	return settings, nil
 }
 
@@ -155,6 +160,7 @@ func preferencesBoolSettingKeys() map[string]struct{} {
 		"notification_emails.reblog":          {},
 		"notification_emails.favourite":       {},
 		"notification_emails.mention":         {},
+		"notification_emails.quote":           {},
 		"notification_emails.report":          {},
 		"notification_emails.appeal":          {},
 		"notification_emails.pending_account": {},
@@ -170,6 +176,7 @@ func preferencesBoolSettingKeys() map[string]struct{} {
 func preferencesStringSettingKeys() map[string][]string {
 	return map[string][]string{
 		"theme":                                nil,
+		"web.emoji_style":                      {"auto", "native", "twemoji"},
 		"web.display_media":                    {"default", "show_all", "hide_all"},
 		"notification_emails.software_updates": {"none", "critical", "patch", "all"},
 		"default_privacy":                      {"public", "unlisted", "private"},
@@ -244,7 +251,7 @@ func stringAllowed(value string, allowed []string) bool {
 func settingsPreferencesRedirectPath(c *echo.Context) string {
 	path := c.Request().URL.Path
 	switch path {
-	case "/settings/preferences/notifications", "/settings/preferences/other":
+	case "/settings/preferences/notifications", "/settings/preferences/posting_defaults", "/settings/preferences/other":
 		return path
 	default:
 		return "/settings/preferences/appearance"

@@ -170,11 +170,14 @@ func statusQuoteTargetStructurallyAllowed(quote *models.Status) bool {
 }
 
 func (s *Server) statusQuoteTargetAllowedForAccount(ctx context.Context, account *models.Account, quote *models.Status) (bool, error) {
-	if s == nil || s.db == nil || account == nil || account.ID == 0 || account.SuspendedAt.Valid || account.MovedToAccountID.Valid || !statusQuoteTargetStructurallyAllowed(quote) {
+	if s == nil || s.db == nil || account == nil || account.ID == 0 || account.SuspendedAt.Valid || account.MovedToAccountID.Valid || quote == nil || quote.ID == 0 || quote.DeletedAt.Valid || quote.ReblogOfID.Valid || quote.Account.ID == 0 || quote.Account.SuspendedAt.Valid || quote.Account.MovedToAccountID.Valid {
 		return false, nil
 	}
 	if quote.AccountID == account.ID {
-		return true, nil
+		return quote.Visibility != 3, nil
+	}
+	if !statusQuoteTargetStructurallyAllowed(quote) {
+		return false, nil
 	}
 	database := s.db
 	if ctx != nil {
@@ -215,7 +218,20 @@ func (s *Server) deleteStatusQuoteBestEffort(ctx context.Context, statusID int64
 	database := s.db.WithContext(nonNilContext(ctx))
 	var references []models.Quote
 	_ = database.Select("id", "status_id").Where("quoted_status_id = ?", statusID).Find(&references).Error
-	_ = database.Where("status_id = ?", statusID).Delete(&models.Quote{}).Error
+	_ = database.Transaction(func(tx *gorm.DB) error {
+		var own []models.Quote
+		if err := tx.Select("id", "quoted_status_id", "state").Where("status_id = ?", statusID).Find(&own).Error; err != nil {
+			return err
+		}
+		for _, quote := range own {
+			if quote.State == models.QuoteStateAccepted && quote.QuotedStatusID.Valid {
+				if err := decrementStatusStatCounter(tx, quote.QuotedStatusID.Int64, statusStatCounterQuotes, 1); err != nil {
+					return err
+				}
+			}
+		}
+		return tx.Where("status_id = ?", statusID).Delete(&models.Quote{}).Error
+	})
 	for _, quote := range references {
 		result := database.Model(&models.Quote{}).
 			Where("id = ? AND quoted_status_id = ?", quote.ID, statusID).
@@ -349,8 +365,35 @@ func (s *Server) hydrateQuoteVisibility(statuses []models.Status, current *model
 	for _, quote := range quotes {
 		quote.QuotedStatusVisibilityChecked = true
 		_, quote.QuotedStatusVisible = visible[quote.QuotedStatus.ID]
+		if !quote.QuotedStatusVisible && current != nil && current.ID != 0 && quote.QuotedStatus.AccountID != current.ID {
+			quote.QuotedStatusFilterState = s.quoteFilterState(current, quote.QuotedStatus)
+		}
 	}
 	return nil
+}
+
+func (s *Server) quoteFilterState(current *models.Account, status *models.Status) string {
+	if s == nil || s.db == nil || current == nil || status == nil {
+		return "unauthorized"
+	}
+	var policyVisible int64
+	if err := s.visibleStatusQuery(current).Where("statuses.id = ?", status.ID).Count(&policyVisible).Error; err != nil || policyVisible == 0 {
+		return "unauthorized"
+	}
+	if status.Account.Domain.Valid {
+		if blocked, err := s.accountDomainBlocking(current.ID, status.Account.Domain.String); err == nil && blocked {
+			return "blocked_domain"
+		}
+	}
+	var count int64
+	if err := s.db.Model(&models.Block{}).Where("account_id = ? AND target_account_id = ?", current.ID, status.AccountID).Count(&count).Error; err == nil && count > 0 {
+		return "blocked_account"
+	}
+	count = 0
+	if err := s.db.Model(&models.Mute{}).Where("account_id = ? AND target_account_id = ? AND (expires_at IS NULL OR expires_at > ?)", current.ID, status.AccountID, time.Now().UTC()).Count(&count).Error; err == nil && count > 0 {
+		return "muted_account"
+	}
+	return "unauthorized"
 }
 
 func applySQLStatusQuote(status *models.Status, quote *models.Quote, server *Server) {
@@ -371,11 +414,80 @@ func (s *Server) upsertSQLStatusQuote(ctx context.Context, statusID int64, quote
 	if s == nil || s.db == nil || statusID == 0 || quoted == nil || quoted.ID == 0 || statusID == quoted.ID {
 		return nil
 	}
-	var source models.Status
-	if err := s.db.WithContext(nonNilContext(ctx)).Select("id", "account_id").Where("id = ? AND deleted_at IS NULL", statusID).First(&source).Error; err != nil {
-		return err
+	return s.db.WithContext(nonNilContext(ctx)).Transaction(func(tx *gorm.DB) error {
+		var source models.Status
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "account_id").Where("id = ? AND deleted_at IS NULL", statusID).First(&source).Error; err != nil {
+			return err
+		}
+		return upsertSQLStatusQuoteTx(tx, &source, quoted, approvalURI, activityURI, legacy, state)
+	})
+}
+
+type quoteCounterSnapshot struct {
+	Exists         bool
+	QuotedStatusID sql.NullInt64
+	State          int
+	Legacy         bool
+}
+
+func loadQuoteCounterSnapshotTx(tx *gorm.DB, statusID int64) (quoteCounterSnapshot, error) {
+	var quote models.Quote
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id", "quoted_status_id", "state", "legacy").
+		Where("status_id = ?", statusID).
+		First(&quote).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return quoteCounterSnapshot{}, nil
 	}
-	return upsertSQLStatusQuoteTx(s.db.WithContext(nonNilContext(ctx)), &source, quoted, approvalURI, activityURI, legacy, state)
+	if err != nil {
+		return quoteCounterSnapshot{}, err
+	}
+	return quoteCounterSnapshot{Exists: true, QuotedStatusID: quote.QuotedStatusID, State: quote.State, Legacy: quote.Legacy}, nil
+}
+
+func applyQuoteCounterTransitionTx(tx *gorm.DB, before quoteCounterSnapshot, after quoteCounterSnapshot) error {
+	decrementID, incrementID := quoteCounterTransitionTargets(before, after)
+	return applyQuoteCounterTargetsTx(tx, decrementID, incrementID)
+}
+
+func applyQuoteUpdateCounterTransitionTx(tx *gorm.DB, before quoteCounterSnapshot, after quoteCounterSnapshot) error {
+	decrementID, incrementID := quoteUpdateCounterTransitionTargets(before, after)
+	return applyQuoteCounterTargetsTx(tx, decrementID, incrementID)
+}
+
+func applyQuoteCounterTargetsTx(tx *gorm.DB, decrementID int64, incrementID int64) error {
+	if decrementID != 0 {
+		if err := decrementStatusStatCounter(tx, decrementID, statusStatCounterQuotes, 1); err != nil {
+			return err
+		}
+	}
+	if incrementID != 0 {
+		return incrementStatusStatCounter(tx, incrementID, statusStatCounterQuotes, 1)
+	}
+	return nil
+}
+
+func quoteUpdateCounterTransitionTargets(before quoteCounterSnapshot, after quoteCounterSnapshot) (int64, int64) {
+	// Quote callbacks count accepted legacy rows on create and destroy, but the
+	// after-update callback deliberately ignores a row that remains legacy.
+	if before.Exists && after.Legacy {
+		return 0, 0
+	}
+	return quoteCounterTransitionTargets(before, after)
+}
+
+func quoteCounterTransitionTargets(before quoteCounterSnapshot, after quoteCounterSnapshot) (int64, int64) {
+	beforeAccepted := before.Exists && before.State == models.QuoteStateAccepted && before.QuotedStatusID.Valid
+	afterAccepted := after.Exists && after.State == models.QuoteStateAccepted && after.QuotedStatusID.Valid
+	decrementID := int64(0)
+	incrementID := int64(0)
+	if beforeAccepted && (!afterAccepted || before.QuotedStatusID.Int64 != after.QuotedStatusID.Int64) {
+		decrementID = before.QuotedStatusID.Int64
+	}
+	if afterAccepted && (!beforeAccepted || before.QuotedStatusID.Int64 != after.QuotedStatusID.Int64) {
+		incrementID = after.QuotedStatusID.Int64
+	}
+	return decrementID, incrementID
 }
 
 func upsertSQLStatusQuoteTx(tx *gorm.DB, source *models.Status, quoted *models.Status, approvalURI sql.NullString, activityURI sql.NullString, legacy bool, state int) error {
@@ -395,7 +507,11 @@ func upsertSQLStatusQuoteTx(tx *gorm.DB, source *models.Status, quoted *models.S
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
-	return tx.Clauses(clause.OnConflict{
+	before, err := loadQuoteCounterSnapshotTx(tx, source.ID)
+	if err != nil {
+		return err
+	}
+	if err := tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "status_id"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"quoted_status_id":  value.QuotedStatusID,
@@ -406,7 +522,35 @@ func upsertSQLStatusQuoteTx(tx *gorm.DB, source *models.Status, quoted *models.S
 			"legacy":            value.Legacy,
 			"updated_at":        value.UpdatedAt,
 		}),
-	}).Create(&value).Error
+	}).Create(&value).Error; err != nil {
+		return err
+	}
+	after := quoteCounterSnapshot{Exists: true, QuotedStatusID: value.QuotedStatusID, State: value.State, Legacy: value.Legacy}
+	return applyQuoteUpdateCounterTransitionTx(tx, before, after)
+}
+
+func (s *Server) deleteSQLStatusQuoteWithCounter(ctx context.Context, statusID int64, quoteID int64) (bool, error) {
+	if s == nil || s.db == nil || statusID == 0 {
+		return false, nil
+	}
+	deleted := false
+	err := s.db.WithContext(nonNilContext(ctx)).Transaction(func(tx *gorm.DB) error {
+		before, err := loadQuoteCounterSnapshotTx(tx, statusID)
+		if err != nil || !before.Exists {
+			return err
+		}
+		query := tx.Where("status_id = ?", statusID)
+		if quoteID != 0 {
+			query = query.Where("id = ?", quoteID)
+		}
+		result := query.Delete(&models.Quote{})
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
+		deleted = true
+		return applyQuoteCounterTransitionTx(tx, before, quoteCounterSnapshot{})
+	})
+	return deleted, err
 }
 
 func nonNilContext(ctx context.Context) context.Context {

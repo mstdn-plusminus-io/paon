@@ -44,6 +44,33 @@ func TestMastodon44CreateRejectsKnownStatusAuthorshipChange(t *testing.T) {
 	}
 }
 
+func TestMastodon4515RemoteStatusMediaUpdateStopsAtFourAttachments(t *testing.T) {
+	attachments := []activityAttachment{
+		{URL: "https://remote.example/1.jpg"},
+		{}, // Invalid entries do not consume one of the four slots.
+		{URL: "https://remote.example/2.jpg"},
+		{URL: "https://remote.example/3.jpg"},
+		{URL: "https://remote.example/4.jpg"},
+		{URL: "https://remote.example/5.jpg"},
+	}
+	got := activityPubRemoteMediaAttachmentsWithinLimit(attachments)
+	if len(got) != 4 || got[0].URL != attachments[0].URL || got[3].URL != attachments[4].URL {
+		t.Fatalf("limited remote media = %#v", got)
+	}
+	if got := activityPubMediaAttachmentsWithinLimit(attachments, 0); len(got) != 0 {
+		t.Fatalf("zero media limit returned %#v", got)
+	}
+	src, err := os.ReadFile("activitypub_inbox.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, function := range []string{"activityPubMediaAttachmentsSignificantChange", "saveActivityPubMediaAttachments"} {
+		if !functionBodyContains(t, src, function, "activityPubRemoteMediaAttachmentsWithinLimit(attachments)") {
+			t.Fatalf("%s does not enforce the fixed Mastodon remote-media limit", function)
+		}
+	}
+}
+
 func TestMastodon44SuspendedActorCannotCreateUnknownStatusThroughUpdate(t *testing.T) {
 	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
 	recent := activityObject{Published: now.Add(-time.Hour).Format(time.RFC3339)}

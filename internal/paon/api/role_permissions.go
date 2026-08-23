@@ -25,7 +25,8 @@ const (
 	rolePermissionManageRoles         = int64(1 << 17)
 	rolePermissionManageUserAccess    = int64(1 << 18)
 	rolePermissionDeleteUserData      = int64(1 << 19)
-	rolePermissionsAll                = int64((1 << 20) - 1)
+	rolePermissionViewFeeds           = int64(1 << 20)
+	rolePermissionsAll                = int64((1 << 21) - 1)
 )
 
 func (s *Server) userCan(user *models.User, permission int64) bool {

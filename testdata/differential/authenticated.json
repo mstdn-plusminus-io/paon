@@ -186,6 +186,288 @@
       "path": "/api/v1/admin/domain_blocks?limit=500",
       "headers_from_env": { "Authorization": "PAON_DIFF_ADMIN_AUTHORIZATION" },
       "compare_headers": ["Content-Type", "Cache-Control", "Link"]
+    },
+    {
+      "id": "FEP-CONTEXT-001",
+      "contract": "FEP-7888",
+      "method": "GET",
+      "path": "/contexts/${PAON_DIFF_CONTEXT_ID}",
+      "headers": { "Accept": "application/activity+json" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "FEP-CONTEXT-ITEMS-001",
+      "contract": "FEP-7888",
+      "method": "GET",
+      "path": "/contexts/${PAON_DIFF_CONTEXT_ID}/items",
+      "headers": { "Accept": "application/activity+json" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "FEP-CONTEXT-PAGE-001",
+      "contract": "FEP-7888",
+      "method": "GET",
+      "path": "/contexts/${PAON_DIFF_CONTEXT_ID}/items?page=true&min_id=0",
+      "headers": { "Accept": "application/activity+json" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "AP-NUMERIC-ACTOR-001",
+      "contract": "ACTIVITYPUB-NUMERIC",
+      "method": "GET",
+      "path": "/ap/users/${PAON_DIFF_NUMERIC_ACCOUNT_ID}.json",
+      "headers": { "Accept": "application/activity+json" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "AP-NUMERIC-OUTBOX-001",
+      "contract": "ACTIVITYPUB-NUMERIC",
+      "method": "GET",
+      "path": "/ap/users/${PAON_DIFF_NUMERIC_ACCOUNT_ID}/outbox.json?page=true",
+      "headers": { "Accept": "application/activity+json" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "AP-NUMERIC-FOLLOWERS-001",
+      "contract": "ACTIVITYPUB-NUMERIC",
+      "method": "GET",
+      "path": "/ap/users/${PAON_DIFF_NUMERIC_ACCOUNT_ID}/followers.json?page=true",
+      "headers": { "Accept": "application/activity+json" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "AP-NUMERIC-STATUS-001",
+      "contract": "ACTIVITYPUB-NUMERIC",
+      "method": "GET",
+      "path": "/ap/users/${PAON_DIFF_NUMERIC_ACCOUNT_ID}/statuses/${PAON_DIFF_NUMERIC_STATUS_ID}.json",
+      "headers": { "Accept": "application/activity+json" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "AP-QUOTE-AUTHORIZATION-001",
+      "contract": "QUOTE-POLICY",
+      "method": "GET",
+      "path": "/ap/users/${PAON_DIFF_LOCAL_ACCOUNT_ID}/quote_authorizations/${PAON_DIFF_ACCEPTED_QUOTE_ID}",
+      "headers": { "Accept": "application/activity+json" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "QUOTE-LIST-001",
+      "contract": "QUOTE-LIST",
+      "method": "GET",
+      "path": "/api/v1/statuses/${PAON_DIFF_QUOTED_STATUS_ID}/quotes?limit=1",
+      "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Link"]
+    },
+    {
+      "id": "QUOTE-LIST-UNAUTHENTICATED-001",
+      "contract": "QUOTE-LIST",
+      "method": "GET",
+      "path": "/api/v1/statuses/${PAON_DIFF_QUOTED_STATUS_ID}/quotes?limit=1",
+      "compare_headers": ["Content-Type", "Cache-Control", "WWW-Authenticate"]
+    },
+    {
+      "id": "QUOTE-POLICY-001",
+      "contract": "QUOTE-POLICY",
+      "method": "PUT",
+      "path": "/api/v1/statuses/${PAON_DIFF_QUOTE_POLICY_STATUS_ID}/interaction_policy",
+      "headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
+      "body": "{\"quote_approval_policy\":\"followers\"}",
+      "compare_headers": ["Content-Type", "Cache-Control"]
+    },
+    {
+      "id": "QUOTE-REVOKE-001",
+      "contract": "QUOTE-REVOKE",
+      "method": "POST",
+      "path": "/api/v1/statuses/${PAON_DIFF_QUOTED_STATUS_ID}/quotes/${PAON_DIFF_ACCEPTED_QUOTE_STATUS_ID}/revoke",
+      "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
+      "compare_headers": ["Content-Type", "Cache-Control"]
+    },
+    {
+      "id": "ADMIN-DISCOVERY-UPDATE-001",
+      "contract": "ADMIN-DISCOVERY",
+      "method": "PATCH",
+      "path": "/admin/settings/discovery",
+      "headers": {
+        "Accept": "text/html",
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      "rails_headers_from_env": {
+        "Cookie": "PAON_DIFF_RAILS_ADMIN_COOKIE",
+        "X-CSRF-Token": "PAON_DIFF_RAILS_ADMIN_CSRF_TOKEN"
+      },
+      "go_headers_from_env": {
+        "Cookie": "PAON_DIFF_GO_ADMIN_COOKIE",
+        "X-CSRF-Token": "PAON_DIFF_GO_ADMIN_CSRF_TOKEN"
+      },
+      "body": "form_admin_settings%5Btrends%5D=1&form_admin_settings%5Btrendable_by_default%5D=0&form_admin_settings%5Blocal_live_feed_access%5D=authenticated&form_admin_settings%5Bremote_live_feed_access%5D=disabled&form_admin_settings%5Blocal_topic_feed_access%5D=authenticated&form_admin_settings%5Bremote_topic_feed_access%5D=disabled&form_admin_settings%5Bnoindex%5D=0&form_admin_settings%5Ballow_referrer_origin%5D=0&form_admin_settings%5Bactivity_api_enabled%5D=1&form_admin_settings%5Bpeers_api_enabled%5D=1&form_admin_settings%5Bauthorized_fetch%5D=0&form_admin_settings%5Bbootstrap_timeline_accounts%5D=&form_admin_settings%5Bprofile_directory%5D=1",
+      "compare_headers": ["Content-Type"],
+      "compare_body": false
+    },
+    {
+      "id": "ADMIN-DISCOVERY-SHOW-001",
+      "contract": "ADMIN-DISCOVERY",
+      "method": "GET",
+      "path": "/admin/settings/discovery",
+      "headers": { "Accept": "text/html" },
+      "rails_headers_from_env": { "Cookie": "PAON_DIFF_RAILS_ADMIN_COOKIE" },
+      "go_headers_from_env": { "Cookie": "PAON_DIFF_GO_ADMIN_COOKIE" },
+      "compare_headers": ["Content-Type", "Cache-Control"],
+      "compare_body": false
+    },
+    {
+      "id": "FEED-LOCAL-ANONYMOUS-001",
+      "contract": "FEED-ACCESS",
+      "method": "GET",
+      "path": "/api/v1/timelines/public?local=true&limit=1",
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "FEED-LOCAL-AUTHORIZED-001",
+      "contract": "FEED-ACCESS",
+      "method": "GET",
+      "path": "/api/v1/timelines/public?local=true&limit=1",
+      "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Link", "Vary"]
+    },
+    {
+      "id": "FEED-REMOTE-USER-DISABLED-001",
+      "contract": "FEED-ACCESS",
+      "method": "GET",
+      "path": "/api/v1/timelines/public?remote=true&limit=1",
+      "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Link", "Vary"]
+    },
+    {
+      "id": "FEED-REMOTE-VIEW-FEEDS-001",
+      "contract": "FEED-ACCESS",
+      "method": "GET",
+      "path": "/api/v1/timelines/public?remote=true&limit=1",
+      "headers_from_env": { "Authorization": "PAON_DIFF_ADMIN_AUTHORIZATION" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Link", "Vary"]
+    },
+    {
+      "id": "FEED-TOPIC-ANONYMOUS-001",
+      "contract": "FEED-ACCESS",
+      "method": "GET",
+      "path": "/api/v1/timelines/tag/${PAON_DIFF_TOPIC_TAG}?local=true&limit=1",
+      "compare_headers": ["Content-Type", "Cache-Control", "Vary"]
+    },
+    {
+      "id": "FEED-TOPIC-VIEW-FEEDS-001",
+      "contract": "FEED-ACCESS",
+      "method": "GET",
+      "path": "/api/v1/timelines/tag/${PAON_DIFF_TOPIC_TAG}?remote=true&limit=1",
+      "headers_from_env": { "Authorization": "PAON_DIFF_ADMIN_AUTHORIZATION" },
+      "compare_headers": ["Content-Type", "Cache-Control", "Link", "Vary"]
+    },
+    {
+      "id": "POSTING-DEFAULTS-UPDATE-001",
+      "contract": "POSTING-DEFAULTS",
+      "method": "PATCH",
+      "path": "/settings/preferences/posting_defaults",
+      "headers": {
+        "Accept": "text/html",
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      "rails_headers_from_env": {
+        "Cookie": "PAON_DIFF_RAILS_USER_COOKIE",
+        "X-CSRF-Token": "PAON_DIFF_RAILS_USER_CSRF_TOKEN"
+      },
+      "go_headers_from_env": {
+        "Cookie": "PAON_DIFF_GO_USER_COOKIE",
+        "X-CSRF-Token": "PAON_DIFF_GO_USER_CSRF_TOKEN"
+      },
+      "body": "user%5Bsettings_attributes%5D%5Bdefault_privacy%5D=private&user%5Bsettings_attributes%5D%5Bdefault_quote_policy%5D=public&user%5Bsettings_attributes%5D%5Bdefault_language%5D=en&user%5Bsettings_attributes%5D%5Bdefault_sensitive%5D=0",
+      "compare_headers": ["Content-Type"],
+      "compare_body": false
+    },
+    {
+      "id": "POSTING-DEFAULTS-POST-001",
+      "contract": "POSTING-DEFAULTS",
+      "method": "POST",
+      "path": "/api/v1/statuses",
+      "headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Idempotency-Key": "paon-diff-4.5-posting-defaults-001"
+      },
+      "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
+      "body": "{\"status\":\"Mastodon 4.5 posting defaults differential fixture\"}",
+      "compare_headers": ["Content-Type", "Cache-Control"],
+      "json_replacements": {
+        "/id": "{{STATUS_ID}}",
+        "/created_at": "{{CREATED_AT}}",
+        "/uri": "{{STATUS_URI}}",
+        "/url": "{{STATUS_URL}}"
+      }
+    },
+    {
+      "id": "POSTING-DEFAULTS-SHOW-001",
+      "contract": "POSTING-DEFAULTS",
+      "method": "GET",
+      "path": "/settings/preferences/posting_defaults",
+      "headers": { "Accept": "text/html" },
+      "rails_headers_from_env": { "Cookie": "PAON_DIFF_RAILS_USER_COOKIE" },
+      "go_headers_from_env": { "Cookie": "PAON_DIFF_GO_USER_COOKIE" },
+      "compare_headers": ["Content-Type", "Cache-Control"],
+      "compare_body": false
+    },
+    {
+      "id": "USERNAME-BLOCK-CREATE-001",
+      "contract": "ADMIN-USERNAME-BLOCKS",
+      "method": "POST",
+      "path": "/admin/username_blocks",
+      "headers": {
+        "Accept": "text/html",
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      "rails_headers_from_env": {
+        "Cookie": "PAON_DIFF_RAILS_ADMIN_COOKIE",
+        "X-CSRF-Token": "PAON_DIFF_RAILS_ADMIN_CSRF_TOKEN"
+      },
+      "go_headers_from_env": {
+        "Cookie": "PAON_DIFF_GO_ADMIN_COOKIE",
+        "X-CSRF-Token": "PAON_DIFF_GO_ADMIN_CSRF_TOKEN"
+      },
+      "body": "username_block%5Busername%5D=${PAON_DIFF_USERNAME_BLOCK}&username_block%5Bcomparison%5D=contains&username_block%5Ballow_with_approval%5D=0",
+      "compare_headers": ["Content-Type"],
+      "compare_body": false
+    },
+    {
+      "id": "USERNAME-BLOCK-INDEX-001",
+      "contract": "ADMIN-USERNAME-BLOCKS",
+      "method": "GET",
+      "path": "/admin/username_blocks",
+      "headers": { "Accept": "text/html" },
+      "rails_headers_from_env": { "Cookie": "PAON_DIFF_RAILS_ADMIN_COOKIE" },
+      "go_headers_from_env": { "Cookie": "PAON_DIFF_GO_ADMIN_COOKIE" },
+      "compare_headers": ["Content-Type", "Cache-Control"],
+      "compare_body": false
+    },
+    {
+      "id": "QUOTE-CREATE-001",
+      "contract": "QUOTE-CREATE",
+      "method": "POST",
+      "path": "/api/v1/statuses",
+      "headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Idempotency-Key": "paon-diff-4.5-quote-001"
+      },
+      "headers_from_env": { "Authorization": "PAON_DIFF_USER_AUTHORIZATION" },
+      "body": "{\"status\":\"Mastodon 4.5 official quote differential fixture\",\"quoted_status_id\":\"${PAON_DIFF_QUOTE_TARGET_STATUS_ID}\",\"quote_approval_policy\":\"public\",\"visibility\":\"public\",\"language\":\"en\"}",
+      "compare_headers": ["Content-Type", "Cache-Control"],
+      "json_replacements": {
+        "/id": "{{STATUS_ID}}",
+        "/created_at": "{{CREATED_AT}}",
+        "/uri": "{{STATUS_URI}}",
+        "/url": "{{STATUS_URL}}"
+      }
     }
   ]
 }

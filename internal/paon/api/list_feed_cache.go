@@ -220,7 +220,10 @@ func (s *Server) fanOutStatusUpdateToLocalRecipients(ctx context.Context, databa
 	default:
 		enqueueHome(s.statusMentionedFollowerHomeFeedTargetsForLocalDistribution(ctx, database, status))
 	}
-	return s.notifyStatusUpdateRebloggers(ctx, database, status)
+	if err := s.notifyStatusUpdateRebloggers(ctx, database, status); err != nil {
+		return err
+	}
+	return s.notifyStatusUpdateQuoters(ctx, database, status)
 }
 
 func statusAuthorCanFanOut(ctx context.Context, database *gorm.DB, accountID int64) (bool, error) {
@@ -278,6 +281,41 @@ func (s *Server) notifyStatusUpdateRebloggers(ctx context.Context, database *gor
 	var firstErr error
 	for _, row := range rows {
 		notification, err := s.createRelationshipNotificationRowAndEnqueue(database.WithContext(ctx), row.AccountID, status.AccountID, status.ID, "Status", "update", time.Now().UTC())
+		if err != nil && firstErr == nil {
+			firstErr = err
+			continue
+		}
+		if notification != nil {
+			s.publishNotificationIDWithContext(ctx, notification.ID)
+		}
+	}
+	return firstErr
+}
+
+// notifyStatusUpdateQuoters mirrors Mastodon 4.5's quoted_update branch in
+// FanOutOnWriteService. The activity is the local quoting status, while the
+// actor is the author whose quoted status was edited.
+func (s *Server) notifyStatusUpdateQuoters(ctx context.Context, database *gorm.DB, status models.Status) error {
+	if s == nil || database == nil || status.ID == 0 || status.AccountID == 0 {
+		return nil
+	}
+	var rows []struct {
+		AccountID int64 `gorm:"column:account_id"`
+		StatusID  int64 `gorm:"column:status_id"`
+	}
+	if err := database.WithContext(ctx).
+		Table("quotes").
+		Select("quotes.account_id, quotes.status_id").
+		Joins("JOIN statuses ON statuses.id = quotes.status_id AND statuses.deleted_at IS NULL").
+		Joins("JOIN accounts ON accounts.id = quotes.account_id").
+		Where("quotes.quoted_status_id = ? AND quotes.state = ?", status.ID, models.QuoteStateAccepted).
+		Where("accounts.domain IS NULL OR accounts.domain = ''").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	var firstErr error
+	for _, row := range rows {
+		notification, err := s.createRelationshipNotificationRowAndEnqueue(database.WithContext(ctx), row.AccountID, status.AccountID, row.StatusID, "Status", "quoted_update", time.Now().UTC())
 		if err != nil && firstErr == nil {
 			firstErr = err
 			continue

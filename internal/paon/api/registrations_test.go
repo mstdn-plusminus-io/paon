@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -16,6 +17,49 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
+
+func TestClosedRegistrationRedirectCarriesLocalizedContactAlert(t *testing.T) {
+	previous, hadPrevious := railsSettingDefaults["site_contact_email"]
+	railsSettingDefaults["site_contact_email"] = "moderation@example.test"
+	t.Cleanup(func() {
+		if hadPrevious {
+			railsSettingDefaults["site_contact_email"] = previous
+		} else {
+			delete(railsSettingDefaults, "site_contact_email")
+		}
+	})
+
+	tests := []struct {
+		locale string
+		want   string
+	}{
+		{locale: "en", want: "Your registration attempt has been blocked due to a network policy."},
+		{locale: "ja", want: "ネットワークポリシーにより登録がブロックされました。"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.locale, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			context := echo.NewContext(httptest.NewRequest(http.MethodGet, "/auth/sign_up", nil), recorder, echo.New())
+			if err := (&Server{}).redirectClosedWebRegistration(context, tt.locale); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != http.StatusFound {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusFound)
+			}
+			location, err := url.Parse(recorder.Header().Get("Location"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if location.Path != "/auth/sign_in" {
+				t.Fatalf("redirect path = %q", location.Path)
+			}
+			alert := location.Query().Get("alert")
+			if !strings.Contains(alert, tt.want) || !strings.Contains(alert, "moderation@example.test") {
+				t.Fatalf("localized alert = %q", alert)
+			}
+		})
+	}
+}
 
 func TestParseAccountCreatePayloadAcceptsFormValues(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/v1/accounts", strings.NewReader("username=alice&email=alice%40example.test&password=correcthorsebattery&agreement=true&locale=ja&reason=hello&time_zone=Asia%2FTokyo"))

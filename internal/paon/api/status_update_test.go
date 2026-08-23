@@ -547,6 +547,19 @@ func TestQuoteStatusURLPrefersRailsPublicURL(t *testing.T) {
 	}
 }
 
+func TestQuoteAndStoredStatusURIUseNumericActivityPubAccountID(t *testing.T) {
+	server := &Server{cfg: config.Config{LocalDomain: "social.example", WebDomain: "social.example", Scheme: "https"}}
+	account := models.Account{ID: 42, Username: "alice", IDScheme: sql.NullInt64{Int64: 1, Valid: true}}
+	status := models.Status{ID: 123, Account: account}
+	want := "https://social.example/ap/users/42/statuses/123"
+	if got := server.quoteStatusURI(status); got != want {
+		t.Fatalf("quote status URI = %q, want %q", got, want)
+	}
+	if got := server.localStatusURI(account, status.ID); got != want {
+		t.Fatalf("stored local status URI = %q, want %q", got, want)
+	}
+}
+
 func TestUpdateStatusUsesOfficialQuoteRelationshipWithoutPrivateTextMarker(t *testing.T) {
 	src, err := os.ReadFile("server.go")
 	if err != nil {

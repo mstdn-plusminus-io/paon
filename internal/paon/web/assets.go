@@ -26,6 +26,7 @@ type AppOptions struct {
 	DocumentTitle          string
 	HeadMeta               []HeadMeta
 	HeadLinks              []HeadLink
+	HeadJSONLD             []string
 	SiteTitle              string
 	SiteTitleSet           bool
 	RegistrationsOpen      bool
@@ -246,6 +247,7 @@ func requiredPackAssets(cfg config.Config) []string {
 		"features/following.js",
 		"features/reblogs.js",
 		"features/favourites.js",
+		"features/quotes.js",
 		"features/follow_requests.js",
 		"features/favourited_statuses.js",
 		"features/followed_tags.js",
@@ -386,7 +388,7 @@ func (r *Renderer) AppHTML(path string, current *models.Account, token string, o
 		r.asset("features/compose.js"),
 		r.asset("features/home_timeline.js"),
 		r.asset("features/notifications.js"),
-	}, CSRFTokenForSession(token), opts.User, "app-body", appHTMLIncludesCSRFMeta(current, opts), opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks, opts.CustomCSSPath)
+	}, CSRFTokenForSession(token), opts.User, "app-body", appHTMLIncludesCSRFMeta(current, opts), opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks, opts.HeadJSONLD, opts.CustomCSSPath)
 }
 
 func (r *Renderer) ShareHTML(current *models.Account, token string, text string, options ...AppOptions) (string, error) {
@@ -414,7 +416,7 @@ func (r *Renderer) ShareHTML(current *models.Account, token string, text string,
 	return r.appHTML("/share", initial, "mastodon-compose", r.asset("share.js"), []string{
 		r.asset("locale/" + r.cfg.Locale() + "-json.js"),
 		r.asset("features/compose.js"),
-	}, CSRFTokenForSession(token), opts.User, "modal-layout compose-standalone", true, opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks, opts.CustomCSSPath)
+	}, CSRFTokenForSession(token), opts.User, "modal-layout compose-standalone", true, opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks, opts.HeadJSONLD, opts.CustomCSSPath)
 }
 
 // EmbedHTML renders the isolated React status mount used by Mastodon oEmbed.
@@ -588,7 +590,7 @@ func rendererLocalesDir(publicDir string) string {
 	return filepath.Join(filepath.Dir(publicDir), "config", "locales")
 }
 
-func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID string, appJS string, preloads []string, csrfToken string, user *models.User, baseBodyClasses string, includeCSRFMeta bool, documentTitle string, headMeta []HeadMeta, headLinks []HeadLink, customCSSPath ...string) (string, error) {
+func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID string, appJS string, preloads []string, csrfToken string, user *models.User, baseBodyClasses string, includeCSRFMeta bool, documentTitle string, headMeta []HeadMeta, headLinks []HeadLink, headJSONLD []string, customCSSPath ...string) (string, error) {
 	initialJSON, err := json.Marshal(initial)
 	if err != nil {
 		return "", err
@@ -607,6 +609,17 @@ func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID
 		title = documentTitle
 	}
 
+	jsonLD := make([]template.JS, 0, len(headJSONLD))
+	for _, raw := range headJSONLD {
+		var value any
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			continue
+		}
+		safe, err := json.Marshal(value)
+		if err == nil {
+			jsonLD = append(jsonLD, template.JS(safe))
+		}
+	}
 	data := struct {
 		Title       string
 		InitialPath string
@@ -633,6 +646,7 @@ func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID
 		Locale      string
 		HeadMeta    []HeadMeta
 		HeadLinks   []HeadLink
+		HeadJSONLD  []template.JS
 		CustomCSS   string
 	}{
 		Title:       title,
@@ -660,6 +674,7 @@ func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID
 		Locale:      locale,
 		HeadMeta:    headMeta,
 		HeadLinks:   headLinks,
+		HeadJSONLD:  jsonLD,
 		CustomCSS:   firstNonEmptyString(customCSSPath, "/custom.css"),
 	}
 
@@ -914,6 +929,9 @@ var appTemplate = template.Must(template.New("app").Parse(`<!DOCTYPE html>
   {{- end }}
   {{- range .HeadLinks }}
   <link rel="{{ .Rel }}"{{ if .Type }} type="{{ .Type }}"{{ end }} href="{{ .Href }}">
+  {{- end }}
+  {{- range .HeadJSONLD }}
+  <script type="application/ld+json">{{ . }}</script>
   {{- end }}
   <title>{{ .Title }}</title>
   {{- if .CommonCSS }}

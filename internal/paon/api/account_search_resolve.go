@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"gorm.io/gorm"
@@ -68,7 +69,7 @@ func accountSearchNonExactLimit(query string, current *models.Account, limitValu
 	if limitValue < 1 {
 		return 0
 	}
-	if current == nil && len(strings.TrimPrefix(strings.TrimSpace(query), "@")) < 5 {
+	if current == nil && utf8.RuneCountInString(strings.TrimPrefix(strings.TrimSpace(query), "@")) < 3 {
 		return 0
 	}
 	if exactAccount != nil {

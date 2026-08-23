@@ -937,6 +937,9 @@ func (s *Server) processActivityPubAccept(payload activityPayload, actor *models
 	if actor == nil || actor.ID == 0 || actor.Local() {
 		return activityPubEventNotAppliedf("Accept actor must be a persisted remote account")
 	}
+	if handled, err := s.processActivityPubQuoteResponse(context.Background(), payload, actor, deliveredToAccountID, true); handled || err != nil {
+		return err
+	}
 	if handled, err := s.processActivityPubRelayFollowResponse(payload.Object.ID, payload.Object.IDPresent, relayStateAccepted); handled || err != nil {
 		return err
 	}
@@ -982,6 +985,9 @@ func (s *Server) processActivityPubAccept(payload activityPayload, actor *models
 func (s *Server) processActivityPubReject(payload activityPayload, actor *models.Account, deliveredToAccountID int64) error {
 	if actor == nil || actor.ID == 0 || actor.Local() {
 		return activityPubEventNotAppliedf("Reject actor must be a persisted remote account")
+	}
+	if handled, err := s.processActivityPubQuoteResponse(context.Background(), payload, actor, deliveredToAccountID, false); handled || err != nil {
+		return err
 	}
 	if handled, err := s.processActivityPubRelayFollowResponse(payload.Object.ID, payload.Object.IDPresent, relayStateRejected); handled || err != nil {
 		return err
@@ -1895,6 +1901,9 @@ func (s *Server) processActivityPubCreateNote(payload activityPayload, actor *mo
 		if err := tx.Omit(clause.Associations).Create(&status).Error; err != nil {
 			return err
 		}
+		if err := s.assignConversationParentTx(tx, status); err != nil {
+			return err
+		}
 		createdStatusID = status.ID
 		statusStat := activityPubStatusStatFromObject(status.ID, note)
 		if err := tx.Create(&statusStat).Error; err != nil {
@@ -2430,9 +2439,6 @@ func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models
 			return err
 		}
 		return s.updateActivityPubActor(actor, object, options.RequestID)
-	}
-	if activityObjectIsConvertedStatus(object) {
-		return nil
 	}
 	if activityObjectIsStatus(object) {
 		if !activityNoteBelongsToActor(object, actor) {
@@ -2994,18 +3000,10 @@ func (s *Server) activityPubMediaAttachmentsSignificantChange(tx *gorm.DB, statu
 	for _, media := range previous {
 		previousByURL[media.RemoteURL] = media
 	}
+	attachments = activityPubRemoteMediaAttachmentsWithinLimit(attachments)
 	nextIDs := make(models.Int64Array, 0, len(attachments))
 	changed := false
-	accepted := 0
-	maxAttachments := s.maxMediaAttachments()
 	for _, attachment := range attachments {
-		if attachment.URL == "" {
-			continue
-		}
-		if accepted >= maxAttachments {
-			break
-		}
-		accepted++
 		media, ok := previousByURL[attachment.URL]
 		if !ok {
 			changed = true
@@ -3910,21 +3908,13 @@ func activityPubPollExpirationShouldSchedule(previousExpiresAt sql.NullTime, now
 }
 
 func (s *Server) saveActivityPubMediaAttachments(tx *gorm.DB, status *models.Status, attachments []activityAttachment, actor *models.Account, now time.Time, updateEmptyOrder bool, _ bool) error {
+	attachments = activityPubRemoteMediaAttachmentsWithinLimit(attachments)
 	orderedIDs := make(models.Int64Array, 0, len(attachments))
-	accepted := 0
-	maxAttachments := s.maxMediaAttachments()
 	skipRemoteMedia, err := activityPubActorSkipsMedia(tx, actor)
 	if err != nil {
 		return err
 	}
 	for _, attachment := range attachments {
-		if attachment.URL == "" {
-			continue
-		}
-		if accepted >= maxAttachments {
-			break
-		}
-		accepted++
 		media, created, err := s.findOrCreateActivityPubMediaAttachment(tx, status, attachment, now)
 		if err != nil {
 			return err
@@ -3945,6 +3935,29 @@ func (s *Server) saveActivityPubMediaAttachments(tx *gorm.DB, status *models.Sta
 	}
 	status.OrderedMediaAttachmentIDs = orderedIDs
 	return tx.Model(&models.Status{}).Where("id = ?", status.ID).Update("ordered_media_attachment_ids", orderedIDs).Error
+}
+
+const activityPubRemoteMediaAttachmentsLimit = 4
+
+func activityPubRemoteMediaAttachmentsWithinLimit(attachments []activityAttachment) []activityAttachment {
+	return activityPubMediaAttachmentsWithinLimit(attachments, activityPubRemoteMediaAttachmentsLimit)
+}
+
+func activityPubMediaAttachmentsWithinLimit(attachments []activityAttachment, limit int) []activityAttachment {
+	if limit <= 0 || len(attachments) == 0 {
+		return []activityAttachment{}
+	}
+	out := make([]activityAttachment, 0, min(limit, len(attachments)))
+	for _, attachment := range attachments {
+		if attachment.URL == "" {
+			continue
+		}
+		if len(out) >= limit {
+			break
+		}
+		out = append(out, attachment)
+	}
+	return out
 }
 
 func activityPubApplyMediaAttachmentUpdates(media *models.MediaAttachment, status *models.Status, attachment activityAttachment, now time.Time) map[string]any {
@@ -4334,28 +4347,15 @@ func activityTypesInclude(primary string, values []string, typ string) bool {
 func activityPubConvertedStatusText(object activityObject) string {
 	parts := make([]string, 0, 3)
 	if name := strings.TrimSpace(activityPubPlainText(object.Name)); name != "" {
-		parts = append(parts, html.EscapeString(name))
+		parts = append(parts, "<h2>"+html.EscapeString(name)+"</h2>")
 	}
-	if summary := strings.TrimSpace(activityPubPlainText(object.Summary)); summary != "" {
-		parts = append(parts, html.EscapeString(summary))
+	if summary := strings.TrimSpace(object.Summary); summary != "" {
+		parts = append(parts, summary)
 	}
 	if uri := strings.TrimSpace(firstNonEmpty(object.URL, object.ID)); uri != "" {
 		parts = append(parts, activityPubConvertedStatusLink(uri))
 	}
-	return activityPubConvertedSimpleFormat(parts)
-}
-
-func activityPubConvertedSimpleFormat(parts []string) string {
-	filtered := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if strings.TrimSpace(part) != "" {
-			filtered = append(filtered, part)
-		}
-	}
-	if len(filtered) == 0 {
-		return ""
-	}
-	return "<p>" + strings.Join(filtered, "</p><p>") + "</p>"
+	return strings.Join(parts, "\n\n")
 }
 
 func activityPubConvertedStatusLink(raw string) string {
@@ -4693,6 +4693,7 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 	updates["outbox_url"] = object.Outbox
 	updates["shared_inbox_url"] = object.SharedInbox
 	updates["followers_url"] = object.Followers
+	updates["following_url"] = object.Following
 	updates["url"] = sql.NullString{String: firstNonEmpty(object.URL, object.ID), Valid: firstNonEmpty(object.URL, object.ID) != ""}
 	updates["uri"] = object.ID
 	updates["actor_type"] = sql.NullString{String: activityActorTypeValueOrDefault(object.Types), Valid: true}
@@ -5726,6 +5727,18 @@ func (s *Server) localUsernameFromActivityURI(raw string) string {
 		return ""
 	}
 	path := strings.Trim(parsed.EscapedPath(), "/")
+	if strings.HasPrefix(path, "ap/users/") {
+		parts := strings.Split(strings.TrimPrefix(path, "ap/users/"), "/")
+		accountID, err := strconv.ParseInt(firstNonEmpty(parts...), 10, 64)
+		if err != nil || accountID <= 0 || s == nil || s.db == nil {
+			return ""
+		}
+		var account models.Account
+		if err := s.db.Select("username").Where("id = ? AND domain IS NULL", accountID).First(&account).Error; err != nil {
+			return ""
+		}
+		return account.Username
+	}
 	if strings.HasPrefix(path, "users/") {
 		parts := strings.Split(strings.TrimPrefix(path, "users/"), "/")
 		if len(parts) > 0 {
@@ -5768,29 +5781,30 @@ func activityHostWithNormalizedName(raw string) string {
 }
 
 type activityPayload struct {
-	ID              string
-	IDRaw           string
-	IDPresent       bool
-	Type            string
-	Actor           string
-	ActorRaw        string
-	ActorPresent    bool
-	Content         string
-	Published       string
-	Signature       activityLinkedDataSignature
-	Object          activityObject
-	ObjectReference bool
-	ObjectIDs       []string
-	ObjectIDRaws    []string
-	Target          string
-	Instrument      string
-	Result          string
-	To              []string
-	CC              []string
-	Items           []activityPayload
-	RawBody         []byte
-	Fetch           bool
-	ObjectDocument  bool
+	ID               string
+	IDRaw            string
+	IDPresent        bool
+	Type             string
+	Actor            string
+	ActorRaw         string
+	ActorPresent     bool
+	Content          string
+	Published        string
+	Signature        activityLinkedDataSignature
+	Object           activityObject
+	ObjectReference  bool
+	ObjectIDs        []string
+	ObjectIDRaws     []string
+	Target           string
+	Instrument       string
+	InstrumentObject *activityObject
+	Result           string
+	To               []string
+	CC               []string
+	Items            []activityPayload
+	RawBody          []byte
+	Fetch            bool
+	ObjectDocument   bool
 }
 
 type activityLinkedDataSignature struct {
@@ -5823,6 +5837,7 @@ type activityObject struct {
 	ObjectID              string
 	ObjectIDRaw           string
 	ObjectIDPresent       bool
+	Instrument            string
 	AttributedTo          string
 	AttributedToRaw       string
 	URL                   string
@@ -6126,6 +6141,7 @@ func parseActivityPayload(body []byte) (activityPayload, error) {
 	}
 	rawActor := activityJSONLDValue(raw, "actor")
 	rawID := activityJSONLDValue(raw, "id")
+	rawInstrument := activityJSONLDValue(raw, "instrument")
 	payloadType := activityJSONLDActivityType(raw)
 	objectIDRaws := activityPubObjectValueOrIDs(rawObject)
 	if payloadType == "Flag" {
@@ -6147,11 +6163,17 @@ func parseActivityPayload(body []byte) (activityPayload, error) {
 		ObjectIDs:       activityPubObjectIDs(rawObject),
 		ObjectIDRaws:    objectIDRaws,
 		Target:          activityRailsValueOrID(activityJSONLDValue(raw, "target")),
-		Instrument:      activityRailsValueOrID(activityJSONLDValue(raw, "instrument")),
+		Instrument:      activityRailsValueOrID(rawInstrument),
 		Result:          activityRailsValueOrID(activityJSONLDValue(raw, "result")),
 		To:              to,
 		CC:              cc,
 		RawBody:         append([]byte(nil), body...),
+	}
+	if inlineInstrument, ok := activityJSONLDSingle(rawInstrument).(map[string]any); ok {
+		instrument := parseActivityObject(inlineInstrument)
+		if activityObjectIsStatus(instrument) {
+			payload.InstrumentObject = &instrument
+		}
 	}
 	payload.Items = parseActivityCollectionPayloads(body, payload.Type)
 	return payload, nil
@@ -6687,6 +6709,7 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 			ObjectID:              activityJSONLDObjectID(object, "object"),
 			ObjectIDRaw:           activityJSONLDValueOrID(objectIDValue),
 			ObjectIDPresent:       objectIDValue != nil,
+			Instrument:            activityJSONLDObjectID(object, "instrument"),
 			AttributedTo:          activityJSONLDObjectIDFirst(object, "attributedTo"),
 			AttributedToRaw:       activityJSONLDValueOrID(activityJSONLDValue(object, "attributedTo")),
 			URL:                   activityActorOrStatusURL(activityJSONLDValue(object, "url"), id, activityJSONLDType(object), activityJSONLDTypes(object)),

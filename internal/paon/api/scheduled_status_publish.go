@@ -79,7 +79,10 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 	}
 	mediaIDs = compactMediaIDs(mediaIDs)
 	sensitive := statusSensitiveValue(payload.statusUpdatePayload)
-	applyCreateSpoilerTextFallback(&payload.statusUpdatePayload)
+	hasQuote := strings.TrimSpace(payload.QuotedStatusID) != ""
+	if !hasQuote {
+		applyCreateSpoilerTextFallback(&payload.statusUpdatePayload)
+	}
 
 	if !scheduled.AccountID.Valid || scheduled.AccountID.Int64 == 0 {
 		s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
@@ -100,10 +103,24 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 		s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
 		return nil, nil
 	}
+	quoteApprovalPolicy, ok := quoteApprovalPolicyForPayload(payload.statusUpdatePayload, account)
+	if !ok {
+		s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
+		return nil, nil
+	}
+	var quotedStatus *models.Status
+	quoteDecision := quotePolicyDenied
+	if hasQuote {
+		quotedStatus, quoteDecision, err = s.findQuotableStatusForAccount(ctx, &account, payload.QuotedStatusID)
+		if err != nil {
+			s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
+			return nil, nil
+		}
+	}
 
 	text := payload.Status
 	normalizeStatusContents(&text, &payload.SpoilerText)
-	if (strings.TrimSpace(text) == "" && len(mediaIDs) == 0 && !hasPoll) || statusLengthTooLong(text, payload.SpoilerText, s.maxStatusChars()) {
+	if (strings.TrimSpace(text) == "" && len(mediaIDs) == 0 && !hasPoll && !hasQuote) || statusLengthTooLong(text, payload.SpoilerText, s.maxStatusChars()) {
 		s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
 		return nil, nil
 	}
@@ -126,17 +143,25 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 	}
 	language := s.statusLanguageForAccount(payload.Language, sql.NullString{}, account)
 
+	visibility := s.statusVisibility(account, payload.Visibility)
+	if quotedStatus != nil && quotedStatus.Visibility == 2 && visibility < 2 {
+		visibility = 2
+	}
+	if visibility > 1 {
+		quoteApprovalPolicy = 0
+	}
 	status := models.Status{
-		Text:          text,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		AccountID:     account.ID,
-		Local:         sql.NullBool{Bool: true, Valid: true},
-		Visibility:    s.statusVisibility(account, payload.Visibility),
-		Sensitive:     sensitive,
-		SpoilerText:   payload.SpoilerText,
-		Language:      language,
-		ApplicationID: payload.ApplicationID,
+		Text:                text,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		AccountID:           account.ID,
+		Local:               sql.NullBool{Bool: true, Valid: true},
+		Visibility:          visibility,
+		Sensitive:           sensitive,
+		SpoilerText:         payload.SpoilerText,
+		Language:            language,
+		ApplicationID:       payload.ApplicationID,
+		QuoteApprovalPolicy: quoteApprovalPolicy,
 	}
 	if replyTo != nil {
 		status.InReplyToID = sql.NullInt64{Int64: replyTo.ID, Valid: true}
@@ -154,6 +179,9 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 			return err
 		}
 		if err := tx.Create(&status).Error; err != nil {
+			return err
+		}
+		if err := s.assignConversationParentTx(tx, status); err != nil {
 			return err
 		}
 		if err := tx.Create(&models.StatusStat{StatusID: status.ID, RepliesCount: 0, ReblogsCount: 0, FavouritesCount: 0}).Error; err != nil {
@@ -185,6 +213,24 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 		if unexpected := unexpectedMentionAccounts(mentions.Accounts, payload.AllowedMentions, payload.HasAllowedMentions); len(unexpected) > 0 {
 			return unexpectedMentionsError{accounts: unexpected}
 		}
+		if quotedStatus != nil && visibility == 3 && quotedStatus.AccountID != account.ID {
+			mentioned, err := directQuoteMentionsQuotedAccount(tx, status.ID, quotedStatus.AccountID)
+			if err != nil {
+				return err
+			}
+			if !mentioned {
+				return errQuotedUserNotMentioned
+			}
+		}
+		if quotedStatus != nil {
+			quote, err := s.createOfficialQuoteTx(tx, &status, quotedStatus, quoteDecision, now)
+			if err != nil {
+				return err
+			}
+			if payload, ok := officialQuoteNotificationPayload(quote, quotedStatus); ok {
+				notificationPayloads = append(notificationPayloads, payload)
+			}
+		}
 		updatedConversationIDs, err := s.addDirectStatusToConversations(tx, status, mentions.Accounts)
 		if err != nil {
 			return err
@@ -204,6 +250,10 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 	}); err != nil {
 		var unexpected unexpectedMentionsError
 		if errors.As(err, &unexpected) {
+			s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
+			return nil, nil
+		}
+		if errors.Is(err, errQuotedUserNotMentioned) {
 			s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
 			return nil, nil
 		}
@@ -253,6 +303,7 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 	s.fetchLinkCardForStatusAsync(created.ID)
 	s.schedulePollExpirationNotifyWorker(created.Poll)
 	_ = s.enqueueOrDeliverActivityPubDistribution(*created)
+	_ = s.deliverLocalQuoteRequest(ctx, *created)
 	return created, nil
 }
 
@@ -274,6 +325,11 @@ func statusCreatePayloadFromScheduledParams(raw models.JSONValue) (statusCreateP
 	payload.SpoilerText = rawJSONString(params["spoiler_text"])
 	payload.Language = rawJSONString(params["language"])
 	payload.InReplyToID = rawJSONString(params["in_reply_to_id"])
+	payload.QuotedStatusID = rawJSONString(params["quoted_status_id"])
+	if rawPolicy, ok := params["quote_approval_policy"]; ok && len(rawPolicy) > 0 && string(rawPolicy) != "null" {
+		payload.QuoteApprovalPolicy = scheduledStatusQuoteApprovalPolicyName(rawPolicy)
+		payload.HasQuoteApprovalPolicy = true
+	}
 	payload.ApplicationID = rawJSONInt64(params["application_id"])
 	if value, ok := rawJSONBool(params["sensitive"]); ok {
 		payload.Sensitive = value
@@ -294,6 +350,14 @@ func statusCreatePayloadFromScheduledParams(raw models.JSONValue) (statusCreateP
 		payload.HasAllowedMentions = true
 	}
 	return payload, mediaIDs, nil
+}
+
+func scheduledStatusQuoteApprovalPolicyName(raw json.RawMessage) string {
+	value := strings.TrimSpace(rawJSONString(raw))
+	if bitmask, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return quoteApprovalPolicyName(int(bitmask))
+	}
+	return value
 }
 
 func pollUpdatePayloadFromRawJSON(raw json.RawMessage) (pollUpdatePayload, bool) {

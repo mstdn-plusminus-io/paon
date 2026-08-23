@@ -50,8 +50,8 @@ func TestMastodon44MigrationInventoryIsExactAndPhaseDisjoint(t *testing.T) {
 	if len(got) != 67 || len(got) != paonschema.Mastodon44UpgradeVersionCount() {
 		t.Fatalf("Mastodon 4.4 marker count = %d, schema inventory = %d, want 67", len(got), paonschema.Mastodon44UpgradeVersionCount())
 	}
-	if seen[CurrentSchemaVersion] != UpgradePhaseContract {
-		t.Fatalf("final marker %s phase = %s, want contract", CurrentSchemaVersion, seen[CurrentSchemaVersion])
+	if seen[Mastodon4422SchemaVersion] != UpgradePhaseContract {
+		t.Fatalf("final marker %s phase = %s, want contract", Mastodon4422SchemaVersion, seen[Mastodon4422SchemaVersion])
 	}
 	if !(expectedMastodon44UpgradeVersions[0] < Mastodon4323SchemaVersion) {
 		t.Fatal("test fixture must preserve the non-monotonic branch marker boundary")
@@ -61,8 +61,8 @@ func TestMastodon44MigrationInventoryIsExactAndPhaseDisjoint(t *testing.T) {
 func TestMastodon44FinalMarkerIsWithheldUntilContract(t *testing.T) {
 	steps := mastodon44ContractSteps()
 	final := steps[len(steps)-1]
-	if final.version != CurrentSchemaVersion {
-		t.Fatalf("last contract marker = %s, want %s", final.version, CurrentSchemaVersion)
+	if final.version != Mastodon4422SchemaVersion {
+		t.Fatalf("last contract marker = %s, want %s", final.version, Mastodon4422SchemaVersion)
 	}
 	if strings.Contains(strings.Join(final.statements, "\n"), "CREATE TABLE") {
 		t.Fatal("final marker must not defer additive catalog creation until contract")

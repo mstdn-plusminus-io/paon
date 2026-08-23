@@ -34,7 +34,7 @@ func TestDockerfileKeepsRunnableDropInRuntime(t *testing.T) {
 		`CGO_ENABLED=0 go build`,
 		`CGO_ENABLED=1 go build -tags=libvips`,
 		`level=WARN event=image_processor_fallback processor=libvips fallback=go-native phase=docker_builder`,
-		`FROM ${BASE_REGISTRY}/node:22-bookworm-slim AS assets`,
+		`FROM ${BASE_REGISTRY}/node:24-trixie-slim AS assets`,
 		`COPY package.json yarn.lock ./`,
 		`RUN corepack enable && yarn install --pure-lockfile --production=false`,
 		`RUN rm -rf public/packs public/packs-test && yarn build:production`,

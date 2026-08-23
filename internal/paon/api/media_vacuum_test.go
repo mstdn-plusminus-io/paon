@@ -34,9 +34,15 @@ func TestMediaVacuumWorkerUsesRailsMediaAttachmentsVacuumShape(t *testing.T) {
 		{"vacuumCachedRemoteMediaAttachments", `Where("remote_url <> ''")`},
 		{"vacuumCachedRemoteMediaAttachments", `Where("file_file_name IS NOT NULL")`},
 		{"vacuumCachedRemoteMediaAttachments", `Where("created_at < ? AND updated_at < ?", cutoff, cutoff)`},
+		{"vacuumCachedRemoteMediaAttachments", `Where("id > ?", lastID)`},
+		{"vacuumCachedRemoteMediaAttachments", `lastID = attachments[len(attachments)-1].ID`},
+		{"vacuumCachedRemoteMediaAttachments", `break`},
 		{"vacuumCachedRemoteMediaAttachments", `Updates(clearMediaAttachmentFileUpdates(now))`},
 		{"vacuumOrphanedMediaAttachments", `Where("status_id IS NULL AND scheduled_status_id IS NULL")`},
 		{"vacuumOrphanedMediaAttachments", `Where("created_at < ?", cutoff)`},
+		{"vacuumOrphanedMediaAttachments", `Where("id > ?", lastID)`},
+		{"vacuumOrphanedMediaAttachments", `lastID = attachments[len(attachments)-1].ID`},
+		{"vacuumOrphanedMediaAttachments", `break`},
 		{"vacuumOrphanedMediaAttachments", `Delete(&models.MediaAttachment{}, attachment.ID)`},
 	}
 	for _, check := range checks {

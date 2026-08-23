@@ -348,7 +348,7 @@ func (s *Server) activityPubInstanceOutbox(c *echo.Context) error {
 }
 
 func (s *Server) activityPubActor(c *echo.Context) error {
-	if shouldRedirectActivityPubHTML(c) {
+	if shouldRedirectActivityPubHTML(c) && strings.TrimSpace(c.Param("account_id")) == "" {
 		return activityPubHTMLRedirect(c, "/@"+url.PathEscape(c.Param("username")))
 	}
 	s.activityPubAccountVary(c)
@@ -357,9 +357,9 @@ func (s *Server) activityPubActor(c *echo.Context) error {
 		return err
 	}
 
-	account, err := s.findAccountByAcct(activityPubFormatParam(c, "username"))
-	if err != nil || !account.Local() {
-		return apiError(c, http.StatusNotFound, "Record not found")
+	account, err := s.localActivityPubAccountWithSuspensionMode(c, true)
+	if err != nil {
+		return err
 	}
 	if err := s.activityPubAccountOwnedGuard(c, account, true); err != nil {
 		return err
@@ -893,7 +893,13 @@ func (s *Server) localActivityPubInboxAccount(c *echo.Context) (*models.Account,
 }
 
 func (s *Server) localActivityPubAccountWithSuspensionMode(c *echo.Context, skipTemporarySuspension bool) (*models.Account, error) {
-	account, err := s.findAccountByAcct(activityPubFormatParam(c, "username"))
+	var account *models.Account
+	var err error
+	if accountID := strings.TrimSpace(activityPubFormatParam(c, "account_id")); accountID != "" {
+		account, err = s.findAccountByID(accountID)
+	} else {
+		account, err = s.findAccountByAcct(activityPubFormatParam(c, "username"))
+	}
 	if err != nil {
 		return nil, apiError(c, http.StatusNotFound, "Record not found")
 	}
@@ -1154,17 +1160,31 @@ func activityContext() []any {
 	return []any{
 		"https://www.w3.org/ns/activitystreams",
 		map[string]any{
-			"ostatus":          "http://ostatus.org#",
-			"atomUri":          "ostatus:atomUri",
-			"inReplyToAtomUri": "ostatus:inReplyToAtomUri",
-			"conversation":     "ostatus:conversation",
-			"sensitive":        "as:sensitive",
-			"Hashtag":          "as:Hashtag",
-			"toot":             "http://joinmastodon.org/ns#",
-			"Emoji":            "toot:Emoji",
-			"votersCount":      "toot:votersCount",
-			"blurhash":         "toot:blurhash",
-			"focalPoint":       map[string]any{"@container": "@list", "@id": "toot:focalPoint"},
+			"ostatus":            "http://ostatus.org#",
+			"atomUri":            "ostatus:atomUri",
+			"inReplyToAtomUri":   "ostatus:inReplyToAtomUri",
+			"conversation":       "ostatus:conversation",
+			"sensitive":          "as:sensitive",
+			"Hashtag":            "as:Hashtag",
+			"toot":               "http://joinmastodon.org/ns#",
+			"Emoji":              "toot:Emoji",
+			"votersCount":        "toot:votersCount",
+			"blurhash":           "toot:blurhash",
+			"focalPoint":         map[string]any{"@container": "@list", "@id": "toot:focalPoint"},
+			"gts":                "https://gotosocial.org/ns#",
+			"interactionPolicy":  map[string]any{"@id": "gts:interactionPolicy", "@type": "@id"},
+			"canQuote":           map[string]any{"@id": "gts:canQuote", "@type": "@id"},
+			"automaticApproval":  map[string]any{"@id": "gts:automaticApproval", "@type": "@id"},
+			"manualApproval":     map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
+			"interactingObject":  map[string]any{"@id": "gts:interactingObject", "@type": "@id"},
+			"interactionTarget":  map[string]any{"@id": "gts:interactionTarget", "@type": "@id"},
+			"fep":                "https://w3id.org/fep/044f#",
+			"quote":              map[string]any{"@id": "fep:quote", "@type": "@id"},
+			"quoteAuthorization": map[string]any{"@id": "fep:quoteAuthorization", "@type": "@id"},
+			"QuoteAuthorization": "fep:QuoteAuthorization",
+			"QuoteRequest":       "fep:QuoteRequest",
+			"quoteUri":           "http://fedibird.com/ns#quoteUri",
+			"_misskey_quote":     "https://misskey-hub.net/ns#_misskey_quote",
 		},
 	}
 }
@@ -1505,7 +1525,14 @@ func activityPubActorSuspended(account models.Account) bool {
 }
 
 func activityPubActorURL(s *Server, account models.Account) string {
-	return s.cfg.BaseURL() + "/users/" + url.PathEscape(account.Username)
+	return localActivityPubActorURL(s.cfg, account)
+}
+
+func localActivityPubActorURL(cfg config.Config, account models.Account) string {
+	if account.ID > 0 && account.IDScheme.Valid && account.IDScheme.Int64 == 1 {
+		return cfg.BaseURL() + "/ap/users/" + strconv.FormatInt(account.ID, 10)
+	}
+	return cfg.BaseURL() + "/users/" + url.PathEscape(account.Username)
 }
 
 func activityPubActorAttachments(s *Server, account models.Account) []any {
@@ -1828,6 +1855,12 @@ func activityPubNoteWithError(s *Server, status models.Status) (map[string]any, 
 		"conversation":     activityPubConversation(s, status),
 		"tag":              activityPubTags(s, status),
 		"attachment":       activityPubMediaAttachments(s, status),
+	}
+	note["interactionPolicy"] = activityPubQuoteInteractionPolicy(s, status)
+	activityPubAddQuoteFields(s, status, note)
+	if conversationURI := s.activityPubFEP7888ConversationURI(status); conversationURI != "" {
+		note["conversation"] = conversationURI
+		note["context"] = conversationURI
 	}
 	if status.Account.Local() {
 		localID := activityPubStatusURL(s, status.Account, status.ID)

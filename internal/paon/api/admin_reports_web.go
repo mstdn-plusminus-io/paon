@@ -43,7 +43,7 @@ func (s *Server) adminReportPage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	statuses, err := s.reportStatuses(*report)
+	statuses, err := s.adminReportStatusModels(*report)
 	if err != nil {
 		return err
 	}
@@ -52,6 +52,16 @@ func (s *Server) adminReportPage(c *echo.Context) error {
 		return err
 	}
 	return c.HTML(http.StatusOK, adminReportHTMLWithConfig(s.cfg, *report, notes, statuses, rules, c.QueryParam("notice"), c.QueryParam("error"), s.webLocale(c, user)))
+}
+
+func (s *Server) adminReportStatusModels(report models.Report) ([]models.Status, error) {
+	if len(report.StatusIDs) == 0 || s.db == nil {
+		return []models.Status{}, nil
+	}
+	query := adminStatusModerationPreloads(s.statusQuery())
+	var statuses []models.Status
+	err := query.Where("statuses.id IN ?", []int64(report.StatusIDs)).Find(&statuses).Error
+	return statuses, err
 }
 
 func (s *Server) updateAdminReportReasonWeb(c *echo.Context) error {
@@ -810,8 +820,9 @@ func adminReportHTMLWithConfig(cfg config.Config, report models.Report, notes []
 	if report.Comment != "" {
 		body.WriteString(`<p>` + adminT(loc, "admin.reports.comment_description_html", "The reporter supplied this comment.") + `</p><div class="report-notes">` + adminReportCommentHTML(cfg, report, loc) + `</div>`)
 	}
-	body.WriteString(`<hr class="spacer"><h3>` + html.EscapeString(adminT(loc, "admin.reports.statuses", "Reported posts")) + `<small class="section-skip-link"><a href="#actions"><i class="fa fa-angle-double-down"></i> ` + html.EscapeString(adminT(loc, "admin.reports.skip_to_actions", "Skip to actions")) + `</a></small></h3><p>` + adminT(loc, "admin.reports.statuses_description_html", "Posts attached to this report.") + ` &mdash; <a class="table-action-link" href="/admin/accounts/` + strconv.FormatInt(report.TargetAccountID, 10) + `/statuses?report_id=` + reportID + `"><i class="fa fa-plus"></i> ` + html.EscapeString(adminT(loc, "admin.reports.add_to_report", "Add posts")) + `</a></p>`)
+	body.WriteString(`<hr class="spacer"><h3>` + html.EscapeString(adminT(loc, "admin.reports.statuses", "Reported posts")) + `<small class="section-skip-link"><a href="#actions"><i class="fa fa-angle-double-down"></i> ` + html.EscapeString(adminT(loc, "admin.reports.skip_to_actions", "Skip to actions")) + `</a></small></h3><p>` + adminT(loc, "admin.reports.statuses_description_html", "Posts attached to this report.") + `</p>`)
 	body.WriteString(`<form method="post" action="/admin/accounts/` + strconv.FormatInt(report.TargetAccountID, 10) + `/statuses/batch" class="new_admin_status_batch_action"><input type="hidden" name="report_id" value="` + reportID + `"><div class="batch-table"><div class="batch-table__toolbar"><label class="batch-table__toolbar__select batch-checkbox-all"><input type="checkbox" name="batch_checkbox_all"></label><div class="batch-table__toolbar__actions">`)
+	body.WriteString(`<a class="table-action-link" href="/admin/accounts/` + strconv.FormatInt(report.TargetAccountID, 10) + `/statuses?report_id=` + reportID + `"><i class="fa fa-plus"></i> ` + html.EscapeString(adminT(loc, "admin.reports.add_to_report", "Add posts")) + `</a>`)
 	if len(statuses) > 0 && !report.ActionTakenAt.Valid {
 		body.WriteString(`<button class="table-action-link" type="submit" name="remove_from_report" value="1"><i class="fa fa-times"></i> ` + html.EscapeString(adminT(loc, "admin.statuses.batch.remove_from_report", "Remove from report")) + `</button>`)
 	}
@@ -820,7 +831,7 @@ func adminReportHTMLWithConfig(cfg config.Config, report models.Report, notes []
 		body.WriteString(adminNothingHereHTML(loc, "nothing-here--under-tabs"))
 	} else {
 		for _, status := range statuses {
-			body.WriteString(adminAccountStatusRowHTML(loc, report.TargetAccountID, status))
+			body.WriteString(adminAccountStatusRowHTMLWithConfig(cfg, loc, report.TargetAccountID, status))
 		}
 	}
 	body.WriteString(`</div></div></form>`)

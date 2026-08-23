@@ -743,13 +743,13 @@ func (s *Server) accountForUser(user *models.User) (*models.Account, error) {
 }
 
 func (s *Server) followRequestsCount(accountID int64) (int64, error) {
-	var count int64
+	var requesterIDs []int64
 	err := s.db.Model(&models.Account{}).
 		Joins("JOIN follow_requests ON follow_requests.account_id = accounts.id").
 		Where("follow_requests.target_account_id = ? AND accounts.suspended_at IS NULL", accountID).
 		Limit(40).
-		Count(&count).Error
-	return count, err
+		Pluck("accounts.id", &requesterIDs).Error
+	return int64(len(requesterIDs)), err
 }
 
 func (s *Server) updateUserPostingSettings(userID int64, source *sourcePayload) error {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -40,9 +41,11 @@ func (s *Server) vacuumCachedPreviewCardImages(ctx context.Context, now time.Tim
 	}
 	cutoff := now.Add(-time.Duration(days) * 24 * time.Hour)
 	cleaned := 0
+	lastID := int64(0)
 	for {
 		var cards []models.PreviewCard
 		if err := s.db.WithContext(ctx).
+			Where("id > ?", lastID).
 			Where("image_file_name IS NOT NULL AND image_file_name <> ''").
 			Where("updated_at < ?", cutoff).
 			Order("id ASC").
@@ -53,10 +56,18 @@ func (s *Server) vacuumCachedPreviewCardImages(ctx context.Context, now time.Tim
 		if len(cards) == 0 {
 			return cleaned
 		}
+		// Cursor past the selected batch even when its cleanup fails, matching
+		// Mastodon 4.5's behavior of rescuing one batch and continuing with the
+		// next instead of aborting the entire vacuum run.
+		lastID = cards[len(cards)-1].ID
 		for _, card := range cards {
-			_ = s.removePreviewCardImageFiles(card)
+			if err := s.removePreviewCardImageFiles(card); err != nil {
+				log.Printf("preview-card vacuum skipping batch after id=%d: %v", card.ID, err)
+				break
+			}
 			if err := s.db.WithContext(ctx).Model(&models.PreviewCard{}).Where("id = ?", card.ID).Updates(clearPreviewCardImageUpdates(now)).Error; err != nil {
-				return cleaned
+				log.Printf("preview-card vacuum skipping batch after id=%d: %v", card.ID, err)
+				break
 			}
 			cleaned++
 		}

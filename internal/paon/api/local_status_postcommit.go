@@ -98,6 +98,9 @@ func (s *Server) runLocalStatusCreatePostCommit(effects localStatusCreatePostCom
 	if err := s.enqueueOrDeliverActivityPubDistribution(created); err != nil {
 		s.logLocalStatusPostCommitError(effects, "activitypub_distribution", err)
 	}
+	if err := s.deliverLocalQuoteRequest(ctx, created); err != nil {
+		s.logLocalStatusPostCommitError(effects, "activitypub_quote_request", err)
+	}
 	log.Printf("level=INFO event=status_postcommit_completed request_id=%q status_id=%d duration_ms=%.2f", effects.RequestID, effects.Status.ID, time.Since(startedAt).Seconds()*1000)
 }
 

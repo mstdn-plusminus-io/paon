@@ -4,6 +4,7 @@ const (
 	Mastodon4219Version = "20230907150100"
 	Mastodon4323Version = "20241007071624"
 	Mastodon4422Version = "20250627132728"
+	Mastodon4515Version = "20251023210145"
 )
 
 // mastodon43UpgradeVersions is the reviewed set of upstream migration markers
@@ -59,4 +60,22 @@ func Mastodon44UpgradeVersionKnown(version string) bool {
 
 func Mastodon44UpgradeVersionCount() int {
 	return len(mastodon44UpgradeVersions)
+}
+
+// mastodon45UpgradeVersions is the exact upstream migration inventory between
+// Mastodon v4.4.22 and v4.5.15. Keep it separate from the older branches so a
+// partially-applied 4.5 upgrade cannot be mistaken for a supported 4.4 schema.
+var mastodon45UpgradeVersions = map[string]struct{}{
+	"20250717003848": {}, "20250805075010": {}, "20250819100545": {}, "20250820084312": {}, "20250828222741": {},
+	"20250902221600": {}, "20250909100506": {}, "20250911163952": {}, "20250912082651": {}, "20250924170259": {},
+	"20251002140103": {}, "20251007100627": {}, "20251007100813": {}, "20251007142305": {}, "20251023210145": {},
+}
+
+func Mastodon45UpgradeVersionKnown(version string) bool {
+	_, ok := mastodon45UpgradeVersions[version]
+	return ok
+}
+
+func Mastodon45UpgradeVersionCount() int {
+	return len(mastodon45UpgradeVersions)
 }

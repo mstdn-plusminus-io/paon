@@ -173,15 +173,15 @@ func TestAvailableExplainsSupportedDatabaseConfiguration(t *testing.T) {
 	}
 }
 
-func TestValidatePostgreSQLVersionNumRequiresMastodon44Floor(t *testing.T) {
-	for _, version := range []int{130000, 130021, 160003} {
+func TestValidatePostgreSQLVersionNumRequiresMastodon45Floor(t *testing.T) {
+	for _, version := range []int{140000, 140021, 160003} {
 		if err := validatePostgreSQLVersionNum(version); err != nil {
 			t.Errorf("validatePostgreSQLVersionNum(%d) = %v", version, err)
 		}
 	}
-	for _, version := range []int{0, 90624, 120019, 129999} {
+	for _, version := range []int{0, 90624, 130021, 139999} {
 		err := validatePostgreSQLVersionNum(version)
-		if err == nil || !strings.Contains(err.Error(), "PostgreSQL 13.0 or newer") {
+		if err == nil || !strings.Contains(err.Error(), "PostgreSQL 14.0 or newer") {
 			t.Errorf("validatePostgreSQLVersionNum(%d) error = %v, want minimum version error", version, err)
 		}
 	}
@@ -531,7 +531,7 @@ func TestRequiredMastodonIndexesCoverDropInSchemaCore(t *testing.T) {
 		"featured_tags":                      {"index_featured_tags_on_account_id_and_tag_id"},
 		"follow_recommendation_suppressions": {"index_follow_recommendation_suppressions_on_account_id"},
 		"follow_requests":                    {"index_follow_requests_on_account_id_and_target_account_id"},
-		"follows":                            {"index_follows_on_account_id_and_target_account_id", "index_follows_on_target_account_id"},
+		"follows":                            {"index_follows_on_account_id_and_target_account_id", "index_follows_on_target_account_id_and_account_id"},
 		"backups":                            {"index_backups_on_user_id"},
 		"instances":                          {"index_instances_on_domain", "index_instances_on_reverse_domain"},
 		"invites":                            {"index_invites_on_code", "index_invites_on_user_id"},
@@ -1188,6 +1188,8 @@ func TestSchemaAvailableChecksColumnsAfterTables(t *testing.T) {
 		`RequiredMastodonIndexes()`,
 		`mastodonIndexAvailable(database, index)`,
 		`database schema is missing required Mastodon indexes`,
+		`ForbiddenMastodonIndexes()`,
+		`database schema still contains obsolete Mastodon indexes`,
 		`RequiredMastodonUniqueIndexes()`,
 		`pg_index i`,
 		`database schema is missing required Mastodon unique indexes`,
@@ -1217,6 +1219,8 @@ func TestSchemaAvailableChecksColumnsAfterTables(t *testing.T) {
 		`database schema is missing required Mastodon foreign keys`,
 		`mastodonSchemaMigrationApplied(database, requiredMastodonSchemaVersion)`,
 		`database schema_migrations is missing required Mastodon schema version`,
+		`mastodonSchemaSHA1Applied(database, requiredMastodonSchemaSHA1)`,
+		`database schema SHA-1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("SchemaAvailable missing column check wiring %q", want)
@@ -1267,6 +1271,9 @@ func TestSchemaAvailableChecksColumnsAfterTables(t *testing.T) {
 	if strings.Index(body, `RequiredMastodonIndexes()`) > strings.Index(body, `mastodonSchemaMigrationApplied(database, requiredMastodonSchemaVersion)`) {
 		t.Fatal("SchemaAvailable must verify indexes before accepting the Rails migration version")
 	}
+	if strings.Index(schemaAvailableBody, `mastodonSchemaMigrationApplied(database, requiredMastodonSchemaVersion)`) > strings.Index(schemaAvailableBody, `mastodonSchemaSHA1Applied(database, requiredMastodonSchemaSHA1)`) {
+		t.Fatal("SchemaAvailable must verify the final migration marker before accepting the Rails schema SHA-1")
+	}
 }
 
 func TestForbiddenMastodonColumnsCoversEvery43ContractDrop(t *testing.T) {
@@ -1282,6 +1289,24 @@ func TestForbiddenMastodonColumnsCoversEvery43ContractDrop(t *testing.T) {
 			if !slices.Contains(forbidden[table], column) {
 				t.Fatalf("ForbiddenMastodonColumns missing %s.%s", table, column)
 			}
+		}
+	}
+}
+
+func TestMastodon45FinalSchemaAdmissionContract(t *testing.T) {
+	if got, want := RequiredMastodonSchemaVersion(), "20251023210145"; got != want {
+		t.Fatalf("RequiredMastodonSchemaVersion() = %q, want %q", got, want)
+	}
+	if got, want := RequiredMastodonSchemaSHA1(), "801766beefdd9b1d55fe6f8bf3bed91392aebab1"; got != want {
+		t.Fatalf("RequiredMastodonSchemaSHA1() = %q, want %q", got, want)
+	}
+	for _, index := range []string{
+		"index_follows_on_target_account_id",
+		"index_quotes_on_account_id_and_quoted_account_id",
+		"index_quotes_on_quoted_status_id",
+	} {
+		if !slices.Contains(ForbiddenMastodonIndexes(), index) {
+			t.Fatalf("ForbiddenMastodonIndexes() is missing v4.5 contract drop %q", index)
 		}
 	}
 }

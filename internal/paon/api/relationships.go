@@ -1377,7 +1377,7 @@ func createRelationshipNotificationRow(tx *gorm.DB, accountID int64, fromAccount
 	if err := tx.Create(&notification).Error; err != nil {
 		return nil, err
 	}
-	if notification.Filtered && kind == "mention" {
+	if notification.Filtered && (kind == "mention" || kind == "quote") {
 		if err := updateRelationshipNotificationRequest(tx, notification, at); err != nil {
 			return nil, err
 		}
@@ -1473,7 +1473,7 @@ func notificationGroupHourBucket(currentBucket int64, previousBucket int64) int6
 
 func relationshipNotificationPolicyDecision(tx *gorm.DB, accountID int64, fromAccountID int64, activityID int64, activityType string, kind string, at time.Time) (bool, bool, error) {
 	switch kind {
-	case "mention", "reblog", "follow", "follow_request", "favourite":
+	case "mention", "reblog", "follow", "follow_request", "favourite", "quote":
 	default:
 		return false, false, nil
 	}
@@ -1592,7 +1592,7 @@ func updateRelationshipNotificationRequest(tx *gorm.DB, notification models.Noti
 func relationshipNotificationDuplicateHandled(tx *gorm.DB, accountID int64, activityID int64, activityType string, kind string) (bool, error) {
 	query := tx.Model(&models.Notification{}).
 		Where("account_id = ? AND activity_id = ? AND activity_type = ? AND type = ?", accountID, activityID, activityType, kind)
-	if kind == "update" {
+	if kind == "update" || kind == "quoted_update" {
 		return false, query.Delete(&models.Notification{}).Error
 	}
 	var count int64
@@ -1827,6 +1827,15 @@ func relationshipNotificationTargetStatus(tx *gorm.DB, activityID int64, activit
 			return nil, err
 		}
 		statusID = favourite.StatusID
+	case "Quote":
+		var quote models.Quote
+		if err := tx.Select("status_id").Where("id = ?", activityID).First(&quote).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		statusID = quote.StatusID
 	case "Status":
 		statusID = activityID
 	default:

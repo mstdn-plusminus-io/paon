@@ -327,7 +327,7 @@ func (s *Server) publicAccountHidden(account *models.Account) bool {
 func publicAccountLinkHeader(cfg config.Config, account models.Account) string {
 	resource := "acct:" + account.Username + "@" + cfg.LocalDomain
 	webfingerURL := cfg.BaseURL() + "/.well-known/webfinger?resource=" + url.QueryEscape(resource)
-	actorURL := cfg.BaseURL() + "/users/" + url.PathEscape(account.Username)
+	actorURL := localActivityPubActorURL(cfg, account)
 	return "<" + webfingerURL + `>; rel="lrdd"; type="application/jrd+json", <` + actorURL + `>; rel="alternate"; type="application/activity+json"`
 }
 

@@ -30,6 +30,13 @@ func TestExportStatusURIUsesActivityPubURI(t *testing.T) {
 	if got := s.exportStatusURI(local); got != "https://social.example/users/alice/statuses/123" {
 		t.Fatalf("local status URI = %q", got)
 	}
+	numeric := exportBookmarkRow{
+		StatusID: 124, AccountID: 10, AccountUsername: "alice",
+		AccountIDScheme: sql.NullInt64{Int64: 1, Valid: true},
+	}
+	if got := s.exportStatusURI(numeric); got != "https://social.example/ap/users/10/statuses/124" {
+		t.Fatalf("numeric local status URI = %q", got)
+	}
 
 	remote := exportBookmarkRow{
 		StatusID:        456,

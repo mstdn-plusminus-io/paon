@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,7 +102,7 @@ func (s *Server) reconcileActivityPubQuote(ctx context.Context, statusID int64, 
 	deletedQuote := note.QuoteSet && note.QuoteDeleted
 	if quoteURI == "" && (!deletedQuote || !removeWhenAbsent) {
 		if removeWhenAbsent && before.ID != 0 {
-			_ = s.db.WithContext(nonNilContext(ctx)).Where("status_id = ?", statusID).Delete(&models.Quote{}).Error
+			_, _ = s.deleteSQLStatusQuoteWithCounter(ctx, statusID, before.ID)
 		}
 	} else {
 		handledDeletedReplacement := false
@@ -110,7 +111,7 @@ func (s *Server) reconcileActivityPubQuote(ctx context.Context, statusID int64, 
 			case activityPubQuoteTargetIgnore:
 				return false
 			case activityPubQuoteTargetReplace:
-				if result := s.db.WithContext(nonNilContext(ctx)).Where("id = ?", existing.ID).Delete(&models.Quote{}); result.Error == nil && result.RowsAffected > 0 && deletedQuote {
+				if deleted, err := s.deleteSQLStatusQuoteWithCounter(ctx, statusID, existing.ID); err == nil && deleted && deletedQuote {
 					_ = s.persistActivityPubQuote(ctx, statusID, nil, sql.NullString{}, false, models.QuoteStateDeleted)
 					handledDeletedReplacement = true
 				}
@@ -202,26 +203,40 @@ func (s *Server) persistActivityPubQuote(ctx context.Context, statusID int64, qu
 	if s == nil || s.db == nil || statusID == 0 {
 		return nil
 	}
-	var source models.Status
-	if err := s.db.WithContext(nonNilContext(ctx)).Select("id", "account_id").Where("id = ? AND deleted_at IS NULL", statusID).First(&source).Error; err != nil {
-		return err
-	}
-	if quoted == nil {
+	return s.db.WithContext(nonNilContext(ctx)).Transaction(func(tx *gorm.DB) error {
+		var source models.Status
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "account_id").Where("id = ? AND deleted_at IS NULL", statusID).First(&source).Error; err != nil {
+			return err
+		}
+		if quoted != nil {
+			return upsertSQLStatusQuoteTx(tx, &source, quoted, approvalURI, sql.NullString{}, legacy, state)
+		}
+		before, err := loadQuoteCounterSnapshotTx(tx, statusID)
+		if err != nil {
+			return err
+		}
 		now := time.Now().UTC()
 		value := models.Quote{AccountID: source.AccountID, StatusID: source.ID, State: state, ApprovalURI: approvalURI, Legacy: legacy, CreatedAt: now, UpdatedAt: now}
 		updates := map[string]any{
 			"state": state, "approval_uri": approvalURI, "legacy": legacy, "updated_at": now,
 		}
+		after := before
+		after.Exists = true
+		after.State = state
+		after.Legacy = legacy
 		if state == models.QuoteStateDeleted {
 			updates["quoted_status_id"] = nil
 			updates["quoted_account_id"] = nil
+			after.QuotedStatusID = sql.NullInt64{}
 		}
-		return s.db.WithContext(nonNilContext(ctx)).Clauses(clause.OnConflict{
+		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "status_id"}},
 			DoUpdates: clause.Assignments(updates),
-		}).Create(&value).Error
-	}
-	return upsertSQLStatusQuoteTx(s.db.WithContext(nonNilContext(ctx)), &source, quoted, approvalURI, sql.NullString{}, legacy, state)
+		}).Create(&value).Error; err != nil {
+			return err
+		}
+		return applyQuoteUpdateCounterTransitionTx(tx, before, after)
+	})
 }
 
 func (s *Server) findQuoteByStatusID(ctx context.Context, statusID int64) (*models.Quote, error) {
@@ -335,19 +350,29 @@ func (s *Server) attachActivityPubQuoteTarget(ctx context.Context, quote *models
 	if s == nil || s.db == nil || quote == nil || quote.ID == 0 || quote.QuotedStatusID.Valid || !activityPubQuoteTargetValidForAccount(quoted, quote.AccountID) {
 		return false, nil
 	}
-	updates := map[string]any{
-		"quoted_status_id":  quoted.ID,
-		"quoted_account_id": quoted.AccountID,
-		"updated_at":        time.Now().UTC(),
-	}
-	result := s.db.WithContext(nonNilContext(ctx)).Model(&models.Quote{}).
-		Where("id = ? AND quoted_status_id IS NULL", quote.ID).
-		Updates(updates)
-	if result.Error != nil {
-		return false, result.Error
-	}
-	if result.RowsAffected == 0 {
-		return false, nil
+	changed := false
+	err := s.db.WithContext(nonNilContext(ctx)).Transaction(func(tx *gorm.DB) error {
+		before, err := loadQuoteCounterSnapshotTx(tx, quote.StatusID)
+		if err != nil || !before.Exists || before.QuotedStatusID.Valid {
+			return err
+		}
+		result := tx.Model(&models.Quote{}).
+			Where("id = ? AND status_id = ? AND quoted_status_id IS NULL", quote.ID, quote.StatusID).
+			Updates(map[string]any{
+				"quoted_status_id":  quoted.ID,
+				"quoted_account_id": quoted.AccountID,
+				"updated_at":        time.Now().UTC(),
+			})
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
+		changed = true
+		after := before
+		after.QuotedStatusID = sql.NullInt64{Int64: quoted.ID, Valid: true}
+		return applyQuoteUpdateCounterTransitionTx(tx, before, after)
+	})
+	if err != nil || !changed {
+		return false, err
 	}
 	quote.QuotedStatusID = sql.NullInt64{Int64: quoted.ID, Valid: true}
 	quote.QuotedAccountID = sql.NullInt64{Int64: quoted.AccountID, Valid: true}
@@ -422,6 +447,97 @@ func quoteRejectedState(current int) int {
 	return models.QuoteStateRejected
 }
 
+// processActivityPubQuoteResponse handles Accept/Reject activities whose object
+// is a QuoteRequest previously emitted for a local status. It returns handled
+// so the generic Follow response path can remain unchanged.
+func (s *Server) processActivityPubQuoteResponse(ctx context.Context, payload activityPayload, actor *models.Account, deliveredToAccountID int64, accepted bool) (bool, error) {
+	if s == nil || s.db == nil || actor == nil || actor.ID == 0 || actor.Local() {
+		return false, nil
+	}
+	quote, embeddedRequest, err := s.quoteFromActivityPubRequest(ctx, payload.Object, actor)
+	if err != nil {
+		return true, err
+	}
+	if quote == nil {
+		// An embedded QuoteRequest belongs to this handler even when its status
+		// references are invalid. Do not reinterpret it as a Follow response.
+		return embeddedRequest, nil
+	}
+	if quote.Status.ID == 0 || !quote.Status.Account.Local() || quote.Status.DeletedAt.Valid || deliveredToAccountID != 0 && quote.AccountID != deliveredToAccountID {
+		return true, nil
+	}
+	if accepted {
+		approvalURI := activityPubHTTPURI(strings.TrimSpace(payload.Result))
+		if approvalURI == "" || !activityURIHostsMatch(approvalURI, actor.URI) || quote.State != models.QuoteStatePending {
+			return true, nil
+		}
+		changed, err := s.transitionQuoteState(ctx, quote, models.QuoteStateAccepted, sqlNullString(approvalURI))
+		if err != nil {
+			return true, err
+		}
+		if changed {
+			s.publishQuoteStateUpdate(ctx, quote.StatusID)
+		}
+		return true, nil
+	}
+	changed, err := s.transitionQuoteState(ctx, quote, quoteRejectedState(quote.State), sql.NullString{})
+	if err != nil {
+		return true, err
+	}
+	if changed {
+		s.publishQuoteStateUpdate(ctx, quote.StatusID)
+	}
+	return true, nil
+}
+
+// quoteFromActivityPubRequest mirrors Mastodon's two QuoteRequest lookup
+// paths. A compact URI is authoritative when it matches activity_uri. An
+// embedded request is instead resolved through its instrument and object, so
+// an unrelated request body cannot approve or reject a quote.
+func (s *Server) quoteFromActivityPubRequest(ctx context.Context, request activityObject, actor *models.Account) (*models.Quote, bool, error) {
+	if s == nil || s.db == nil || actor == nil || actor.ID == 0 {
+		return nil, false, nil
+	}
+	db := quoteRelationshipQuery(s.db.WithContext(nonNilContext(ctx))).Preload("Status.Account")
+	if requestURI := strings.TrimSpace(request.ID); requestURI != "" {
+		var quote models.Quote
+		err := db.Where("quotes.activity_uri = ? AND quotes.quoted_account_id = ?", requestURI, actor.ID).First(&quote).Error
+		if err == nil {
+			s.hydrateQuoteTarget(&quote)
+			return &quote, false, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, err
+		}
+	}
+	embedded := activityCompactType(request.TypeExact) == "QuoteRequest"
+	if !embedded || strings.TrimSpace(request.Instrument) == "" || strings.TrimSpace(request.ObjectID) == "" {
+		return nil, embedded, nil
+	}
+	quotingStatus, err := s.statusFromActivityURIWithContext(nonNilContext(ctx), request.Instrument)
+	if err != nil {
+		return nil, true, err
+	}
+	quotedStatus, err := s.statusFromActivityURIWithContext(nonNilContext(ctx), request.ObjectID)
+	if err != nil {
+		return nil, true, err
+	}
+	if quotingStatus == nil || quotedStatus == nil || quotedStatus.AccountID != actor.ID {
+		return nil, true, nil
+	}
+	quote, err := s.findQuoteByStatusID(ctx, quotingStatus.ID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	if quote == nil || !quote.QuotedStatusID.Valid || quote.QuotedStatusID.Int64 != quotedStatus.ID || quote.QuotedAccountID.Int64 != actor.ID {
+		return nil, true, nil
+	}
+	return quote, true, nil
+}
+
 func activityValueHasCompactType(value any, wanted string) bool {
 	for _, item := range activityJSONLDListItems(value) {
 		if activityCompactType(stringValue(item)) == wanted {
@@ -438,18 +554,41 @@ func (s *Server) transitionQuoteState(ctx context.Context, quote *models.Quote, 
 	if quote.State == state && quote.ApprovalURI == approvalURI {
 		return false, nil
 	}
-	updates := map[string]any{"state": state, "approval_uri": approvalURI, "updated_at": time.Now().UTC()}
-	query := s.db.WithContext(nonNilContext(ctx)).Model(&models.Quote{}).Where("id = ? AND state = ?", quote.ID, quote.State)
-	if quote.ApprovalURI.Valid {
-		query = query.Where("approval_uri = ?", quote.ApprovalURI.String)
-	} else {
-		query = query.Where("approval_uri IS NULL")
+	changed := false
+	err := s.db.WithContext(nonNilContext(ctx)).Transaction(func(tx *gorm.DB) error {
+		updates := map[string]any{"state": state, "approval_uri": approvalURI, "updated_at": time.Now().UTC()}
+		query := tx.Model(&models.Quote{}).Where("id = ? AND state = ?", quote.ID, quote.State)
+		if quote.ApprovalURI.Valid {
+			query = query.Where("approval_uri = ?", quote.ApprovalURI.String)
+		} else {
+			query = query.Where("approval_uri IS NULL")
+		}
+		result := query.Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		changed = true
+		// Mastodon deliberately does not change quotes_count when a legacy
+		// relationship changes state. Legacy rows predate the counter column and
+		// cannot carry a revocable official authorization lifecycle.
+		if quote.Legacy {
+			return nil
+		}
+		if quote.QuotedStatusID.Valid && quote.State != models.QuoteStateAccepted && state == models.QuoteStateAccepted {
+			return incrementStatusStatCounter(tx, quote.QuotedStatusID.Int64, statusStatCounterQuotes, 1)
+		}
+		if quote.QuotedStatusID.Valid && quote.State == models.QuoteStateAccepted && state != models.QuoteStateAccepted {
+			return decrementStatusStatCounter(tx, quote.QuotedStatusID.Int64, statusStatCounterQuotes, 1)
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
 	}
-	result := query.Updates(updates)
-	if result.Error != nil {
-		return false, result.Error
-	}
-	if result.RowsAffected == 0 {
+	if !changed {
 		return false, nil
 	}
 	quote.State = state
@@ -520,17 +659,82 @@ func (s *Server) processActivityPubQuoteRequest(ctx context.Context, payload act
 		return nil
 	}
 	quoted, err := s.statusFromActivityURI(quotedURI)
-	if err != nil || quoted == nil || quoted.ID == 0 || !quoted.Account.Local() || quoted.DeletedAt.Valid || quoted.Visibility != 0 && quoted.Visibility != 1 {
+	if err != nil || quoted == nil || quoted.ID == 0 || !quoted.Account.Local() || quoted.DeletedAt.Valid || quoted.ReblogOfID.Valid || quoted.Visibility != 0 && quoted.Visibility != 1 {
 		return err
 	}
 	if strings.TrimSpace(actor.InboxURL) == "" {
 		return nil
 	}
-	body, err := json.Marshal(s.rejectQuoteRequestActivity(payload, actor, quoted))
+	blocked, err := s.quoteDeniedByAccountRelationship(&quoted.Account, actor)
 	if err != nil {
 		return err
 	}
-	return s.deliverActivityPubConfigured(quoted.Account, actor.InboxURL, body, nil)
+	decision := quotePolicyDenied
+	if !blocked {
+		decision, err = s.quotePolicyForAccount(ctx, *quoted, actor)
+		if err != nil {
+			return err
+		}
+	}
+	if decision == quotePolicyDenied {
+		body, err := json.Marshal(s.rejectQuoteRequestActivity(payload, actor, quoted))
+		if err != nil {
+			return err
+		}
+		return s.deliverActivityPubConfigured(quoted.Account, actor.InboxURL, body, nil)
+	}
+	status := (*models.Status)(nil)
+	if strings.TrimSpace(payload.Instrument) != "" {
+		status, err = s.statusFromActivityURIWithContext(nonNilContext(ctx), payload.Instrument)
+		if err == nil && status == nil && payload.InstrumentObject != nil && payload.InstrumentObject.ID == payload.Instrument && activityURIHostsMatch(actor.URI, payload.InstrumentObject.ID) {
+			requestID := remoteStatusDiscoveryRequestID("", payload.Instrument)
+			if err = s.processFetchedActivityPubStatusObjectForRequestWithQuoteDepth(*payload.InstrumentObject, requestID, 0); err == nil {
+				status, err = s.statusFromActivityURIWithContext(nonNilContext(ctx), payload.Instrument)
+			}
+		}
+		if err == nil && status == nil {
+			requestID := remoteStatusDiscoveryRequestID("", payload.Instrument)
+			status, err = s.fetchRemoteStatusFromActivityURIForRequestWithSignerContextAndQuoteDepth(nonNilContext(ctx), payload.Instrument, actor.URI, requestID, &quoted.Account, 0)
+		}
+	}
+	if err != nil || status == nil || status.AccountID != actor.ID {
+		return err
+	}
+	quote, err := s.findQuoteByStatusID(ctx, status.ID)
+	if err != nil || quote == nil || quote.QuotedStatusID.Int64 != quoted.ID || quote.AccountID != actor.ID {
+		return err
+	}
+	quote.ActivityURI = sqlNullString(payload.ID)
+	if err := s.db.WithContext(nonNilContext(ctx)).Model(&models.Quote{}).Where("id = ?", quote.ID).Update("activity_uri", payload.ID).Error; err != nil {
+		return err
+	}
+	approvalURI := sqlNullString(s.localQuoteAuthorizationURI(quoted.Account, quote.ID))
+	changed, err := s.transitionQuoteState(ctx, quote, models.QuoteStateAccepted, sql.NullString{})
+	if err != nil {
+		return err
+	}
+	quote.Status = *status
+	quote.QuotedStatus = quoted
+	quote.QuotedAccount = &quoted.Account
+	request := map[string]any{"id": payload.ID, "type": "QuoteRequest", "actor": activityPubAccountTagManagerURI(s, *actor), "object": s.quoteStatusURI(*quoted), "instrument": payload.Instrument}
+	accept := map[string]any{
+		"@context": activityContext(),
+		"id":       activityPubAccountTagManagerURI(s, quoted.Account) + "#accepts/quote_requests/" + strconv.FormatInt(quote.ID, 10),
+		"type":     "Accept", "actor": activityPubAccountTagManagerURI(s, quoted.Account),
+		"object": request, "result": approvalURI.String,
+	}
+	body, err := json.Marshal(accept)
+	if err != nil {
+		return err
+	}
+	if err := s.deliverActivityPubConfigured(quoted.Account, actor.InboxURL, body, nil); err != nil {
+		return err
+	}
+	if changed {
+		_, _ = s.enqueueOrCreateLocalNotification(ctx, asynqLocalNotificationPayload{ReceiverAccountID: quoted.AccountID, FromAccountID: actor.ID, ActivityID: quote.ID, ActivityType: "Quote", Type: "quote"})
+		s.publishQuoteStateUpdate(ctx, status.ID)
+	}
+	return nil
 }
 
 func quoteVerificationError(operation string, err error) error {

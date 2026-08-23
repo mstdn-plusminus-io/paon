@@ -55,6 +55,24 @@ func TestAccountFromModelLocalURLs(t *testing.T) {
 	}
 }
 
+func TestNumericActivityPubAccountUsesNumericRESTURIs(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	account := models.Account{
+		ID: 42, Username: "alice", IDScheme: sql.NullInt64{Int64: 1, Valid: true},
+		URI: "https://example.test/users/alice",
+	}
+	if got := AccountFromModel(cfg, account).URI; got != "https://example.test/ap/users/42" {
+		t.Fatalf("account URI = %q", got)
+	}
+	status := models.Status{
+		ID: 77, AccountID: account.ID, Account: account,
+		URI: sql.NullString{String: "https://example.test/users/alice/statuses/77", Valid: true},
+	}
+	if got := statusURI(cfg, status); got != "https://example.test/ap/users/42/statuses/77" {
+		t.Fatalf("status URI = %q", got)
+	}
+}
+
 func TestAccountCreatedAtMatchesRailsDateOnlyTimestamp(t *testing.T) {
 	got := accountCreatedAt(time.Date(2026, 6, 18, 23, 59, 58, 123456789, time.FixedZone("JST", 9*60*60)))
 	if got != "2026-06-18T00:00:00.000Z" {
@@ -747,7 +765,7 @@ func TestCredentialAccountFromModelIncludesSourceSettings(t *testing.T) {
 		Fields:             rawFields,
 		AccountStat:        models.AccountStat{},
 	}
-	user := models.User{Settings: sql.NullString{String: `{"default_privacy":"unlisted","default_sensitive":true,"default_language":"ja"}`, Valid: true}}
+	user := models.User{Settings: sql.NullString{String: `{"default_privacy":"unlisted","default_sensitive":true,"default_language":"ja","default_quote_policy":"followers"}`, Valid: true}}
 
 	role := models.UserRole{ID: 4, Name: "Moderator", Permissions: 1 << 4, Color: "#ffcc00", Highlighted: true}
 	everyone := models.UserRole{ID: -99, Permissions: 1 << 16}
@@ -757,6 +775,9 @@ func TestCredentialAccountFromModelIncludesSourceSettings(t *testing.T) {
 	}
 	if out.Source.Language == nil || *out.Source.Language != "ja" {
 		t.Fatalf("language = %#v", out.Source.Language)
+	}
+	if out.Source.QuotePolicy != "followers" {
+		t.Fatalf("quote_policy = %#v", out.Source.QuotePolicy)
 	}
 	emptyLanguage := CredentialAccountFromModel(cfg, account, models.User{Settings: sql.NullString{String: `{"default_language":""}`, Valid: true}}, 0)
 	if emptyLanguage.Source.Language == nil || *emptyLanguage.Source.Language != "" {
@@ -821,6 +842,7 @@ func TestPreferencesFromModelUsesUserSettings(t *testing.T) {
 		"default_privacy":"unlisted",
 		"default_sensitive":true,
 		"default_language":"en",
+		"default_quote_policy":"followers",
 		"web.display_media":"hide_all",
 		"web.expand_content_warnings":true,
 		"web.auto_play":true
@@ -830,6 +852,7 @@ func TestPreferencesFromModelUsesUserSettings(t *testing.T) {
 	if out.PostingDefaultVisibility != "unlisted" ||
 		!out.PostingDefaultSensitive ||
 		out.PostingDefaultLanguage != "en" ||
+		out.PostingDefaultQuotePolicy != "followers" ||
 		out.ReadingExpandMedia != "hide_all" ||
 		!out.ReadingExpandSpoilers ||
 		!out.ReadingAutoplayGIFs {
@@ -847,6 +870,9 @@ func TestPreferencesFromModelFallsBackToLocaleLanguage(t *testing.T) {
 	}
 	if out.PostingDefaultVisibility != "public" {
 		t.Fatalf("visibility = %#v", out.PostingDefaultVisibility)
+	}
+	if out.PostingDefaultQuotePolicy != "public" {
+		t.Fatalf("quote policy = %#v", out.PostingDefaultQuotePolicy)
 	}
 }
 
@@ -895,6 +921,26 @@ func TestScheduledStatusFromModelRestoresApplicationIDLikeMastodon44(t *testing.
 	}
 	if out.Params["application_id"] != float64(42) {
 		t.Fatalf("application_id = %#v", out.Params["application_id"])
+	}
+}
+
+func TestScheduledStatusFromModelNormalizesMastodon45QuoteParams(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	out := ScheduledStatusFromModel(cfg, models.ScheduledStatus{
+		ID:     7,
+		Params: models.JSONValue(`{"quoted_status_id":456,"quote_approval_policy":131072}`),
+	})
+
+	if out.Params["quoted_status_id"] != "456" {
+		t.Fatalf("quoted_status_id = %#v, want string", out.Params["quoted_status_id"])
+	}
+	if out.Params["quote_approval_policy"] != "public" {
+		t.Fatalf("quote_approval_policy = %#v", out.Params["quote_approval_policy"])
+	}
+
+	withoutQuote := ScheduledStatusFromModel(cfg, models.ScheduledStatus{ID: 8, Params: models.JSONValue(`{"status":"plain"}`)})
+	if withoutQuote.Params["quoted_status_id"] != nil || withoutQuote.Params["quote_approval_policy"] != "nobody" {
+		t.Fatalf("default quote params = %#v", withoutQuote.Params)
 	}
 }
 
@@ -1023,10 +1069,10 @@ func TestInstanceFromConfigMarksTranslationDisabled(t *testing.T) {
 	}
 }
 
-func TestInstanceFromConfigAdvertisesMastodon44APIVersion(t *testing.T) {
+func TestInstanceFromConfigAdvertisesMastodon45APIVersion(t *testing.T) {
 	out := InstanceFromConfig(config.Config{}, nil)
-	if got := out.APIVersions["mastodon"]; got != 6 {
-		t.Fatalf("api_versions.mastodon = %d, want 6 for Mastodon 4.4", got)
+	if got := out.APIVersions["mastodon"]; got != 7 {
+		t.Fatalf("api_versions.mastodon = %d, want 7 for Mastodon 4.5", got)
 	}
 }
 
@@ -1190,6 +1236,18 @@ func TestInstanceFromConfigLanguagesMatchRailsDefaultLocale(t *testing.T) {
 	if len(SupportedLanguageCodes()) <= 1 {
 		t.Fatal("supported language list should remain available for /api/v1/instance/languages")
 	}
+}
+
+func TestSupportedLanguagesIncludeMastodon45TraditionalMongolian(t *testing.T) {
+	for _, language := range SupportedLanguages() {
+		if language.Code == "mn-Mong" {
+			if language.Name != "Traditional Mongolian" || language.NativeName != "ᠮᠣᠩᠭᠣᠯ ᠬᠡᠯᠡ" {
+				t.Fatalf("mn-Mong language = %#v", language)
+			}
+			return
+		}
+	}
+	t.Fatal("Mastodon 4.5 Traditional Mongolian posting language is missing")
 }
 
 func TestInstanceFromConfigDisablesRegistrationsInSingleUserMode(t *testing.T) {
@@ -1417,7 +1475,7 @@ func TestInitialStateJSONIncludesNullRoleLikeRailsHasOne(t *testing.T) {
 
 func TestRoleFromModelExpandsAdministratorPermissions(t *testing.T) {
 	role := RoleFromModel(models.UserRole{ID: 1, Permissions: 1}, &models.UserRole{ID: -99, Permissions: 1 << 16})
-	if role.Permissions != "1048575" {
+	if role.Permissions != "2097151" {
 		t.Fatalf("admin permissions = %q", role.Permissions)
 	}
 }
@@ -2001,13 +2059,27 @@ func TestTermsOfServiceSerializationMatchesMastodon44(t *testing.T) {
 func TestInitialStateFromConfigIncludesComposeDefaults(t *testing.T) {
 	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
 	user := models.User{
-		Settings: sql.NullString{String: `{"default_privacy":"unlisted","default_sensitive":true,"default_language":"en"}`, Valid: true},
+		Settings: sql.NullString{String: `{"default_privacy":"unlisted","default_sensitive":true,"default_language":"en","default_quote_policy":"followers"}`, Valid: true},
 	}
 	account := models.Account{ID: 42, Username: "alice"}
 	out := InitialStateFromConfigWithOptions(cfg, &account, "token", InitialStateOptions{User: &user})
 
-	if out.Compose["me"] != "42" || out.Compose["default_privacy"] != "unlisted" || out.Compose["default_sensitive"] != true || out.Compose["default_language"] != "en" {
+	if out.Compose["me"] != "42" || out.Compose["default_privacy"] != "unlisted" || out.Compose["default_sensitive"] != true || out.Compose["default_language"] != "en" || out.Compose["default_quote_policy"] != "followers" {
 		t.Fatalf("compose = %#v", out.Compose)
+	}
+}
+
+func TestInitialStateFromConfigIncludesMastodon45ExperimentalFeatures(t *testing.T) {
+	out := InitialStateFromConfig(config.Config{ExperimentalFeatures: []string{"fasp", "alpha"}}, nil, "")
+	if !reflect.DeepEqual(out.Features, []string{"fasp", "alpha"}) {
+		t.Fatalf("features = %#v", out.Features)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"features":["fasp","alpha"]`) {
+		t.Fatalf("initial state = %s", raw)
 	}
 }
 
@@ -2019,6 +2091,9 @@ func TestInitialStateFromConfigComposePrivacyFallsBackToPrivateForLockedAccount(
 
 	if out.Compose["default_privacy"] != "private" {
 		t.Fatalf("default_privacy = %#v, want private", out.Compose["default_privacy"])
+	}
+	if out.Compose["default_quote_policy"] != "public" {
+		t.Fatalf("default_quote_policy = %#v, want public", out.Compose["default_quote_policy"])
 	}
 }
 
@@ -2032,6 +2107,7 @@ func TestInitialStateFromConfigIncludesAuthenticatedMetaSettings(t *testing.T) {
 			"web.delete_modal":false,
 			"web.missing_alt_text_modal":false,
 			"web.auto_play":true,
+			"web.emoji_style":"native",
 			"web.display_media":"show_all",
 			"web.expand_content_warnings":true,
 			"web.reduce_motion":true,
@@ -2052,6 +2128,7 @@ func TestInitialStateFromConfigIncludesAuthenticatedMetaSettings(t *testing.T) {
 		"delete_modal":           false,
 		"missing_alt_text_modal": false,
 		"auto_play_gif":          true,
+		"emoji_style":            "native",
 		"display_media":          "show_all",
 		"expand_spoilers":        true,
 		"reduce_motion":          true,
@@ -2080,6 +2157,7 @@ func TestInitialStateFromConfigUsesAuthenticatedMetaDefaults(t *testing.T) {
 		"delete_modal":           true,
 		"missing_alt_text_modal": true,
 		"auto_play_gif":          false,
+		"emoji_style":            "auto",
 		"display_media":          "default",
 		"expand_spoilers":        false,
 		"reduce_motion":          false,
@@ -2479,6 +2557,15 @@ func TestAnnouncementContentHTMLLinkifiesURLAndEscapesText(t *testing.T) {
 	}
 	if strings.Contains(out, `@ghost</span>`) || strings.Contains(out, `/@ghost`) {
 		t.Fatalf("unresolved announcement mention should remain plain like Rails: %s", out)
+	}
+}
+
+func TestAnnouncementContentHTMLLinkifiesFullWidthHashtag(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	out := announcementContentHTML(cfg, models.Announcement{Text: `News ＃全角`})
+
+	if !strings.Contains(out, `href="https://example.test/tags/%E5%85%A8%E8%A7%92"`) || !strings.Contains(out, `＃<span>全角</span>`) {
+		t.Fatalf("full-width hashtag was not linkified: %s", out)
 	}
 }
 
@@ -4352,6 +4439,54 @@ func TestPollFromModelHidesOptionTalliesUntilExpiredLikeRails(t *testing.T) {
 	out = PollFromModel(cfg, &expired, nil)
 	if out.Options[0].VotesCount == nil || *out.Options[0].VotesCount != 2 {
 		t.Fatalf("expired option votes = %#v", out.Options)
+	}
+}
+
+func TestQuoteFromModelRetainsRevealPayloadForViewerOwnedFilters(t *testing.T) {
+	quoted := &models.Status{ID: 77, AccountID: 7, Account: models.Account{ID: 7, Username: "quoted"}}
+	quote := &models.Quote{
+		State:                         models.QuoteStateAccepted,
+		QuotedStatusID:                sql.NullInt64{Int64: quoted.ID, Valid: true},
+		QuotedStatus:                  quoted,
+		QuotedStatusVisibilityChecked: true,
+		QuotedStatusVisible:           false,
+	}
+	for _, state := range []string{"blocked_account", "blocked_domain", "muted_account"} {
+		quote.QuotedStatusFilterState = state
+		serialized, ok := quoteFromModel(config.Config{}, quote, &models.Account{ID: 9}, false).(Quote)
+		if !ok || serialized.State != state || serialized.QuotedStatus == nil || serialized.QuotedStatus.ID != "77" {
+			t.Fatalf("%s quote = %#v, want revealable nested status", state, serialized)
+		}
+	}
+
+	quote.QuotedStatusFilterState = "unauthorized"
+	serialized := quoteFromModel(config.Config{}, quote, &models.Account{ID: 9}, false).(Quote)
+	if serialized.State != "unauthorized" || serialized.QuotedStatus != nil {
+		t.Fatalf("author-side denied quote = %#v, want opaque payload", serialized)
+	}
+}
+
+func TestStatusFromModelWithSourceIncludesRejectedQuoteTarget(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	account := models.Account{ID: 7, Username: "alice"}
+	quoted := &models.Status{ID: 77, AccountID: account.ID, Account: account}
+	status := models.Status{
+		ID: 88, AccountID: account.ID, Account: account, Text: "redraft",
+		Quote: &models.Quote{
+			State:                         models.QuoteStateRejected,
+			QuotedStatusID:                sql.NullInt64{Int64: quoted.ID, Valid: true},
+			QuotedStatus:                  quoted,
+			QuotedStatusVisibilityChecked: true,
+			QuotedStatusVisible:           true,
+		},
+	}
+	normal, ok := StatusFromModel(cfg, status, &account).Quote.(Quote)
+	if !ok || normal.State != "rejected" || normal.QuotedStatus != nil {
+		t.Fatalf("normal rejected quote = %#v", normal)
+	}
+	redraft, ok := StatusFromModelWithSource(cfg, status, &account).Quote.(Quote)
+	if !ok || redraft.State != "rejected" || redraft.QuotedStatus == nil || redraft.QuotedStatus.ID != "77" {
+		t.Fatalf("source-requested rejected quote = %#v", redraft)
 	}
 }
 

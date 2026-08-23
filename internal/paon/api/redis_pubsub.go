@@ -430,11 +430,21 @@ func redisAvailabilityVersion(ctx context.Context, cfg redisConnConfig) (string,
 	if !ok {
 		return "", fmt.Errorf("unexpected INFO server response %v", value)
 	}
-	version := redisInfoValue(info, "redis_version")
+	_, version := redisStoreIdentity(info)
 	if version == "" {
-		return "", errors.New("INFO server response is missing redis_version")
+		return "", errors.New("INFO server response is missing valkey_version, dragonfly_version, and redis_version")
 	}
 	return version, nil
+}
+
+func redisStoreIdentity(info string) (string, string) {
+	if version := redisInfoValue(info, "valkey_version"); version != "" {
+		return "Valkey", version
+	}
+	if version := redisInfoValue(info, "dragonfly_version"); version != "" {
+		return "Dragonfly", version
+	}
+	return "Redis", redisInfoValue(info, "redis_version")
 }
 
 func validateRedisVersion(version string) error {
@@ -446,12 +456,12 @@ func validateRedisVersion(version string) error {
 	if err != nil {
 		return fmt.Errorf("invalid Redis version %q", version)
 	}
-	minor, err := strconv.Atoi(parts[1])
+	_, err = strconv.Atoi(parts[1])
 	if err != nil {
 		return fmt.Errorf("invalid Redis version %q", version)
 	}
-	if major < 6 || major == 6 && minor < 2 {
-		return fmt.Errorf("Redis 6.2 or newer is required (server reports %s)", version)
+	if major < 7 {
+		return fmt.Errorf("Redis 7.0 or newer is required (server reports %s)", version)
 	}
 	return nil
 }

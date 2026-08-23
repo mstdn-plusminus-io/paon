@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -90,11 +91,12 @@ func (s *Server) processActivityPubCollectionSynchronization(c *echo.Context, ac
 		return
 	}
 	urlValue := params["url"]
-	if s.enqueueFollowersSynchronizationTask(actor.ID, urlValue) {
+	expectedDigest := params["digest"]
+	if s.enqueueFollowersSynchronizationTask(actor.ID, urlValue, expectedDigest) {
 		return
 	}
 	go func() {
-		_ = s.synchronizeActivityPubFollowers(context.Background(), *actor, urlValue)
+		_ = s.synchronizeActivityPubFollowers(context.Background(), *actor, urlValue, expectedDigest)
 	}()
 }
 
@@ -168,9 +170,29 @@ func hexLower(value []byte) string {
 	return string(out)
 }
 
-func (s *Server) synchronizeActivityPubFollowers(ctx context.Context, account models.Account, collectionURL string) error {
+func (s *Server) synchronizeActivityPubFollowers(ctx context.Context, account models.Account, collectionURL string, expectedDigestValues ...string) error {
 	expectedIDs := []int64{}
+	expectedDigest := strings.TrimSpace(firstNonEmpty(expectedDigestValues...))
+	var remainingDigest []byte
+	if expectedDigest != "" {
+		decoded, err := hex.DecodeString(expectedDigest)
+		if err != nil || len(decoded) != sha256.Size {
+			// Invalid or incomplete digest metadata must never authorize the
+			// destructive removal phase.
+			remainingDigest = nil
+		} else {
+			remainingDigest = decoded
+		}
+	}
 	complete, err := s.processActivityPubFollowersSynchronizationCollection(collectionURL, account.URI, 10, func(items []string) error {
+		if remainingDigest != nil {
+			for _, uri := range items {
+				sum := sha256.Sum256([]byte(uri))
+				for i := range remainingDigest {
+					remainingDigest[i] ^= sum[i]
+				}
+			}
+		}
 		ids, err := s.localAccountIDsFromActivityURIs(items)
 		if err != nil {
 			return err
@@ -181,7 +203,22 @@ func (s *Server) synchronizeActivityPubFollowers(ctx context.Context, account mo
 	if err != nil || !complete {
 		return err
 	}
+	if expectedDigest != "" && (remainingDigest == nil || !allZeroBytes(remainingDigest)) {
+		return nil
+	}
 	return s.removeUnexpectedActivityPubFollowers(ctx, account, expectedIDs)
+}
+
+func allZeroBytes(value []byte) bool {
+	if len(value) == 0 {
+		return false
+	}
+	for _, b := range value {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) activityPubFollowersSynchronizationCollectionItems(collectionURL string, actorURI string, maxPages int) ([]string, bool, error) {

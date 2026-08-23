@@ -24,20 +24,24 @@ func (s *Server) severedRelationshipsPage(c *echo.Context) error {
 	var body strings.Builder
 	body.WriteString(`<div class="table-wrapper"><table><thead><tr><th>` + html.EscapeString(settingsT(locale, "severed_relationships.type", "Type")) + `</th><th>` + html.EscapeString(settingsT(locale, "severed_relationships.target", "Domain")) + `</th><th>` + html.EscapeString(settingsT(locale, "severed_relationships.following", "Following")) + `</th><th>` + html.EscapeString(settingsT(locale, "severed_relationships.followers", "Followers")) + `</th></tr></thead><tbody>`)
 	for _, event := range events {
-		id := strconv.FormatInt(event.ID, 10)
-		following := strconv.Itoa(event.FollowingCount)
-		followers := strconv.Itoa(event.FollowersCount)
-		if !event.RelationshipSeveranceEvent.Purged {
-			following = `<a href="/severed_relationships/` + id + `/following.csv">` + following + `</a>`
-			followers = `<a href="/severed_relationships/` + id + `/followers.csv">` + followers + `</a>`
-		}
-		body.WriteString(`<tr><td>` + html.EscapeString(severanceTypeLabel(event.RelationshipSeveranceEvent.Type, locale)) + `</td><td>` + html.EscapeString(event.RelationshipSeveranceEvent.TargetName) + `</td><td>` + following + `</td><td>` + followers + `</td></tr>`)
+		body.WriteString(severedRelationshipEventRowHTML(event, locale))
 	}
 	body.WriteString(`</tbody></table></div>`)
 	if len(events) == 0 {
 		body.WriteString(adminNothingHereHTML(locale, "nothing-here"))
 	}
 	return c.HTML(http.StatusOK, authPageHTML(settingsT(locale, "severed_relationships.title", "Severed relationships"), "", "", body.String(), locale))
+}
+
+func severedRelationshipEventRowHTML(event models.AccountRelationshipSeveranceEvent, locale string) string {
+	prefix := `<tr><td>` + html.EscapeString(severanceTypeLabel(event.RelationshipSeveranceEvent.Type, locale)) + `</td><td>` + html.EscapeString(event.RelationshipSeveranceEvent.TargetName) + `</td>`
+	if event.RelationshipSeveranceEvent.Purged {
+		return prefix + `<td colspan="2">` + html.EscapeString(settingsT(locale, "severed_relationships.purged", "Information about this server has been purged by your server's administrators.")) + `</td></tr>`
+	}
+	id := strconv.FormatInt(event.ID, 10)
+	following := `<a href="/severed_relationships/` + id + `/following.csv">` + strconv.Itoa(event.FollowingCount) + `</a>`
+	followers := `<a href="/severed_relationships/` + id + `/followers.csv">` + strconv.Itoa(event.FollowersCount) + `</a>`
+	return prefix + `<td>` + following + `</td><td>` + followers + `</td></tr>`
 }
 
 func severanceTypeLabel(kind int, locale string) string {

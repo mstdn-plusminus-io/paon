@@ -17,7 +17,7 @@ func TestPaonGoDockerfileBuildsAssetsAndRuntimeSeparately(t *testing.T) {
 		`ARG BASE_REGISTRY=docker.io`,
 		`FROM ${BASE_REGISTRY}/golang:1.25.12-trixie AS go-builder`,
 		`apt-get install -y --no-install-recommends libvips-dev pkg-config`,
-		`FROM ${BASE_REGISTRY}/node:22-bookworm-slim AS assets`,
+		`FROM ${BASE_REGISTRY}/node:24-trixie-slim AS assets`,
 		`FROM ${BASE_REGISTRY}/debian:trixie-slim`,
 		`ARG SOURCE_COMMIT=""`,
 		`ENV SOURCE_COMMIT=${SOURCE_COMMIT}`,

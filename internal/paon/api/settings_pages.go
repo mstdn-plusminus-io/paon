@@ -92,6 +92,8 @@ func (s *Server) settingsHTMLWithOptions(path string, user models.User, account 
 		return settingsPreferencesAppearanceHTMLWithMessages(user, settings, options.Notice, options.ErrorText, renderContext...), true, nil
 	case "/settings/preferences/notifications":
 		return settingsPreferencesNotificationsHTMLWithOptions(settings, options.Notice, options.ErrorText, options, renderContext...), true, nil
+	case "/settings/preferences/posting_defaults":
+		return settingsPreferencesPostingDefaultsHTMLWithMessages(account, settings, options.Notice, options.ErrorText, renderContext...), true, nil
 	case "/settings/preferences/other":
 		return settingsPreferencesOtherHTMLWithMessages(user, account, settings, options.Notice, options.ErrorText, renderContext...), true, nil
 	case "/settings/privacy":
@@ -232,9 +234,13 @@ func settingsNavigationHTML(path string, locale string, options settingsHTMLOpti
 
 	if options.Functional {
 		profile := item("profile", "/settings/profile", "user", "settings.profile", "Profile")
-		profile.Selected = selected("/settings/profile", "/settings/featured_tags", "/settings/verification", "/settings/privacy")
+		profile.Selected = selected("/settings/profile", "/settings/featured_tags", "/settings/verification")
 		profile.Leaf = profile.Selected
 		items = append(items, profile)
+
+		privacy := item("privacy", "/settings/privacy", "lock", "privacy.title", "Privacy and reach")
+		privacy.Selected, privacy.Leaf = selected("/settings/privacy"), selected("/settings/privacy")
+		items = append(items, privacy)
 
 		preferences := item("preferences", "/settings/preferences", "cog", "settings.preferences", "Preferences")
 		preferences.Selected = selected("/settings/preferences")
@@ -242,6 +248,7 @@ func settingsNavigationHTML(path string, locale string, options settingsHTMLOpti
 			preferences.Children = []settingsNavigationItem{
 				settingsNavigationLeaf("appearance", "/settings/preferences/appearance", "desktop", settingsT(locale, "settings.appearance", "Appearance"), path),
 				settingsNavigationLeaf("notifications", "/settings/preferences/notifications", "bell", settingsT(locale, "settings.notifications", "Notifications"), path),
+				settingsNavigationLeaf("posting_defaults", "/settings/preferences/posting_defaults", "pencil", settingsT(locale, "preferences.posting_defaults", "Posting defaults"), path),
 				settingsNavigationLeaf("other", "/settings/preferences/other", "cog", settingsT(locale, "preferences.other", "Other"), path),
 			}
 		}
@@ -450,6 +457,7 @@ func settingsModerationNavigationChildren(path, locale string, options settingsH
 	add(rolePermissionManageFederation, "instances", instancesHref, "cloud", "admin.instances.title", "Federation")
 	add(rolePermissionManageBlocks, "email_domain_blocks", "/admin/email_domain_blocks", "envelope", "admin.email_domain_blocks.title", "E-mail domain blocks")
 	add(rolePermissionManageBlocks, "ip_blocks", "/admin/ip_blocks", "ban", "admin.ip_blocks.title", "IP blocks")
+	add(rolePermissionManageBlocks, "username_blocks", "/admin/username_blocks", "user-times", "admin.username_blocks.title", "Username blocks")
 	add(rolePermissionViewAuditLog, "action_logs", "/admin/action_logs", "bars", "admin.action_logs.title", "Audit log")
 	return children
 }
@@ -599,7 +607,6 @@ func settingsProfileTabsHTML(active string, locale string) string {
 		label string
 	}{
 		{"profile", "/settings/profile", "user", "settings.edit_profile", "Edit profile"},
-		{"privacy", "/settings/privacy", "lock", "privacy.title", "Privacy and reach"},
 		{"verification", "/settings/verification", "check", "verification.verification", "Verification"},
 		{"featured_tags", "/settings/featured_tags", "hashtag", "settings.featured_tags", "Featured hashtags"},
 	}
@@ -639,6 +646,7 @@ func settingsPreferencesAppearanceHTMLWithMessages(user models.User, settings ma
 	body += `<div class="fields-row">` + settingsFieldRowColumn(settingsLocaleSelectField(user.Locale.String, loc)) + settingsFieldRowColumn(settingsTimeZoneSelectField(user.TimeZone.String, loc)) + `</div>`
 	themeField := settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_theme", "Theme"), "theme", stringSetting(settings, "theme", "system"), []string{"system", "default", "contrast", "mastodon-light", "single-column-chat-dark"}, true, loc)
 	body += strings.ReplaceAll(themeField, "Mastodon", applicationName)
+	body += settingsPreferenceSelectFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_emoji_style", "Emoji style"), settingsT(loc, "simple_form.hints.defaults.setting_emoji_style", `How to display emojis. "Auto" will try using native emoji, but falls back to Twemoji for legacy browsers.`), "web.emoji_style", stringSetting(settings, "web.emoji_style", "auto"), []string{"auto", "native", "twemoji"}, false, loc)
 	if loc != "en" {
 		guideText := settingsT(loc, "appearance.localization.guide_link_text", "Join the translation effort")
 		guideURL := settingsT(loc, "appearance.localization.guide_link", "https://crowdin.com/project/mastodon")
@@ -703,6 +711,7 @@ func settingsPreferencesNotificationsHTMLWithOptions(settings map[string]any, no
 		{"notification_emails.reblog", "simple_form.labels.notification_emails.reblog", "Boosts", false},
 		{"notification_emails.favourite", "simple_form.labels.notification_emails.favourite", "Favourites", false},
 		{"notification_emails.mention", "simple_form.labels.notification_emails.mention", "Mentions", true},
+		{"notification_emails.quote", "simple_form.labels.notification_emails.quote", "Quotes", false},
 	} {
 		eventInputs.WriteString(settingsCheckboxInputHTML(settingsT(loc, item.labelKey, item.fallback), "", settingsPreferenceFieldName(item.key), rawBool(settings[item.key], item.def), ""))
 	}
@@ -767,19 +776,39 @@ func settingsPreferencesOtherHTMLWithMessages(user models.User, account models.A
 	theme := settingsThemeArg(locale...)
 	body := settingsInlineFlashHTML(notice, errorText) + `<form class="simple_form edit_user" novalidate="novalidate" method="post" action="/settings/preferences/other" id="edit_preferences"><input type="hidden" name="_method" value="put">`
 	body += settingsPreferenceRecommendedCheckboxFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_aggregate_reblogs", "Group boosts in timelines"), settingsT(loc, "simple_form.hints.defaults.setting_aggregate_reblogs", "Do not show new boosts for posts that have been recently boosted"), "aggregate_reblogs", rawBool(settings["aggregate_reblogs"], true), settingsT(loc, "simple_form.recommended", "Recommended"))
-	body += `<h4>` + html.EscapeString(settingsT(loc, "preferences.posting_defaults", "Posting defaults")) + `</h4><div class="fields-row">`
-	body += settingsFieldRowColumn(settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_default_privacy", "Default post privacy"), "default_privacy", settingsDefaultPrivacy(settings, account), []string{"public", "unlisted", "private"}, false, loc))
-	languages := []string{""}
-	for _, language := range serializer.SupportedLanguages() {
-		languages = append(languages, language.Code)
-	}
-	body += settingsFieldRowColumn(settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_default_language", "Default post language"), "default_language", stringSetting(settings, "default_language", ""), languages, false, loc)) + `</div>`
-	body += `<div class="fields-row">` + settingsFieldRowColumn(settingsPreferenceSelectFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_default_quote_policy", "Who can quote"), settingsT(loc, "simple_form.hints.defaults.setting_default_quote_policy", "This setting will only take effect for posts created with the next Mastodon version, but you can select your preference in preparation."), "default_quote_policy", stringSetting(settings, "default_quote_policy", "public"), []string{"public", "followers", "nobody"}, false, loc)) + `</div>`
-	body += settingsPreferenceCheckboxFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_default_sensitive", "Mark media as sensitive by default"), settingsT(loc, "simple_form.hints.defaults.setting_default_sensitive", "Sensitive media is hidden by default and can be revealed with a click"), "default_sensitive", rawBool(settings["default_sensitive"], false))
 	body += `<h4>` + html.EscapeString(settingsT(loc, "preferences.public_timelines", "Public timelines")) + `</h4>`
 	body += settingsChosenLanguagesHTML(user.ChosenLanguages, loc)
 	body += settingsSubmitButton(settingsT(loc, "generic.save_changes", "Save changes")) + `</form>`
 	title := settingsT(loc, "preferences.other", "Other preferences")
+	return settingsPageShellWithHeading(title, settingsNavigationArg(locale, loc), body, loc, theme, "", settingsHeadingActions(body, loc))
+}
+
+func settingsPreferencesPostingDefaultsHTML(account models.Account, settings map[string]any, locale ...string) string {
+	return settingsPreferencesPostingDefaultsHTMLWithMessages(account, settings, "", "", locale...)
+}
+
+func settingsPreferencesPostingDefaultsHTMLWithMessages(account models.Account, settings map[string]any, notice string, errorText string, locale ...string) string {
+	loc := settingsLocaleArg(locale...)
+	theme := settingsThemeArg(locale...)
+	privacy := settingsDefaultPrivacy(settings, account)
+	quoteHint := ""
+	if privacy == "unlisted" {
+		quoteHint = settingsT(loc, "simple_form.hints.defaults.setting_default_quote_policy_unlisted", "When people quote you, their post will also be hidden from trending timelines.")
+	} else if privacy == "private" {
+		quoteHint = settingsT(loc, "simple_form.hints.defaults.setting_default_quote_policy_private", "Followers-only posts authored on Paon cannot be quoted by others.")
+	}
+	body := settingsInlineFlashHTML(notice, errorText) + `<form class="simple_form edit_user" novalidate="novalidate" method="post" action="/settings/preferences/posting_defaults" id="edit_preferences"><input type="hidden" name="_method" value="put">`
+	body += `<div class="flash-message">` + html.EscapeString(settingsT(loc, "posting_defaults.explanation", "These defaults are applied to every new post. You can change them for an individual post in the composer.")) + `</div>`
+	body += settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_default_privacy", "Default post privacy"), "default_privacy", privacy, []string{"public", "unlisted", "private"}, false, loc)
+	body += settingsPreferenceSelectFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_default_quote_policy", "Who can quote"), quoteHint, "default_quote_policy", stringSetting(settings, "default_quote_policy", "public"), []string{"public", "followers", "nobody"}, false, loc)
+	languages := []string{""}
+	for _, language := range serializer.SupportedLanguages() {
+		languages = append(languages, language.Code)
+	}
+	body += settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_default_language", "Default post language"), "default_language", stringSetting(settings, "default_language", ""), languages, false, loc)
+	body += settingsPreferenceCheckboxFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_default_sensitive", "Mark media as sensitive by default"), settingsT(loc, "simple_form.hints.defaults.setting_default_sensitive", "Sensitive media is hidden by default and can be revealed with a click"), "default_sensitive", rawBool(settings["default_sensitive"], false))
+	body += settingsSubmitButton(settingsT(loc, "generic.save_changes", "Save changes")) + `</form>`
+	title := settingsT(loc, "preferences.posting_defaults", "Posting defaults")
 	return settingsPageShellWithHeading(title, settingsNavigationArg(locale, loc), body, loc, theme, "", settingsHeadingActions(body, loc))
 }
 
@@ -843,7 +872,7 @@ func settingsPrivacyHTMLWithMessages(account models.Account, settings map[string
 	body += settingsCheckboxFieldWithHint(settingsT(loc, "simple_form.labels.settings.show_application", "Display from which app you sent a post"), settingsT(loc, "simple_form.hints.settings.show_application", "You will always be able to see which app published your post regardless."), "account[settings][show_application]", rawBool(settings["show_application"], true))
 	body += settingsSubmitButton(settingsT(loc, "generic.save_changes", "Save changes")) + `</form>`
 	title := settingsT(loc, "privacy.title", "Privacy settings")
-	return settingsPageShellWithHeadingTitle(title, settingsT(loc, "settings.profile", "Profile"), settingsNavigationArg(locale, loc), body, loc, theme, settingsProfileTabsHTML("privacy", loc), "")
+	return settingsPageShellWithHeadingTitle(title, title, settingsNavigationArg(locale, loc), body, loc, theme, "", "")
 }
 
 func (s *Server) settingsBackups(userID int64) ([]models.Backup, error) {
@@ -1254,6 +1283,8 @@ func settingsOptionLabel(locale string, name string, option string) string {
 	switch {
 	case strings.HasSuffix(name, "[theme]"):
 		return settingsT(locale, "themes."+option, option)
+	case strings.HasSuffix(name, "[web.emoji_style]"):
+		return settingsT(locale, "emoji_styles."+option, option)
 	case strings.HasSuffix(name, "[web.display_media]"):
 		return settingsT(locale, "simple_form.labels.defaults.setting_display_media_"+strings.ReplaceAll(option, "-", "_"), option)
 	case strings.HasSuffix(name, "[notification_emails.software_updates]"):

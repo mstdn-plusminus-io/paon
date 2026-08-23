@@ -1390,16 +1390,18 @@ func (c Config) ValidateRuntime() error {
 		problems = append(problems, fmt.Errorf("PAON_PROCESS_ROLE must be all, web, or worker, got %q", c.ProcessRole))
 	}
 	validAsynqQueues := map[string]struct{}{
-		"default": {},
-		"push":    {},
-		"ingress": {},
-		"mailers": {},
-		"pull":    {},
-		"fasp":    {},
+		"default":        {},
+		"push":           {},
+		"ingress":        {},
+		"mailers":        {},
+		"pull":           {},
+		"removal":        {},
+		"remote_removal": {},
+		"fasp":           {},
 	}
 	for _, queue := range c.AsynqQueues {
 		if _, ok := validAsynqQueues[queue]; !ok {
-			problems = append(problems, fmt.Errorf("ASYNQ_QUEUES contains unsupported queue %q; supported queues are default, push, ingress, mailers, pull, fasp", queue))
+			problems = append(problems, fmt.Errorf("ASYNQ_QUEUES contains unsupported queue %q; supported queues are default, push, ingress, mailers, pull, removal, remote_removal, fasp", queue))
 		}
 	}
 	if c.ExperimentalFeatureEnabled("fasp") && len(c.AsynqQueues) > 0 && c.ProcessRole != "web" {

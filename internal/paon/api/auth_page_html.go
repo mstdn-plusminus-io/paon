@@ -229,6 +229,10 @@ func normalizedWebTheme(theme string) string {
 // (wordmark link) and a .form-container (flashes + content), built on buildAppHead plus the
 // public.js pack. This is the shell for all auth pages (sign in/up/reset/2FA/...).
 func authShellHTML(title string, notice string, errorText string, body string, locale ...string) string {
+	return authShellHTMLWithLogoLink(title, notice, errorText, body, true, locale...)
+}
+
+func authShellHTMLWithLogoLink(title string, notice string, errorText string, body string, linkLogo bool, locale ...string) string {
 	loc := ""
 	theme := "system"
 	if len(locale) > 0 {
@@ -242,6 +246,10 @@ func authShellHTML(title string, notice string, errorText string, body string, l
 	}
 	flashes := settingsFlashHTML(notice, errorText)
 	a := currentAppAssets()
+	logo := `<img class="logo logo--wordmark" alt="` + html.EscapeString(title) + `" src="` + html.EscapeString(a.logoWordmarkSVG) + `">`
+	if linkLogo {
+		logo = `<a href="/">` + logo + `</a>`
+	}
 	return `<!DOCTYPE html>
 <html lang="` + html.EscapeString(loc) + `">
   <head>
@@ -251,7 +259,7 @@ func authShellHTML(title string, notice string, errorText string, body string, l
   <body class="app-body lighter theme-` + html.EscapeString(theme) + ` no-reduce-motion">
     <div class="container-alt">
       <div class="logo-container">
-        <h1><a href="/"><img class="logo logo--wordmark" alt="` + html.EscapeString(title) + `" src="` + html.EscapeString(a.logoWordmarkSVG) + `"></a></h1>
+        <h1>` + logo + `</h1>
       </div>
       <div class="form-container">
 		` + flashes + body + `

@@ -382,17 +382,17 @@ func railsVideoTranscodeFFmpegArgsForMetadata(source string, metadata mediaTrans
 
 func railsVideoTranscodeFFmpegArgsForMetadataAndLimit(source string, metadata mediaTranscodeMetadata, videoLimitBytes int) []string {
 	if metadata.eligibleForPassthrough() {
-		return []string{
-			"-y", "-i", source,
+		args := append([]string{"-y"}, mediaLocalInputArgs(source)...)
+		return append(args,
 			"-loglevel", "fatal",
 			"-map_metadata", "-1",
 			"-movflags", "faststart",
 			"-c:v", "copy",
 			"-c:a", "copy",
-		}
+		)
 	}
-	args := []string{
-		"-y", "-i", source,
+	args := append([]string{"-y"}, mediaLocalInputArgs(source)...)
+	args = append(args,
 		"-loglevel", "fatal",
 		"-preset", "veryfast",
 		"-movflags", "faststart",
@@ -403,7 +403,7 @@ func railsVideoTranscodeFFmpegArgsForMetadataAndLimit(source string, metadata me
 		"-b:a", "192k",
 		"-map_metadata", "-1",
 		"-frames:v", "36000",
-	}
+	)
 	if metadata.valid {
 		if bitrate := railsVideoTranscodeBitrateWithLimit(metadata, videoLimitBytes); bitrate != "" {
 			args = append(args, "-b:v", bitrate, "-maxrate", railsVideoTranscodeMaxrateWithLimit(metadata, videoLimitBytes), "-bufsize", railsVideoTranscodeBufsizeWithLimit(metadata, videoLimitBytes))
@@ -416,11 +416,11 @@ func railsVideoTranscodeFFmpegArgsForMetadataAndLimit(source string, metadata me
 }
 
 func railsAudioTranscodeFFmpegArgs(source string) []string {
-	return []string{
-		"-y", "-i", source,
+	args := append([]string{"-y"}, mediaLocalInputArgs(source)...)
+	return append(args,
 		"-loglevel", "fatal",
 		"-q:a", "2",
-	}
+	)
 }
 
 func transcodeMediaOriginalFile(source string, target string, args []string) error {
@@ -520,7 +520,7 @@ type mediaTranscodeMetadata struct {
 func mediaTranscodeMetadataForFile(path string) mediaTranscodeMetadata {
 	ctx, cancel := context.WithTimeout(context.Background(), mediaFFProbeTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, mediaFFprobeBinary(), "-i", path, "-print_format", "json", "-show_format", "-show_streams", "-show_error", "-loglevel", "fatal").Output()
+	output, err := exec.CommandContext(ctx, mediaFFprobeBinary(), mediaFFprobeArgs(path)...).Output()
 	if err != nil {
 		return mediaTranscodeMetadata{}
 	}

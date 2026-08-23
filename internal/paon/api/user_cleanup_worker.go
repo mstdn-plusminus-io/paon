@@ -104,7 +104,8 @@ func (s *Server) cleanupDiscardedStatuses(ctx context.Context, cutoff time.Time)
 		var statuses []models.Status
 		if err := s.db.WithContext(ctx).
 			Model(&models.Status{}).
-			Select("id").
+			Select("id", "account_id").
+			Preload("Account").
 			Where("id > ? AND deleted_at IS NOT NULL AND deleted_at <= ?", lastID, cutoff).
 			Order("id ASC").
 			Limit(userCleanupBatchSize).
@@ -119,8 +120,18 @@ func (s *Server) cleanupDiscardedStatuses(ctx context.Context, cutoff time.Time)
 			ids = append(ids, status.ID)
 			lastID = status.ID
 		}
+		localIDs, remoteIDs := partitionRemovalStatusIDsByOrigin(statuses)
 		options := asynqRemovalPayload{Immediate: true, SkipStreaming: true}
-		if s.enqueueRemovalTasksForStatusIDs(ids, options) {
+		queued := true
+		if len(localIDs) > 0 && !s.enqueueRemovalTasksForStatusIDs(localIDs, options) {
+			queued = false
+		}
+		remoteOptions := options
+		remoteOptions.Remote = true
+		if len(remoteIDs) > 0 && !s.enqueueRemovalTasksForStatusIDs(remoteIDs, remoteOptions) {
+			queued = false
+		}
+		if queued {
 			cleaned += len(ids)
 			continue
 		}
@@ -139,6 +150,20 @@ func (s *Server) cleanupDiscardedStatuses(ctx context.Context, cutoff time.Time)
 		}
 		cleaned += len(ids)
 	}
+}
+
+func partitionRemovalStatusIDsByOrigin(statuses []models.Status) (localIDs []int64, remoteIDs []int64) {
+	for _, status := range statuses {
+		if status.ID == 0 {
+			continue
+		}
+		if status.Account.Local() {
+			localIDs = append(localIDs, status.ID)
+		} else {
+			remoteIDs = append(remoteIDs, status.ID)
+		}
+	}
+	return localIDs, remoteIDs
 }
 
 func (s *Server) purgeDiscardedStatus(ctx context.Context, statusID int64) error {
@@ -178,11 +203,32 @@ func (s *Server) discardedStatusAndUnreportedReblogIDs(ctx context.Context, stat
 	if s == nil || s.db == nil || statusID == 0 {
 		return nil
 	}
-	var ids []int64
-	_ = s.db.WithContext(ctx).Unscoped().
+	database := s.db.WithContext(ctx).Unscoped()
+	var original models.Status
+	if err := database.Model(&models.Status{}).
+		Select("id", "account_id").
+		Where("id = ?", statusID).
+		Find(&original).Error; err != nil {
+		return nil
+	}
+	var reblogs []models.Status
+	if err := database.
 		Model(&models.Status{}).
-		Where("id = ? OR (reblog_of_id = ? AND NOT EXISTS (SELECT 1 FROM reports WHERE reports.target_account_id = statuses.account_id AND reports.action_taken_at IS NULL AND statuses.id = ANY(reports.status_ids)))", statusID, statusID).
-		Pluck("id", &ids).Error
+		Select("id", "account_id").
+		Where("reblog_of_id = ?", statusID).
+		Order("id ASC").
+		Find(&reblogs).Error; err != nil {
+		return nil
+	}
+	reported, err := unresolvedReportedStatusIDs(database, statusRemovalReportCandidatesFromStatuses(reblogs))
+	if err != nil {
+		return nil
+	}
+	ids := make([]int64, 0, 1+len(reblogs))
+	if original.ID != 0 {
+		ids = append(ids, original.ID)
+	}
+	ids = append(ids, unreportedStatusIDs(reblogs, reported)...)
 	return uniqueInt64s(ids)
 }
 
@@ -190,12 +236,21 @@ func (s *Server) discardedUnreportedReblogIDs(ctx context.Context, status models
 	if s == nil || s.db == nil || status.ID == 0 || status.ReblogOfID.Valid {
 		return nil
 	}
-	var ids []int64
-	_ = s.db.WithContext(ctx).Unscoped().
+	database := s.db.WithContext(ctx).Unscoped()
+	var reblogs []models.Status
+	if err := database.
 		Model(&models.Status{}).
-		Where("reblog_of_id = ? AND deleted_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM reports WHERE reports.target_account_id = statuses.account_id AND reports.action_taken_at IS NULL AND statuses.id = ANY(reports.status_ids))", status.ID).
-		Pluck("id", &ids).Error
-	return uniqueInt64s(ids)
+		Select("id", "account_id").
+		Where("reblog_of_id = ? AND deleted_at IS NOT NULL", status.ID).
+		Order("id ASC").
+		Find(&reblogs).Error; err != nil {
+		return nil
+	}
+	reported, err := unresolvedReportedStatusIDs(database, statusRemovalReportCandidatesFromStatuses(reblogs))
+	if err != nil {
+		return nil
+	}
+	return uniqueInt64s(unreportedStatusIDs(reblogs, reported))
 }
 
 func (s *Server) syncPermanentStatusRemovalCounters(ctx context.Context, statusIDs []int64, now time.Time) error {

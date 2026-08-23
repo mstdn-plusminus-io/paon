@@ -275,6 +275,12 @@ func TestAsynqTaskTypesAndQueueMatchRailsSidekiq(t *testing.T) {
 	if asynqQueueDefault != "default" {
 		t.Fatalf("default queue = %q", asynqQueueDefault)
 	}
+	if asynqQueueRemoval != "removal" {
+		t.Fatalf("removal queue = %q", asynqQueueRemoval)
+	}
+	if asynqQueueRemoteRemoval != "remote_removal" {
+		t.Fatalf("remote removal queue = %q", asynqQueueRemoteRemoval)
+	}
 	if asynqQueuePull != "pull" {
 		t.Fatalf("pull queue = %q", asynqQueuePull)
 	}
@@ -441,6 +447,12 @@ func TestAsynqQueueNamesUseRedisNamespaceForSharedRedisIsolation(t *testing.T) {
 	if weights["mastodon:pull"] != paonGoAsynqQueueWeights()[asynqQueuePull] || weights[asynqQueuePull] != 0 {
 		t.Fatalf("namespace queue weights = %#v", weights)
 	}
+	if weights["mastodon:removal"] != paonGoAsynqQueueWeights()[asynqQueueRemoval] || weights[asynqQueueRemoval] != 0 {
+		t.Fatalf("namespace removal queue weight = %#v", weights)
+	}
+	if weights["mastodon:remote_removal"] != paonGoAsynqQueueWeights()[asynqQueueRemoteRemoval] || weights[asynqQueueRemoteRemoval] != 0 {
+		t.Fatalf("namespace remote removal queue weight = %#v", weights)
+	}
 
 	selected := paonGoAsynqQueueWeightsForConfig(config.Config{
 		RedisNamespace: "mastodon:",
@@ -452,6 +464,53 @@ func TestAsynqQueueNamesUseRedisNamespaceForSharedRedisIsolation(t *testing.T) {
 	}
 	if !reflect.DeepEqual(selected, wantSelected) {
 		t.Fatalf("selected queue weights = %#v, want %#v", selected, wantSelected)
+	}
+}
+
+func TestRemovalTasksUsePriorityQueues(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload asynqRemovalPayload
+		want    string
+	}{
+		{name: "local", payload: asynqRemovalPayload{}, want: asynqQueueRemoval},
+		{name: "remote owner", payload: asynqRemovalPayload{Remote: true}, want: asynqQueueRemoteRemoval},
+		{name: "remote origin removed", payload: asynqRemovalPayload{OriginalRemoved: true}, want: asynqQueueRemoteRemoval},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := asynqRemovalQueueForPayload(tc.payload); got != tc.want {
+				t.Fatalf("queue = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	weights := paonGoAsynqQueueWeights()
+	if weights[asynqQueueRemoval] <= weights[asynqQueueRemoteRemoval] {
+		t.Fatalf("local removal weight must exceed remote removal: %#v", weights)
+	}
+	if weights[asynqQueueRemoval] != 2 || weights[asynqQueueRemoteRemoval] != 1 {
+		t.Fatalf("removal queue weights = %#v, want local=2 remote=1", weights)
+	}
+
+	src, err := os.ReadFile("asynq_workers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, src, "enqueueRemovalTaskContext")
+	if !sourceContains([]byte(body), `queue := asynqRemovalQueueForPayload(payload)`) {
+		t.Fatal("removal tasks must select the queue from the payload origin")
+	}
+	if sourceContains([]byte(body), `s.asynqQueue(asynqQueueDefault)`) {
+		t.Fatal("removal tasks must not be enqueued on the default queue")
+	}
+}
+
+func TestAdminStatusBatchRemovalMarksRemoteOwner(t *testing.T) {
+	src, err := os.ReadFile("admin_account_subroutes.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !functionBodyContains(t, src, "adminStatusBatchRemovalPayload", `Remote: !local`) {
+		t.Fatal("admin remote-account status removal must use the remote removal queue")
 	}
 }
 

@@ -39,6 +39,7 @@ type exportBookmarkRow struct {
 	AccountID       int64          `gorm:"column:account_id"`
 	AccountUsername string         `gorm:"column:account_username"`
 	AccountDomain   sql.NullString `gorm:"column:account_domain"`
+	AccountIDScheme sql.NullInt64  `gorm:"column:account_id_scheme"`
 }
 
 type exportListRow struct {
@@ -247,7 +248,8 @@ func (s *Server) exportBookmarksCSVBytes(accountID int64) ([]byte, error) {
 	var rows []exportBookmarkRow
 	if err := s.db.Raw(`
 		SELECT statuses.id AS status_id, statuses.uri AS status_uri, statuses.url AS status_url,
-		       accounts.id AS account_id, accounts.username AS account_username, accounts.domain AS account_domain
+		       accounts.id AS account_id, accounts.username AS account_username, accounts.domain AS account_domain,
+		       accounts.id_scheme AS account_id_scheme
 		FROM bookmarks
 		INNER JOIN statuses ON statuses.id = bookmarks.status_id
 		INNER JOIN accounts ON accounts.id = statuses.account_id
@@ -283,7 +285,8 @@ func (s *Server) exportStatusURI(row exportBookmarkRow) string {
 		}
 		return "https://" + row.AccountDomain.String + "/users/" + url.PathEscape(row.AccountUsername) + "/statuses/" + strconv.FormatInt(row.StatusID, 10)
 	}
-	return s.cfg.BaseURL() + "/users/" + url.PathEscape(row.AccountUsername) + "/statuses/" + strconv.FormatInt(row.StatusID, 10)
+	account := models.Account{ID: row.AccountID, Username: row.AccountUsername, IDScheme: row.AccountIDScheme}
+	return activityPubStatusURL(s, account, row.StatusID)
 }
 
 func csvBytes(filename string, header [][]string, writeRows func(*csv.Writer) error, contexts ...*echo.Context) []byte {

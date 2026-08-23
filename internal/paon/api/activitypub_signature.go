@@ -2277,6 +2277,7 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 		OutboxURL:         actor.Outbox,
 		SharedInboxURL:    actor.SharedInbox(),
 		FollowersURL:      actor.Followers,
+		FollowingURL:      actor.Following,
 		Protocol:          1,
 		ActorType:         sql.NullString{String: firstNonEmpty(actor.Type, "Person"), Valid: true},
 		LastWebfingeredAt: sql.NullTime{Time: now, Valid: true},

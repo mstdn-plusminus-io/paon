@@ -33,7 +33,7 @@ func (s *Server) adminAccountStatusesPage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	return c.HTML(http.StatusOK, adminAccountStatusesHTML(*account, statuses, c.QueryParam("notice"), c.QueryParam("error"), adminAccountStatusFilters{
+	return c.HTML(http.StatusOK, adminAccountStatusesHTMLWithConfig(s.cfg, *account, statuses, c.QueryParam("notice"), c.QueryParam("error"), adminAccountStatusFilters{
 		Page:     adminTrendsPageValue(c),
 		Media:    c.QueryParam("media"),
 		ReportID: c.QueryParam("report_id"),
@@ -57,7 +57,7 @@ func (s *Server) adminAccountStatusPage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	return c.HTML(http.StatusOK, adminAccountStatusHTML(*account, status, edits, c.QueryParam("notice"), c.QueryParam("error"), s.webLocale(c, user)))
+	return c.HTML(http.StatusOK, adminAccountStatusHTMLWithConfig(s.cfg, *account, status, edits, c.QueryParam("notice"), c.QueryParam("error"), s.webLocale(c, user)))
 }
 
 func (s *Server) batchAdminAccountStatusesWeb(c *echo.Context) error {
@@ -310,11 +310,11 @@ func (s *Server) adminAccountStatusModels(accountID int64, c *echo.Context) ([]m
 	if s.db == nil {
 		return []models.Status{}, nil
 	}
-	query := s.db.Preload("Account.AccountStat").
+	query := adminStatusModerationPreloads(s.db.Preload("Account.AccountStat").
 		Preload("Application").
 		Preload("MediaAttachments").
 		Preload("Poll").
-		Preload("StatusStat").
+		Preload("StatusStat")).
 		Where("account_id = ? AND visibility IN ? AND deleted_at IS NULL", accountID, []int{0, 1}).
 		Order("id DESC").
 		Offset(adminPageOffset(c, adminAccountStatusesPageSize)).
@@ -333,7 +333,8 @@ func (s *Server) findAdminAccountStatus(accountID int64, rawID string) (models.S
 		return models.Status{}, echo.NewHTTPError(http.StatusNotFound, "status not found")
 	}
 	var status models.Status
-	if err := s.db.Preload("Account.AccountStat").Preload("Application").Preload("MediaAttachments").Preload("Poll").Preload("StatusStat").Where("id = ? AND account_id = ?", id, accountID).First(&status).Error; err != nil {
+	query := adminStatusModerationPreloads(s.db.Preload("Account.AccountStat").Preload("Application").Preload("MediaAttachments").Preload("Poll").Preload("StatusStat"))
+	if err := query.Where("id = ? AND account_id = ?", id, accountID).First(&status).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return status, echo.NewHTTPError(http.StatusNotFound, "status not found")
 		}
@@ -347,8 +348,38 @@ func (s *Server) adminStatusEdits(statusID int64) ([]models.StatusEdit, error) {
 		return []models.StatusEdit{}, nil
 	}
 	var edits []models.StatusEdit
-	err := s.db.Where("status_id = ?", statusID).Order("id ASC").Find(&edits).Error
+	query := adminStatusQuotePreloads(s.db.Model(&models.StatusEdit{}))
+	err := query.Where("status_id = ?", statusID).Order("id ASC").Find(&edits).Error
 	return edits, err
+}
+
+// adminStatusModerationPreloads keeps the server-rendered moderation views on
+// the authoritative PostgreSQL quote and preview-card relations. The quoted
+// status is deliberately loaded only one level deep so malformed nested quote
+// graphs cannot cause recursive rendering or unbounded database work.
+func adminStatusModerationPreloads(query *gorm.DB) *gorm.DB {
+	if query == nil {
+		return nil
+	}
+	return adminStatusQuotePreloads(query).
+		Preload("PreviewCards").
+		Preload("PreviewCardStatuses")
+}
+
+func adminStatusQuotePreloads(query *gorm.DB) *gorm.DB {
+	if query == nil {
+		return nil
+	}
+	return query.
+		Preload("Quote").
+		Preload("Quote.QuotedAccount.AccountStat").
+		Preload("Quote.QuotedStatus.Account.AccountStat").
+		Preload("Quote.QuotedStatus.Application").
+		Preload("Quote.QuotedStatus.MediaAttachments").
+		Preload("Quote.QuotedStatus.Poll").
+		Preload("Quote.QuotedStatus.PreviewCards").
+		Preload("Quote.QuotedStatus.PreviewCardStatuses").
+		Preload("Quote.QuotedStatus.StatusStat")
 }
 
 func (s *Server) adminAccountRelationshipModels(account *models.Account, filters relationshipFilters, c *echo.Context) ([]models.Account, error) {
@@ -524,7 +555,7 @@ func (s *Server) adminStatusBatchRemovalPayload(targetAccountID int64) asynqRemo
 		return asynqRemovalPayload{}
 	}
 	local := target.Local()
-	return asynqRemovalPayload{Preserve: local, Immediate: !local}
+	return asynqRemovalPayload{Preserve: local, Immediate: !local, Remote: !local}
 }
 
 func createAdminStatusBatchWarning(tx *gorm.DB, actorAccountID int64, targetAccountID int64, reportID int64, action string, statusIDs []int64, text string, now time.Time) (models.AccountWarning, error) {
@@ -663,6 +694,10 @@ func adminAccountStatusesRedirectURL(c *echo.Context, rawAccountID string, messa
 }
 
 func adminAccountStatusesHTML(account models.Account, statuses []models.Status, notice string, errorText string, filters adminAccountStatusFilters, locale ...string) string {
+	return adminAccountStatusesHTMLWithConfig(config.Config{}, account, statuses, notice, errorText, filters, locale...)
+}
+
+func adminAccountStatusesHTMLWithConfig(cfg config.Config, account models.Account, statuses []models.Status, notice string, errorText string, filters adminAccountStatusFilters, locale ...string) string {
 	loc := settingsLocaleArgOrEnglish(locale...)
 	var body strings.Builder
 	accountID := strconv.FormatInt(account.ID, 10)
@@ -687,7 +722,7 @@ func adminAccountStatusesHTML(account models.Account, statuses []models.Status, 
 		body.WriteString(adminNothingHereHTML(loc, "nothing-here--under-tabs"))
 	} else {
 		for _, status := range statuses {
-			body.WriteString(adminAccountStatusRowHTML(loc, account.ID, status))
+			body.WriteString(adminAccountStatusRowHTMLWithConfig(cfg, loc, account.ID, status))
 		}
 	}
 	body.WriteString(`</div></div></form>`)
@@ -718,12 +753,18 @@ func adminAccountStatusFilterHref(accountID string, filters adminAccountStatusFi
 }
 
 func adminAccountStatusRowHTML(locale string, accountID int64, status models.Status) string {
+	return adminAccountStatusRowHTMLWithConfig(config.Config{}, locale, accountID, status)
+}
+
+func adminAccountStatusRowHTMLWithConfig(cfg config.Config, locale string, accountID int64, status models.Status) string {
 	statusID := strconv.FormatInt(status.ID, 10)
 	var body strings.Builder
 	body.WriteString(`<div class="batch-table__row"><label class="batch-table__row__select batch-checkbox"><input type="checkbox" name="admin_status_batch_action[status_ids][]" value="` + statusID + `"></label><div class="batch-table__row__content">`)
 	body.WriteString(`<div class="status__content">` + adminAccountStatusRowContentHTML(status, locale) + `</div>`)
 	body.WriteString(adminAccountStatusPollHTML(status.Poll, locale))
 	body.WriteString(adminAccountStatusRowMediaHTML(status, locale))
+	body.WriteString(adminAccountStatusPreviewCardHTMLWithConfig(cfg, status, locale))
+	body.WriteString(adminAccountStatusQuoteHTMLWithConfig(cfg, status, locale))
 	body.WriteString(`<div class="detailed-status__meta">`)
 	if status.Application != nil && strings.TrimSpace(status.Application.Name) != "" {
 		body.WriteString(html.EscapeString(status.Application.Name) + ` · `)
@@ -783,6 +824,93 @@ func adminAccountStatusRowMediaHTML(status models.Status, locale string) string 
 	return body.String()
 }
 
+func adminAccountStatusPreviewCardHTMLWithConfig(cfg config.Config, status models.Status, locale string) string {
+	if len(snapshotMediaAttachments(status)) > 0 {
+		return ""
+	}
+	card, ok := status.FirstPreviewCard()
+	if !ok {
+		return ""
+	}
+	card.URL = safeExternalHTTPURL(card.URL)
+	if card.URL == "" {
+		return ""
+	}
+	previewStatus := status
+	previewStatus.PreviewCards = []models.PreviewCard{card}
+	previewStatus.PreviewCardStatuses = nil
+	previewStatus.MediaAttachments = nil
+	preview := statusEmbedPreviewCardHTMLWithConfig(cfg, previewStatus, locale)
+	if preview == "" {
+		return ""
+	}
+	return `<div class="preview-card" data-admin-read-only="true">` + preview + `</div>`
+}
+
+func adminAccountStatusQuoteHTMLWithConfig(cfg config.Config, status models.Status, locale string) string {
+	quote := status.Quote
+	if quote == nil {
+		return ""
+	}
+	state := adminStatusQuoteStateName(quote.State)
+	quoted := quote.QuotedStatus
+	if quote.State != models.QuoteStateAccepted || quoted == nil || quoted.DeletedAt.Valid {
+		label := settingsT(locale, "statuses.quote_error.not_available", "Post unavailable")
+		switch quote.State {
+		case models.QuoteStatePending:
+			label = settingsT(locale, "statuses.quote_error.pending_approval", "Post pending")
+		case models.QuoteStateRevoked:
+			label = settingsT(locale, "statuses.quote_error.revoked", "Post removed by author")
+		}
+		var targetLink string
+		if quoted != nil && quoted.ID > 0 && quoted.AccountID > 0 {
+			targetLink = ` <a class="link-button" href="` + adminQuotedStatusPath(*quoted) + `">` + html.EscapeString(adminT(locale, "admin.statuses.view_quoted_post", "View quoted post")) + `</a>`
+		}
+		return `<div class="status__quote status__quote--error" data-admin-read-only="true" data-quote-state="` + state + `"><div class="status__quote__inner"><span>` + html.EscapeString(label) + `</span>` + targetLink + `</div></div>`
+	}
+
+	account := quoted.Account
+	if account.ID == 0 && quote.QuotedAccount != nil {
+		account = *quote.QuotedAccount
+	}
+	accountLabel := adminReportAccountLabel(account)
+	if accountLabel == "-" {
+		accountLabel = adminT(locale, "admin.statuses.unknown_author", "Unknown author")
+	}
+	path := adminQuotedStatusPath(*quoted)
+	created := quoted.CreatedAt.UTC().Format(time.RFC3339)
+	var body strings.Builder
+	body.WriteString(`<div class="status__quote" data-admin-read-only="true" data-quote-state="accepted"><div class="status__quote__inner">`)
+	body.WriteString(`<a class="status__quote__inner__header" href="` + path + `"><span class="display-name"><strong>` + html.EscapeString(accountLabel) + `</strong><span class="display-name__account">` + html.EscapeString(adminT(locale, "admin.statuses.quoted_post", "Quoted post")) + `</span></span><time class="formatted" datetime="` + html.EscapeString(created) + `" title="` + html.EscapeString(created) + `">` + html.EscapeString(created) + `</time></a>`)
+	body.WriteString(`<div class="status__quote__inner__content">` + adminAccountStatusRowContentHTML(*quoted, locale) + `</div>`)
+	body.WriteString(adminAccountStatusPollHTML(quoted.Poll, locale))
+	body.WriteString(adminAccountStatusRowMediaHTML(*quoted, locale))
+	body.WriteString(adminAccountStatusPreviewCardHTMLWithConfig(cfg, *quoted, locale))
+	body.WriteString(`<div class="status__quote__inner__footer">` + html.EscapeString(statusEmbedVisibilityLabel(quoted.Visibility, locale)) + ` · <a href="` + path + `">` + html.EscapeString(adminT(locale, "admin.statuses.view_quoted_post", "View quoted post")) + `</a></div></div></div>`)
+	return body.String()
+}
+
+func adminStatusQuoteStateName(state int) string {
+	switch state {
+	case models.QuoteStatePending:
+		return "pending"
+	case models.QuoteStateAccepted:
+		return "accepted"
+	case models.QuoteStateRejected:
+		return "rejected"
+	case models.QuoteStateRevoked:
+		return "revoked"
+	case models.QuoteStateDeleted:
+		return "deleted"
+	default:
+		return "unknown"
+	}
+}
+
+func adminQuotedStatusPath(status models.Status) string {
+	return "/admin/accounts/" + strconv.FormatInt(status.AccountID, 10) + "/statuses/" + strconv.FormatInt(status.ID, 10)
+}
+
 func adminAccountStatusPollHTML(poll *models.Poll, locale string) string {
 	if poll == nil || len(poll.Options) == 0 {
 		return ""
@@ -819,6 +947,10 @@ func adminStatusEditContentHTML(edit models.StatusEdit, locale string) string {
 }
 
 func adminAccountStatusHTML(account models.Account, status models.Status, edits []models.StatusEdit, notice string, errorText string, locale ...string) string {
+	return adminAccountStatusHTMLWithConfig(config.Config{}, account, status, edits, notice, errorText, locale...)
+}
+
+func adminAccountStatusHTMLWithConfig(cfg config.Config, account models.Account, status models.Status, edits []models.StatusEdit, notice string, errorText string, locale ...string) string {
 	loc := settingsLocaleArgOrEnglish(locale...)
 	var body strings.Builder
 	if publicURL := firstNonEmpty(status.URL.String, status.URI.String); strings.TrimSpace(publicURL) != "" {
@@ -833,8 +965,8 @@ func adminAccountStatusHTML(account models.Account, status models.Status, edits 
 	if status.Application != nil {
 		application = status.Application.Name
 	}
-	body.WriteString(`<tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.application", "Application")) + `</th><td>` + html.EscapeString(application) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.language", "Language")) + `</th><td>` + html.EscapeString(railsStandardLocaleName(status.Language.String)) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.visibility", "Visibility")) + `</th><td>` + html.EscapeString(statusEmbedVisibilityLabel(status.Visibility, loc)) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.reblogs", "Reblogs")) + `</th><td>` + strconv.FormatInt(status.StatusStat.ReblogsCount, 10) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.favourites", "Favourites")) + `</th><td>` + strconv.FormatInt(status.StatusStat.FavouritesCount, 10) + `</td></tr>`)
-	body.WriteString(`</tbody></table></div><hr class="spacer"><h3>` + html.EscapeString(adminT(loc, "admin.statuses.contents", "Contents")) + `</h3><div class="status"><div class="status__content">` + adminAccountStatusRowContentHTML(status, loc) + `</div>` + adminAccountStatusPollHTML(status.Poll, loc) + adminAccountStatusRowMediaHTML(status, loc) + `</div><hr class="spacer"><h3>` + html.EscapeString(adminT(loc, "admin.statuses.history", "History")) + `</h3>`)
+	body.WriteString(`<tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.application", "Application")) + `</th><td>` + html.EscapeString(application) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.language", "Language")) + `</th><td>` + html.EscapeString(railsStandardLocaleName(status.Language.String)) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.visibility", "Visibility")) + `</th><td>` + html.EscapeString(statusEmbedVisibilityLabel(status.Visibility, loc)) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.reblogs", "Reblogs")) + `</th><td>` + strconv.FormatInt(status.StatusStat.ReblogsCount, 10) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.quotes", "Quotes")) + `</th><td>` + strconv.FormatInt(status.StatusStat.QuotesCount, 10) + `</td></tr><tr><th>` + html.EscapeString(adminT(loc, "admin.statuses.favourites", "Favourites")) + `</th><td>` + strconv.FormatInt(status.StatusStat.FavouritesCount, 10) + `</td></tr>`)
+	body.WriteString(`</tbody></table></div><hr class="spacer"><h3>` + html.EscapeString(adminT(loc, "admin.statuses.contents", "Contents")) + `</h3><div class="status"><div class="status__content">` + adminAccountStatusRowContentHTML(status, loc) + `</div>` + adminAccountStatusPollHTML(status.Poll, loc) + adminAccountStatusRowMediaHTML(status, loc) + adminAccountStatusPreviewCardHTMLWithConfig(cfg, status, loc) + adminAccountStatusQuoteHTMLWithConfig(cfg, status, loc) + `</div><hr class="spacer"><h3>` + html.EscapeString(adminT(loc, "admin.statuses.history", "History")) + `</h3>`)
 	body.WriteString(`<ol class="history">`)
 	for i, edit := range edits {
 		title := adminT(loc, "admin.statuses.status_changed", "Status changed")
@@ -845,7 +977,7 @@ func adminAccountStatusHTML(account models.Account, status models.Status, edits 
 		if len(edit.PollOptions) > 0 {
 			editPoll = &models.Poll{Options: edit.PollOptions}
 		}
-		body.WriteString(`<li><div class="history__entry"><h5>` + html.EscapeString(title) + ` · <time class="formatted" datetime="` + html.EscapeString(edit.CreatedAt.UTC().Format(time.RFC3339)) + `">` + html.EscapeString(edit.CreatedAt.UTC().Format(time.RFC3339)) + `</time></h5><div class="status"><div class="status__content">` + adminStatusEditContentHTML(edit, loc) + `</div>` + adminAccountStatusPollHTML(editPoll, loc) + `</div></div></li>`)
+		body.WriteString(`<li><div class="history__entry"><h5>` + html.EscapeString(title) + ` · <time class="formatted" datetime="` + html.EscapeString(edit.CreatedAt.UTC().Format(time.RFC3339)) + `">` + html.EscapeString(edit.CreatedAt.UTC().Format(time.RFC3339)) + `</time></h5><div class="status"><div class="status__content">` + adminStatusEditContentHTML(edit, loc) + `</div>` + adminAccountStatusPollHTML(editPoll, loc) + adminAccountStatusQuoteHTMLWithConfig(cfg, models.Status{Quote: edit.Quote}, loc) + `</div></div></li>`)
 	}
 	body.WriteString(`</ol>`)
 	return authPageHTML(adminT(loc, "admin.statuses.title", "Post"), notice, errorText, body.String(), loc)

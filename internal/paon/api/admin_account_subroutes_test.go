@@ -84,11 +84,30 @@ func TestAdminAccountSubrouteModelsUseRailsPageSizesAndOffsets(t *testing.T) {
 		{"adminAccountStatusModels", "Offset(adminPageOffset(c, adminAccountStatusesPageSize))"},
 		{"adminAccountStatusModels", "Limit(adminAccountStatusesPageSize)"},
 		{"adminAccountStatusModels", `Preload("Poll")`},
+		{"adminAccountStatusModels", "adminStatusModerationPreloads("},
+		{"findAdminAccountStatus", "adminStatusModerationPreloads("},
+		{"adminStatusEdits", "adminStatusQuotePreloads("},
 		{"adminAccountRelationshipModels", "Offset(adminRailsPageOffset(c))"},
 		{"adminAccountRelationshipModels", "Limit(adminRailsDefaultPageSize)"},
 	} {
 		if !functionBodyContains(t, src, check.fn, check.want) {
 			t.Fatalf("%s missing %q", check.fn, check.want)
+		}
+	}
+	for _, want := range []string{
+		`Preload("Quote")`,
+		`Preload("Quote.QuotedStatus.Account.AccountStat")`,
+		`Preload("Quote.QuotedStatus.PreviewCards")`,
+		`Preload("Quote.QuotedStatus.PreviewCardStatuses")`,
+		`Preload("Quote.QuotedStatus.StatusStat")`,
+	} {
+		if !functionBodyContains(t, src, "adminStatusQuotePreloads", want) {
+			t.Fatalf("adminStatusQuotePreloads missing %q", want)
+		}
+	}
+	for _, want := range []string{`Preload("PreviewCards")`, `Preload("PreviewCardStatuses")`} {
+		if !functionBodyContains(t, src, "adminStatusModerationPreloads", want) {
+			t.Fatalf("adminStatusModerationPreloads missing %q", want)
 		}
 	}
 }
@@ -102,6 +121,89 @@ func TestAdminModerationStatusRowDisplaysPoll(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("moderation row missing poll markup %q: %s", want, html)
 		}
+	}
+}
+
+func TestAdminModerationStatusRowDisplaysAcceptedQuoteAndSafePreviewCards(t *testing.T) {
+	quoted := &models.Status{
+		ID:         22,
+		AccountID:  9,
+		Account:    models.Account{ID: 9, Username: `bob<script>`},
+		Text:       `quoted <script>alert(1)</script>`,
+		Visibility: 0,
+		CreatedAt:  time.Date(2026, 8, 13, 1, 2, 3, 0, time.UTC),
+		PreviewCards: []models.PreviewCard{{
+			ID: 2, URL: "https://quoted.example/article", Title: `Quoted <title>`, ProviderName: "Quoted News",
+		}},
+	}
+	status := models.Status{
+		ID:        11,
+		AccountID: 7,
+		Text:      "comment",
+		PreviewCards: []models.PreviewCard{{
+			ID: 1, URL: "https://news.example/article", Title: `News <title>`, ProviderName: "News",
+		}},
+		Quote: &models.Quote{State: models.QuoteStateAccepted, QuotedStatus: quoted},
+	}
+	body := adminAccountStatusRowHTMLWithConfig(config.Config{WebDomain: "example.com"}, "en", 7, status)
+	for _, want := range []string{
+		`data-quote-state="accepted"`,
+		`data-admin-read-only="true"`,
+		`href="/admin/accounts/9/statuses/22"`,
+		`bob&lt;script&gt;`,
+		`quoted &lt;script&gt;alert(1)&lt;/script&gt;`,
+		`href="https://news.example/article"`,
+		`href="https://quoted.example/article"`,
+		`News &lt;title&gt;`,
+		`Quoted &lt;title&gt;`,
+		"View quoted post",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("moderation row missing %q: %s", want, body)
+		}
+	}
+	for _, unsafe := range []string{`<script>`, `javascript:`, `data-method=`} {
+		if strings.Contains(body, unsafe) {
+			t.Fatalf("moderation row contains unsafe or interactive markup %q: %s", unsafe, body)
+		}
+	}
+}
+
+func TestAdminModerationQuoteRendersAllUnavailableStatesWithoutControls(t *testing.T) {
+	quoted := &models.Status{ID: 22, AccountID: 9}
+	tests := []struct {
+		state int
+		name  string
+		label string
+	}{
+		{models.QuoteStatePending, "pending", "Post pending"},
+		{models.QuoteStateRejected, "rejected", "Post unavailable"},
+		{models.QuoteStateRevoked, "revoked", "Post removed by author"},
+		{models.QuoteStateDeleted, "deleted", "Post unavailable"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := adminAccountStatusQuoteHTMLWithConfig(config.Config{}, models.Status{Quote: &models.Quote{State: tc.state, QuotedStatus: quoted}}, "en")
+			for _, want := range []string{`data-quote-state="` + tc.name + `"`, tc.label, `href="/admin/accounts/9/statuses/22"`} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("quote state %s missing %q: %s", tc.name, want, body)
+				}
+			}
+			for _, interactive := range []string{"<button", "<form", "data-method="} {
+				if strings.Contains(body, interactive) {
+					t.Fatalf("quote state %s contains control %q: %s", tc.name, interactive, body)
+				}
+			}
+		})
+	}
+}
+
+func TestAdminModerationPreviewCardRejectsNonHTTPURL(t *testing.T) {
+	body := adminAccountStatusPreviewCardHTMLWithConfig(config.Config{}, models.Status{PreviewCards: []models.PreviewCard{{
+		ID: 1, URL: `javascript:alert(1)`, Title: "Unsafe",
+	}}}, "en")
+	if body != "" {
+		t.Fatalf("unsafe preview card was rendered: %s", body)
 	}
 }
 
@@ -172,7 +274,7 @@ func TestAdminAccountStatusHTMLIncludesMetadataAndHistory(t *testing.T) {
 		Visibility:  2,
 		Language:    sql.NullString{String: "ja", Valid: true},
 		Application: &models.OAuthApplication{Name: "Paon Mobile"},
-		StatusStat:  models.StatusStat{ReblogsCount: 2, FavouritesCount: 3},
+		StatusStat:  models.StatusStat{ReblogsCount: 2, QuotesCount: 4, FavouritesCount: 3},
 		Poll:        &models.Poll{Options: models.StringArray{"red", "blue"}, Multiple: true},
 	}, []models.StatusEdit{{Text: "original", PollOptions: models.StringArray{"yes", "no"}, CreatedAt: time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC)}, {Text: "changed", CreatedAt: time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)}}, "", "")
 	for _, want := range []string{
@@ -188,6 +290,8 @@ func TestAdminAccountStatusHTMLIncludesMetadataAndHistory(t *testing.T) {
 		"original",
 		"changed",
 		"Reblogs",
+		"Quotes",
+		">4</td>",
 		"Favorites",
 		`class="history"`,
 		`class="poll"`,

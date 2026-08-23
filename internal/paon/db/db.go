@@ -24,8 +24,9 @@ import (
 )
 
 const (
-	requiredMastodonSchemaVersion = paonschema.Mastodon4422Version
-	minimumPostgreSQLVersionNum   = 130000
+	requiredMastodonSchemaVersion = paonschema.Mastodon4515Version
+	requiredMastodonSchemaSHA1    = "801766beefdd9b1d55fe6f8bf3bed91392aebab1"
+	minimumPostgreSQLVersionNum   = 140000
 )
 
 func Open(cfg config.Config) (*gorm.DB, error) {
@@ -143,7 +144,7 @@ func Available(database *gorm.DB) error {
 	return sqlDB.Ping()
 }
 
-// RequireSupportedVersion rejects PostgreSQL releases that Mastodon 4.4 no
+// RequireSupportedVersion rejects PostgreSQL releases that Mastodon 4.5 no
 // longer supports. Keep this separate from Available so callers can report a
 // connectivity failure independently from an unsupported server version.
 func RequireSupportedVersion(database *gorm.DB) error {
@@ -159,7 +160,7 @@ func RequireSupportedVersion(database *gorm.DB) error {
 
 func validatePostgreSQLVersionNum(version int) error {
 	if version < minimumPostgreSQLVersionNum {
-		return fmt.Errorf("PostgreSQL 13.0 or newer is required (server_version_num=%d)", version)
+		return fmt.Errorf("PostgreSQL 14.0 or newer is required (server_version_num=%d)", version)
 	}
 	return nil
 }
@@ -180,6 +181,7 @@ func RequiredMastodonTables() []string {
 		"account_warnings",
 		"accounts_tags",
 		"users",
+		"username_blocks",
 		"user_roles",
 		"user_invite_requests",
 		"statuses",
@@ -280,6 +282,18 @@ func RequiredMastodonTables() []string {
 
 func ForbiddenMastodonRelations() []string {
 	return []string{"devices", "encrypted_messages", "one_time_keys", "system_keys", "imports"}
+}
+
+// ForbiddenMastodonIndexes is intentionally limited to indexes removed by the
+// reviewed v4.5 contract. Additional operator-created indexes remain valid,
+// while these names prove that the destructive half of the upstream index
+// replacements has not completed yet.
+func ForbiddenMastodonIndexes() []string {
+	return []string{
+		"index_follows_on_target_account_id",
+		"index_quotes_on_account_id_and_quoted_account_id",
+		"index_quotes_on_quoted_status_id",
+	}
 }
 
 func ForbiddenMastodonColumns() map[string][]string {
@@ -1158,6 +1172,7 @@ func RequiredMastodonIndexes() map[string][]string {
 		},
 		"conversations": {
 			"index_conversations_on_uri",
+			"index_conversations_on_parent_status_id",
 		},
 		"domain_allows": {
 			"index_domain_allows_on_domain",
@@ -1175,7 +1190,7 @@ func RequiredMastodonIndexes() map[string][]string {
 		},
 		"follows": {
 			"index_follows_on_account_id_and_target_account_id",
-			"index_follows_on_target_account_id",
+			"index_follows_on_target_account_id_and_account_id",
 		},
 		"follow_requests": {
 			"index_follow_requests_on_account_id_and_target_account_id",
@@ -1356,6 +1371,7 @@ func RequiredMastodonIndexes() map[string][]string {
 		"statuses": {
 			"index_statuses_20190820",
 			"index_statuses_on_account_id",
+			"index_statuses_on_conversation_id",
 			"index_statuses_on_deleted_at",
 			"index_statuses_on_in_reply_to_account_id",
 			"index_statuses_on_in_reply_to_id",
@@ -1417,8 +1433,9 @@ func RequiredMastodonIndexes() map[string][]string {
 		"fasp_backfill_requests":      {"index_fasp_backfill_requests_on_fasp_provider_id"},
 		"fasp_follow_recommendations": {"index_fasp_follow_recommendations_on_requesting_account_id", "index_fasp_follow_recommendations_on_recommended_account_id"},
 		"instance_moderation_notes":   {"index_instance_moderation_notes_on_domain"},
-		"quotes":                      {"index_quotes_on_account_id_and_quoted_account_id", "index_quotes_on_activity_uri", "index_quotes_on_approval_uri", "index_quotes_on_quoted_account_id", "index_quotes_on_quoted_status_id", "index_quotes_on_status_id"},
+		"quotes":                      {"index_quotes_on_account_id_and_quoted_account_id_and_id", "index_quotes_on_activity_uri", "index_quotes_on_approval_uri", "index_quotes_on_quoted_account_id", "index_quotes_on_quoted_status_id_and_id", "index_quotes_on_status_id"},
 		"rule_translations":           {"index_rule_translations_on_rule_id_and_language"},
+		"username_blocks":             {"index_username_blocks_on_username_lower_btree", "index_username_blocks_on_normalized_username"},
 	}
 }
 
@@ -1440,6 +1457,7 @@ func RequiredMastodonUniqueIndexes() []string {
 		"index_canonical_email_blocks_on_canonical_email_hash",
 		"index_conversation_mutes_on_account_id_and_conversation_id",
 		"index_conversations_on_uri",
+		"index_conversations_on_parent_status_id",
 		"index_custom_emoji_categories_on_name",
 		"index_custom_emojis_on_shortcode_and_domain",
 		"index_custom_filter_statuses_on_status_id_and_custom_filter_id",
@@ -1498,6 +1516,7 @@ func RequiredMastodonUniqueIndexes() []string {
 		"index_fasp_providers_on_base_url",
 		"index_quotes_on_activity_uri",
 		"index_quotes_on_status_id",
+		"index_username_blocks_on_username_lower_btree",
 		"index_rule_translations_on_rule_id_and_language",
 	}
 }
@@ -1555,6 +1574,14 @@ func RequiredMastodonIndexDefinitionFragments() map[string][]string {
 		"index_conversations_on_uri": {
 			"uri text_pattern_ops",
 			"WHERE (uri IS NOT NULL)",
+		},
+		"index_conversations_on_parent_status_id": {
+			"parent_status_id",
+			"WHERE (parent_status_id IS NOT NULL)",
+		},
+		"index_follows_on_target_account_id_and_account_id": {
+			"target_account_id",
+			"account_id",
 		},
 		"index_media_attachments_on_shortcode": {
 			"shortcode text_pattern_ops",
@@ -1662,6 +1689,18 @@ func RequiredMastodonIndexDefinitionFragments() map[string][]string {
 			"approval_uri",
 			"WHERE (approval_uri IS NOT NULL)",
 		},
+		"index_quotes_on_account_id_and_quoted_account_id_and_id": {
+			"account_id",
+			"quoted_account_id",
+			"id",
+		},
+		"index_quotes_on_quoted_status_id_and_id": {
+			"quoted_status_id",
+			"id",
+		},
+		"index_username_blocks_on_username_lower_btree": {
+			"lower((username)::text)",
+		},
 	}
 }
 
@@ -1755,6 +1794,7 @@ func RequiredMastodonPrimaryKeys() map[string][]string {
 		"user_invite_requests":                  {"id"},
 		"user_roles":                            {"id"},
 		"users":                                 {"id"},
+		"username_blocks":                       {"id"},
 		"web_push_subscriptions":                {"id"},
 		"web_settings":                          {"id"},
 		"webauthn_credentials":                  {"id"},
@@ -1795,6 +1835,8 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "accounts", Column: "outbox_url", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "accounts", Column: "shared_inbox_url", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "accounts", Column: "followers_url", NotNull: true, DefaultFragments: []string{"''::character varying"}},
+		{Table: "accounts", Column: "following_url", NotNull: true, DataType: "varchar", DefaultFragments: []string{"''::character varying"}},
+		{Table: "accounts", Column: "id_scheme", MustBeNullable: true, DataType: "int4", DefaultFragments: []string{"1"}},
 		{Table: "accounts", Column: "locked", NotNull: true, DefaultFragments: []string{"false"}},
 		{Table: "accounts", Column: "protocol", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "accounts", Column: "memorial", NotNull: true, DefaultFragments: []string{"false"}},
@@ -1892,6 +1934,8 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "custom_emojis", Column: "visible_in_picker", NotNull: true, DefaultFragments: []string{"true"}},
 		{Table: "conversation_mutes", Column: "conversation_id", NotNull: true},
 		{Table: "conversation_mutes", Column: "account_id", NotNull: true},
+		{Table: "conversations", Column: "parent_status_id", MustBeNullable: true, DataType: "int8"},
+		{Table: "conversations", Column: "parent_account_id", MustBeNullable: true, DataType: "int8"},
 		{Table: "domain_allows", Column: "domain", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "domain_blocks", Column: "domain", NotNull: true, DefaultFragments: []string{"''::character varying"}},
 		{Table: "domain_blocks", Column: "severity", DefaultFragments: []string{"0"}},
@@ -1924,6 +1968,7 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "fasp_providers", Column: "privacy_policy", MustBeNullable: true, DataType: "jsonb"},
 		{Table: "fasp_providers", Column: "contact_email", MustBeNullable: true, DataType: "varchar"},
 		{Table: "fasp_providers", Column: "fediverse_account", MustBeNullable: true, DataType: "varchar"},
+		{Table: "fasp_providers", Column: "delivery_last_failed_at", MustBeNullable: true, DataType: "timestamp"},
 		{Table: "fasp_providers", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
 		{Table: "fasp_providers", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
 		{Table: "fasp_debug_callbacks", Column: "fasp_provider_id", NotNull: true, DataType: "int8"},
@@ -2123,6 +2168,7 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "status_stats", Column: "replies_count", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "status_stats", Column: "reblogs_count", NotNull: true, DefaultFragments: []string{"0"}},
 		{Table: "status_stats", Column: "favourites_count", NotNull: true, DefaultFragments: []string{"0"}},
+		{Table: "status_stats", Column: "quotes_count", NotNull: true, DataType: "int8", DefaultFragments: []string{"0"}},
 		{Table: "status_stats", Column: "untrusted_favourites_count", MustBeNullable: true, DataType: "int8"},
 		{Table: "status_stats", Column: "untrusted_reblogs_count", MustBeNullable: true, DataType: "int8"},
 		{Table: "status_trends", Column: "status_id", NotNull: true},
@@ -2171,6 +2217,12 @@ func RequiredMastodonColumnDefinitions() []MastodonColumnDefinition {
 		{Table: "users", Column: "otp_secret", MustBeNullable: true, DataType: "varchar"},
 		{Table: "users", Column: "account_id", NotNull: true},
 		{Table: "users", Column: "disabled", NotNull: true, DefaultFragments: []string{"false"}},
+		{Table: "username_blocks", Column: "username", NotNull: true, DataType: "varchar", DefaultMustBeNull: true},
+		{Table: "username_blocks", Column: "normalized_username", NotNull: true, DataType: "varchar", DefaultMustBeNull: true},
+		{Table: "username_blocks", Column: "exact", NotNull: true, DataType: "bool", DefaultFragments: []string{"false"}},
+		{Table: "username_blocks", Column: "allow_with_approval", NotNull: true, DataType: "bool", DefaultFragments: []string{"false"}},
+		{Table: "username_blocks", Column: "created_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
+		{Table: "username_blocks", Column: "updated_at", NotNull: true, DataType: "timestamp", DefaultMustBeNull: true},
 		{Table: "users", Column: "approved", NotNull: true, DefaultFragments: []string{"true"}},
 		{Table: "users", Column: "age_verified_at", MustBeNullable: true, DataType: "timestamp"},
 		{Table: "users", Column: "require_tos_interstitial", NotNull: true, DataType: "bool", DefaultFragments: []string{"false"}},
@@ -2575,6 +2627,7 @@ func requiredMastodonColumnModels() []any {
 		paonmodels.User{},
 		paonmodels.UserInviteRequest{},
 		paonmodels.UserRole{},
+		paonmodels.UsernameBlock{},
 		paonmodels.WebauthnCredential{},
 		paonmodels.Webhook{},
 		paonmodels.WebPushSubscription{},
@@ -2611,7 +2664,7 @@ func SchemaAvailable(database *gorm.DB) error {
 		}
 	}
 	if len(obsoleteRelations) > 0 {
-		return fmt.Errorf("database schema still contains obsolete Mastodon relations: %s; complete the acknowledged migration contract through Mastodon 4.4 before starting paon", strings.Join(obsoleteRelations, ", "))
+		return fmt.Errorf("database schema still contains obsolete Mastodon relations: %s; complete the acknowledged migration contract through Mastodon 4.5 before starting paon", strings.Join(obsoleteRelations, ", "))
 	}
 	wrongRelationKinds := make([]string, 0)
 	for _, relation := range RequiredMastodonRelationKinds() {
@@ -2702,7 +2755,7 @@ func SchemaAvailable(database *gorm.DB) error {
 		}
 	}
 	if len(obsoleteColumns) > 0 {
-		return fmt.Errorf("database schema still contains obsolete Mastodon columns: %s; complete the acknowledged migration contract through Mastodon 4.4 before starting paon", strings.Join(obsoleteColumns, ", "))
+		return fmt.Errorf("database schema still contains obsolete Mastodon columns: %s; complete the acknowledged migration contract through Mastodon 4.5 before starting paon", strings.Join(obsoleteColumns, ", "))
 	}
 	wrongColumnDefinitions := make([]string, 0)
 	for _, definition := range RequiredMastodonColumnDefinitions() {
@@ -2731,6 +2784,19 @@ func SchemaAvailable(database *gorm.DB) error {
 	}
 	if len(missingIndexes) > 0 {
 		return fmt.Errorf("database schema is missing required Mastodon indexes: %s", strings.Join(missingIndexes, ", "))
+	}
+	obsoleteIndexes := make([]string, 0)
+	for _, index := range ForbiddenMastodonIndexes() {
+		available, err := mastodonIndexAvailable(database, index)
+		if err != nil {
+			return fmt.Errorf("inspect obsolete database schema index %s: %w", index, err)
+		}
+		if available {
+			obsoleteIndexes = append(obsoleteIndexes, index)
+		}
+	}
+	if len(obsoleteIndexes) > 0 {
+		return fmt.Errorf("database schema still contains obsolete Mastodon indexes: %s; complete the acknowledged migration contract through Mastodon 4.5 before starting paon", strings.Join(obsoleteIndexes, ", "))
 	}
 	nonUniqueIndexes := make([]string, 0)
 	for _, index := range RequiredMastodonUniqueIndexes() {
@@ -2787,11 +2853,36 @@ func SchemaAvailable(database *gorm.DB) error {
 	if err := mastodonSchemaMigrationApplied(database, requiredMastodonSchemaVersion); err != nil {
 		return err
 	}
+	if err := mastodonSchemaSHA1Applied(database, requiredMastodonSchemaSHA1); err != nil {
+		return err
+	}
 	return nil
 }
 
 func RequiredMastodonSchemaVersion() string {
 	return requiredMastodonSchemaVersion
+}
+
+func RequiredMastodonSchemaSHA1() string {
+	return requiredMastodonSchemaSHA1
+}
+
+func mastodonSchemaSHA1Applied(database *gorm.DB, expected string) error {
+	if expected == "" {
+		return nil
+	}
+	var actual sql.NullString
+	err := database.Raw(`SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1' LIMIT 1`).Row().Scan(&actual)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("database ar_internal_metadata is missing required Mastodon schema SHA-1 %s", expected)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect Mastodon schema SHA-1: %w", err)
+	}
+	if !actual.Valid || actual.String != expected {
+		return fmt.Errorf("database schema SHA-1 %q does not match required Mastodon schema SHA-1 %s", actual.String, expected)
+	}
+	return nil
 }
 
 func mastodonSchemaMigrationApplied(database *gorm.DB, version string) error {
@@ -2807,18 +2898,21 @@ func mastodonSchemaMigrationApplied(database *gorm.DB, version string) error {
 	}
 	var upgradeVersions []string
 	if err := database.Raw(`SELECT version FROM schema_migrations WHERE version > ? AND version <= ? ORDER BY version`, paonschema.Mastodon4219Version, version).Scan(&upgradeVersions).Error; err != nil {
-		return fmt.Errorf("inspect Mastodon 4.3/4.4 database schema_migrations versions: %w", err)
+		return fmt.Errorf("inspect Mastodon 4.3/4.4/4.5 database schema_migrations versions: %w", err)
 	}
 	var mastodon43Count int
 	var mastodon44Count int
+	var mastodon45Count int
 	for _, upgradeVersion := range upgradeVersions {
 		switch {
 		case paonschema.Mastodon43UpgradeVersionKnown(upgradeVersion):
 			mastodon43Count++
 		case paonschema.Mastodon44UpgradeVersionKnown(upgradeVersion):
 			mastodon44Count++
+		case paonschema.Mastodon45UpgradeVersionKnown(upgradeVersion):
+			mastodon45Count++
 		default:
-			return fmt.Errorf("database schema contains unsupported migration marker %s between Mastodon 4.2 and 4.4", upgradeVersion)
+			return fmt.Errorf("database schema contains unsupported migration marker %s between Mastodon 4.2 and 4.5", upgradeVersion)
 		}
 	}
 	if mastodon43Count != paonschema.Mastodon43UpgradeVersionCount() {
@@ -2826,6 +2920,9 @@ func mastodonSchemaMigrationApplied(database *gorm.DB, version string) error {
 	}
 	if mastodon44Count != paonschema.Mastodon44UpgradeVersionCount() {
 		return fmt.Errorf("database schema has final marker %s but only %d of %d reviewed Mastodon 4.4 migration markers", version, mastodon44Count, paonschema.Mastodon44UpgradeVersionCount())
+	}
+	if mastodon45Count != paonschema.Mastodon45UpgradeVersionCount() {
+		return fmt.Errorf("database schema has final marker %s but only %d of %d reviewed Mastodon 4.5 migration markers", version, mastodon45Count, paonschema.Mastodon45UpgradeVersionCount())
 	}
 	var found string
 	err := database.Raw("SELECT version FROM schema_migrations WHERE version = ? LIMIT 1", version).Row().Scan(&found)

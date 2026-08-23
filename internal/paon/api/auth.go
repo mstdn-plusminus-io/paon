@@ -83,6 +83,7 @@ var casHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 func (s *Server) signInForm(c *echo.Context) error {
 	next := c.QueryParam("redirect_to")
+	withinAuthorizationFlow := signInWithinOAuthAuthorizationFlow(next)
 	if user, _, err := s.currentUser(c); err == nil && user != nil {
 		return c.Redirect(http.StatusFound, s.afterSignInRedirectPath(user, next))
 	}
@@ -105,9 +106,23 @@ func (s *Server) signInForm(c *echo.Context) error {
 		body.WriteString(simpleFormClose())
 	}
 	body.WriteString(s.omniauthAlternativeLoginHTML(locale))
-	body.WriteString(s.authSharedFooterHTML("sessions", locale))
+	if !withinAuthorizationFlow {
+		body.WriteString(s.authSharedFooterHTML("sessions", locale))
+	}
 	c.Response().Header().Set("Content-Security-Policy", railsContentSecurityPolicyWithoutDirective(s.cfg, "form-action"))
-	return c.HTML(http.StatusOK, authShellHTML(loginLabel, "", c.QueryParam("error"), body.String(), locale, s.settingStringValue("theme", "system")))
+	return c.HTML(http.StatusOK, authShellHTMLWithLogoLink(loginLabel, c.QueryParam("alert"), c.QueryParam("error"), body.String(), !withinAuthorizationFlow, locale, s.settingStringValue("theme", "system")))
+}
+
+func signInWithinOAuthAuthorizationFlow(redirectTo string) bool {
+	redirectTo = strings.TrimSpace(redirectTo)
+	if redirectTo == "" {
+		return false
+	}
+	target, err := url.Parse(redirectTo)
+	if err != nil || target.IsAbs() || target.Host != "" {
+		return false
+	}
+	return target.Path == "/oauth/authorize"
 }
 
 func (s *Server) useSeamlessExternalLogin() bool {
@@ -2368,6 +2383,7 @@ func (s *Server) createUserForOmniAuth(tx *gorm.DB, auth omniauthAuthInfo, now t
 		DisplayName: omniauthDisplayName(auth),
 		PrivateKey:  sql.NullString{String: privateKey, Valid: true},
 		PublicKey:   publicKey,
+		IDScheme:    sql.NullInt64{Int64: 1, Valid: true},
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
@@ -3232,7 +3248,7 @@ var authenticateLDAPBindSearch = func(cfg config.Config, email string, password 
 		scheme = "ldaps"
 	}
 	u := url.URL{Scheme: scheme, Host: net.JoinHostPort(cfg.LDAPHost, strconv.Itoa(cfg.LDAPPort))}
-	tlsConfig := &tls.Config{ServerName: cfg.LDAPHost, InsecureSkipVerify: cfg.LDAPTLSNoVerify} //nolint:gosec // Mirrors Rails LDAP_TLS_NO_VERIFY.
+	tlsConfig := ldapTLSConfigForConfig(cfg)
 	conn, err := ldap.DialURL(u.String(), ldap.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}), ldap.DialWithTLSConfig(tlsConfig))
 	if err != nil {
 		return ldapAuthAttributes{}, err
@@ -3279,6 +3295,14 @@ var authenticateLDAPBindSearch = func(cfg config.Config, email string, password 
 	return attrs, nil
 }
 
+func ldapTLSConfigForConfig(cfg config.Config) *tls.Config {
+	// Return a fresh config for each authentication attempt. Mastodon 4.5.12
+	// fixed LDAP_TLS_NO_VERIFY by copying the process-wide OpenSSL defaults
+	// before applying this per-connection override; Go must keep the same
+	// isolation boundary rather than sharing mutable TLS state between binds.
+	return &tls.Config{ServerName: cfg.LDAPHost, InsecureSkipVerify: cfg.LDAPTLSNoVerify} //nolint:gosec // Mirrors explicit LDAP_TLS_NO_VERIFY=true.
+}
+
 func (s *Server) authenticateUserLDAP(email string, password string) (*models.User, error) {
 	attrs, err := authenticateLDAPBindSearch(s.cfg, email, password)
 	if err != nil {
@@ -3313,6 +3337,7 @@ func (s *Server) authenticateUserLDAP(email string, password string) (*models.Us
 			Username:   username,
 			PrivateKey: sql.NullString{String: privateKey, Valid: true},
 			PublicKey:  publicKey,
+			IDScheme:   sql.NullInt64{Int64: 1, Valid: true},
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
@@ -3386,6 +3411,7 @@ func (s *Server) authenticateUserPAM(login string, password string) (*models.Use
 			Username:   username,
 			PrivateKey: sql.NullString{String: privateKey, Valid: true},
 			PublicKey:  publicKey,
+			IDScheme:   sql.NullInt64{Int64: 1, Valid: true},
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}

@@ -221,7 +221,9 @@ type Account struct {
 	OutboxURL                  string         `gorm:"column:outbox_url"`
 	SharedInboxURL             string         `gorm:"column:shared_inbox_url"`
 	FollowersURL               string         `gorm:"column:followers_url"`
+	FollowingURL               string         `gorm:"column:following_url"`
 	Protocol                   int            `gorm:"column:protocol"`
+	IDScheme                   sql.NullInt64  `gorm:"column:id_scheme"`
 	Locked                     bool           `gorm:"column:locked"`
 	Memorial                   bool           `gorm:"column:memorial"`
 	MovedToAccountID           sql.NullInt64  `gorm:"column:moved_to_account_id"`
@@ -704,6 +706,7 @@ type FaspProvider struct {
 	PrivacyPolicy        JSONValue      `gorm:"column:privacy_policy"`
 	ContactEmail         sql.NullString `gorm:"column:contact_email"`
 	FediverseAccount     sql.NullString `gorm:"column:fediverse_account"`
+	DeliveryLastFailedAt sql.NullTime   `gorm:"column:delivery_last_failed_at"`
 	CreatedAt            time.Time      `gorm:"column:created_at"`
 	UpdatedAt            time.Time      `gorm:"column:updated_at"`
 }
@@ -841,10 +844,14 @@ func AccountConversationConversationID(value int64) sql.NullInt64 {
 }
 
 type Conversation struct {
-	ID        int64          `gorm:"primaryKey;column:id"`
-	URI       sql.NullString `gorm:"column:uri"`
-	CreatedAt time.Time      `gorm:"column:created_at"`
-	UpdatedAt time.Time      `gorm:"column:updated_at"`
+	ID              int64          `gorm:"primaryKey;column:id"`
+	URI             sql.NullString `gorm:"column:uri"`
+	CreatedAt       time.Time      `gorm:"column:created_at"`
+	UpdatedAt       time.Time      `gorm:"column:updated_at"`
+	ParentStatusID  sql.NullInt64  `gorm:"column:parent_status_id"`
+	ParentAccountID sql.NullInt64  `gorm:"column:parent_account_id"`
+	ParentStatus    *Status        `gorm:"foreignKey:ParentStatusID"`
+	ParentAccount   *Account       `gorm:"foreignKey:ParentAccountID"`
 }
 
 func (Conversation) TableName() string { return "conversations" }
@@ -1293,6 +1300,7 @@ type Status struct {
 	MutedByCurrent            bool                `gorm:"-"`
 	BookmarkedByCurrent       bool                `gorm:"-"`
 	PinnedByCurrent           bool                `gorm:"-"`
+	QuotePolicyCurrentUser    string              `gorm:"-"`
 	CustomEmojis              []CustomEmoji       `gorm:"-"`
 }
 
@@ -1352,6 +1360,7 @@ type StatusStat struct {
 	RepliesCount             int64         `gorm:"column:replies_count"`
 	ReblogsCount             int64         `gorm:"column:reblogs_count"`
 	FavouritesCount          int64         `gorm:"column:favourites_count"`
+	QuotesCount              int64         `gorm:"column:quotes_count"`
 	UntrustedFavouritesCount sql.NullInt64 `gorm:"column:untrusted_favourites_count"`
 	UntrustedReblogsCount    sql.NullInt64 `gorm:"column:untrusted_reblogs_count"`
 	CreatedAt                time.Time     `gorm:"column:created_at"`
@@ -1387,11 +1396,24 @@ type Quote struct {
 	// QuotedStatusVisible is populated by viewer-aware API hydration. The
 	// companion checked flag prevents a zero value from being confused with a
 	// visibility decision that was never evaluated.
-	QuotedStatusVisible           bool `gorm:"-"`
-	QuotedStatusVisibilityChecked bool `gorm:"-"`
+	QuotedStatusVisible           bool   `gorm:"-"`
+	QuotedStatusVisibilityChecked bool   `gorm:"-"`
+	QuotedStatusFilterState       string `gorm:"-"`
 }
 
 func (Quote) TableName() string { return "quotes" }
+
+type UsernameBlock struct {
+	ID                 int64     `gorm:"primaryKey;column:id"`
+	Username           string    `gorm:"column:username"`
+	NormalizedUsername string    `gorm:"column:normalized_username"`
+	Exact              bool      `gorm:"column:exact"`
+	AllowWithApproval  bool      `gorm:"column:allow_with_approval"`
+	CreatedAt          time.Time `gorm:"column:created_at"`
+	UpdatedAt          time.Time `gorm:"column:updated_at"`
+}
+
+func (UsernameBlock) TableName() string { return "username_blocks" }
 
 type AnnualReportStatusesPerAccountCount struct {
 	ID            int64 `gorm:"primaryKey;column:id"`
@@ -1833,6 +1855,8 @@ func (n Notification) ResolvedType() string {
 		return "favourite"
 	case "Poll":
 		return "poll"
+	case "Quote":
+		return "quote"
 	default:
 		return n.ActivityType
 	}

@@ -372,6 +372,14 @@ func (s *Server) deliverWebPushNotification(ctx context.Context, notification mo
 		return
 	}
 	for _, target := range targets {
+		valid, err := s.prepareWebPushSubscription(ctx, target.Subscription)
+		if err != nil {
+			s.enqueueWebPushDeliveryRetry(target.Subscription.ID, notification.ID)
+			continue
+		}
+		if !valid {
+			continue
+		}
 		if !webPushSubscriptionPushable(s.db.WithContext(ctx), target.Subscription, notification) {
 			continue
 		}
@@ -395,6 +403,13 @@ func (s *Server) performWebPushNotificationDelivery(ctx context.Context, subscri
 			return nil
 		}
 		return taskTargetError("web push subscription lookup", "local", serverLocalTaskTargetHost(s), err)
+	}
+	valid, err := s.prepareWebPushSubscription(ctx, subscription)
+	if err != nil {
+		return taskTargetError("delete invalid web push subscription", "local", serverLocalTaskTargetHost(s), err)
+	}
+	if !valid {
+		return nil
 	}
 	var notification models.Notification
 	if err := s.db.WithContext(ctx).
@@ -442,6 +457,13 @@ func webPushNotificationOutsideTTL(notification models.Notification, now time.Ti
 }
 
 func (s *Server) deliverWebPushTargetForWorker(ctx context.Context, subscription models.WebPushSubscription, payload []byte) error {
+	valid, err := s.prepareWebPushSubscription(ctx, subscription)
+	if err != nil {
+		return taskTargetError("delete invalid web push subscription", "local", serverLocalTaskTargetHost(s), err)
+	}
+	if !valid {
+		return nil
+	}
 	deliver := s.webPushDeliverer
 	if deliver == nil {
 		deliver = defaultWebPushDeliverer
@@ -457,13 +479,51 @@ func (s *Server) deliverWebPushTargetForWorker(ctx context.Context, subscription
 		return nil
 	}
 	if webPushSubscriptionExpired(response.StatusCode) {
-		_ = s.db.WithContext(ctx).Delete(&models.WebPushSubscription{}, subscription.ID).Error
+		if err := s.deleteWebPushSubscription(ctx, subscription.ID); err != nil {
+			return taskTargetError("delete expired web push subscription", "local", serverLocalTaskTargetHost(s), err)
+		}
 		return nil
 	}
 	return fmt.Errorf("web push delivery target=remote host=%q status=%d", remoteTaskTargetHost(subscription.Endpoint), response.StatusCode)
 }
 
+func (s *Server) prepareWebPushSubscription(ctx context.Context, subscription models.WebPushSubscription) (bool, error) {
+	if webPushSubscriptionValid(subscription) {
+		return true, nil
+	}
+	if s != nil && s.db != nil && subscription.ID != 0 {
+		if err := s.db.WithContext(ctx).Delete(&models.WebPushSubscription{}, subscription.ID).Error; err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func webPushSubscriptionValid(subscription models.WebPushSubscription) bool {
+	endpoint, err := url.Parse(strings.TrimSpace(subscription.Endpoint))
+	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil {
+		return false
+	}
+	publicKey, err := decodeWebPushKey(subscription.KeyP256dh)
+	if err != nil {
+		return false
+	}
+	x, y := elliptic.Unmarshal(elliptic.P256(), publicKey)
+	if x == nil || y == nil {
+		return false
+	}
+	auth, err := decodeWebPushKey(subscription.KeyAuth)
+	return err == nil && len(auth) == 16
+}
+
 func (s *Server) deliverWebPushTargetOnce(ctx context.Context, subscription models.WebPushSubscription, payload []byte) bool {
+	valid, err := s.prepareWebPushSubscription(ctx, subscription)
+	if err != nil {
+		return true
+	}
+	if !valid {
+		return false
+	}
 	deliver := s.webPushDeliverer
 	if deliver == nil {
 		deliver = defaultWebPushDeliverer
@@ -482,10 +542,16 @@ func (s *Server) deliverWebPushTargetOnce(ctx context.Context, subscription mode
 		return false
 	}
 	if webPushSubscriptionExpired(response.StatusCode) {
-		_ = s.db.WithContext(ctx).Delete(&models.WebPushSubscription{}, subscription.ID).Error
-		return false
+		return s.deleteWebPushSubscription(ctx, subscription.ID) != nil
 	}
 	return true
+}
+
+func (s *Server) deleteWebPushSubscription(ctx context.Context, subscriptionID int64) error {
+	if s == nil || s.db == nil || subscriptionID == 0 {
+		return nil
+	}
+	return s.db.WithContext(nonNilContext(ctx)).Delete(&models.WebPushSubscription{}, subscriptionID).Error
 }
 
 func (s *Server) webPushDeliveryConfig() config.Config {
@@ -631,6 +697,8 @@ func notificationActivityTable(activityType string, kind string) string {
 		return "favourites"
 	case "Poll":
 		return "polls"
+	case "Quote":
+		return "quotes"
 	case "Report":
 		return "reports"
 	case "Account":
@@ -655,6 +723,8 @@ func notificationActivityTable(activityType string, kind string) string {
 		return "favourites"
 	case "poll":
 		return "polls"
+	case "quote":
+		return "quotes"
 	case "admin.report":
 		return "reports"
 	case "admin.sign_up":
@@ -881,6 +951,10 @@ func webPushNotificationTitle(notification models.Notification, locale string) s
 		return name + " favorited your post"
 	case "poll":
 		return "A poll by " + name + " has ended"
+	case "quote":
+		return name + " quoted your post"
+	case "quoted_update":
+		return name + " edited a post you have quoted"
 	case "admin.sign_up":
 		return name + " signed up"
 	case "admin.report":

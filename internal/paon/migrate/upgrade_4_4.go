@@ -8,13 +8,13 @@ import (
 	"math"
 	"strings"
 
-	paondb "github.com/mstdn-plusminus-io/paon/internal/paon/db"
 	paonotp "github.com/mstdn-plusminus-io/paon/internal/paon/otp"
 	paonschema "github.com/mstdn-plusminus-io/paon/internal/paon/schema"
 	"gorm.io/gorm"
 )
 
 const Mastodon4323SchemaVersion = paonschema.Mastodon4323Version
+const Mastodon4422SchemaVersion = paonschema.Mastodon4422Version
 
 // runMastodon44Phase preserves the same expand/backfill/validate/contract
 // operator fence used by the 4.2 -> 4.3 upgrade. Every upstream marker is
@@ -27,7 +27,7 @@ func runMastodon44Phase(ctx context.Context, database *gorm.DB, phase UpgradePha
 		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", migrationAdvisoryLockID).Error; err != nil {
 			return fmt.Errorf("acquire migration lock for Mastodon 4.4 phase %s: %w", phase, err)
 		}
-		current, err := upgradeVersionApplied(tx, CurrentSchemaVersion)
+		current, err := upgradeVersionApplied(tx, Mastodon4422SchemaVersion)
 		if err != nil {
 			return err
 		}
@@ -94,9 +94,9 @@ func runMastodon44Phase(ctx context.Context, database *gorm.DB, phase UpgradePha
 			if err := applyMastodon44Steps(tx, mastodon44ContractSteps()); err != nil {
 				return err
 			}
-			if err := paondb.SchemaAvailable(tx); err != nil {
-				return fmt.Errorf("validate contracted Mastodon 4.4 schema before commit: %w", err)
-			}
+			// The outer runner continues directly into the 4.5 phases. The full
+			// current-schema guard is therefore intentionally deferred until the
+			// 4.5 contract marker has been recorded.
 		default:
 			return fmt.Errorf("unsupported Mastodon 4.4 migration phase %q", phase)
 		}

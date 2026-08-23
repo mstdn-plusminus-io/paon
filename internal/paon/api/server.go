@@ -98,19 +98,21 @@ var (
 )
 
 type statusUpdatePayload struct {
-	Status          string
-	HasStatus       bool
-	MediaIDs        []string
-	HasMediaIDs     bool
-	MediaAttributes []mediaAttributePayload
-	Sensitive       bool
-	HasSensitive    bool
-	SpoilerText     string
-	HasSpoilerText  bool
-	Language        string
-	HasLanguage     bool
-	Poll            *pollUpdatePayload
-	HasPoll         bool
+	Status                 string
+	HasStatus              bool
+	MediaIDs               []string
+	HasMediaIDs            bool
+	MediaAttributes        []mediaAttributePayload
+	Sensitive              bool
+	HasSensitive           bool
+	SpoilerText            string
+	HasSpoilerText         bool
+	Language               string
+	HasLanguage            bool
+	Poll                   *pollUpdatePayload
+	HasPoll                bool
+	QuoteApprovalPolicy    string
+	HasQuoteApprovalPolicy bool
 }
 
 type statusCreatePayload struct {
@@ -118,6 +120,7 @@ type statusCreatePayload struct {
 	Visibility         string
 	InReplyToID        string
 	ScheduledAt        string
+	QuotedStatusID     string
 	AllowedMentions    []string
 	HasAllowedMentions bool
 	ApplicationID      sql.NullInt64
@@ -1746,6 +1749,44 @@ func (s *Server) routes() {
 	e.GET("/users/:username/statuses/:id/activity.json", s.activityPubStatusActivity)
 	e.GET("/users/:username/statuses/:id/activity.:format", s.activityPubStatusActivity)
 	e.GET("/users/:username/statuses/:id/activity", s.activityPubStatusActivity)
+	e.GET("/users/:username/quote_authorizations/:id", s.activityPubQuoteAuthorization)
+	e.GET("/ap/users/:account_id/quote_authorizations/:id", s.activityPubQuoteAuthorization)
+	e.GET("/ap/users/:account_id/outbox.json", s.numericActivityPubAccountRoute(s.activityPubOutbox))
+	e.GET("/ap/users/:account_id/outbox.:format", s.numericActivityPubAccountRoute(s.activityPubOutbox))
+	e.GET("/ap/users/:account_id/outbox", s.numericActivityPubAccountRoute(s.activityPubOutbox))
+	e.GET("/ap/users/:account_id/followers.json", s.numericActivityPubAccountRoute(s.activityPubFollowers))
+	e.GET("/ap/users/:account_id/followers.:format", s.numericActivityPubAccountRoute(s.activityPubFollowersFormat))
+	e.GET("/ap/users/:account_id/followers", s.numericActivityPubAccountRoute(s.activityPubFollowersOrWebRedirect))
+	e.GET("/ap/users/:account_id/following.json", s.numericActivityPubAccountRoute(s.activityPubFollowing))
+	e.GET("/ap/users/:account_id/following.:format", s.numericActivityPubAccountRoute(s.activityPubFollowingFormat))
+	e.GET("/ap/users/:account_id/following", s.numericActivityPubAccountRoute(s.activityPubFollowingOrWebRedirect))
+	e.GET("/ap/users/:account_id/followers_synchronization.json", s.numericActivityPubAccountRoute(s.activityPubFollowersSynchronization))
+	e.GET("/ap/users/:account_id/followers_synchronization.:format", s.numericActivityPubAccountRoute(s.activityPubFollowersSynchronization))
+	e.GET("/ap/users/:account_id/followers_synchronization", s.numericActivityPubAccountRoute(s.activityPubFollowersSynchronization))
+	e.GET("/ap/users/:account_id/collections/:id.json", s.numericActivityPubAccountRoute(s.activityPubCollection))
+	e.GET("/ap/users/:account_id/collections/:id.:format", s.numericActivityPubAccountRoute(s.activityPubCollection))
+	e.GET("/ap/users/:account_id/collections/:id", s.numericActivityPubAccountRoute(s.activityPubCollection))
+	e.GET("/ap/users/:account_id/statuses/:id/replies.json", s.numericActivityPubAccountRoute(s.activityPubReplies))
+	e.GET("/ap/users/:account_id/statuses/:id/replies.:format", s.numericActivityPubAccountRoute(s.activityPubReplies))
+	e.GET("/ap/users/:account_id/statuses/:id/replies", s.numericActivityPubAccountRoute(s.activityPubReplies))
+	e.GET("/ap/users/:account_id/statuses/:id/likes.json", s.numericActivityPubAccountRoute(s.activityPubStatusLikes))
+	e.GET("/ap/users/:account_id/statuses/:id/likes.:format", s.numericActivityPubAccountRoute(s.activityPubStatusLikes))
+	e.GET("/ap/users/:account_id/statuses/:id/likes", s.numericActivityPubAccountRoute(s.activityPubStatusLikes))
+	e.GET("/ap/users/:account_id/statuses/:id/shares.json", s.numericActivityPubAccountRoute(s.activityPubStatusShares))
+	e.GET("/ap/users/:account_id/statuses/:id/shares.:format", s.numericActivityPubAccountRoute(s.activityPubStatusShares))
+	e.GET("/ap/users/:account_id/statuses/:id/shares", s.numericActivityPubAccountRoute(s.activityPubStatusShares))
+	e.GET("/ap/users/:account_id/statuses/:id.json", s.numericActivityPubAccountRoute(s.activityPubStatus))
+	e.GET("/ap/users/:account_id/statuses/:id.:format", s.numericActivityPubAccountRoute(s.activityPubStatusUnsupportedFormat))
+	e.GET("/ap/users/:account_id/statuses/:id", s.numericActivityPubAccountRoute(s.activityPubStatusOrWebRedirect))
+	e.GET("/ap/users/:account_id/statuses/:id/activity.json", s.numericActivityPubAccountRoute(s.activityPubStatusActivity))
+	e.GET("/ap/users/:account_id/statuses/:id/activity.:format", s.numericActivityPubAccountRoute(s.activityPubStatusActivity))
+	e.GET("/ap/users/:account_id/statuses/:id/activity", s.numericActivityPubAccountRoute(s.activityPubStatusActivity))
+	e.POST("/ap/users/:account_id/inbox.json", s.numericActivityPubAccountRoute(s.activityPubInbox))
+	e.POST("/ap/users/:account_id/inbox.:format", s.numericActivityPubAccountRoute(s.activityPubInbox))
+	e.POST("/ap/users/:account_id/inbox", s.numericActivityPubAccountRoute(s.activityPubInbox))
+	e.GET("/ap/users/:account_id.json", s.numericActivityPubAccountRoute(s.activityPubActor))
+	e.GET("/ap/users/:account_id.:format", s.numericActivityPubAccountRoute(s.activityPubActorOrWebRedirect))
+	e.GET("/ap/users/:account_id", s.numericActivityPubAccountRoute(s.activityPubActorOrWebRedirect))
 	e.POST("/users/:username/inbox.json", s.activityPubInbox)
 	e.POST("/users/:username/inbox.:format", s.activityPubInbox)
 	e.POST("/users/:username/inbox", s.activityPubInbox)
@@ -1756,6 +1797,10 @@ func (s *Server) routes() {
 	e.POST("/inbox.json", s.activityPubInbox)
 	e.POST("/inbox.:format", s.activityPubInbox)
 	e.POST("/inbox", s.activityPubInbox)
+	e.GET("/contexts/:id/items", s.activityPubContextItems)
+	e.GET("/contexts/:id/items.:format", s.activityPubContextItems)
+	e.GET("/contexts/:id", s.activityPubContext)
+	e.GET("/contexts/:id.:format", s.activityPubContext)
 	e.GET("/invite/:invite_code.:format", s.publicInvite)
 	e.GET("/invite/:invite_code", s.publicInvite)
 	e.GET("/redirect/accounts/:id", s.redirectRemoteAccount)
@@ -2067,6 +2112,10 @@ func (s *Server) routes() {
 	e.PUT("/api/v1/statuses/:id", s.updateStatus)
 	e.PATCH("/api/v1/statuses/:id", s.updateStatus)
 	e.POST("/api/v1/statuses", s.createStatus)
+	e.PUT("/api/v1/statuses/:id/interaction_policy", s.updateStatusInteractionPolicy)
+	e.PATCH("/api/v1/statuses/:id/interaction_policy", s.updateStatusInteractionPolicy)
+	e.GET("/api/v1/statuses/:status_id/quotes", s.statusQuotes)
+	e.POST("/api/v1/statuses/:status_id/quotes/:id/revoke", s.revokeStatusQuote)
 	e.GET("/api/v1/statuses/:id/context", s.statusContext)
 	e.GET("/api/v1/statuses/:id/source", s.statusSource)
 	e.GET("/api/v1/statuses/:id/history", s.statusHistory)
@@ -2560,6 +2609,20 @@ func (s *Server) routes() {
 	e.POST("/admin/ip_blocks", s.createAdminIPBlockWeb)
 	e.POST("/admin/ip_blocks/batch.:format", s.batchAdminIPBlocks)
 	e.POST("/admin/ip_blocks/batch", s.batchAdminIPBlocks)
+	e.GET("/admin/username_blocks.:format", s.adminUsernameBlocksPage)
+	e.GET("/admin/username_blocks", s.adminUsernameBlocksPage)
+	e.GET("/admin/username_blocks/new.:format", s.newAdminUsernameBlockPage)
+	e.GET("/admin/username_blocks/new", s.newAdminUsernameBlockPage)
+	e.POST("/admin/username_blocks.:format", s.createAdminUsernameBlockWeb)
+	e.POST("/admin/username_blocks", s.createAdminUsernameBlockWeb)
+	e.POST("/admin/username_blocks/batch.:format", s.batchAdminUsernameBlocks)
+	e.POST("/admin/username_blocks/batch", s.batchAdminUsernameBlocks)
+	e.GET("/admin/username_blocks/:id/edit.:format", optionalFormatPathParam("id", s.editAdminUsernameBlockPage))
+	e.GET("/admin/username_blocks/:id/edit", s.editAdminUsernameBlockPage)
+	e.PUT("/admin/username_blocks/:id.:format", optionalFormatPathParam("id", s.updateAdminUsernameBlockWeb))
+	e.PUT("/admin/username_blocks/:id", s.updateAdminUsernameBlockWeb)
+	e.PATCH("/admin/username_blocks/:id.:format", optionalFormatPathParam("id", s.updateAdminUsernameBlockWeb))
+	e.PATCH("/admin/username_blocks/:id", s.updateAdminUsernameBlockWeb)
 	e.GET("/admin/email_domain_blocks.:format", s.adminEmailDomainBlocksPage)
 	e.GET("/admin/email_domain_blocks", s.adminEmailDomainBlocksPage)
 	e.GET("/admin/email_domain_blocks/new.:format", s.newAdminEmailDomainBlockPage)
@@ -2704,6 +2767,14 @@ func (s *Server) routes() {
 	e.PATCH("/settings/preferences/notifications", s.updateSettingsPreferences)
 	e.POST("/settings/preferences/notifications.:format", s.notFound)
 	e.POST("/settings/preferences/notifications", s.notFound)
+	e.GET("/settings/preferences/posting_defaults.:format", s.settingsPage)
+	e.GET("/settings/preferences/posting_defaults", s.settingsPage)
+	e.PUT("/settings/preferences/posting_defaults.:format", s.updateSettingsPreferences)
+	e.PUT("/settings/preferences/posting_defaults", s.updateSettingsPreferences)
+	e.PATCH("/settings/preferences/posting_defaults.:format", s.updateSettingsPreferences)
+	e.PATCH("/settings/preferences/posting_defaults", s.updateSettingsPreferences)
+	e.POST("/settings/preferences/posting_defaults.:format", s.notFound)
+	e.POST("/settings/preferences/posting_defaults", s.notFound)
 	e.GET("/settings/preferences/other.:format", s.settingsPage)
 	e.GET("/settings/preferences/other", s.settingsPage)
 	e.PUT("/settings/preferences/other.:format", s.updateSettingsPreferences)
@@ -3796,7 +3867,7 @@ func (s *Server) instanceV1(c *echo.Context) error {
 func instanceV1Configuration(configuration map[string]any) map[string]any {
 	out := make(map[string]any, len(configuration))
 	for key, value := range configuration {
-		if key == "urls" || key == "translation" || key == "vapid" {
+		if key == "urls" || key == "translation" || key == "vapid" || key == "timelines_access" || key == "limited_federation" {
 			continue
 		}
 		if key == "accounts" {
@@ -3866,6 +3937,20 @@ func (s *Server) instanceMetadata() serializer.InstanceMetadata {
 		PreviewImageURL:   s.packAssetURL("media/images/preview.png"),
 		StatusPageURL:     s.settingRawValue("status_page_url", ""),
 		TermsOfServiceURL: termsOfServiceURL,
+		TimelinesAccess: map[string]any{
+			"live_feeds": map[string]string{
+				"local":  normalizeTimelineAccess(s.settingStringValue("local_live_feed_access", timelineAccessPublic)),
+				"remote": normalizeTimelineAccess(s.settingStringValue("remote_live_feed_access", timelineAccessPublic)),
+			},
+			"hashtag_feeds": map[string]string{
+				"local":  normalizeTimelineAccess(s.settingStringValue("local_topic_feed_access", timelineAccessPublic)),
+				"remote": normalizeTimelineAccess(s.settingStringValue("remote_topic_feed_access", timelineAccessPublic)),
+			},
+			"trending_link_feeds": map[string]string{
+				"local":  normalizeTimelineAccess(s.settingStringValue("local_topic_feed_access", timelineAccessPublic)),
+				"remote": normalizeTimelineAccess(s.settingStringValue("remote_topic_feed_access", timelineAccessPublic)),
+			},
+		},
 	}
 }
 
@@ -4002,6 +4087,11 @@ func (s *Server) initialStateServerSettings() *serializer.InitialStateServerSett
 	settings.TimelinePreview = s.settingBoolValue("timeline_preview", settings.TimelinePreview)
 	settings.ActivityAPIEnabled = s.settingBoolValue("activity_api_enabled", settings.ActivityAPIEnabled)
 	settings.TrendsAsLandingPage = s.settingBoolValue("trends_as_landing_page", settings.TrendsAsLandingPage)
+	settings.LandingPage = normalizeLandingPage(s.settingStringValue("landing_page", settings.LandingPage))
+	settings.LocalLiveFeedAccess = normalizeTimelineAccess(s.settingStringValue("local_live_feed_access", settings.LocalLiveFeedAccess))
+	settings.RemoteLiveFeedAccess = normalizeTimelineAccess(s.settingStringValue("remote_live_feed_access", settings.RemoteLiveFeedAccess))
+	settings.LocalTopicFeedAccess = normalizeTimelineAccess(s.settingStringValue("local_topic_feed_access", settings.LocalTopicFeedAccess))
+	settings.RemoteTopicFeedAccess = normalizeTimelineAccess(s.settingStringValue("remote_topic_feed_access", settings.RemoteTopicFeedAccess))
 	settings.StatusPageURL = s.settingStringValue("status_page_url", settings.StatusPageURL)
 	settings.AutoPlayGIF = s.settingOptionalBoolValue("auto_play_gif")
 	settings.DisplayMedia = s.settingOptionalStringValue("display_media")
@@ -4282,17 +4372,19 @@ func (s *Server) publicTimeline(c *echo.Context) error {
 	if err := s.authorizeTokenScopeIfPresent(c, "read", "read:statuses"); err != nil {
 		return err
 	}
-	if err := s.requireTimelinePreviewAccess(c); err != nil {
-		return err
-	}
 	if s.db == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	current, err := s.currentAccountForOptionalRequestToken(c)
+	requestedLocal, requestedRemote := timelineLocationParams(c)
+	access, err := s.timelineAccessForRequest(c, false, requestedLocal, requestedRemote)
 	if err != nil {
 		return err
 	}
-	localOnly, remoteOnly := timelineLocationParams(c)
+	if access.incompatible {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	current := access.account
+	localOnly, remoteOnly := access.localOnly, access.remoteOnly
 	query := s.publicTimelineStatusQuery().
 		Where("statuses.reply = false OR statuses.in_reply_to_account_id = statuses.account_id").
 		Where("statuses.reblog_of_id IS NULL")
@@ -4363,19 +4455,21 @@ func (s *Server) tagTimeline(c *echo.Context) error {
 	if err := s.authorizeTokenScopeIfPresent(c, "read", "read:statuses"); err != nil {
 		return err
 	}
-	if err := s.requireTimelinePreviewAccess(c); err != nil {
-		return err
-	}
 	if s.db == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	current, err := s.currentAccountForOptionalRequestToken(c)
+	requestedLocal, requestedRemote := timelineLocationParams(c)
+	access, err := s.timelineAccessForRequest(c, true, requestedLocal, requestedRemote)
 	if err != nil {
 		return err
 	}
+	if access.incompatible {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	current := access.account
 	tag := normalizedSearchTagName(c.Param("tag"))
 	anyTags := tagTimelineParamValuesWithInitial(c, []string{tag}, "any", "any[]")
-	localOnly, remoteOnly := timelineLocationParams(c)
+	localOnly, remoteOnly := access.localOnly, access.remoteOnly
 	query := s.publicTimelineStatusQuery().
 		Where(statusHasAnyTagSQL(), anyTags)
 	if localOnly {
@@ -4853,6 +4947,8 @@ func (s *Server) statusContext(c *echo.Context) error {
 	if err := s.hydrateStatusRelationships(descendants, account); err != nil {
 		return err
 	}
+	requestID, _ := c.Get("request_id").(string)
+	s.prepareContextReplyRefresh(c, status, account, requestID)
 
 	out := serializer.Context{
 		Ancestors:   serializeStatusesWithFilterContext(s.cfg, ancestors, account, s.accountFilters(account), "thread"),
@@ -4861,8 +4957,6 @@ func (s *Server) statusContext(c *echo.Context) error {
 	if err := c.JSON(http.StatusOK, out); err != nil {
 		return err
 	}
-	requestID, _ := c.Get("request_id").(string)
-	s.maybeEnqueueContextReplyFetch(status, account, requestID)
 	return nil
 }
 
@@ -5000,10 +5094,19 @@ func (s *Server) createStatus(c *echo.Context) error {
 	if !validStatusVisibility(payload.Visibility) {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Visibility is invalid")
 	}
+	quoteApprovalPolicy, ok := quoteApprovalPolicyForPayload(payload.statusUpdatePayload, *account)
+	if !ok {
+		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Quote approval policy is invalid")
+	}
+	payload.QuoteApprovalPolicy = quoteApprovalPolicyName(quoteApprovalPolicy)
+	payload.HasQuoteApprovalPolicy = true
+	hasQuote := strings.TrimSpace(payload.QuotedStatusID) != ""
 	sensitive := statusSensitiveForCreate(payload.statusUpdatePayload, *account)
 	payload.Sensitive = sensitive
 	payload.HasSensitive = true
-	applyCreateSpoilerTextFallback(&payload.statusUpdatePayload)
+	if !hasQuote {
+		applyCreateSpoilerTextFallback(&payload.statusUpdatePayload)
+	}
 	text := payload.Status
 	mediaIDs := compactMediaIDs(payload.MediaIDs)
 	if submittedMediaIDsPresent(payload.MediaIDs) && submittedMediaIDsCount(payload.MediaIDs) > s.maxMediaAttachments() {
@@ -5011,7 +5114,7 @@ func (s *Server) createStatus(c *echo.Context) error {
 	}
 	hasPoll := payload.HasPoll && payload.Poll != nil
 	normalizeStatusContents(&text, &payload.SpoilerText)
-	if strings.TrimSpace(text) == "" && len(mediaIDs) == 0 && !hasPoll {
+	if strings.TrimSpace(text) == "" && len(mediaIDs) == 0 && !hasPoll && !hasQuote {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Text can't be blank")
 	}
 	if statusLengthTooLong(text, payload.SpoilerText, s.maxStatusChars()) {
@@ -5058,6 +5161,25 @@ func (s *Server) createStatus(c *echo.Context) error {
 
 	visibility := s.statusVisibility(*account, payload.Visibility)
 	language := s.statusLanguageForAccount(payload.Language, sql.NullString{}, *account)
+	var quotedStatus *models.Status
+	quoteDecision := quotePolicyDenied
+	if hasQuote {
+		quotedStatus, quoteDecision, err = s.findQuotableStatusForAccount(c.Request().Context(), account, payload.QuotedStatusID)
+		if err != nil {
+			return apiError(c, http.StatusNotFound, "Record not found")
+		}
+		if quotedStatus.Visibility == 2 && visibility < 2 {
+			visibility = 2
+			payload.Visibility = "private"
+		}
+	}
+	if visibility > 1 {
+		quoteApprovalPolicy = 0
+		payload.QuoteApprovalPolicy = "nobody"
+	}
+	if scheduled && quotedStatus != nil && visibility == 3 && quotedStatus.AccountID != account.ID && !s.statusTextExplicitlyMentionsAccount(text, &quotedStatus.Account) {
+		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Quoted user must be mentioned")
+	}
 
 	var replyTo *models.Status
 	if strings.TrimSpace(payload.InReplyToID) != "" {
@@ -5070,21 +5192,57 @@ func (s *Server) createStatus(c *echo.Context) error {
 			return err
 		}
 	}
+	preflightMentions, err := s.mastodon45StatusMentionAccounts(c.Request().Context(), account.ID, text)
+	if err != nil {
+		return err
+	}
+	if unexpected := unexpectedMentionAccounts(preflightMentions, payload.AllowedMentions, payload.HasAllowedMentions); len(unexpected) > 0 {
+		return c.JSON(http.StatusUnprocessableEntity, map[string]any{
+			"error":               unexpectedMentionsError{accounts: unexpected}.Error(),
+			"unexpected_accounts": serializeAccounts(s.cfg, unexpected),
+		})
+	}
+	if quotedStatus != nil && visibility == 3 && quotedStatus.AccountID != account.ID && !s.statusTextExplicitlyMentionsAccount(text, &quotedStatus.Account) {
+		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Quoted user must be mentioned")
+	}
+	recipientIDs := mastodon45AntispamRecipientIDs(replyTo, preflightMentions)
+	spam, err := s.mastodon45LocalStatusConsideredSpam(c.Request().Context(), *account, text, recipientIDs, now)
+	if err != nil {
+		return err
+	}
+	if spam {
+		if err := s.mastodon45CreateAntispamReport(c.Request().Context(), *account); err != nil {
+			return err
+		}
+		if scheduled {
+			params, err := scheduledStatusParamsFromPayload(payload, mediaIDs)
+			if err != nil {
+				return err
+			}
+			dummy := models.ScheduledStatus{AccountID: models.ScheduledStatusAccountID(account.ID), ScheduledAt: sql.NullTime{Time: scheduledAt.UTC(), Valid: true}, Params: params}
+			return c.JSON(http.StatusOK, s.mastodon45DummyScheduledStatus(dummy))
+		}
+		dummy := mastodon45DummyStatus(*account, text, payload.SpoilerText, visibility, language, quoteApprovalPolicy, replyTo, preflightMentions, now)
+		dummy.Sensitive = sensitive
+		dummy.ApplicationID = payload.ApplicationID
+		return c.JSON(http.StatusOK, statusWithFilterContext(s.cfg, dummy, account, s.accountFilters(account), "public"))
+	}
 	if scheduled {
 		return s.createScheduledStatusFromPayload(c, account, payload, mediaIDs, scheduledAt, idempotencyKey)
 	}
 
 	status := models.Status{
-		Text:          text,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		AccountID:     account.ID,
-		Local:         sql.NullBool{Bool: true, Valid: true},
-		Visibility:    visibility,
-		Sensitive:     sensitive,
-		SpoilerText:   payload.SpoilerText,
-		Language:      language,
-		ApplicationID: payload.ApplicationID,
+		Text:                text,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		AccountID:           account.ID,
+		Local:               sql.NullBool{Bool: true, Valid: true},
+		Visibility:          visibility,
+		Sensitive:           sensitive,
+		SpoilerText:         payload.SpoilerText,
+		Language:            language,
+		ApplicationID:       payload.ApplicationID,
+		QuoteApprovalPolicy: quoteApprovalPolicy,
 	}
 	if replyTo != nil {
 		status.InReplyToID = sql.NullInt64{Int64: replyTo.ID, Valid: true}
@@ -5106,6 +5264,9 @@ func (s *Server) createStatus(c *echo.Context) error {
 			return err
 		}
 		if err := tx.Create(&status).Error; err != nil {
+			return err
+		}
+		if err := s.assignConversationParentTx(tx, status); err != nil {
 			return err
 		}
 		if err := tx.Create(&models.StatusStat{StatusID: status.ID, RepliesCount: 0, ReblogsCount: 0, FavouritesCount: 0}).Error; err != nil {
@@ -5137,6 +5298,24 @@ func (s *Server) createStatus(c *echo.Context) error {
 		if unexpected := unexpectedMentionAccounts(mentions.Accounts, payload.AllowedMentions, payload.HasAllowedMentions); len(unexpected) > 0 {
 			return unexpectedMentionsError{accounts: unexpected}
 		}
+		if quotedStatus != nil && visibility == 3 && quotedStatus.AccountID != account.ID {
+			mentioned, err := directQuoteMentionsQuotedAccount(tx, status.ID, quotedStatus.AccountID)
+			if err != nil {
+				return err
+			}
+			if !mentioned {
+				return errQuotedUserNotMentioned
+			}
+		}
+		if quotedStatus != nil {
+			quote, err := s.createOfficialQuoteTx(tx, &status, quotedStatus, quoteDecision, now)
+			if err != nil {
+				return err
+			}
+			if payload, ok := officialQuoteNotificationPayload(quote, quotedStatus); ok {
+				notificationPayloads = append(notificationPayloads, payload)
+			}
+		}
 		updatedConversationIDs, err := s.addDirectStatusToConversations(tx, status, mentions.Accounts)
 		if err != nil {
 			return err
@@ -5163,6 +5342,9 @@ func (s *Server) createStatus(c *echo.Context) error {
 				"error":               unexpected.Error(),
 				"unexpected_accounts": serializeAccounts(s.cfg, unexpected.accounts),
 			})
+		}
+		if errors.Is(err, errQuotedUserNotMentioned) {
+			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Quoted user must be mentioned")
 		}
 		if mediaErr := mediaAttachmentValidationAPIError(c, err); mediaErr != nil {
 			return mediaErr
@@ -5219,14 +5401,17 @@ func (s *Server) quoteStatusURL(status models.Status) string {
 }
 
 func (s *Server) quoteStatusURI(status models.Status) string {
+	if status.Account.Local() {
+		return activityPubStatusURL(s, status.Account, status.ID)
+	}
 	if status.URI.Valid && strings.TrimSpace(status.URI.String) != "" {
 		return status.URI.String
 	}
-	return s.cfg.BaseURL() + "/users/" + url.PathEscape(status.Account.Username) + "/statuses/" + strconv.FormatInt(status.ID, 10)
+	return activityPubStatusURL(s, status.Account, status.ID)
 }
 
 func (s *Server) localStatusURI(account models.Account, statusID int64) string {
-	return s.cfg.BaseURL() + "/users/" + url.PathEscape(account.Username) + "/statuses/" + strconv.FormatInt(statusID, 10)
+	return activityPubStatusURL(s, account, statusID)
 }
 
 func (s *Server) storeLocalStatusURI(tx *gorm.DB, status *models.Status, account models.Account, _ time.Time) error {
@@ -5279,7 +5464,9 @@ func (s *Server) createScheduledStatusFromPayload(c *echo.Context, account *mode
 	if strings.TrimSpace(payload.Visibility) == "" {
 		payload.Visibility = serializer.UserDefaultPrivacy(userSettingsForAccount(*account), *account)
 	}
-	applyCreateSpoilerTextFallback(&payload.statusUpdatePayload)
+	if strings.TrimSpace(payload.QuotedStatusID) == "" {
+		applyCreateSpoilerTextFallback(&payload.statusUpdatePayload)
+	}
 	if payload.HasPoll && payload.Poll != nil {
 		if err := validatePollPayload(payload.Poll, now); err != nil {
 			return err
@@ -5343,7 +5530,20 @@ func (s *Server) updateStatus(c *echo.Context) error {
 	if err != nil {
 		return apiError(c, http.StatusBadRequest, "Malformed request")
 	}
-	applyUpdateSpoilerTextFallback(&payload)
+	if status.Quote == nil {
+		applyUpdateSpoilerTextFallback(&payload)
+	}
+	nextQuoteApprovalPolicy := status.QuoteApprovalPolicy
+	if payload.HasQuoteApprovalPolicy {
+		var ok bool
+		nextQuoteApprovalPolicy, ok = quoteApprovalPolicyFromName(payload.QuoteApprovalPolicy)
+		if !ok {
+			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Quote approval policy is invalid")
+		}
+		if status.Visibility > 1 {
+			nextQuoteApprovalPolicy = 0
+		}
+	}
 	nextText := status.Text
 	if payload.HasStatus {
 		nextText = payload.Status
@@ -5420,6 +5620,10 @@ func (s *Server) updateStatus(c *echo.Context) error {
 		}
 		updates["language"] = nextLanguage
 		status.Language = nextLanguage
+		if payload.HasQuoteApprovalPolicy {
+			updates["quote_approval_policy"] = nextQuoteApprovalPolicy
+			status.QuoteApprovalPolicy = nextQuoteApprovalPolicy
+		}
 		if payload.HasMediaIDs {
 			mediaIntIDs := mediaIDsToInt64Array(payload.MediaIDs)
 			acceptedMediaIDs, err := updateStatusMedia(tx, account.ID, status.ID, payload.MediaIDs, mediaIntIDs, payload.MediaAttributes, false)
@@ -5515,6 +5719,8 @@ func (s *Server) updateStatus(c *echo.Context) error {
 	return c.JSON(http.StatusOK, statusWithFilterContext(s.cfg, *updated, account, s.accountFilters(account), "public"))
 }
 
+const localStatusDeleteEnqueueTimeout = time.Second
+
 func (s *Server) deleteStatus(c *echo.Context) error {
 	account, _, err := s.requireAccountScope(c, "write", "write:statuses")
 	if err != nil {
@@ -5527,29 +5733,16 @@ func (s *Server) deleteStatus(c *echo.Context) error {
 	if status.AccountID != account.ID {
 		return apiError(c, http.StatusForbidden, "This action is outside the authorized account")
 	}
-	if err := s.refreshStatusAccount(status); err != nil {
-		return err
-	}
-	acquired, releaseDistributionLock, err := s.acquireStatusDistributionRedisLock(c.Request().Context(), status.ID)
-	if err != nil {
-		return err
-	}
-	if !acquired {
+	redraft := !formBoolValue(c.QueryParam("delete_media"))
+	removal := asynqRemovalPayload{StatusID: status.ID, Redraft: redraft}
+	enqueueCtx, cancel := context.WithTimeout(c.Request().Context(), localStatusDeleteEnqueueTimeout)
+	defer cancel()
+	if err := s.enqueueRemovalTaskContext(enqueueCtx, removal, asynq.TaskID(removalTaskID(status.ID))); err != nil {
 		return apiError(c, http.StatusServiceUnavailable, "There was a temporary problem serving your request, please try again")
 	}
-	defer releaseDistributionLock()
 	deletedAt := time.Now().UTC()
-	discardedRows, err := s.discardStatusRowsForRemoval(c.Request().Context(), status.ID, deletedAt)
-	if err != nil {
-		return err
-	}
 	status.DeletedAt = sql.NullTime{Time: deletedAt, Valid: true}
 	decrementDeletedStatusAccountCountForResponse(status)
-	redraft := !formBoolValue(c.QueryParam("delete_media"))
-	if !s.enqueueRemovalTask(asynqRemovalPayload{StatusID: status.ID, Redraft: redraft}) {
-		s.applyDiscardedStatusRowSideEffects(c.Request().Context(), discardedRows)
-		s.applyDeletedStatusRemovalSideEffects(c.Request().Context(), *status, asynqRemovalPayload{StatusID: status.ID, Redraft: redraft})
-	}
 	return c.JSON(http.StatusOK, statusWithSourceAndFilterContext(s.cfg, *status, account, s.accountFilters(account), "public"))
 }
 
@@ -5558,13 +5751,6 @@ func decrementDeletedStatusAccountCountForResponse(status *models.Status) {
 		return
 	}
 	status.Account.AccountStat.StatusesCount--
-}
-
-func (s *Server) refreshStatusAccount(status *models.Status) error {
-	if s == nil || s.db == nil || status == nil || status.AccountID == 0 {
-		return nil
-	}
-	return s.db.Preload("AccountStat").Preload("User.Role").Where("id = ?", status.AccountID).First(&status.Account).Error
 }
 
 func (s *Server) deleteStatusRecord(ctx context.Context, statusID int64, now time.Time) error {
@@ -5581,61 +5767,66 @@ type discardedStatusRowsResult struct {
 	IndexedTagIDs []int64
 }
 
+type statusRemovalRow struct {
+	ID             int64
+	InReplyToID    sql.NullInt64
+	ReblogOfID     sql.NullInt64
+	AccountID      int64
+	Visibility     int
+	ConversationID sql.NullInt64
+}
+
 func (s *Server) discardStatusRowsForRemoval(ctx context.Context, statusID int64, now time.Time) (discardedStatusRowsResult, error) {
 	var deletedFeedStatuses []models.Status
 	var indexedTagIDs []int64
 	var removedStatusPins []models.StatusPin
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		const notUnresolvedReportedStatusSQL = "NOT EXISTS (SELECT 1 FROM reports WHERE reports.target_account_id = statuses.account_id AND reports.action_taken_at IS NULL AND statuses.id = ANY(reports.status_ids))"
-		type accountDeletionCount struct {
-			AccountID int64
-			Count     int64
-		}
-		type statusDeletionCounter struct {
-			ID             int64
-			InReplyToID    sql.NullInt64
-			ReblogOfID     sql.NullInt64
-			AccountID      int64
-			Visibility     int
-			ConversationID sql.NullInt64
-		}
-		var counts []accountDeletionCount
-		if err := tx.Model(&models.Status{}).
-			Select("account_id, COUNT(*) AS count").
-			Where("(id = ? OR reblog_of_id = ?) AND deleted_at IS NULL AND visibility <> ?", statusID, statusID, 3).
-			Where(notUnresolvedReportedStatusSQL).
-			Group("account_id").
-			Scan(&counts).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&models.Status{}).
-			Select("id, account_id, reblog_of_id").
-			Where("(id = ? OR reblog_of_id = ?) AND deleted_at IS NULL", statusID, statusID).
-			Order(clause.Expr{SQL: "CASE WHEN id = ? THEN 0 ELSE 1 END, id", Vars: []any{statusID}}).
-			Scan(&deletedFeedStatuses).Error; err != nil {
-			return err
-		}
-		var reblogCount int64
-		if err := tx.Model(&models.Status{}).
-			Where("reblog_of_id = ? AND deleted_at IS NULL", statusID).
-			Where(notUnresolvedReportedStatusSQL).
-			Count(&reblogCount).Error; err != nil {
-			return err
-		}
-		var counter statusDeletionCounter
+		var counter statusRemovalRow
 		if err := tx.Model(&models.Status{}).
 			Select("id, in_reply_to_id, reblog_of_id, account_id, visibility, conversation_id").
 			Where("id = ? AND deleted_at IS NULL", statusID).
 			Scan(&counter).Error; err != nil {
 			return err
 		}
-		counterReported := false
+		var reblogs []statusRemovalRow
+		if err := tx.Model(&models.Status{}).
+			Select("id, in_reply_to_id, reblog_of_id, account_id, visibility, conversation_id").
+			Where("reblog_of_id = ? AND deleted_at IS NULL", statusID).
+			Order("id ASC").
+			Find(&reblogs).Error; err != nil {
+			return err
+		}
+		rows := make([]statusRemovalRow, 0, 1+len(reblogs))
 		if counter.ID != 0 {
-			reported, err := statusUnresolvedReported(tx, counter.ID, counter.AccountID)
-			if err != nil {
-				return err
+			rows = append(rows, counter)
+		}
+		rows = append(rows, reblogs...)
+		candidates := make([]statusRemovalReportCandidate, 0, len(rows))
+		for _, row := range rows {
+			candidates = append(candidates, statusRemovalReportCandidate{StatusID: row.ID, AccountID: row.AccountID})
+		}
+		reportedIDs, err := unresolvedReportedStatusIDs(tx, candidates)
+		if err != nil {
+			return err
+		}
+		countsByAccount := make(map[int64]int64)
+		for _, row := range rows {
+			deletedFeedStatuses = append(deletedFeedStatuses, models.Status{ID: row.ID, AccountID: row.AccountID, ReblogOfID: row.ReblogOfID})
+			if row.Visibility != 3 && !statusRemovalReported(reportedIDs, row.ID) {
+				countsByAccount[row.AccountID]++
 			}
-			counterReported = reported
+		}
+		accountIDs := make([]int64, 0, len(countsByAccount))
+		for accountID := range countsByAccount {
+			accountIDs = append(accountIDs, accountID)
+		}
+		sort.Slice(accountIDs, func(i int, j int) bool { return accountIDs[i] < accountIDs[j] })
+		counterReported := statusRemovalReported(reportedIDs, counter.ID)
+		var reblogCount int64
+		for _, reblog := range reblogs {
+			if !statusRemovalReported(reportedIDs, reblog.ID) {
+				reblogCount++
+			}
 		}
 		tagIDs, err := statusTagIDs(tx, statusID)
 		if err != nil {
@@ -5657,8 +5848,8 @@ func (s *Server) discardStatusRowsForRemoval(ctx context.Context, statusID int64
 		if err := tx.Where("status_id = ?", statusID).Delete(&models.StatusPin{}).Error; err != nil {
 			return err
 		}
-		for _, count := range counts {
-			if err := decrementAccountStatCounter(tx, count.AccountID, accountStatCounterStatuses, count.Count); err != nil {
+		for _, accountID := range accountIDs {
+			if err := decrementAccountStatCounter(tx, accountID, accountStatCounterStatuses, countsByAccount[accountID]); err != nil {
 				return err
 			}
 		}
@@ -5694,13 +5885,11 @@ func statusUnresolvedReported(tx *gorm.DB, statusID int64, accountID int64) (boo
 	if tx == nil || statusID == 0 || accountID == 0 {
 		return false, nil
 	}
-	var count int64
-	if err := tx.Model(&models.Report{}).
-		Where("target_account_id = ? AND action_taken_at IS NULL AND ? = ANY(status_ids)", accountID, statusID).
-		Count(&count).Error; err != nil {
+	reported, err := unresolvedReportedStatusIDs(tx, []statusRemovalReportCandidate{{StatusID: statusID, AccountID: accountID}})
+	if err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	return statusRemovalReported(reported, statusID), nil
 }
 
 func (s *Server) applyDiscardedStatusRowSideEffects(ctx context.Context, result discardedStatusRowsResult) {
@@ -6474,7 +6663,7 @@ func (s *Server) visibleStatusQuery(account *models.Account) *gorm.DB {
 				AND search_status_mentions.status_id = statuses.id
 			)
 		)
-	)`, []int{0, 1}, account.ID, account.ID, account.ID, 2, account.ID, []int{3, 4}, account.ID)
+	)`, []int{0, 1}, account.ID, account.ID, account.ID, 2, account.ID, []int{2, 3, 4}, account.ID)
 }
 
 func applyStatusContextFilterQuery(query *gorm.DB, account *models.Account) *gorm.DB {
@@ -7325,6 +7514,9 @@ func (s *Server) hydrateStatusRelationships(statuses []models.Status, current *m
 	}
 	s.hydrateStatusesQuote(statuses)
 	if err := s.hydrateQuoteVisibility(statuses, current); err != nil {
+		return err
+	}
+	if err := s.hydrateQuotePolicyForViewer(statuses, current); err != nil {
 		return err
 	}
 	for i := range statuses {
@@ -8182,10 +8374,20 @@ func statusUpdatePayloadSubmitted(payload statusUpdatePayload) bool {
 		payload.HasSensitive ||
 		payload.HasSpoilerText ||
 		payload.HasLanguage ||
-		payload.HasPoll
+		payload.HasPoll ||
+		payload.HasQuoteApprovalPolicy
 }
 
 func statusUpdateHasSignificantChanges(status models.Status, payload statusUpdatePayload, nextText string, nextSpoilerText string, nextLanguage sql.NullString) bool {
+	if payload.HasQuoteApprovalPolicy {
+		policy, ok := quoteApprovalPolicyFromName(payload.QuoteApprovalPolicy)
+		if ok && status.Visibility > 1 {
+			policy = 0
+		}
+		if ok && status.QuoteApprovalPolicy != policy {
+			return true
+		}
+	}
 	if !statusNullStringEqual(status.Language, nextLanguage) {
 		return true
 	}
@@ -8266,6 +8468,12 @@ func scheduledStatusParamsFromPayload(payload statusCreatePayload, mediaIDs []st
 	}
 	if payload.InReplyToID != "" {
 		params["in_reply_to_id"] = payload.InReplyToID
+	}
+	if payload.QuotedStatusID != "" {
+		params["quoted_status_id"] = payload.QuotedStatusID
+	}
+	if payload.HasQuoteApprovalPolicy {
+		params["quote_approval_policy"] = payload.QuoteApprovalPolicy
 	}
 	if payload.HasAllowedMentions {
 		params["allowed_mentions"] = payload.AllowedMentions
@@ -8383,6 +8591,13 @@ func parseStatusCreatePayload(c *echo.Context) (statusCreatePayload, error) {
 			payload.HasAllowedMentions = true
 			payload.AllowedMentions = stringSliceFromRaw(value)
 		}
+		if value, ok := raw["quoted_status_id"]; ok && string(value) != "null" {
+			payload.QuotedStatusID = stringValueFromRaw(value)
+		}
+		if value, ok := raw["quote_approval_policy"]; ok && string(value) != "null" {
+			payload.HasQuoteApprovalPolicy = true
+			_ = json.Unmarshal(value, &payload.QuoteApprovalPolicy)
+		}
 		return payload, nil
 	}
 
@@ -8399,6 +8614,9 @@ func parseStatusCreatePayload(c *echo.Context) (statusCreatePayload, error) {
 	}
 	if value, ok := formField(c, "scheduled_at"); ok {
 		payload.ScheduledAt = value
+	}
+	if value, ok := formField(c, "quoted_status_id"); ok {
+		payload.QuotedStatusID = value
 	}
 	values, _ := c.FormValues()
 	if allowed, ok := statusAllowedMentionsFromForm(values); ok {
@@ -8449,6 +8667,10 @@ func parseStatusUpdatePayload(c *echo.Context) (statusUpdatePayload, error) {
 				payload.Poll = &poll
 			}
 		}
+		if value, ok := raw["quote_approval_policy"]; ok && string(value) != "null" {
+			payload.HasQuoteApprovalPolicy = true
+			_ = json.Unmarshal(value, &payload.QuoteApprovalPolicy)
+		}
 		return payload, nil
 	}
 
@@ -8477,6 +8699,10 @@ func parseStatusUpdatePayload(c *echo.Context) (statusUpdatePayload, error) {
 	if poll, ok := pollPayloadFromFormValues(values); ok {
 		payload.Poll = poll
 		payload.HasPoll = true
+	}
+	if value, ok := formField(c, "quote_approval_policy"); ok {
+		payload.QuoteApprovalPolicy = value
+		payload.HasQuoteApprovalPolicy = true
 	}
 	return payload, nil
 }
@@ -9197,7 +9423,7 @@ func deleteStatusMentionMetadata(tx *gorm.DB, statusID int64) error {
 	return tx.Where("status_id = ?", statusID).Delete(&models.Mention{}).Error
 }
 
-var statusHashtagPattern = regexp.MustCompile(`(^|[^\pL\pN_])#([\pL\pN_·・‌]+)`)
+var statusHashtagPattern = regexp.MustCompile(`(^|[^\pL\pN_])[#＃]([\pL\pN_·・‌]+)`)
 
 func replaceStatusTagsFromText(tx *gorm.DB, statusID int64, text string, now time.Time) ([]int64, error) {
 	oldTagIDs, err := statusTagIDs(tx, statusID)

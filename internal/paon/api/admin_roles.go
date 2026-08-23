@@ -34,6 +34,7 @@ var adminRolePermissions = []adminRolePermission{
 	{Key: "manage_users", Bit: rolePermissionManageUsers, Area: "moderation"},
 	{Key: "manage_user_access", Bit: rolePermissionManageUserAccess, Area: "moderation"},
 	{Key: "delete_user_data", Bit: rolePermissionDeleteUserData, Area: "moderation"},
+	{Key: "view_feeds", Bit: rolePermissionViewFeeds, Area: "moderation"},
 	{Key: "manage_reports", Bit: rolePermissionManageReports, Area: "moderation"},
 	{Key: "manage_appeals", Bit: rolePermissionManageAppeals, Area: "moderation"},
 	{Key: "manage_federation", Bit: rolePermissionManageFederation, Area: "moderation"},

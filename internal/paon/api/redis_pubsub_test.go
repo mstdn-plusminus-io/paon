@@ -209,7 +209,7 @@ func TestRedisAvailableDeduplicatesRoleSpecificRedisFallbacks(t *testing.T) {
 	}
 }
 
-func TestRedisAvailableRejectsRedisOlderThanSixPointTwo(t *testing.T) {
+func TestRedisAvailableRejectsRedisOlderThanSeven(t *testing.T) {
 	originalDial := redisDial
 	defer func() { redisDial = originalDial }()
 	redisDial = func(_ context.Context, _ redisConnConfig) (net.Conn, *bufio.Reader, error) {
@@ -219,20 +219,37 @@ func TestRedisAvailableRejectsRedisOlderThanSixPointTwo(t *testing.T) {
 	}
 
 	err := RedisAvailable(t.Context(), config.Config{RedisHost: "redis.internal", RedisPort: "6379"})
-	if err == nil || !strings.Contains(err.Error(), "Redis 6.2 or newer") {
+	if err == nil || !strings.Contains(err.Error(), "Redis 7.0 or newer") {
 		t.Fatalf("RedisAvailable error = %v, want minimum version error", err)
 	}
 }
 
 func TestValidateRedisVersion(t *testing.T) {
-	for _, version := range []string{"6.2.0", "7.0.0", "10.1.3"} {
+	for _, version := range []string{"7.0.0", "7.2.5", "10.1.3"} {
 		if err := validateRedisVersion(version); err != nil {
 			t.Errorf("validateRedisVersion(%q) = %v", version, err)
 		}
 	}
-	for _, version := range []string{"", "6", "5.9.9", "6.0.20", "six.2"} {
+	for _, version := range []string{"", "6", "5.9.9", "6.0.20", "6.2.14", "six.2"} {
 		if err := validateRedisVersion(version); err == nil {
 			t.Errorf("validateRedisVersion(%q) accepted unsupported or invalid version", version)
+		}
+	}
+}
+
+func TestRedisStoreIdentitySupportsValkeyAndDragonfly(t *testing.T) {
+	for _, test := range []struct {
+		info        string
+		wantName    string
+		wantVersion string
+	}{
+		{"redis_version:7.4.2\r\n", "Redis", "7.4.2"},
+		{"redis_version:7.2.4\r\nvalkey_version:8.1.3\r\n", "Valkey", "8.1.3"},
+		{"redis_version:7.2.4\r\ndragonfly_version:1.30.0\r\n", "Dragonfly", "1.30.0"},
+	} {
+		name, version := redisStoreIdentity(test.info)
+		if name != test.wantName || version != test.wantVersion {
+			t.Fatalf("redisStoreIdentity() = %q, %q; want %q, %q", name, version, test.wantName, test.wantVersion)
 		}
 	}
 }

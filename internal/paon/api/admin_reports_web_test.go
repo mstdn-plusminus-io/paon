@@ -110,6 +110,24 @@ func TestAdminReportModelsUseRailsKaminariPageSizeAndOffset(t *testing.T) {
 	}
 }
 
+func TestAdminReportDetailUsesModerationQuoteAndPreviewPreloads(t *testing.T) {
+	src, err := os.ReadFile("admin_reports_web.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !functionBodyContains(t, src, "adminReportPage", "s.adminReportStatusModels(*report)") {
+		t.Fatal("adminReportPage does not use the moderation-specific status loader")
+	}
+	for _, want := range []string{
+		"adminStatusModerationPreloads(s.statusQuery())",
+		`Where("statuses.id IN ?", []int64(report.StatusIDs))`,
+	} {
+		if !functionBodyContains(t, src, "adminReportStatusModels", want) {
+			t.Fatalf("adminReportStatusModels missing %q", want)
+		}
+	}
+}
+
 func TestAdminReportFilterHiddenFieldsPreserveRailsKeys(t *testing.T) {
 	html := adminReportFilterHiddenFields(adminReportFilters{
 		Page:            "3",
@@ -186,6 +204,7 @@ func TestAdminReportHTMLIncludesActionsAndNotes(t *testing.T) {
 		`name="suspend" value="1"`,
 		`class="report-actions"`,
 		`class="batch-table__body"`,
+		`href="/admin/accounts/4/statuses?report_id=7"`,
 		`name="report_note[report_id]" value="7"`,
 		`name="report_note[content]"`,
 		`href="/admin/report_notes/5"`,
@@ -196,6 +215,51 @@ func TestAdminReportHTMLIncludesActionsAndNotes(t *testing.T) {
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("report html missing %q: %s", want, html)
+		}
+	}
+	toolbar := strings.Index(html, `class="batch-table__toolbar__actions"`)
+	addMore := strings.Index(html, `href="/admin/accounts/4/statuses?report_id=7"`)
+	body := strings.Index(html, `class="batch-table__body"`)
+	if toolbar < 0 || addMore <= toolbar || body <= addMore {
+		t.Fatalf("add-more link must be inside the report table toolbar: %s", html)
+	}
+}
+
+func TestAdminReportHTMLDisplaysOfficialQuoteAndPreviewReadOnly(t *testing.T) {
+	report := models.Report{ID: 7, TargetAccountID: 4, TargetAccount: models.Account{ID: 4, Username: "target"}}
+	quoted := &models.Status{
+		ID:         22,
+		AccountID:  9,
+		Account:    models.Account{ID: 9, Username: "quoted-author"},
+		Text:       `quoted <content>`,
+		Visibility: 0,
+		CreatedAt:  time.Date(2026, 8, 13, 1, 2, 3, 0, time.UTC),
+	}
+	status := models.Status{
+		ID:        11,
+		AccountID: 4,
+		Text:      "reported quote",
+		PreviewCards: []models.PreviewCard{{
+			ID: 1, URL: "https://news.example/report", Title: `Report <card>`, ProviderName: "News",
+		}},
+		Quote: &models.Quote{State: models.QuoteStateAccepted, QuotedStatus: quoted},
+	}
+	body := adminReportHTMLWithConfig(config.Config{WebDomain: "example.com"}, report, nil, []models.Status{status}, nil, "", "", "en")
+	for _, want := range []string{
+		`data-quote-state="accepted"`,
+		`data-admin-read-only="true"`,
+		`href="/admin/accounts/9/statuses/22"`,
+		`quoted &lt;content&gt;`,
+		`href="https://news.example/report"`,
+		`Report &lt;card&gt;`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("report quote/preview missing %q: %s", want, body)
+		}
+	}
+	for _, unsafe := range []string{`quoted <content>`, `javascript:`} {
+		if strings.Contains(body, unsafe) {
+			t.Fatalf("report quote/preview contains unsafe text %q: %s", unsafe, body)
 		}
 	}
 }

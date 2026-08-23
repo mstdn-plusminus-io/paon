@@ -18,6 +18,7 @@ var unsubscribeEmailTypes = map[string]string{
 	"favourite":      "notification_emails.favourite",
 	"mention":        "notification_emails.mention",
 	"follow_request": "notification_emails.follow_request",
+	"quote":          "notification_emails.quote",
 }
 
 func (s *Server) unsubscribePage(c *echo.Context) error {

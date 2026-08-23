@@ -269,7 +269,7 @@ func TestCollectAsynqDashboardAggregatesAndOrdersOperationalState(t *testing.T) 
 	for _, queue := range snapshot.Queues {
 		queueNames = append(queueNames, queue.Name)
 	}
-	wantQueues := []string{"tenant:default", "tenant:fasp", "tenant:ingress", "tenant:mailers", "tenant:pull", "tenant:push", "tenant:zeta"}
+	wantQueues := []string{"tenant:default", "tenant:fasp", "tenant:ingress", "tenant:mailers", "tenant:pull", "tenant:push", "tenant:remote_removal", "tenant:removal", "tenant:zeta"}
 	if !reflect.DeepEqual(queueNames, wantQueues) {
 		t.Fatalf("queue order = %#v, want %#v", queueNames, wantQueues)
 	}

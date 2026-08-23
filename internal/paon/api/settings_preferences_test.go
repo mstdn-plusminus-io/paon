@@ -40,12 +40,30 @@ func TestParseSettingsPreferencesPayloadAcceptsRailsNestedSettings(t *testing.T)
 	if !locale.Valid || locale.String != "ja" {
 		t.Fatalf("locale = %#v", locale)
 	}
-	if settings["web.auto_play"] != true || settings["web.use_system_scrollbars"] != true || settings["web.display_media"] != "show_all" || settings["default_privacy"] != "private" || settings["default_quote_policy"] != "followers" {
+	if settings["web.auto_play"] != true || settings["web.use_system_scrollbars"] != true || settings["web.display_media"] != "show_all" || settings["default_privacy"] != "private" || settings["default_quote_policy"] != "nobody" {
 		t.Fatalf("settings = %#v", settings)
 	}
 	languages := updates["chosen_languages"].(models.StringArray)
 	if len(languages) != 3 || languages[0] != "ja" || languages[1] != "en" || languages[2] != "ja" {
 		t.Fatalf("languages = %#v", languages)
+	}
+}
+
+func TestMastodon45EmojiStylePreferenceIsValidatedAndRendered(t *testing.T) {
+	html := settingsPreferencesAppearanceHTML(models.User{}, map[string]any{"web.emoji_style": "native"}, "en")
+	for _, want := range []string{`name="user[settings_attributes][web.emoji_style]"`, `value="native" selected`, "Emoji style"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("emoji style preference is missing %q: %s", want, html)
+		}
+	}
+	for _, value := range []string{"auto", "native", "twemoji"} {
+		settings, err := preferencesSettingsFromForm(map[string][]string{"user[settings][web.emoji_style]": {value}})
+		if err != nil || settings["web.emoji_style"] != value {
+			t.Fatalf("emoji style %q = %#v, %v", value, settings, err)
+		}
+	}
+	if _, err := preferencesSettingsFromForm(map[string][]string{"user[settings][web.emoji_style]": {"invalid"}}); err == nil {
+		t.Fatal("invalid emoji style was accepted")
 	}
 }
 
@@ -116,47 +134,42 @@ func TestPreferencesSettingsRejectsInvalidEnum(t *testing.T) {
 	}
 }
 
-func TestMastodon44DefaultQuotePolicyIsSavedAndRenderedAsPreparationOnly(t *testing.T) {
+func TestMastodon45DefaultQuotePolicyIsSavedAndRenderedOnPostingDefaults(t *testing.T) {
 	settings := map[string]any{"theme": "system"}
 	applyUserSettingsAttributes(settings, map[string]any{"default_quote_policy": "followers"})
 	if settings["default_quote_policy"] != "followers" {
 		t.Fatalf("saved default_quote_policy = %#v", settings["default_quote_policy"])
 	}
 
-	user := models.User{}
 	account := models.Account{}
-	english := settingsPreferencesOtherHTML(user, account, settings, "en")
+	english := settingsPreferencesPostingDefaultsHTML(account, settings, "en")
 	for _, want := range []string{
+		`action="/settings/preferences/posting_defaults"`,
 		`name="user[settings_attributes][default_quote_policy]"`,
 		`value="followers" selected`,
 		`Who can quote`,
-		`This setting will only take effect for posts created with the next Paon version`,
+		`These settings will be used as defaults when you create new posts`,
 	} {
 		if !strings.Contains(english, want) {
 			t.Fatalf("English quote policy setting is missing %q: %s", want, english)
 		}
 	}
 	if strings.Index(english, `value="public"`) > strings.Index(english, `value="followers"`) || strings.Index(english, `value="followers"`) > strings.Index(english, `value="nobody"`) {
-		t.Fatalf("quote policy option order does not match Mastodon 4.4: %s", english)
+		t.Fatalf("quote policy option order does not match Mastodon 4.5: %s", english)
 	}
 
-	japanese := settingsPreferencesOtherHTML(user, account, settings, "ja")
-	for _, want := range []string{"引用できるユーザー", "フォロワーのみ", "次のバージョンで作成される投稿にのみ適用"} {
+	japanese := settingsPreferencesPostingDefaultsHTML(models.Account{Locked: true}, settings, "ja")
+	for _, want := range []string{"引用できるユーザー", "フォロワーのみ", "デフォルトとして使用", "フォロワーのみの投稿はほかのユーザーから引用できません"} {
 		if !strings.Contains(japanese, want) {
 			t.Fatalf("Japanese quote policy setting is missing %q: %s", want, japanese)
 		}
 	}
 }
 
-func TestMastodon44DefaultQuotePolicyIsNotAppliedToPostsOrActivityPub(t *testing.T) {
-	for _, name := range []string{"server.go", "activitypub.go", "activitypub_quotes.go"} {
-		source, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(source), "default_quote_policy") {
-			t.Fatalf("Mastodon 4.4 preparation-only default_quote_policy is applied by %s", name)
-		}
+func TestMastodon45PostingDefaultsAreSeparatedFromOtherPreferences(t *testing.T) {
+	other := settingsPreferencesOtherHTML(models.User{}, models.Account{}, map[string]any{}, "en")
+	if strings.Contains(other, "default_quote_policy") || strings.Contains(other, "default_privacy") {
+		t.Fatalf("posting defaults must not remain embedded in Other preferences: %s", other)
 	}
 }
 

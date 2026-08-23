@@ -5,6 +5,7 @@ package migrate
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -51,14 +52,17 @@ func TestFreshMigrationAgainstPostgreSQL(t *testing.T) {
 		`SELECT COUNT(*) FROM accounts WHERE id = -99`:                         1,
 		`SELECT COUNT(*) FROM oauth_applications WHERE superapp = true`:        1,
 		`SELECT COUNT(*) FROM pg_matviews WHERE schemaname = current_schema()`: 3,
-		`SELECT COUNT(*) FROM schema_migrations`:                               539,
+		`SELECT COUNT(*) FROM schema_migrations`:                               554,
+		`SELECT COUNT(*) FROM username_blocks`:                                 23,
 	} {
 		if err := database.Raw(query).Scan(&count).Error; err != nil || count != want {
 			t.Fatalf("%s = %d, %v; want %d", query, count, err, want)
 		}
 	}
 	assertMastodon43TimestampPrecisions(t, database)
-	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "b53e3b8de778cd1b53158326b97afa9368f3237e")
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "801766beefdd9b1d55fe6f8bf3bed91392aebab1")
+	assertScalarInt64(t, database, `SELECT permissions FROM user_roles WHERE id = 1`, 1308|(1<<20))
+	assertScalarInt64(t, database, `SELECT permissions FROM user_roles WHERE id = 2`, 983036|(1<<20))
 	assertRelationAvailable(t, database, "quotes", true)
 	assertRelationAvailable(t, database, "imports", false)
 	assertColumnAvailable(t, database, "users", "encrypted_otp_secret", false)
@@ -207,7 +211,7 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 	if err != nil || !applied {
 		t.Fatalf("4.4 contract = applied %v, err %v", applied, err)
 	}
-	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 539)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 554)
 	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 1)
 	assertRelationAvailable(t, database, "fasp_follow_recommendations", true)
 	assertRelationAvailable(t, database, "imports", false)
@@ -215,9 +219,140 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 	assertColumnAvailable(t, database, "users", "encrypted_otp_secret", false)
 	assertColumnNullable(t, database, "web_push_subscriptions", "user_id", false)
 	assertColumnNullable(t, database, "polls", "status_id", false)
-	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "b53e3b8de778cd1b53158326b97afa9368f3237e")
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "801766beefdd9b1d55fe6f8bf3bed91392aebab1")
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM username_blocks`, 23)
 	if err := paondb.SchemaAvailable(database); err != nil {
 		t.Fatalf("validate contracted 4.4 schema: %v", err)
+	}
+}
+
+func TestStagedMastodon4422UpgradeAgainstPostgreSQL(t *testing.T) {
+	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("PAON_TEST_DATABASE_URL is required for integration tests")
+	}
+	database, err := paondb.Open(config.Config{DatabaseURL: databaseURL, DatabaseMaxOpenConns: 5, DatabaseMaxIdleConns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`).Error; err != nil {
+		t.Fatalf("reset integration schema: %v", err)
+	}
+	salt, err := randomMigrationHex(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, statement := range strings.Split(strings.ReplaceAll(string(mastodon4219Schema), "__PAON_TIMESTAMP_ID_SALT__", salt), statementSeparator) {
+		statement = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(statement), ";"))
+		if statement == "" {
+			continue
+		}
+		if err := database.Exec(statement).Error; err != nil {
+			t.Fatalf("apply Mastodon 4.2.19 fixture statement %d: %v", index, err)
+		}
+	}
+	credentials := paonotp.Credentials{
+		PrimaryKey:        strings.Repeat("p", paonotp.MinimumCredentialLength),
+		DeterministicKey:  strings.Repeat("d", paonotp.MinimumCredentialLength),
+		KeyDerivationSalt: strings.Repeat("s", paonotp.MinimumCredentialLength),
+	}
+	for _, phase := range []UpgradePhase{UpgradePhaseExpand, UpgradePhaseBackfill, UpgradePhaseValidate, UpgradePhaseContract} {
+		options := Options{Phase: phase, ActiveRecordEncryption: credentials, Mastodon44SkipTagTrendBackfill: true}
+		if phase == UpgradePhaseContract {
+			options.AcknowledgeContract = true
+		}
+		applied, err := runMastodon43Phase(context.Background(), database, phase, options)
+		if err != nil || !applied {
+			t.Fatalf("prepare 4.3 phase %s = applied %v, err %v", phase, applied, err)
+		}
+	}
+	for _, phase := range []UpgradePhase{UpgradePhaseExpand, UpgradePhaseBackfill, UpgradePhaseValidate, UpgradePhaseContract} {
+		options := Options{Phase: phase, ActiveRecordEncryption: credentials, Mastodon44SkipTagTrendBackfill: true}
+		if phase == UpgradePhaseContract {
+			options.AcknowledgeContract = true
+		}
+		applied, err := runMastodon44Phase(context.Background(), database, phase, options)
+		if err != nil || !applied {
+			t.Fatalf("prepare 4.4 phase %s = applied %v, err %v", phase, applied, err)
+		}
+	}
+	assertMigrationVersionCount(t, database, Mastodon4422SchemaVersion, 1)
+	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 539)
+	if err := database.Exec(`INSERT INTO accounts (id, username, domain, created_at, updated_at) VALUES (8501, 'existing', 'remote.example', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP); INSERT INTO users (id, email, account_id, settings, created_at, updated_at) VALUES (8502, 'settings@example.test', 8501, '{"notification_emails.reblog":false,"notification_emails.mention":false,"default_privacy":"private"}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP); INSERT INTO settings (var, value, created_at, updated_at) VALUES ('timeline_preview', E'--- false\n', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), ('trends_as_landing_page', E'--- true\n', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).Error; err != nil {
+		t.Fatalf("seed populated Mastodon 4.4 fixture: %v", err)
+	}
+
+	applied, err := RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseExpand})
+	if err != nil || !applied {
+		t.Fatalf("4.5 expand = applied %v, err %v", applied, err)
+	}
+	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM username_blocks`, 23)
+	assertScalarInt64(t, database, `SELECT id_scheme FROM accounts WHERE id = 8501`, 0)
+	assertRelationAvailable(t, database, "index_quotes_on_account_id_and_quoted_account_id", true)
+	assertRelationAvailable(t, database, "index_quotes_on_account_id_and_quoted_account_id_and_id", true)
+	assertRelationAvailable(t, database, "index_follows_on_target_account_id", true)
+	assertRelationAvailable(t, database, "index_follows_on_target_account_id_and_account_id", true)
+	if err := database.Exec(`INSERT INTO accounts (id, username, created_at, updated_at) VALUES (8503, 'newnumeric', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).Error; err != nil {
+		t.Fatalf("insert post-expand account: %v", err)
+	}
+	assertScalarInt64(t, database, `SELECT id_scheme FROM accounts WHERE id = 8503`, 1)
+
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseBackfill})
+	if err != nil || !applied {
+		t.Fatalf("4.5 backfill = applied %v, err %v", applied, err)
+	}
+	var settingsJSON string
+	if err := database.Raw(`SELECT settings FROM users WHERE id = 8502`).Scan(&settingsJSON).Error; err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]any{}
+	if err := json.Unmarshal([]byte(settingsJSON), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings["notification_emails.quote"] != false || settings["default_quote_policy"] != "nobody" {
+		t.Fatalf("backfilled user settings = %#v", settings)
+	}
+	for _, setting := range []string{"local_live_feed_access", "remote_live_feed_access", "local_topic_feed_access", "remote_topic_feed_access"} {
+		assertScalarString(t, database, `SELECT value FROM settings WHERE var = '`+setting+`'`, "--- authenticated\n")
+	}
+	assertScalarString(t, database, `SELECT value FROM settings WHERE var = 'landing_page'`, "--- trends\n")
+
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseValidate})
+	if err != nil || applied {
+		t.Fatalf("4.5 validate = applied %v, err %v; validation has no upstream marker", applied, err)
+	}
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true})
+	if err != nil || !applied {
+		t.Fatalf("4.5 contract = applied %v, err %v", applied, err)
+	}
+	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 1)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 554)
+	assertRelationAvailable(t, database, "index_quotes_on_account_id_and_quoted_account_id", false)
+	assertRelationAvailable(t, database, "index_quotes_on_quoted_status_id", false)
+	assertRelationAvailable(t, database, "index_follows_on_target_account_id", false)
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "801766beefdd9b1d55fe6f8bf3bed91392aebab1")
+	if err := paondb.SchemaAvailable(database); err != nil {
+		t.Fatalf("validate contracted 4.5 schema: %v", err)
+	}
+	if err := database.Exec(`UPDATE ar_internal_metadata SET value = 'incorrect' WHERE key = 'schema_sha1'`).Error; err != nil {
+		t.Fatalf("corrupt final schema SHA-1 fixture: %v", err)
+	}
+	if err := paondb.SchemaAvailable(database); err == nil || !strings.Contains(err.Error(), "schema SHA-1") {
+		t.Fatalf("schema guard with incorrect SHA-1 = %v, want schema SHA-1 error", err)
+	}
+	if err := database.Exec(`UPDATE ar_internal_metadata SET value = '801766beefdd9b1d55fe6f8bf3bed91392aebab1' WHERE key = 'schema_sha1'; CREATE INDEX index_follows_on_target_account_id ON follows (target_account_id)`).Error; err != nil {
+		t.Fatalf("restore SHA-1 and recreate obsolete v4.5 index fixture: %v", err)
+	}
+	if err := paondb.SchemaAvailable(database); err == nil || !strings.Contains(err.Error(), "obsolete Mastodon indexes") {
+		t.Fatalf("schema guard with obsolete v4.5 index = %v, want obsolete-index error", err)
+	}
+	if err := database.Exec(`DROP INDEX index_follows_on_target_account_id`).Error; err != nil {
+		t.Fatalf("drop obsolete v4.5 index fixture: %v", err)
+	}
+	if err := paondb.SchemaAvailable(database); err != nil {
+		t.Fatalf("validate restored contracted 4.5 schema: %v", err)
 	}
 }
 
@@ -380,7 +515,7 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 	assertRelationAvailable(t, database, "encrypted_messages_id_seq", false)
 	assertColumnAvailable(t, database, "users", "admin", false)
 	assertRelationAvailable(t, database, "quotes", true)
-	assertRelationAvailable(t, database, "imports", true)
+	assertRelationAvailable(t, database, "imports", false)
 	assertScalarString(t, database, `SELECT scopes FROM oauth_applications WHERE id = 5001`, "read profile")
 	if err := database.Exec(`CREATE INDEX index_accounts_on_uri ON accounts (uri)`).Error; err != nil {
 		t.Fatalf("repair final schema guard fixture: %v", err)
@@ -392,7 +527,7 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 	}
 	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 1)
 	assertMigrationVersionCount(t, database, "20180813113448", 1)
-	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 539)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 554)
 	assertRelationAvailable(t, database, "devices", false)
 	assertRelationAvailable(t, database, "encrypted_messages_id_seq", false)
 	assertColumnAvailable(t, database, "users", "admin", false)
@@ -400,7 +535,8 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 	assertScalarString(t, database, `SELECT scopes FROM oauth_access_tokens WHERE id = 5001`, "read profile")
 	assertRelationAvailable(t, database, "imports", false)
 	assertColumnAvailable(t, database, "users", "encrypted_otp_secret", false)
-	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "b53e3b8de778cd1b53158326b97afa9368f3237e")
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "801766beefdd9b1d55fe6f8bf3bed91392aebab1")
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM username_blocks`, 23)
 	assertMastodon43TimestampPrecisions(t, database)
 	if err := paondb.SchemaAvailable(database); err != nil {
 		t.Fatalf("validate contracted schema: %v", err)

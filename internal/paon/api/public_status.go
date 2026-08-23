@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -87,7 +88,7 @@ func (s *Server) applyPublicStatusHead(options *web.AppOptions, status models.St
 	options.DocumentTitle = settingsTVars(locale, "statuses.title", `%{name}: "%{quote}"`, map[string]string{"name": displayName, "quote": quote})
 
 	statusURL := activityPubStatusPublicURL(s, status)
-	actorURL := s.cfg.BaseURL() + "/users/" + url.PathEscape(status.Account.Username)
+	actorURL := localActivityPubActorURL(s.cfg, status.Account)
 	activityURL := actorURL + "/statuses/" + strconv.FormatInt(status.ID, 10)
 	localDomain := firstNonEmpty(strings.TrimSpace(s.cfg.LocalDomain), strings.TrimSpace(s.cfg.WebDomain))
 	acct := "@" + status.Account.Username
@@ -108,14 +109,104 @@ func (s *Server) applyPublicStatusHead(options *web.AppOptions, status models.St
 	if status.Language.Valid && strings.TrimSpace(status.Language.String) != "" {
 		options.HeadMeta = append(options.HeadMeta, web.HeadMeta{Property: "og:locale", Content: strings.TrimSpace(status.Language.String)})
 	}
-	if status.Account.User.Settings.Valid && rawBool(decodeUserSettings(status.Account.User.Settings.String)["noindex"], false) {
+	noIndex := status.Account.User.Settings.Valid && rawBool(decodeUserSettings(status.Account.User.Settings.String)["noindex"], false)
+	if noIndex {
 		options.HeadMeta = append([]web.HeadMeta{{Name: "robots", Content: "noindex, noarchive"}}, options.HeadMeta...)
+	} else if schema := s.publicStatusSEOSchema(status); schema != "" {
+		options.HeadJSONLD = []string{schema}
 	}
 	options.HeadLinks = []web.HeadLink{
 		{Rel: "alternate", Type: "application/json+oembed", Href: s.cfg.BaseURL() + "/api/oembed?url=" + url.QueryEscape(statusURL)},
 		{Rel: "alternate", Type: "application/activity+json", Href: activityURL},
 	}
 	options.HeadMeta = append(options.HeadMeta, s.publicStatusMediaMeta(status)...)
+}
+
+func (s *Server) publicStatusSEOSchema(status models.Status) string {
+	displayName := strings.TrimSpace(status.Account.DisplayName)
+	if displayName == "" {
+		displayName = status.Account.Username
+	}
+	localDomain := firstNonEmpty(strings.TrimSpace(s.cfg.LocalDomain), strings.TrimSpace(s.cfg.WebDomain))
+	identifier := status.Account.Username
+	if localDomain != "" {
+		identifier += "@" + localDomain
+	}
+	statusView := serializer.StatusFromModel(s.cfg, status, nil)
+	payload := map[string]any{
+		"@context":      "https://schema.org",
+		"@type":         "SocialMediaPosting",
+		"url":           activityPubStatusPublicURL(s, status),
+		"datePublished": status.CreatedAt.UTC().Format(time.RFC3339),
+		"author": map[string]any{
+			"@type":                "Person",
+			"name":                 displayName,
+			"alternateName":        identifier,
+			"identifier":           identifier,
+			"url":                  s.cfg.BaseURL() + "/@" + url.PathEscape(status.Account.Username),
+			"interactionStatistic": []any{publicStatusSEOInteraction("FollowAction", status.Account.AccountStat.FollowersCount)},
+		},
+		"text": statusView.Content,
+		"interactionStatistic": []any{
+			publicStatusSEOInteraction("LikeAction", status.StatusStat.FavouritesCount),
+			publicStatusSEOInteraction("ShareAction", status.StatusStat.ReblogsCount),
+			publicStatusSEOInteraction("ReplyAction", status.StatusStat.RepliesCount),
+		},
+	}
+	if status.EditedAt.Valid {
+		payload["dateModified"] = status.EditedAt.Time.UTC().Format(time.RFC3339)
+	}
+	images, videos, audio := []any{}, []any{}, []any{}
+	for _, attachment := range activityPubOrderedMediaAttachments(status) {
+		media := serializer.MediaAttachmentFromModel(s.cfg, attachment)
+		item := map[string]any{
+			"contentUrl":   media.URL,
+			"thumbnailUrl": media.PreviewURL,
+		}
+		if attachment.Description.Valid {
+			item["description"] = attachment.Description.String
+		}
+		switch attachment.Type {
+		case 0:
+			item["@type"] = "ImageObject"
+			images = append(images, item)
+		case 1, 2:
+			item["@type"] = "VideoObject"
+			item["uploadDate"] = attachment.CreatedAt.UTC().Format(time.RFC3339)
+			item["embedUrl"] = s.cfg.BaseURL() + "/media/" + strconv.FormatInt(attachment.ID, 10)
+			videos = append(videos, item)
+		case 4:
+			item["@type"] = "AudioObject"
+			item["uploadDate"] = attachment.CreatedAt.UTC().Format(time.RFC3339)
+			item["embedUrl"] = s.cfg.BaseURL() + "/media/" + strconv.FormatInt(attachment.ID, 10)
+			audio = append(audio, item)
+		}
+	}
+	if len(images) > 0 {
+		payload["image"] = images
+	}
+	if len(videos) > 0 {
+		payload["video"] = videos
+	}
+	if len(audio) > 0 {
+		payload["audio"] = audio
+	}
+	if card, ok := status.FirstPreviewCard(); ok && strings.TrimSpace(card.URL) != "" {
+		payload["sharedContent"] = map[string]any{"@type": "WebPage", "url": card.URL}
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func publicStatusSEOInteraction(action string, count int64) map[string]any {
+	return map[string]any{
+		"@type":                "InteractionCounter",
+		"interactionType":      "https://schema.org/" + action,
+		"userInteractionCount": count,
+	}
 }
 
 func publicStatusDescription(status models.Status, locale string) string {
@@ -313,7 +404,7 @@ func (s *Server) publicStatusOriginalRedirectURL(status models.Status) string {
 }
 
 func publicStatusLinkHeader(cfg config.Config, status models.Status) string {
-	actorURL := cfg.BaseURL() + "/users/" + url.PathEscape(status.Account.Username)
+	actorURL := localActivityPubActorURL(cfg, status.Account)
 	statusURL := actorURL + "/statuses/" + url.PathEscape(strconv.FormatInt(status.ID, 10))
 	return "<" + statusURL + `>; rel="alternate"; type="application/activity+json"`
 }

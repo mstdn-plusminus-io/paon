@@ -52,9 +52,11 @@ func TestSettingsNavMatchesRailsNavigationDestinations(t *testing.T) {
 		settingsNavigationHTML("/admin/warning_presets", "en", options)
 	for _, want := range []string{
 		`href="/settings/profile"`,
+		`href="/settings/privacy"`,
 		`href="/settings/preferences"`,
 		`href="/settings/preferences/appearance"`,
 		`href="/settings/preferences/notifications"`,
+		`href="/settings/preferences/posting_defaults"`,
 		`href="/settings/preferences/other"`,
 		`href="/relationships"`,
 		`href="/severed_relationships"`,
@@ -80,6 +82,22 @@ func TestSettingsNavMatchesRailsNavigationDestinations(t *testing.T) {
 		if !strings.Contains(nav, want) {
 			t.Fatalf("settings nav missing implemented route %s: %s", want, nav)
 		}
+	}
+}
+
+func TestSettingsPrivacyIsMastodon45TopLevelNavigation(t *testing.T) {
+	options := settingsHTMLOptions{Functional: true, FunctionalOrMoved: true}
+	privacy := settingsNavigationHTML("/settings/privacy", "en", options)
+	if !strings.Contains(privacy, `id="privacy" class="selected simple-navigation-active-leaf"`) {
+		t.Fatalf("privacy must be its own selected top-level item: %s", privacy)
+	}
+	if strings.Contains(privacy, `id="profile" class="selected`) {
+		t.Fatalf("privacy must not select the profile navigation item: %s", privacy)
+	}
+
+	profileTabs := settingsProfileTabsHTML("profile", "en")
+	if strings.Contains(profileTabs, `/settings/privacy`) {
+		t.Fatalf("privacy must not remain in profile tabs: %s", profileTabs)
 	}
 }
 
@@ -189,9 +207,9 @@ func railsNavigationTopLevelItems(src string) []string {
 	return out
 }
 
-func TestSettingsPreferencesOtherHTMLUsesRailsPrivacyOptions(t *testing.T) {
+func TestSettingsPreferencesPostingDefaultsHTMLUsesRailsPrivacyOptions(t *testing.T) {
 	user := models.User{Settings: sql.NullString{String: `{}`, Valid: true}}
-	html, ok, err := (&Server{}).settingsHTML("/settings/preferences/other", user, models.Account{Locked: true})
+	html, ok, err := (&Server{}).settingsHTML("/settings/preferences/posting_defaults", user, models.Account{Locked: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,6 +257,10 @@ func TestSettingsPrivacyHTMLRendersRailsFields(t *testing.T) {
 	}
 	if got := strings.Count(html, `class="recommended"`); got != 1 {
 		t.Fatalf("privacy html recommended badge count = %d, want 1: %s", got, html)
+	}
+	wantHeading := `<h2>` + settingsT("en", "privacy.title", "Privacy settings") + `</h2>`
+	if strings.Contains(html, `content__heading__tabs`) || !strings.Contains(html, wantHeading) {
+		t.Fatalf("privacy must use its own Mastodon 4.5 top-level heading without profile tabs: %s", html)
 	}
 }
 

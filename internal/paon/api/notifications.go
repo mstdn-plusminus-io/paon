@@ -22,6 +22,8 @@ var notificationTypes = map[string]struct{}{
 	"follow_request":        {},
 	"favourite":             {},
 	"poll":                  {},
+	"quote":                 {},
+	"quoted_update":         {},
 	"update":                {},
 	"admin.sign_up":         {},
 	"admin.report":          {},
@@ -199,6 +201,7 @@ func notificationTypeSQL() string {
 		WHEN 'FollowRequest' THEN 'follow_request'
 		WHEN 'Favourite' THEN 'favourite'
 		WHEN 'Poll' THEN 'poll'
+		WHEN 'Quote' THEN 'quote'
 		ELSE notifications.activity_type
 	END)`
 }
@@ -368,8 +371,17 @@ func (s *Server) hydrateNotificationStatusRelationships(notifications []models.N
 
 func (s *Server) notificationTargetStatus(notification models.Notification) (*models.Status, error) {
 	switch notification.ResolvedType() {
-	case "status", "update":
+	case "status", "update", "quoted_update":
 		return s.findStatusByID(notification.ActivityID)
+	case "quote":
+		var quote models.Quote
+		if err := s.db.Select("status_id").Where("id = ?", notification.ActivityID).First(&quote).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return s.findStatusByID(quote.StatusID)
 	case "reblog":
 		var reblog models.Status
 		if err := s.db.Where("id = ? AND deleted_at IS NULL", notification.ActivityID).First(&reblog).Error; err != nil {

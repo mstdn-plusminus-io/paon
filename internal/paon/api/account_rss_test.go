@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -79,6 +80,23 @@ func TestAccountAndTagRSSHandlersSetRailsCacheHeaders(t *testing.T) {
 		if !functionBodyContains(t, src, check.fn, check.want) {
 			t.Fatalf("%s:%s missing %q", check.file, check.fn, check.want)
 		}
+		if !functionBodyContains(t, src, check.fn, `"application/rss+xml; charset=utf-8"`) {
+			t.Fatalf("%s:%s must return the Mastodon 4.5 RSS MIME type", check.file, check.fn)
+		}
+	}
+}
+
+func TestDistributionNginxGzipTypesUseStandardRSSMIME(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "..", "dist", "nginx.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(src)
+	if !strings.Contains(config, "gzip_types") || !strings.Contains(config, "application/rss+xml") {
+		t.Fatalf("distribution nginx gzip types must include application/rss+xml: %s", config)
+	}
+	if strings.Contains(config, "application/xml+rss") {
+		t.Fatalf("distribution nginx config still contains the non-standard application/xml+rss MIME: %s", config)
 	}
 }
 
@@ -223,7 +241,7 @@ func TestRenderAccountRSSIncludesAccountAndStatuses(t *testing.T) {
 		`<title>Alice</title>`,
 		`xmlns:webfeeds="http://webfeeds.org/rss/1.0"`,
 		`<description>Public posts from @alice@example.com</description>`,
-		`<generator>Mastodon v4.2.29</generator>`,
+		`<generator>Mastodon v4.5.15</generator>`,
 		`<url>https://example.com/system/accounts/avatars/000/000/010/original/avatar.png</url>`,
 		`<webfeeds:icon>https://example.com/system/accounts/avatars/000/000/010/original/avatar.png</webfeeds:icon>`,
 		`<link>https://example.com/@alice/123</link>`,
@@ -374,6 +392,13 @@ func TestPublicAccountLinkHeaderMatchesRailsDiscoveryLinks(t *testing.T) {
 	want := `<https://example.com/.well-known/webfinger?resource=acct%3Aalice%40example.com>; rel="lrdd"; type="application/jrd+json", <https://example.com/users/alice>; rel="alternate"; type="application/activity+json"`
 	if got != want {
 		t.Fatalf("Link = %q, want %q", got, want)
+	}
+
+	account.IDScheme = sql.NullInt64{Int64: 1, Valid: true}
+	got = publicAccountLinkHeader(cfg, account)
+	want = `<https://example.com/.well-known/webfinger?resource=acct%3Aalice%40example.com>; rel="lrdd"; type="application/jrd+json", <https://example.com/ap/users/10>; rel="alternate"; type="application/activity+json"`
+	if got != want {
+		t.Fatalf("numeric Link = %q, want %q", got, want)
 	}
 }
 

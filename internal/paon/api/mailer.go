@@ -1528,6 +1528,8 @@ func notificationMailKey(notificationType string) (string, bool) {
 		return "notification_emails.favourite", true
 	case "reblog":
 		return "notification_emails.reblog", true
+	case "quote":
+		return "notification_emails.quote", true
 	default:
 		return "", false
 	}
@@ -1592,6 +1594,11 @@ func notificationMailMessage(cfg config.Config, user models.User, notification m
 		subjectFallback = "%{name} boosted your post"
 		bodyKey = "notification_mailer.reblog.body"
 		bodyFallback = "Your post was boosted by %{name}:"
+	case "quote":
+		subjectKey = "notification_mailer.quote.subject"
+		subjectFallback = "%{name} quoted your post"
+		bodyKey = "notification_mailer.quote.body"
+		bodyFallback = "Your post was quoted by %{name}:"
 	case "follow":
 		subjectKey = "notification_mailer.follow.subject"
 		subjectFallback = "%{name} is now following you"
@@ -1610,7 +1617,7 @@ func notificationMailMessage(cfg config.Config, user models.User, notification m
 	body = mailSalutation(locale, user) + "\n\n"
 	body += settingsTVars(locale, bodyKey, bodyFallback, vars) + "\n\n"
 	switch notification.Type {
-	case "mention", "favourite", "reblog":
+	case "mention", "favourite", "reblog", "quote":
 		body += notificationStatusTextBlock(locale, status, statusURL)
 	case "follow":
 		body += settingsT(locale, "application_mailer.view", "View:") + " " + baseURL + "/@" + from + "\n"
