@@ -226,7 +226,7 @@ type Account struct {
 	Memorial                   bool           `gorm:"column:memorial"`
 	MovedToAccountID           sql.NullInt64  `gorm:"column:moved_to_account_id"`
 	FeaturedCollectionURL      sql.NullString `gorm:"column:featured_collection_url"`
-	Fields                     []byte         `gorm:"column:fields"`
+	Fields                     JSONValue      `gorm:"column:fields"`
 	AlsoKnownAs                StringArray    `gorm:"column:also_known_as"`
 	DevicesURL                 NullSafeString `gorm:"column:devices_url"`
 	ActorType                  sql.NullString `gorm:"column:actor_type"`
