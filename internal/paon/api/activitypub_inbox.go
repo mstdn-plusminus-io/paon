@@ -465,6 +465,11 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 		if payload.Object.TypeExact == "Block" {
 			return s.processActivityPubUndoBlock(payload.Object, actor)
 		}
+	case "View":
+		// PeerTube federates aggregate video view counters as View
+		// activities. Mastodon has no state to apply for them, so accept the
+		// authenticated activity without sending it through retry/archive.
+		return nil
 	}
 	logActivityPubUnsupportedPayload(payload, actor.ID, "unsupported_activity_or_object_type")
 	return activityPubEventNotAppliedf("unsupported activity type %q or object type %q", payload.Type, payload.Object.TypeExact)
@@ -7379,7 +7384,7 @@ func activityJSONLDGraphMaps(object map[string]any) []map[string]any {
 
 func activityJSONLDTypeIsActivity(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Block", "Create", "Delete", "Flag", "Follow", "Like", "Move", "Reject", "Remove", "Undo", "Update":
+	case "Accept", "Add", "Announce", "Block", "Create", "Delete", "Flag", "Follow", "Like", "Move", "Reject", "Remove", "Undo", "Update", "View":
 		return true
 	default:
 		return false
@@ -7859,7 +7864,7 @@ func activityCompactType(value string) string {
 
 func activityKnownType(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "Collection", "CollectionPage", "Create", "Delete", "EncryptedMessage", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Question", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video":
+	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "Collection", "CollectionPage", "Create", "Delete", "EncryptedMessage", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Question", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video", "View":
 		return true
 	default:
 		return false
