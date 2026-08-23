@@ -7,7 +7,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -149,5 +152,63 @@ func TestRelayedMisskeyActivityAuthenticatesBeforeForwardingFinalization(t *test
 	err = server.processActivityPubInboxForDeliveredToWithContext(t.Context(), forgedBody, &relay, nil, 0)
 	if !errors.Is(err, errActivityPubEventNotApplied) || !strings.Contains(err.Error(), "linked-data signature actor does not match activity actor") {
 		t.Fatalf("forged collection actor binding error = %v", err)
+	}
+
+	var unknownCreatorCount int64
+	if err := database.Model(&models.Account{}).Where("uri = ?", misskeyDeleteActorURI).Count(&unknownCreatorCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if unknownCreatorCount != 0 {
+		t.Fatalf("Misskey signature creator already exists before relayed delivery: %d", unknownCreatorCount)
+	}
+
+	oldClient := activityHTTPClient
+	t.Cleanup(func() { activityHTTPClient = oldClient })
+	requests := []string{}
+	activityHTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests = append(requests, request.URL.String())
+		switch request.URL.String() {
+		case misskeyDeleteActorURI:
+			body := `{
+				"@context":["https://www.w3.org/ns/activitystreams","https://w3id.org/security/v1"],
+				"id":"` + misskeyDeleteActorURI + `",
+				"type":"Person",
+				"preferredUsername":"nox_",
+				"inbox":"` + misskeyDeleteActorURI + `/inbox",
+				"publicKey":{
+					"id":"` + misskeyDeleteKeyID + `",
+					"owner":"` + misskeyDeleteActorURI + `",
+					"publicKeyPem":` + strconv.Quote(misskeyDeletePublicKeyPEM) + `
+				}
+			}`
+			return textResponse(http.StatusOK, "application/activity+json", body), nil
+		case "https://misskey.day/.well-known/webfinger?resource=acct%3Anox_%40misskey.day":
+			body := `{"subject":"acct:nox_@misskey.day","links":[{"rel":"self","type":"application/activity+json","href":"` + misskeyDeleteActorURI + `"}]}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		default:
+			t.Fatalf("unexpected unknown signature creator fetch: %s", request.URL.String())
+			return nil, nil
+		}
+	})}
+
+	if err := server.processActivityPubInboxForDeliveredToWithContext(t.Context(), []byte(misskeyDeleteBody), &relay, nil, 0); err != nil {
+		t.Fatalf("relayed Misskey Delete with unknown signature creator error = %v", err)
+	}
+	if strings.Join(requests, "\n") != strings.Join([]string{
+		misskeyDeleteActorURI,
+		"https://misskey.day/.well-known/webfinger?resource=acct%3Anox_%40misskey.day",
+	}, "\n") {
+		t.Fatalf("unknown signature creator requests = %#v", requests)
+	}
+	var fetchedCreator models.Account
+	if err := database.Where("uri = ?", misskeyDeleteActorURI).First(&fetchedCreator).Error; err != nil {
+		t.Fatalf("load fetched signature creator: %v", err)
+	}
+	if fetchedCreator.PublicKey != misskeyDeletePublicKeyPEM {
+		t.Fatal("fetched signature creator did not retain the verified public key")
+	}
+	var tombstone models.Tombstone
+	if err := database.Where("account_id = ? AND uri = ?", fetchedCreator.ID, misskeyDeleteTargetURI).First(&tombstone).Error; err != nil {
+		t.Fatalf("load Misskey Delete tombstone: %v", err)
 	}
 }
