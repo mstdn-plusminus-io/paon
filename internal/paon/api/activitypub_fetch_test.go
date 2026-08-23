@@ -358,6 +358,9 @@ func TestVerifyRemoteActivityActorWebFingerLoopback(t *testing.T) {
 		if r.URL.String() != "https://remote.example/.well-known/webfinger?resource=acct%3Aalice%40remote.example" {
 			t.Fatalf("unexpected webfinger request: %s", r.URL.String())
 		}
+		if got := r.Header.Get("User-Agent"); got != railsHTTPRequestUserAgent {
+			t.Fatalf("WebFinger User-Agent = %q, want %q", got, railsHTTPRequestUserAgent)
+		}
 		body := `{"subject":"acct:alice@remote.example","links":[{"rel":"self","type":"application/activity+json","href":"https://remote.example/users/alice"}]}`
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})}
