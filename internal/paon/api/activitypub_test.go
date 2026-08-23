@@ -2046,6 +2046,9 @@ func TestFetchActivityActorURLFromWebFingerFallsBackToHostMetaLikeRails(t *testi
 	requests := []string{}
 	activityHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		requests = append(requests, r.URL.String())
+		if got := r.Header.Get("User-Agent"); got != railsHTTPRequestUserAgent {
+			t.Fatalf("WebFinger/host-meta User-Agent = %q, want %q", got, railsHTTPRequestUserAgent)
+		}
 		switch r.URL.String() {
 		case "https://remote.example/.well-known/webfinger?resource=acct%3Aalice%40remote.example":
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(""))}, nil

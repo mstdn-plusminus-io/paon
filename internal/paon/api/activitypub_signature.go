@@ -1253,6 +1253,8 @@ func fetchActivityWebFingerDocument(endpoint string) (activityWebFinger, error) 
 		return activityWebFinger{}, err
 	}
 	req.Header.Set("Accept", "application/jrd+json, application/json")
+	// Some peers redirect Go's HTTP/2 default identity; match Mastodon's Request client.
+	req.Header.Set("User-Agent", railsHTTPRequestUserAgent)
 	resp, err := activityWebFingerHTTPClient().Do(req)
 	if err != nil {
 		return activityWebFinger{}, taskTargetError("webfinger fetch", "remote", remoteTaskTargetHost(endpoint), err)
@@ -1279,6 +1281,8 @@ func fetchActivityWebFingerHostMetaURL(domain string, resource string) (string, 
 		return "", err
 	}
 	req.Header.Set("Accept", "application/xrd+xml, application/xml, text/xml")
+	// Keep the host-meta fallback on the same Mastodon-compatible identity.
+	req.Header.Set("User-Agent", railsHTTPRequestUserAgent)
 	resp, err := activityWebFingerHTTPClient().Do(req)
 	if err != nil {
 		return "", taskTargetError("webfinger host-meta fetch", "remote", endpoint.Hostname(), err)
