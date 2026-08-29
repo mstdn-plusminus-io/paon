@@ -64,3 +64,5 @@ bin/paon-admin
 bin/paon-cutover
 bin/paon-meili-deploy
 bin/paon-migrate
+
+*.tsbuildinfo
