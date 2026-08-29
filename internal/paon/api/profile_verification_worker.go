@@ -90,7 +90,7 @@ func accountProfileFieldsRequireVerification(account models.Account) bool {
 	if account.SuspendedAt.Valid {
 		return false
 	}
-	fields := profileFieldsFromRaw(account.Fields)
+	fields := profileFieldsFromRaw(json.RawMessage(account.Fields))
 	for _, field := range fields {
 		if field.VerifiedAt != nil && strings.TrimSpace(*field.VerifiedAt) != "" {
 			continue
@@ -107,7 +107,7 @@ func accountProfileFieldsRequireVerification(account models.Account) bool {
 }
 
 func (s *Server) verifiedProfileFieldsForAccount(account models.Account, now time.Time) ([]byte, bool, error) {
-	fields := profileFieldsFromRaw(account.Fields)
+	fields := profileFieldsFromRaw(json.RawMessage(account.Fields))
 	if account.SuspendedAt.Valid || len(fields) == 0 {
 		return account.Fields, false, nil
 	}
