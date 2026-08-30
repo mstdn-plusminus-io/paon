@@ -1219,8 +1219,6 @@ func TestSchemaAvailableChecksColumnsAfterTables(t *testing.T) {
 		`database schema is missing required Mastodon foreign keys`,
 		`mastodonSchemaMigrationApplied(database, requiredMastodonSchemaVersion)`,
 		`database schema_migrations is missing required Mastodon schema version`,
-		`mastodonSchemaSHA1Applied(database, requiredMastodonSchemaSHA1)`,
-		`database schema SHA-1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("SchemaAvailable missing column check wiring %q", want)
@@ -1271,9 +1269,6 @@ func TestSchemaAvailableChecksColumnsAfterTables(t *testing.T) {
 	if strings.Index(body, `RequiredMastodonIndexes()`) > strings.Index(body, `mastodonSchemaMigrationApplied(database, requiredMastodonSchemaVersion)`) {
 		t.Fatal("SchemaAvailable must verify indexes before accepting the Rails migration version")
 	}
-	if strings.Index(schemaAvailableBody, `mastodonSchemaMigrationApplied(database, requiredMastodonSchemaVersion)`) > strings.Index(schemaAvailableBody, `mastodonSchemaSHA1Applied(database, requiredMastodonSchemaSHA1)`) {
-		t.Fatal("SchemaAvailable must verify the final migration marker before accepting the Rails schema SHA-1")
-	}
 }
 
 func TestForbiddenMastodonColumnsCoversEvery43ContractDrop(t *testing.T) {
@@ -1296,9 +1291,6 @@ func TestForbiddenMastodonColumnsCoversEvery43ContractDrop(t *testing.T) {
 func TestMastodon45FinalSchemaAdmissionContract(t *testing.T) {
 	if got, want := RequiredMastodonSchemaVersion(), "20251023210145"; got != want {
 		t.Fatalf("RequiredMastodonSchemaVersion() = %q, want %q", got, want)
-	}
-	if got, want := RequiredMastodonSchemaSHA1(), "801766beefdd9b1d55fe6f8bf3bed91392aebab1"; got != want {
-		t.Fatalf("RequiredMastodonSchemaSHA1() = %q, want %q", got, want)
 	}
 	for _, index := range []string{
 		"index_follows_on_target_account_id",

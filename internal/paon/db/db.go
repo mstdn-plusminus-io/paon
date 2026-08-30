@@ -25,7 +25,6 @@ import (
 
 const (
 	requiredMastodonSchemaVersion = paonschema.Mastodon4515Version
-	requiredMastodonSchemaSHA1    = "801766beefdd9b1d55fe6f8bf3bed91392aebab1"
 	minimumPostgreSQLVersionNum   = 140000
 )
 
@@ -2255,6 +2254,7 @@ type MastodonForeignKey struct {
 	Column       string
 	ForeignTable string
 	OnDelete     string
+	Name         string
 }
 
 func RequiredMastodonRelationKinds() []MastodonRelationKind {
@@ -2305,149 +2305,149 @@ func formatMissingMastodonRelations(names []string) string {
 
 func RequiredMastodonForeignKeys() []MastodonForeignKey {
 	return []MastodonForeignKey{
-		{Table: "account_aliases", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_conversations", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_conversations", Column: "conversation_id", ForeignTable: "conversations", OnDelete: "c"},
-		{Table: "account_deletion_requests", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_domain_blocks", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_migrations", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_migrations", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "account_moderation_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_moderation_notes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_notes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_pins", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_pins", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_relationship_severance_events", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_relationship_severance_events", Column: "relationship_severance_event_id", ForeignTable: "relationship_severance_events", OnDelete: "c"},
-		{Table: "account_stats", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_statuses_cleanup_policies", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "account_warnings", Column: "account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "account_warnings", Column: "report_id", ForeignTable: "reports", OnDelete: "c"},
-		{Table: "account_warnings", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "accounts", Column: "moved_to_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "admin_action_logs", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "announcement_mutes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "announcement_mutes", Column: "announcement_id", ForeignTable: "announcements", OnDelete: "c"},
-		{Table: "announcement_reactions", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "announcement_reactions", Column: "announcement_id", ForeignTable: "announcements", OnDelete: "c"},
-		{Table: "announcement_reactions", Column: "custom_emoji_id", ForeignTable: "custom_emojis", OnDelete: "c"},
-		{Table: "appeals", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "appeals", Column: "account_warning_id", ForeignTable: "account_warnings", OnDelete: "c"},
-		{Table: "appeals", Column: "approved_by_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "appeals", Column: "rejected_by_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "backups", Column: "user_id", ForeignTable: "users", OnDelete: "n"},
-		{Table: "blocks", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "blocks", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "bookmarks", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "bookmarks", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "bulk_import_rows", Column: "bulk_import_id", ForeignTable: "bulk_imports", OnDelete: "c"},
-		{Table: "bulk_imports", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "canonical_email_blocks", Column: "reference_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "conversation_mutes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "conversation_mutes", Column: "conversation_id", ForeignTable: "conversations", OnDelete: "c"},
-		{Table: "custom_filter_keywords", Column: "custom_filter_id", ForeignTable: "custom_filters", OnDelete: "c"},
-		{Table: "custom_filter_statuses", Column: "custom_filter_id", ForeignTable: "custom_filters", OnDelete: "c"},
-		{Table: "custom_filter_statuses", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "custom_filters", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "email_domain_blocks", Column: "parent_id", ForeignTable: "email_domain_blocks", OnDelete: "c"},
-		{Table: "favourites", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "favourites", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "featured_tags", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "featured_tags", Column: "tag_id", ForeignTable: "tags", OnDelete: "c"},
-		{Table: "follow_recommendation_mutes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "follow_recommendation_mutes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "follow_recommendation_suppressions", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "follow_requests", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "follow_requests", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "follows", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "follows", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "fasp_backfill_requests", Column: "fasp_provider_id", ForeignTable: "fasp_providers", OnDelete: "a"},
-		{Table: "fasp_debug_callbacks", Column: "fasp_provider_id", ForeignTable: "fasp_providers", OnDelete: "a"},
-		{Table: "fasp_follow_recommendations", Column: "requesting_account_id", ForeignTable: "accounts", OnDelete: "a"},
-		{Table: "fasp_follow_recommendations", Column: "recommended_account_id", ForeignTable: "accounts", OnDelete: "a"},
-		{Table: "fasp_subscriptions", Column: "fasp_provider_id", ForeignTable: "fasp_providers", OnDelete: "a"},
-		{Table: "generated_annual_reports", Column: "account_id", ForeignTable: "accounts", OnDelete: "a"},
-		{Table: "identities", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "instance_moderation_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "invites", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "list_accounts", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "list_accounts", Column: "follow_id", ForeignTable: "follows", OnDelete: "c"},
-		{Table: "list_accounts", Column: "follow_request_id", ForeignTable: "follow_requests", OnDelete: "c"},
-		{Table: "list_accounts", Column: "list_id", ForeignTable: "lists", OnDelete: "c"},
-		{Table: "lists", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "login_activities", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "markers", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "media_attachments", Column: "account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "media_attachments", Column: "scheduled_status_id", ForeignTable: "scheduled_statuses", OnDelete: "n"},
-		{Table: "media_attachments", Column: "status_id", ForeignTable: "statuses", OnDelete: "n"},
-		{Table: "mentions", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "mentions", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "mutes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "mutes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "notification_permissions", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "notification_permissions", Column: "from_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "notification_policies", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "notification_requests", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "notification_requests", Column: "from_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "notification_requests", Column: "last_status_id", ForeignTable: "statuses", OnDelete: "n"},
-		{Table: "notifications", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "notifications", Column: "from_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "oauth_access_grants", Column: "application_id", ForeignTable: "oauth_applications", OnDelete: "c"},
-		{Table: "oauth_access_grants", Column: "resource_owner_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "oauth_access_tokens", Column: "application_id", ForeignTable: "oauth_applications", OnDelete: "c"},
-		{Table: "oauth_access_tokens", Column: "resource_owner_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "oauth_applications", Column: "owner_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "poll_votes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "poll_votes", Column: "poll_id", ForeignTable: "polls", OnDelete: "c"},
-		{Table: "polls", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "polls", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "preview_card_trends", Column: "preview_card_id", ForeignTable: "preview_cards", OnDelete: "c"},
-		{Table: "preview_cards", Column: "author_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "quotes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "quotes", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "quotes", Column: "quoted_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "quotes", Column: "quoted_status_id", ForeignTable: "statuses", OnDelete: "n"},
-		{Table: "report_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "report_notes", Column: "report_id", ForeignTable: "reports", OnDelete: "c"},
-		{Table: "reports", Column: "action_taken_by_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "reports", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "reports", Column: "assigned_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "reports", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "reports", Column: "application_id", ForeignTable: "oauth_applications", OnDelete: "n"},
-		{Table: "rule_translations", Column: "rule_id", ForeignTable: "rules", OnDelete: "c"},
-		{Table: "scheduled_statuses", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "session_activations", Column: "access_token_id", ForeignTable: "oauth_access_tokens", OnDelete: "c"},
-		{Table: "session_activations", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "severed_relationships", Column: "local_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "severed_relationships", Column: "remote_account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "severed_relationships", Column: "relationship_severance_event_id", ForeignTable: "relationship_severance_events", OnDelete: "c"},
-		{Table: "status_edits", Column: "account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "status_edits", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "status_pins", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "status_pins", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "status_stats", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "status_trends", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "status_trends", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "statuses", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "statuses", Column: "in_reply_to_account_id", ForeignTable: "accounts", OnDelete: "n"},
-		{Table: "statuses", Column: "in_reply_to_id", ForeignTable: "statuses", OnDelete: "n"},
-		{Table: "statuses", Column: "reblog_of_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "statuses_tags", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
-		{Table: "statuses_tags", Column: "tag_id", ForeignTable: "tags", OnDelete: "c"},
-		{Table: "tag_follows", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "tag_follows", Column: "tag_id", ForeignTable: "tags", OnDelete: "c"},
-		{Table: "tag_trends", Column: "tag_id", ForeignTable: "tags", OnDelete: "c"},
-		{Table: "tombstones", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "user_invite_requests", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "users", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
-		{Table: "users", Column: "invite_id", ForeignTable: "invites", OnDelete: "n"},
-		{Table: "users", Column: "created_by_application_id", ForeignTable: "oauth_applications", OnDelete: "n"},
-		{Table: "users", Column: "role_id", ForeignTable: "user_roles", OnDelete: "n"},
-		{Table: "web_push_subscriptions", Column: "access_token_id", ForeignTable: "oauth_access_tokens", OnDelete: "c"},
-		{Table: "web_push_subscriptions", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "web_settings", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
-		{Table: "webauthn_credentials", Column: "user_id", ForeignTable: "users", OnDelete: "c"},
+		{Table: "account_aliases", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_fc91575d08"},
+		{Table: "account_conversations", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_6f5278b6e9"},
+		{Table: "account_conversations", Column: "conversation_id", ForeignTable: "conversations", OnDelete: "c", Name: "fk_rails_1491654f9f"},
+		{Table: "account_deletion_requests", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_45bf2626b9"},
+		{Table: "account_domain_blocks", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_206c6029bd"},
+		{Table: "account_migrations", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_c9f701caaf"},
+		{Table: "account_migrations", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_rails_d9a8dad070"},
+		{Table: "account_moderation_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_3f8b75089b"},
+		{Table: "account_moderation_notes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_dd62ed5ac3"},
+		{Table: "account_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_4ee4503c69"},
+		{Table: "account_notes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_2801b48f1a"},
+		{Table: "account_pins", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_d44979e5dd"},
+		{Table: "account_pins", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_a176e26c37"},
+		{Table: "account_relationship_severance_events", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_030c916965"},
+		{Table: "account_relationship_severance_events", Column: "relationship_severance_event_id", ForeignTable: "relationship_severance_events", OnDelete: "c", Name: "fk_rails_8a34c3a361"},
+		{Table: "account_stats", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_215bb31ff1"},
+		{Table: "account_statuses_cleanup_policies", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_23d5f73cfe"},
+		{Table: "account_warnings", Column: "account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_rails_a65a1bf71b"},
+		{Table: "account_warnings", Column: "report_id", ForeignTable: "reports", OnDelete: "c", Name: "fk_rails_8f2bab4b16"},
+		{Table: "account_warnings", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_a7ebbb1e37"},
+		{Table: "accounts", Column: "moved_to_account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_rails_2320833084"},
+		{Table: "admin_action_logs", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_a7667297fa"},
+		{Table: "announcement_mutes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_9c99f8e835"},
+		{Table: "announcement_mutes", Column: "announcement_id", ForeignTable: "announcements", OnDelete: "c", Name: "fk_rails_e35401adf1"},
+		{Table: "announcement_reactions", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_7444ad831f"},
+		{Table: "announcement_reactions", Column: "announcement_id", ForeignTable: "announcements", OnDelete: "c", Name: "fk_rails_a1226eaa5c"},
+		{Table: "announcement_reactions", Column: "custom_emoji_id", ForeignTable: "custom_emojis", OnDelete: "c", Name: "fk_rails_b742c91c0e"},
+		{Table: "appeals", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_ea84881569"},
+		{Table: "appeals", Column: "account_warning_id", ForeignTable: "account_warnings", OnDelete: "c", Name: "fk_rails_a99f14546e"},
+		{Table: "appeals", Column: "approved_by_account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_rails_9deb2f63ad"},
+		{Table: "appeals", Column: "rejected_by_account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_rails_501c3a6e13"},
+		{Table: "backups", Column: "user_id", ForeignTable: "users", OnDelete: "n", Name: "fk_rails_096669d221"},
+		{Table: "blocks", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_4269e03e65"},
+		{Table: "blocks", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_9571bfabc1"},
+		{Table: "bookmarks", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_9f6ac182a6"},
+		{Table: "bookmarks", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_11207ffcfd"},
+		{Table: "bulk_import_rows", Column: "bulk_import_id", ForeignTable: "bulk_imports", OnDelete: "c", Name: "fk_rails_d39af34335"},
+		{Table: "bulk_imports", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_1d89c0f8b2"},
+		{Table: "canonical_email_blocks", Column: "reference_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_1ecb262096"},
+		{Table: "conversation_mutes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_225b4212bb"},
+		{Table: "conversation_mutes", Column: "conversation_id", ForeignTable: "conversations", OnDelete: "c", Name: "fk_rails_5ab139311f"},
+		{Table: "custom_filter_keywords", Column: "custom_filter_id", ForeignTable: "custom_filters", OnDelete: "c", Name: "fk_rails_5a49a74012"},
+		{Table: "custom_filter_statuses", Column: "custom_filter_id", ForeignTable: "custom_filters", OnDelete: "c", Name: "fk_rails_e2ddaf5b14"},
+		{Table: "custom_filter_statuses", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_2f6d20c0cf"},
+		{Table: "custom_filters", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_8b8d786993"},
+		{Table: "email_domain_blocks", Column: "parent_id", ForeignTable: "email_domain_blocks", OnDelete: "c", Name: "fk_rails_408efe0a15"},
+		{Table: "favourites", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_5eb6c2b873"},
+		{Table: "favourites", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_b0e856845e"},
+		{Table: "featured_tags", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_174efcf15f"},
+		{Table: "featured_tags", Column: "tag_id", ForeignTable: "tags", OnDelete: "c", Name: "fk_rails_23a9055c7c"},
+		{Table: "follow_recommendation_mutes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_d36abd69ea"},
+		{Table: "follow_recommendation_mutes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_a9f09ec9a8"},
+		{Table: "follow_recommendation_suppressions", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_dfb9a1dbe2"},
+		{Table: "follow_requests", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_76d644b0e7"},
+		{Table: "follow_requests", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_9291ec025d"},
+		{Table: "follows", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_32ed1b5560"},
+		{Table: "follows", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_745ca29eac"},
+		{Table: "fasp_backfill_requests", Column: "fasp_provider_id", ForeignTable: "fasp_providers", OnDelete: "a", Name: "fk_rails_760d761775"},
+		{Table: "fasp_debug_callbacks", Column: "fasp_provider_id", ForeignTable: "fasp_providers", OnDelete: "a", Name: "fk_rails_c1650087cd"},
+		{Table: "fasp_follow_recommendations", Column: "requesting_account_id", ForeignTable: "accounts", OnDelete: "a", Name: "fk_rails_71623d7e2c"},
+		{Table: "fasp_follow_recommendations", Column: "recommended_account_id", ForeignTable: "accounts", OnDelete: "a", Name: "fk_rails_5c63a5fd1b"},
+		{Table: "fasp_subscriptions", Column: "fasp_provider_id", ForeignTable: "fasp_providers", OnDelete: "a", Name: "fk_rails_4c021f5938"},
+		{Table: "generated_annual_reports", Column: "account_id", ForeignTable: "accounts", OnDelete: "a", Name: "fk_rails_4ca37f035c"},
+		{Table: "identities", Column: "user_id", ForeignTable: "users", OnDelete: "c", Name: "fk_bea040f377"},
+		{Table: "instance_moderation_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_62f919e09b"},
+		{Table: "invites", Column: "user_id", ForeignTable: "users", OnDelete: "c", Name: "fk_rails_ff69dbb2ac"},
+		{Table: "list_accounts", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_85fee9d6ab"},
+		{Table: "list_accounts", Column: "follow_id", ForeignTable: "follows", OnDelete: "c", Name: "fk_rails_40f9cc29f1"},
+		{Table: "list_accounts", Column: "follow_request_id", ForeignTable: "follow_requests", OnDelete: "c", Name: "fk_rails_f11f9d1fcc"},
+		{Table: "list_accounts", Column: "list_id", ForeignTable: "lists", OnDelete: "c", Name: "fk_rails_e54e356c88"},
+		{Table: "lists", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_3853b78dac"},
+		{Table: "login_activities", Column: "user_id", ForeignTable: "users", OnDelete: "c", Name: "fk_rails_e4b6396b41"},
+		{Table: "markers", Column: "user_id", ForeignTable: "users", OnDelete: "c", Name: "fk_rails_a7009bc2b6"},
+		{Table: "media_attachments", Column: "account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_96dd81e81b"},
+		{Table: "media_attachments", Column: "scheduled_status_id", ForeignTable: "scheduled_statuses", OnDelete: "n", Name: "fk_rails_31fc5aeef1"},
+		{Table: "media_attachments", Column: "status_id", ForeignTable: "statuses", OnDelete: "n", Name: "fk_rails_3ec0cfdd70"},
+		{Table: "mentions", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_970d43f9d1"},
+		{Table: "mentions", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_59edbe2887"},
+		{Table: "mutes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_b8d8daf315"},
+		{Table: "mutes", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_eecff219ea"},
+		{Table: "notification_permissions", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_7c0bed08df"},
+		{Table: "notification_permissions", Column: "from_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_e3e0aaad70"},
+		{Table: "notification_policies", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_506d62f0da"},
+		{Table: "notification_requests", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_881c7f71c4"},
+		{Table: "notification_requests", Column: "from_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_5632f121b4"},
+		{Table: "notification_requests", Column: "last_status_id", ForeignTable: "statuses", OnDelete: "n", Name: "fk_rails_61c7aa9c1f"},
+		{Table: "notifications", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_c141c8ee55"},
+		{Table: "notifications", Column: "from_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_fbd6b0bf9e"},
+		{Table: "oauth_access_grants", Column: "application_id", ForeignTable: "oauth_applications", OnDelete: "c", Name: "fk_34d54b0a33"},
+		{Table: "oauth_access_grants", Column: "resource_owner_id", ForeignTable: "users", OnDelete: "c", Name: "fk_63b044929b"},
+		{Table: "oauth_access_tokens", Column: "application_id", ForeignTable: "oauth_applications", OnDelete: "c", Name: "fk_f5fc4c1ee3"},
+		{Table: "oauth_access_tokens", Column: "resource_owner_id", ForeignTable: "users", OnDelete: "c", Name: "fk_e84df68546"},
+		{Table: "oauth_applications", Column: "owner_id", ForeignTable: "users", OnDelete: "c", Name: "fk_b0988c7c0a"},
+		{Table: "poll_votes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_b6c18cf44a"},
+		{Table: "poll_votes", Column: "poll_id", ForeignTable: "polls", OnDelete: "c", Name: "fk_rails_a6e6974b7e"},
+		{Table: "polls", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_5b19a0c011"},
+		{Table: "polls", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_3e0d9f1115"},
+		{Table: "preview_card_trends", Column: "preview_card_id", ForeignTable: "preview_cards", OnDelete: "c", Name: "fk_rails_371593db34"},
+		{Table: "preview_cards", Column: "author_account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_rails_dca4905b94"},
+		{Table: "quotes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_36d54169fc"},
+		{Table: "quotes", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_bd3ab4462c"},
+		{Table: "quotes", Column: "quoted_account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_rails_bfc5276b70"},
+		{Table: "quotes", Column: "quoted_status_id", ForeignTable: "statuses", OnDelete: "n", Name: "fk_rails_38068caa0e"},
+		{Table: "report_notes", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_cae66353f3"},
+		{Table: "report_notes", Column: "report_id", ForeignTable: "reports", OnDelete: "c", Name: "fk_rails_7fa83a61eb"},
+		{Table: "reports", Column: "action_taken_by_account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_bca45b75fd"},
+		{Table: "reports", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_4b81f7522c"},
+		{Table: "reports", Column: "assigned_account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_rails_4e7a498fb4"},
+		{Table: "reports", Column: "target_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_eb37af34f0"},
+		{Table: "reports", Column: "application_id", ForeignTable: "oauth_applications", OnDelete: "n", Name: "fk_rails_3deb8c7acb"},
+		{Table: "rule_translations", Column: "rule_id", ForeignTable: "rules", OnDelete: "c", Name: "fk_rails_d5fd439dde"},
+		{Table: "scheduled_statuses", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_23bd9018f9"},
+		{Table: "session_activations", Column: "access_token_id", ForeignTable: "oauth_access_tokens", OnDelete: "c", Name: "fk_957e5bda89"},
+		{Table: "session_activations", Column: "user_id", ForeignTable: "users", OnDelete: "c", Name: "fk_e5fda67334"},
+		{Table: "severed_relationships", Column: "local_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_98ff099d4c"},
+		{Table: "severed_relationships", Column: "remote_account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_f7afd97ba4"},
+		{Table: "severed_relationships", Column: "relationship_severance_event_id", ForeignTable: "relationship_severance_events", OnDelete: "c", Name: "fk_rails_5054494e1e"},
+		{Table: "status_edits", Column: "account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_rails_dc8988c545"},
+		{Table: "status_edits", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_a960f234a0"},
+		{Table: "status_pins", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_d4cb435b62"},
+		{Table: "status_pins", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_65c05552f1"},
+		{Table: "status_stats", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_4a247aac42"},
+		{Table: "status_trends", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_a6b527ea49"},
+		{Table: "status_trends", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_68c610dc1a"},
+		{Table: "statuses", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_9bda1543f7"},
+		{Table: "statuses", Column: "in_reply_to_account_id", ForeignTable: "accounts", OnDelete: "n", Name: "fk_c7fa917661"},
+		{Table: "statuses", Column: "in_reply_to_id", ForeignTable: "statuses", OnDelete: "n", Name: "fk_rails_94a6f70399"},
+		{Table: "statuses", Column: "reblog_of_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_256483a9ab"},
+		{Table: "statuses_tags", Column: "status_id", ForeignTable: "statuses", OnDelete: "c", Name: "fk_rails_df0fe11427"},
+		{Table: "statuses_tags", Column: "tag_id", ForeignTable: "tags", OnDelete: "c", Name: "fk_3081861e21"},
+		{Table: "tag_follows", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_091e831473"},
+		{Table: "tag_follows", Column: "tag_id", ForeignTable: "tags", OnDelete: "c", Name: "fk_rails_0deefe597f"},
+		{Table: "tag_trends", Column: "tag_id", ForeignTable: "tags", OnDelete: "c", Name: "fk_rails_3033046460"},
+		{Table: "tombstones", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_rails_f95b861449"},
+		{Table: "user_invite_requests", Column: "user_id", ForeignTable: "users", OnDelete: "c", Name: "fk_rails_3773f15361"},
+		{Table: "users", Column: "account_id", ForeignTable: "accounts", OnDelete: "c", Name: "fk_50500f500d"},
+		{Table: "users", Column: "invite_id", ForeignTable: "invites", OnDelete: "n", Name: "fk_rails_8fb2a43e88"},
+		{Table: "users", Column: "created_by_application_id", ForeignTable: "oauth_applications", OnDelete: "n", Name: "fk_rails_ecc9536e7c"},
+		{Table: "users", Column: "role_id", ForeignTable: "user_roles", OnDelete: "n", Name: "fk_rails_642f17018b"},
+		{Table: "web_push_subscriptions", Column: "access_token_id", ForeignTable: "oauth_access_tokens", OnDelete: "c", Name: "fk_rails_751a9f390b"},
+		{Table: "web_push_subscriptions", Column: "user_id", ForeignTable: "users", OnDelete: "c", Name: "fk_rails_b006f28dac"},
+		{Table: "web_settings", Column: "user_id", ForeignTable: "users", OnDelete: "c", Name: "fk_11910667b2"},
+		{Table: "webauthn_credentials", Column: "user_id", ForeignTable: "users", OnDelete: "c", Name: "fk_rails_a4355aef77"},
 	}
 }
 
@@ -2853,36 +2853,11 @@ func SchemaAvailable(database *gorm.DB) error {
 	if err := mastodonSchemaMigrationApplied(database, requiredMastodonSchemaVersion); err != nil {
 		return err
 	}
-	if err := mastodonSchemaSHA1Applied(database, requiredMastodonSchemaSHA1); err != nil {
-		return err
-	}
 	return nil
 }
 
 func RequiredMastodonSchemaVersion() string {
 	return requiredMastodonSchemaVersion
-}
-
-func RequiredMastodonSchemaSHA1() string {
-	return requiredMastodonSchemaSHA1
-}
-
-func mastodonSchemaSHA1Applied(database *gorm.DB, expected string) error {
-	if expected == "" {
-		return nil
-	}
-	var actual sql.NullString
-	err := database.Raw(`SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1' LIMIT 1`).Row().Scan(&actual)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("database ar_internal_metadata is missing required Mastodon schema SHA-1 %s", expected)
-	}
-	if err != nil {
-		return fmt.Errorf("inspect Mastodon schema SHA-1: %w", err)
-	}
-	if !actual.Valid || actual.String != expected {
-		return fmt.Errorf("database schema SHA-1 %q does not match required Mastodon schema SHA-1 %s", actual.String, expected)
-	}
-	return nil
 }
 
 func mastodonSchemaMigrationApplied(database *gorm.DB, version string) error {
@@ -3155,26 +3130,36 @@ func mastodonPrimaryKeyMatches(database *gorm.DB, table string, columns []string
 
 func mastodonForeignKeyAvailable(database *gorm.DB, foreignKey MastodonForeignKey) (bool, error) {
 	var available bool
-	err := database.Raw(
-		`SELECT EXISTS(
-		   SELECT 1
-		     FROM pg_constraint c
-		     JOIN pg_class source_table ON source_table.oid = c.conrelid
-		     JOIN pg_class target_table ON target_table.oid = c.confrelid
-		     JOIN pg_attribute source_column
+	query := `SELECT EXISTS(
+			   SELECT 1
+			     FROM pg_constraint c
+			     JOIN pg_class source_table ON source_table.oid = c.conrelid
+			     JOIN pg_namespace source_namespace ON source_namespace.oid = source_table.relnamespace
+			     JOIN pg_class target_table ON target_table.oid = c.confrelid
+			     JOIN pg_namespace target_namespace ON target_namespace.oid = target_table.relnamespace
+			     JOIN pg_attribute source_column
 		       ON source_column.attrelid = source_table.oid
 		      AND source_column.attnum = ANY(c.conkey)
-		    WHERE c.contype = 'f'
-		      AND source_table.relname = ?
-		      AND source_column.attname = ?
-		      AND target_table.relname = ?
-		      AND c.confdeltype = ?
-		 )`,
+			    WHERE c.contype = 'f'
+			      AND source_namespace.nspname = current_schema()
+			      AND target_namespace.nspname = current_schema()
+			      AND source_table.relname = ?
+			      AND source_column.attname = ?
+			      AND target_table.relname = ?
+			      AND c.confdeltype = ?
+	`
+	arguments := []any{
 		foreignKey.Table,
 		foreignKey.Column,
 		foreignKey.ForeignTable,
 		foreignKey.OnDelete,
-	).Row().Scan(&available)
+	}
+	if foreignKey.Name != "" {
+		query += ` AND c.conname = ?`
+		arguments = append(arguments, foreignKey.Name)
+	}
+	query += `)`
+	err := database.Raw(query, arguments...).Row().Scan(&available)
 	if err != nil {
 		return false, err
 	}

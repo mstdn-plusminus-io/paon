@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -14,11 +15,78 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	paondb "github.com/mstdn-plusminus-io/paon/internal/paon/db"
 	paonotp "github.com/mstdn-plusminus-io/paon/internal/paon/otp"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/schemacatalog"
 	"gorm.io/gorm"
 )
 
 //go:embed testdata/mastodon_4_2_19_schema.sql
 var mastodon4219Schema []byte
+
+//go:embed testdata/mastodon_4_3_23_schema.sql
+var mastodon4323Schema []byte
+
+//go:embed testdata/mastodon_4_4_22_schema.sql
+var mastodon4422Schema []byte
+
+//go:embed testdata/mastodon_v4_2_19_fresh_catalog.json
+var mastodon4219FreshCatalog []byte
+
+//go:embed testdata/mastodon_v4_2_19_fresh_catalog_pg14.json
+var mastodon4219FreshCatalogPG14 []byte
+
+//go:embed testdata/mastodon_v4_3_23_fresh_catalog.json
+var mastodon4323FreshCatalog []byte
+
+//go:embed testdata/mastodon_v4_3_23_fresh_catalog_pg14.json
+var mastodon4323FreshCatalogPG14 []byte
+
+//go:embed testdata/mastodon_v4_2_19_to_v4_3_23_catalog.json
+var mastodon4219To4323Catalog []byte
+
+//go:embed testdata/mastodon_v4_2_19_to_v4_3_23_catalog_pg14.json
+var mastodon4219To4323CatalogPG14 []byte
+
+//go:embed testdata/mastodon_v4_4_22_fresh_catalog.json
+var mastodon4422FreshCatalog []byte
+
+//go:embed testdata/mastodon_v4_4_22_fresh_catalog_pg14.json
+var mastodon4422FreshCatalogPG14 []byte
+
+//go:embed testdata/mastodon_v4_3_23_to_v4_4_22_catalog.json
+var mastodon4323To4422Catalog []byte
+
+//go:embed testdata/mastodon_v4_3_23_to_v4_4_22_catalog_pg14.json
+var mastodon4323To4422CatalogPG14 []byte
+
+//go:embed testdata/mastodon_v4_2_19_to_v4_4_22_catalog.json
+var mastodon4219To4422Catalog []byte
+
+//go:embed testdata/mastodon_v4_2_19_to_v4_4_22_catalog_pg14.json
+var mastodon4219To4422CatalogPG14 []byte
+
+//go:embed testdata/mastodon_v4_5_15_fresh_catalog.json
+var mastodon4515FreshCatalog []byte
+
+//go:embed testdata/mastodon_v4_5_15_fresh_catalog_pg14.json
+var mastodon4515FreshCatalogPG14 []byte
+
+//go:embed testdata/mastodon_v4_4_22_to_v4_5_15_catalog.json
+var mastodon4422To4515Catalog []byte
+
+//go:embed testdata/mastodon_v4_4_22_to_v4_5_15_catalog_pg14.json
+var mastodon4422To4515CatalogPG14 []byte
+
+//go:embed testdata/mastodon_v4_3_23_to_v4_5_15_catalog.json
+var mastodon4323To4515Catalog []byte
+
+//go:embed testdata/mastodon_v4_3_23_to_v4_5_15_catalog_pg14.json
+var mastodon4323To4515CatalogPG14 []byte
+
+//go:embed testdata/mastodon_v4_2_19_to_v4_5_15_catalog.json
+var mastodon4219To4515Catalog []byte
+
+//go:embed testdata/mastodon_v4_2_19_to_v4_5_15_catalog_pg14.json
+var mastodon4219To4515CatalogPG14 []byte
 
 func TestFreshMigrationAgainstPostgreSQL(t *testing.T) {
 	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
@@ -67,6 +135,99 @@ func TestFreshMigrationAgainstPostgreSQL(t *testing.T) {
 	assertRelationAvailable(t, database, "imports", false)
 	assertColumnAvailable(t, database, "users", "encrypted_otp_secret", false)
 	assertColumnAvailable(t, database, "statuses", "quote_approval_policy", true)
+	assertSchemaCatalogGolden(t, database, mastodon4515FreshCatalogPG14, mastodon4515FreshCatalog)
+}
+
+func TestCurrentMastodon4515CatalogReconciliationAgainstPostgreSQL(t *testing.T) {
+	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("PAON_TEST_DATABASE_URL is required for integration tests")
+	}
+	database, err := paondb.Open(config.Config{DatabaseURL: databaseURL, DatabaseMaxOpenConns: 5, DatabaseMaxIdleConns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`).Error; err != nil {
+		t.Fatalf("reset integration schema: %v", err)
+	}
+	applied, err := Run(context.Background(), database)
+	if err != nil || !applied {
+		t.Fatalf("fresh Run() = applied %v, err %v", applied, err)
+	}
+	installLegacyPaonCanonicalNames(t, database)
+	if err := paondb.SchemaAvailable(database); err == nil {
+		t.Fatal("SchemaAvailable accepted legacy Paon constraint names")
+	}
+	if err := database.Exec(`DROP INDEX index_accounts_on_uri`).Error; err != nil {
+		t.Fatal(err)
+	}
+	applied, err = Run(context.Background(), database)
+	if err == nil || applied {
+		t.Fatalf("catalog reconciliation committed before complete validation: applied %v, err %v", applied, err)
+	}
+	assertScalarString(t, database, `SELECT conname FROM pg_constraint WHERE conrelid = 'account_aliases'::regclass AND contype = 'f'`, "account_aliases_account_id_fkey")
+	if err := database.Exec(`CREATE INDEX index_accounts_on_uri ON accounts (uri)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	applied, err = Run(context.Background(), database)
+	if err != nil || !applied {
+		t.Fatalf("catalog reconciliation Run() = applied %v, err %v", applied, err)
+	}
+	assertScalarString(t, database, `SELECT conname FROM pg_constraint WHERE conrelid = 'account_aliases'::regclass AND contype = 'f'`, "fk_rails_fc91575d08")
+	assertSchemaCatalogGolden(t, database, mastodon4515FreshCatalogPG14, mastodon4515FreshCatalog)
+
+	applied, err = Run(context.Background(), database)
+	if err != nil || applied {
+		t.Fatalf("second catalog reconciliation Run() = applied %v, err %v", applied, err)
+	}
+}
+
+func TestStagedMastodon4219To4323CatalogAgainstPostgreSQL(t *testing.T) {
+	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("PAON_TEST_DATABASE_URL is required for integration tests")
+	}
+	database, err := paondb.Open(config.Config{DatabaseURL: databaseURL, DatabaseMaxOpenConns: 5, DatabaseMaxIdleConns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`DROP SCHEMA public CASCADE; CREATE SCHEMA public`).Error; err != nil {
+		t.Fatalf("reset integration schema: %v", err)
+	}
+	salt, err := randomMigrationHex(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, statement := range strings.Split(strings.ReplaceAll(string(mastodon4219Schema), "__PAON_TIMESTAMP_ID_SALT__", salt), statementSeparator) {
+		statement = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(statement), ";"))
+		if statement == "" {
+			continue
+		}
+		if err := database.Exec(statement).Error; err != nil {
+			t.Fatalf("apply Mastodon 4.2.19 fixture statement %d: %v", index, err)
+		}
+	}
+	assertSchemaCatalogGolden(t, database, mastodon4219FreshCatalogPG14, mastodon4219FreshCatalog)
+	credentials := paonotp.Credentials{
+		PrimaryKey:        strings.Repeat("p", paonotp.MinimumCredentialLength),
+		DeterministicKey:  strings.Repeat("d", paonotp.MinimumCredentialLength),
+		KeyDerivationSalt: strings.Repeat("s", paonotp.MinimumCredentialLength),
+	}
+	for _, phase := range []UpgradePhase{UpgradePhaseExpand, UpgradePhaseBackfill, UpgradePhaseValidate, UpgradePhaseContract} {
+		options := Options{Phase: phase, ActiveRecordEncryption: credentials}
+		if phase == UpgradePhaseContract {
+			options.AcknowledgeContract = true
+		}
+		applied, err := runMastodon43Phase(context.Background(), database, phase, options)
+		if err != nil || !applied {
+			t.Fatalf("Mastodon 4.3 phase %s = applied %v, err %v", phase, applied, err)
+		}
+	}
+	assertMigrationVersionCount(t, database, Mastodon4323SchemaVersion, 1)
+	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 472)
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "7d5086228b379c66ff21a4396f443ba4daac5752")
+	assertSchemaCatalogGolden(t, database, mastodon4219To4323CatalogPG14, mastodon4219To4323Catalog)
 }
 
 func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
@@ -82,19 +243,19 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 		t.Fatalf("reset integration schema: %v", err)
 	}
 
-	// Build a real 4.3.23 source using Paon's reviewed 4.2 fixture and 4.3
-	// phased path, then exercise the independent 4.4 phase inventory.
+	// Load the exact reviewed Mastodon 4.3.23 fresh catalog, then exercise the
+	// independent 4.4 phase inventory.
 	salt, err := randomMigrationHex(16)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index, statement := range strings.Split(strings.ReplaceAll(string(mastodon4219Schema), "__PAON_TIMESTAMP_ID_SALT__", salt), statementSeparator) {
+	for index, statement := range strings.Split(strings.ReplaceAll(string(mastodon4323Schema), "__PAON_TIMESTAMP_ID_SALT__", salt), statementSeparator) {
 		statement = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(statement), ";"))
 		if statement == "" {
 			continue
 		}
 		if err := database.Exec(statement).Error; err != nil {
-			t.Fatalf("apply Mastodon 4.2.19 fixture statement %d: %v", index, err)
+			t.Fatalf("apply Mastodon 4.3.23 fixture statement %d: %v", index, err)
 		}
 	}
 	credentials := paonotp.Credentials{
@@ -102,19 +263,11 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 		DeterministicKey:  strings.Repeat("d", paonotp.MinimumCredentialLength),
 		KeyDerivationSalt: strings.Repeat("s", paonotp.MinimumCredentialLength),
 	}
-	for _, phase := range []UpgradePhase{UpgradePhaseExpand, UpgradePhaseBackfill, UpgradePhaseValidate, UpgradePhaseContract} {
-		options := Options{Phase: phase, ActiveRecordEncryption: credentials}
-		if phase == UpgradePhaseContract {
-			options.AcknowledgeContract = true
-		}
-		applied, err := runMastodon43Phase(context.Background(), database, phase, options)
-		if err != nil || !applied {
-			t.Fatalf("prepare 4.3 phase %s = applied %v, err %v", phase, applied, err)
-		}
-	}
 	assertMigrationVersionCount(t, database, Mastodon4323SchemaVersion, 1)
 	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 472)
+	assertSchemaCatalogGolden(t, database, mastodon4323FreshCatalogPG14, mastodon4323FreshCatalog)
+	installLegacyPaonCanonicalNames(t, database)
 	encryptedOTP, err := paonotp.EncryptActiveRecord("JBSWY3DPEHPK3PXP", credentials)
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +282,7 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 		t.Fatalf("seed populated Mastodon 4.3 fixture: %v", err)
 	}
 
-	applied, err := RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseExpand})
+	applied, err := runMastodon44Phase(context.Background(), database, UpgradePhaseExpand, Options{Phase: UpgradePhaseExpand})
 	if err != nil || !applied {
 		t.Fatalf("4.4 expand = applied %v, err %v", applied, err)
 	}
@@ -156,7 +309,7 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 		return nil
 	}
 	backfillOptions := Options{Phase: UpgradePhaseBackfill, Mastodon44TagTrendBackfill: backfill, Mastodon44TagTrendBackfillPostCommit: postCommit}
-	applied, err = RunWithOptions(context.Background(), database, backfillOptions)
+	applied, err = runMastodon44Phase(context.Background(), database, UpgradePhaseBackfill, backfillOptions)
 	if err == nil || applied {
 		t.Fatalf("4.4 backfill accepted failed Redis read: applied %v, err %v", applied, err)
 	}
@@ -164,7 +317,7 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 	if cleanupCalls != 0 {
 		t.Fatalf("cleanup ran before PostgreSQL commit: calls=%d", cleanupCalls)
 	}
-	applied, err = RunWithOptions(context.Background(), database, backfillOptions)
+	applied, err = runMastodon44Phase(context.Background(), database, UpgradePhaseBackfill, backfillOptions)
 	if err == nil || !applied {
 		t.Fatalf("4.4 backfill did not report post-commit cleanup failure: applied %v, err %v", applied, err)
 	}
@@ -172,7 +325,7 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM tag_trends WHERE tag_id = 7201 AND score = 2.5 AND rank = 2 AND allowed = true AND language = ''`, 1)
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM tag_trends WHERE tag_id = 7202 AND score = 9 AND rank = 1 AND allowed = false AND language = ''`, 1)
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM settings WHERE id = 7501`, 0)
-	applied, err = RunWithOptions(context.Background(), database, backfillOptions)
+	applied, err = runMastodon44Phase(context.Background(), database, UpgradePhaseBackfill, backfillOptions)
 	if err != nil || applied {
 		t.Fatalf("retry 4.4 post-commit cleanup = applied %v, err %v", applied, err)
 	}
@@ -180,7 +333,7 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 		t.Fatalf("tag trend retry calls = backfill %d cleanup %d, want 2/2", callbackCalls, cleanupCalls)
 	}
 
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseValidate, ActiveRecordEncryption: credentials})
+	applied, err = runMastodon44Phase(context.Background(), database, UpgradePhaseValidate, Options{Phase: UpgradePhaseValidate, ActiveRecordEncryption: credentials})
 	if err == nil || applied {
 		t.Fatalf("4.4 validate accepted pending imports: applied %v, err %v", applied, err)
 	}
@@ -188,7 +341,7 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 	if err := database.Exec(`DELETE FROM imports WHERE id = 7401`).Error; err != nil {
 		t.Fatalf("mark legacy import complete: %v", err)
 	}
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseValidate, ActiveRecordEncryption: credentials})
+	applied, err = runMastodon44Phase(context.Background(), database, UpgradePhaseValidate, Options{Phase: UpgradePhaseValidate, ActiveRecordEncryption: credentials})
 	if err != nil || !applied {
 		t.Fatalf("4.4 validate = applied %v, err %v", applied, err)
 	}
@@ -197,7 +350,7 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 	if err := database.Exec(`UPDATE users SET otp_secret = 'not-active-record-ciphertext' WHERE id = 7301`).Error; err != nil {
 		t.Fatalf("inject invalid migrated OTP: %v", err)
 	}
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true, ActiveRecordEncryption: credentials})
+	applied, err = runMastodon44Phase(context.Background(), database, UpgradePhaseContract, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true, ActiveRecordEncryption: credentials})
 	if err == nil || applied {
 		t.Fatalf("4.4 contract accepted invalid migrated OTP: applied %v, err %v", applied, err)
 	}
@@ -207,23 +360,46 @@ func TestStagedMastodon4323UpgradeAgainstPostgreSQL(t *testing.T) {
 	if err := database.Exec(`UPDATE users SET otp_secret = ? WHERE id = 7301`, encryptedOTP).Error; err != nil {
 		t.Fatalf("repair migrated OTP: %v", err)
 	}
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true, ActiveRecordEncryption: credentials})
+	applied, err = runMastodon44Phase(context.Background(), database, UpgradePhaseContract, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true, ActiveRecordEncryption: credentials})
 	if err != nil || !applied {
 		t.Fatalf("4.4 contract = applied %v, err %v", applied, err)
 	}
-	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 554)
-	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 1)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 539)
+	assertMigrationVersionCount(t, database, Mastodon4422SchemaVersion, 1)
+	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
 	assertRelationAvailable(t, database, "fasp_follow_recommendations", true)
 	assertRelationAvailable(t, database, "imports", false)
 	assertColumnAvailable(t, database, "settings", "thing_type", false)
 	assertColumnAvailable(t, database, "users", "encrypted_otp_secret", false)
 	assertColumnNullable(t, database, "web_push_subscriptions", "user_id", false)
 	assertColumnNullable(t, database, "polls", "status_id", false)
-	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "801766beefdd9b1d55fe6f8bf3bed91392aebab1")
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "d03e3ba56d365d37ac099782d9d80efbce3abb8b")
+	assertSchemaCatalogGolden(t, database, mastodon4323To4422CatalogPG14, mastodon4323To4422Catalog)
+
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseExpand})
+	if err != nil || !applied {
+		t.Fatalf("4.5 expand = applied %v, err %v", applied, err)
+	}
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseBackfill})
+	if err != nil || !applied {
+		t.Fatalf("4.5 backfill = applied %v, err %v", applied, err)
+	}
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseValidate})
+	if err != nil || applied {
+		t.Fatalf("4.5 validate = applied %v, err %v; validation has no upstream marker", applied, err)
+	}
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true})
+	if err != nil || !applied {
+		t.Fatalf("4.5 contract = applied %v, err %v", applied, err)
+	}
+	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 1)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 554)
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "d03e3ba56d365d37ac099782d9d80efbce3abb8b")
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM username_blocks`, 23)
 	if err := paondb.SchemaAvailable(database); err != nil {
-		t.Fatalf("validate contracted 4.4 schema: %v", err)
+		t.Fatalf("validate contracted 4.5 schema: %v", err)
 	}
+	assertSchemaCatalogGolden(t, database, mastodon4323To4515CatalogPG14, mastodon4323To4515Catalog)
 }
 
 func TestStagedMastodon4422UpgradeAgainstPostgreSQL(t *testing.T) {
@@ -242,43 +418,19 @@ func TestStagedMastodon4422UpgradeAgainstPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index, statement := range strings.Split(strings.ReplaceAll(string(mastodon4219Schema), "__PAON_TIMESTAMP_ID_SALT__", salt), statementSeparator) {
+	for index, statement := range strings.Split(strings.ReplaceAll(string(mastodon4422Schema), "__PAON_TIMESTAMP_ID_SALT__", salt), statementSeparator) {
 		statement = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(statement), ";"))
 		if statement == "" {
 			continue
 		}
 		if err := database.Exec(statement).Error; err != nil {
-			t.Fatalf("apply Mastodon 4.2.19 fixture statement %d: %v", index, err)
-		}
-	}
-	credentials := paonotp.Credentials{
-		PrimaryKey:        strings.Repeat("p", paonotp.MinimumCredentialLength),
-		DeterministicKey:  strings.Repeat("d", paonotp.MinimumCredentialLength),
-		KeyDerivationSalt: strings.Repeat("s", paonotp.MinimumCredentialLength),
-	}
-	for _, phase := range []UpgradePhase{UpgradePhaseExpand, UpgradePhaseBackfill, UpgradePhaseValidate, UpgradePhaseContract} {
-		options := Options{Phase: phase, ActiveRecordEncryption: credentials, Mastodon44SkipTagTrendBackfill: true}
-		if phase == UpgradePhaseContract {
-			options.AcknowledgeContract = true
-		}
-		applied, err := runMastodon43Phase(context.Background(), database, phase, options)
-		if err != nil || !applied {
-			t.Fatalf("prepare 4.3 phase %s = applied %v, err %v", phase, applied, err)
-		}
-	}
-	for _, phase := range []UpgradePhase{UpgradePhaseExpand, UpgradePhaseBackfill, UpgradePhaseValidate, UpgradePhaseContract} {
-		options := Options{Phase: phase, ActiveRecordEncryption: credentials, Mastodon44SkipTagTrendBackfill: true}
-		if phase == UpgradePhaseContract {
-			options.AcknowledgeContract = true
-		}
-		applied, err := runMastodon44Phase(context.Background(), database, phase, options)
-		if err != nil || !applied {
-			t.Fatalf("prepare 4.4 phase %s = applied %v, err %v", phase, applied, err)
+			t.Fatalf("apply Mastodon 4.4.22 fixture statement %d: %v", index, err)
 		}
 	}
 	assertMigrationVersionCount(t, database, Mastodon4422SchemaVersion, 1)
 	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 539)
+	assertSchemaCatalogGolden(t, database, mastodon4422FreshCatalogPG14, mastodon4422FreshCatalog)
 	if err := database.Exec(`INSERT INTO accounts (id, username, domain, created_at, updated_at) VALUES (8501, 'existing', 'remote.example', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP); INSERT INTO users (id, email, account_id, settings, created_at, updated_at) VALUES (8502, 'settings@example.test', 8501, '{"notification_emails.reblog":false,"notification_emails.mention":false,"default_privacy":"private"}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP); INSERT INTO settings (var, value, created_at, updated_at) VALUES ('timeline_preview', E'--- false\n', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), ('trends_as_landing_page', E'--- true\n', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).Error; err != nil {
 		t.Fatalf("seed populated Mastodon 4.4 fixture: %v", err)
 	}
@@ -332,18 +484,12 @@ func TestStagedMastodon4422UpgradeAgainstPostgreSQL(t *testing.T) {
 	assertRelationAvailable(t, database, "index_quotes_on_account_id_and_quoted_account_id", false)
 	assertRelationAvailable(t, database, "index_quotes_on_quoted_status_id", false)
 	assertRelationAvailable(t, database, "index_follows_on_target_account_id", false)
-	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "801766beefdd9b1d55fe6f8bf3bed91392aebab1")
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "b53e3b8de778cd1b53158326b97afa9368f3237e")
 	if err := paondb.SchemaAvailable(database); err != nil {
 		t.Fatalf("validate contracted 4.5 schema: %v", err)
 	}
-	if err := database.Exec(`UPDATE ar_internal_metadata SET value = 'incorrect' WHERE key = 'schema_sha1'`).Error; err != nil {
-		t.Fatalf("corrupt final schema SHA-1 fixture: %v", err)
-	}
-	if err := paondb.SchemaAvailable(database); err == nil || !strings.Contains(err.Error(), "schema SHA-1") {
-		t.Fatalf("schema guard with incorrect SHA-1 = %v, want schema SHA-1 error", err)
-	}
-	if err := database.Exec(`UPDATE ar_internal_metadata SET value = '801766beefdd9b1d55fe6f8bf3bed91392aebab1' WHERE key = 'schema_sha1'; CREATE INDEX index_follows_on_target_account_id ON follows (target_account_id)`).Error; err != nil {
-		t.Fatalf("restore SHA-1 and recreate obsolete v4.5 index fixture: %v", err)
+	if err := database.Exec(`CREATE INDEX index_follows_on_target_account_id ON follows (target_account_id)`).Error; err != nil {
+		t.Fatalf("recreate obsolete v4.5 index fixture: %v", err)
 	}
 	if err := paondb.SchemaAvailable(database); err == nil || !strings.Contains(err.Error(), "obsolete Mastodon indexes") {
 		t.Fatalf("schema guard with obsolete v4.5 index = %v, want obsolete-index error", err)
@@ -354,6 +500,7 @@ func TestStagedMastodon4422UpgradeAgainstPostgreSQL(t *testing.T) {
 	if err := paondb.SchemaAvailable(database); err != nil {
 		t.Fatalf("validate restored contracted 4.5 schema: %v", err)
 	}
+	assertSchemaCatalogGolden(t, database, mastodon4422To4515CatalogPG14, mastodon4422To4515Catalog)
 }
 
 func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
@@ -383,26 +530,26 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 	}
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 422)
 	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "7d5086228b379c66ff21a4396f443ba4daac5752")
-	if err := database.Exec(`DELETE FROM schema_migrations WHERE version = '20180813113448'`).Error; err != nil {
-		t.Fatal(err)
-	}
-	assertMigrationVersionCount(t, database, "20180813113448", 0)
-	if err := database.Exec(`ALTER TABLE accounts DROP COLUMN devices_url`).Error; err != nil {
-		t.Fatal(err)
-	}
-	applied, err := RunWithOptions(context.Background(), database, Options{})
-	if err == nil || applied {
-		t.Fatalf("expand accepted malformed Mastodon 4.2 base: applied %v, err %v", applied, err)
+	assertSchemaCatalogGolden(t, database, mastodon4219FreshCatalogPG14, mastodon4219FreshCatalog)
+	errRollbackMalformedFixture := errors.New("rollback malformed Mastodon 4.2 fixture")
+	err = database.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`ALTER TABLE accounts DROP COLUMN devices_url`).Error; err != nil {
+			return err
+		}
+		if err := validateMastodon4219UpgradePrerequisites(tx); err == nil {
+			return errors.New("upgrade prerequisites accepted a malformed Mastodon 4.2 base")
+		}
+		return errRollbackMalformedFixture
+	})
+	if !errors.Is(err, errRollbackMalformedFixture) {
+		t.Fatalf("malformed Mastodon 4.2 fixture rollback = %v", err)
 	}
 	assertMigrationVersionCount(t, database, mastodon43ExpandSteps()[0].version, 0)
-	if err := database.Exec(`ALTER TABLE accounts ADD COLUMN devices_url character varying`).Error; err != nil {
-		t.Fatal(err)
-	}
 	seedWorstCaseMastodon4219Fixture(t, database)
 
-	applied, err = RunWithOptions(context.Background(), database, Options{})
+	applied, err := runMastodon43Phase(context.Background(), database, UpgradePhaseExpand, Options{})
 	if err != nil || !applied {
-		t.Fatalf("expand RunWithOptions() = applied %v, err %v", applied, err)
+		t.Fatalf("4.3 expand = applied %v, err %v", applied, err)
 	}
 	assertMigrationVersionCount(t, database, mastodon43ExpandSteps()[len(mastodon43ExpandSteps())-1].version, 1)
 	assertMigrationVersionCount(t, database, "20240109103012", 0)
@@ -413,16 +560,16 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 	assertColumnNullable(t, database, "mentions", "account_id", true)
 	assertColumnDefaultAvailable(t, database, "status_pins", "created_at", true)
 
-	applied, err = RunWithOptions(context.Background(), database, Options{})
+	applied, err = runMastodon43Phase(context.Background(), database, UpgradePhaseExpand, Options{})
 	if err != nil || applied {
-		t.Fatalf("second expand RunWithOptions() = applied %v, err %v", applied, err)
+		t.Fatalf("second 4.3 expand = applied %v, err %v", applied, err)
 	}
 	if err := database.Exec(`INSERT INTO schema_migrations (version) VALUES ('20231111111111')`).Error; err != nil {
 		t.Fatal(err)
 	}
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseBackfill})
+	applied, err = runMastodon43Phase(context.Background(), database, UpgradePhaseBackfill, Options{Phase: UpgradePhaseBackfill})
 	if err == nil || applied {
-		t.Fatalf("backfill with unknown migration marker RunWithOptions() = applied %v, err %v", applied, err)
+		t.Fatalf("4.3 backfill with unknown migration marker = applied %v, err %v", applied, err)
 	}
 	assertMigrationVersionCount(t, database, "20240109103012", 0)
 	if err := database.Exec(`DELETE FROM schema_migrations WHERE version = '20231111111111'`).Error; err != nil {
@@ -437,9 +584,9 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 	if err := database.Exec(`CREATE FUNCTION fail_second_alias_backfill_batch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.id = 3602 THEN RAISE EXCEPTION 'injected alias backfill failure'; END IF; RETURN OLD; END $$; CREATE TRIGGER fail_second_alias_backfill_batch BEFORE DELETE ON account_aliases FOR EACH ROW EXECUTE FUNCTION fail_second_alias_backfill_batch()`).Error; err != nil {
 		t.Fatalf("install backfill failure injection: %v", err)
 	}
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseBackfill, ActiveRecordEncryption: credentials})
+	applied, err = runMastodon43Phase(context.Background(), database, UpgradePhaseBackfill, Options{Phase: UpgradePhaseBackfill, ActiveRecordEncryption: credentials})
 	if err == nil || applied {
-		t.Fatalf("interrupted backfill RunWithOptions() = applied %v, err %v", applied, err)
+		t.Fatalf("interrupted 4.3 backfill = applied %v, err %v", applied, err)
 	}
 	assertMigrationVersionCount(t, database, "20231018193209", 0)
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM account_aliases WHERE account_id = 1001 AND uri = 'https://remote.example/@alias'`, 502)
@@ -449,9 +596,9 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 		t.Fatalf("remove backfill failure injection: %v", err)
 	}
 
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseBackfill, ActiveRecordEncryption: credentials})
+	applied, err = runMastodon43Phase(context.Background(), database, UpgradePhaseBackfill, Options{Phase: UpgradePhaseBackfill, ActiveRecordEncryption: credentials})
 	if err != nil || !applied {
-		t.Fatalf("backfill RunWithOptions() = applied %v, err %v", applied, err)
+		t.Fatalf("4.3 backfill = applied %v, err %v", applied, err)
 	}
 	assertMigrationVersionCount(t, database, "20240808124339", 1)
 	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
@@ -459,12 +606,18 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 	assertRelationAvailable(t, database, "encrypted_messages_id_seq", true)
 	assertColumnAvailable(t, database, "notification_policies", "filter_not_following", true)
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM account_aliases WHERE account_id = 1001 AND uri = 'https://remote.example/@alias'`, 1)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM account_aliases WHERE account_id IS NULL AND uri = 'https://remote.example/@nullable-alias'`, 1)
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM custom_filter_statuses WHERE custom_filter_id = 4001 AND status_id = 3001`, 1)
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM identities WHERE uid = 'duplicate-uid' AND provider = 'oidc'`, 1)
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM webauthn_credentials WHERE user_id = 2001 AND nickname = 'duplicate-key'`, 1)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM webauthn_credentials WHERE user_id IS NULL AND nickname = 'nullable-key'`, 2)
 	assertScalarString(t, database, `SELECT locale FROM users WHERE id = 2001`, "fr-CA")
+	assertScalarString(t, database, `SELECT locale FROM users WHERE id = 2002`, "fr-CA")
+	assertScalarString(t, database, `SELECT updated_at::text FROM users WHERE id = 2002`, "2000-01-01 00:00:00")
 	assertScalarString(t, database, `SELECT scopes FROM oauth_applications WHERE id = 5001`, "read profile crypto")
 	assertScalarString(t, database, `SELECT scopes FROM oauth_access_tokens WHERE id = 5001`, "read profile crypto")
+	assertScalarString(t, database, `SELECT scopes FROM oauth_applications WHERE id = 5002`, "bprofile  crypto-scope")
+	assertScalarString(t, database, `SELECT scopes FROM oauth_access_tokens WHERE id = 5002`, "profile-extra crypto  profile")
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM notification_policies WHERE account_id = 1001 AND filter_not_following AND filter_not_followers AND NOT filter_private_mentions AND for_not_following = 1 AND for_not_followers = 1 AND for_private_mentions = 0`, 1)
 	var migratedOTP string
 	if err := database.Raw(`SELECT otp_secret FROM users WHERE id = 2001`).Scan(&migratedOTP).Error; err != nil {
@@ -475,9 +628,9 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 		t.Fatalf("migrated OTP = %q, err %v", clearOTP, err)
 	}
 
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseValidate, ActiveRecordEncryption: credentials})
+	applied, err = runMastodon43Phase(context.Background(), database, UpgradePhaseValidate, Options{Phase: UpgradePhaseValidate, ActiveRecordEncryption: credentials})
 	if err == nil || applied {
-		t.Fatalf("validate with NULL mentions RunWithOptions() = applied %v, err %v", applied, err)
+		t.Fatalf("4.3 validate with NULL mentions = applied %v, err %v", applied, err)
 	}
 	assertMigrationVersionCount(t, database, mastodon43ValidateSteps()[0].version, 0)
 	assertColumnNullable(t, database, "mentions", "status_id", true)
@@ -485,9 +638,9 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 	if err := database.Exec(`UPDATE mentions SET status_id = 3001, account_id = 1001 WHERE status_id IS NULL OR account_id IS NULL`).Error; err != nil {
 		t.Fatalf("repair fixture mentions after validate refusal: %v", err)
 	}
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseValidate, ActiveRecordEncryption: credentials})
+	applied, err = runMastodon43Phase(context.Background(), database, UpgradePhaseValidate, Options{Phase: UpgradePhaseValidate, ActiveRecordEncryption: credentials})
 	if err != nil || !applied {
-		t.Fatalf("validate RunWithOptions() = applied %v, err %v", applied, err)
+		t.Fatalf("4.3 validate = applied %v, err %v", applied, err)
 	}
 	assertMigrationVersionCount(t, database, mastodon43ValidateSteps()[len(mastodon43ValidateSteps())-1].version, 1)
 	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
@@ -495,24 +648,62 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 	assertColumnNullable(t, database, "mentions", "account_id", false)
 	assertColumnDefaultAvailable(t, database, "status_pins", "created_at", false)
 
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseContract})
+	applied, err = runMastodon43Phase(context.Background(), database, UpgradePhaseContract, Options{Phase: UpgradePhaseContract})
 	if err == nil || applied {
-		t.Fatalf("unacknowledged contract RunWithOptions() = applied %v, err %v", applied, err)
+		t.Fatalf("unacknowledged 4.3 contract = applied %v, err %v", applied, err)
 	}
 	assertMigrationVersionCount(t, database, "20240808124339", 1)
 	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
 	assertRelationAvailable(t, database, "devices", true)
 
+	applied, err = runMastodon43Phase(context.Background(), database, UpgradePhaseContract, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true, ActiveRecordEncryption: credentials})
+	if err != nil || !applied {
+		t.Fatalf("4.3 contract = applied %v, err %v", applied, err)
+	}
+	assertMigrationVersionCount(t, database, Mastodon4323SchemaVersion, 1)
+	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 472)
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "7d5086228b379c66ff21a4396f443ba4daac5752")
+	assertSchemaCatalogGolden(t, database, mastodon4219To4323CatalogPG14, mastodon4219To4323Catalog)
+
+	for _, phase := range []UpgradePhase{UpgradePhaseExpand, UpgradePhaseBackfill, UpgradePhaseValidate, UpgradePhaseContract} {
+		options := Options{Phase: phase, ActiveRecordEncryption: credentials, Mastodon44SkipTagTrendBackfill: true}
+		if phase == UpgradePhaseContract {
+			options.AcknowledgeContract = true
+		}
+		applied, err = runMastodon44Phase(context.Background(), database, phase, options)
+		if err != nil || !applied {
+			t.Fatalf("4.4 phase %s = applied %v, err %v", phase, applied, err)
+		}
+	}
+	assertMigrationVersionCount(t, database, Mastodon4422SchemaVersion, 1)
+	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
+	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 539)
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "7d5086228b379c66ff21a4396f443ba4daac5752")
+	assertSchemaCatalogGolden(t, database, mastodon4219To4422CatalogPG14, mastodon4219To4422Catalog)
+
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseExpand})
+	if err != nil || !applied {
+		t.Fatalf("4.5 expand = applied %v, err %v", applied, err)
+	}
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseBackfill})
+	if err != nil || !applied {
+		t.Fatalf("4.5 backfill = applied %v, err %v", applied, err)
+	}
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseValidate})
+	if err != nil || applied {
+		t.Fatalf("4.5 validate = applied %v, err %v; validation has no upstream marker", applied, err)
+	}
 	if err := database.Exec(`DROP INDEX index_accounts_on_uri`).Error; err != nil {
 		t.Fatalf("inject final schema guard failure: %v", err)
 	}
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true, ActiveRecordEncryption: credentials, Mastodon44SkipTagTrendBackfill: true})
-	if err == nil || !applied {
-		t.Fatalf("contract with malformed final schema RunWithOptions() = applied %v, err %v", applied, err)
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true})
+	if err == nil || applied {
+		t.Fatalf("4.5 contract with malformed final schema = applied %v, err %v", applied, err)
 	}
 	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 0)
 	assertRelationAvailable(t, database, "devices", false)
-	assertRelationAvailable(t, database, "encrypted_messages_id_seq", false)
+	assertRelationAvailable(t, database, "encrypted_messages_id_seq", true)
 	assertColumnAvailable(t, database, "users", "admin", false)
 	assertRelationAvailable(t, database, "quotes", true)
 	assertRelationAvailable(t, database, "imports", false)
@@ -521,26 +712,29 @@ func TestStagedMastodon4219UpgradeAgainstPostgreSQL(t *testing.T) {
 		t.Fatalf("repair final schema guard fixture: %v", err)
 	}
 
-	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true, ActiveRecordEncryption: credentials, Mastodon44SkipTagTrendBackfill: true})
+	applied, err = RunWithOptions(context.Background(), database, Options{Phase: UpgradePhaseContract, AcknowledgeContract: true})
 	if err != nil || !applied {
-		t.Fatalf("contract RunWithOptions() = applied %v, err %v", applied, err)
+		t.Fatalf("4.5 contract = applied %v, err %v", applied, err)
 	}
 	assertMigrationVersionCount(t, database, CurrentSchemaVersion, 1)
 	assertMigrationVersionCount(t, database, "20180813113448", 1)
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM schema_migrations`, 554)
 	assertRelationAvailable(t, database, "devices", false)
-	assertRelationAvailable(t, database, "encrypted_messages_id_seq", false)
+	assertRelationAvailable(t, database, "encrypted_messages_id_seq", true)
 	assertColumnAvailable(t, database, "users", "admin", false)
 	assertScalarString(t, database, `SELECT scopes FROM oauth_applications WHERE id = 5001`, "read profile")
 	assertScalarString(t, database, `SELECT scopes FROM oauth_access_tokens WHERE id = 5001`, "read profile")
+	assertScalarString(t, database, `SELECT scopes FROM oauth_applications WHERE id = 5002`, "bprofile  -scope")
+	assertScalarString(t, database, `SELECT scopes FROM oauth_access_tokens WHERE id = 5002`, "profile-extra   profile")
 	assertRelationAvailable(t, database, "imports", false)
 	assertColumnAvailable(t, database, "users", "encrypted_otp_secret", false)
-	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "801766beefdd9b1d55fe6f8bf3bed91392aebab1")
+	assertScalarString(t, database, `SELECT value FROM ar_internal_metadata WHERE key = 'schema_sha1'`, "7d5086228b379c66ff21a4396f443ba4daac5752")
 	assertScalarInt64(t, database, `SELECT COUNT(*) FROM username_blocks`, 23)
 	assertMastodon43TimestampPrecisions(t, database)
 	if err := paondb.SchemaAvailable(database); err != nil {
 		t.Fatalf("validate contracted schema: %v", err)
 	}
+	assertSchemaCatalogGolden(t, database, mastodon4219To4515CatalogPG14, mastodon4219To4515Catalog)
 	if err := database.Exec(`DELETE FROM schema_migrations WHERE version = '20240916190140'`).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -628,21 +822,80 @@ func assertColumnType(t *testing.T, database *gorm.DB, table string, column stri
 	}
 }
 
+func assertSchemaCatalogGolden(t *testing.T, database *gorm.DB, goldenPG14 []byte, goldenPG15 []byte) {
+	t.Helper()
+	sqlDatabase, err := database.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versionNumber int
+	if err := sqlDatabase.QueryRowContext(context.Background(), `SELECT current_setting('server_version_num')::integer`).Scan(&versionNumber); err != nil {
+		t.Fatal(err)
+	}
+	var golden []byte
+	switch versionNumber / 10000 {
+	case 14:
+		golden = goldenPG14
+	case 15:
+		golden = goldenPG15
+	default:
+		t.Fatalf("strict catalog integration test has no golden for PostgreSQL %d", versionNumber/10000)
+	}
+	if err := schemacatalog.CheckGolden(context.Background(), sqlDatabase, "public", golden); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func installLegacyPaonCanonicalNames(t *testing.T, database *gorm.DB) {
+	t.Helper()
+	if err := database.Exec(`ALTER TABLE account_aliases RENAME CONSTRAINT fk_rails_fc91575d08 TO account_aliases_account_id_fkey`).Error; err != nil {
+		t.Fatal(err)
+	}
+	var functionBody string
+	if err := database.Raw(`SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure('timestamp_id(text)')`).Scan(&functionBody).Error; err != nil {
+		t.Fatal(err)
+	}
+	salt := timestampIDSaltPattern.FindString(functionBody)
+	if salt == "" {
+		t.Fatal("timestamp_id salt is missing")
+	}
+	legacyFunction := fmt.Sprintf(`CREATE OR REPLACE FUNCTION timestamp_id(table_name text)
+RETURNS bigint AS $$
+DECLARE
+  time_part bigint;
+  sequence_base bigint;
+  tail bigint;
+BEGIN
+  time_part := (((date_part('epoch', now()) * 1000))::bigint << 16);
+  sequence_base := ('x' || substr(md5(table_name || '%s' || time_part::text), 1, 4))::bit(16)::bigint;
+  tail := ((sequence_base + nextval(table_name || '_id_seq')) & 65535);
+  RETURN time_part | tail;
+END
+$$ LANGUAGE plpgsql VOLATILE`, salt)
+	if err := database.Exec(legacyFunction).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func seedWorstCaseMastodon4219Fixture(t *testing.T, database *gorm.DB) {
 	t.Helper()
 	statements := []string{
-		`INSERT INTO accounts (id, username, created_at, updated_at) VALUES (1001, 'migration-user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		`INSERT INTO accounts (id, username, created_at, updated_at) VALUES (1001, 'migration-user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), (1002, 'locale-user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO users (id, email, created_at, updated_at, account_id, locale, settings, otp_required_for_login, encrypted_otp_secret) VALUES (2001, 'migration@example.com', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1001, 'fr-QC', '{"interactions.must_be_follower":true,"interactions.must_be_following":true,"interactions.must_be_following_dm":false}', true, 'paon-go-totp:JBSWY3DPEHPK3PXP')`,
+		`INSERT INTO users (id, email, created_at, updated_at, account_id, locale) VALUES (2002, 'locale@example.com', TIMESTAMP '2000-01-01 00:00:00', TIMESTAMP '2000-01-01 00:00:00', 1002, 'fr-QC')`,
 		`INSERT INTO statuses (id, account_id, created_at, updated_at) VALUES (3001, 1001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO mentions (id, created_at, updated_at) VALUES (3001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO account_aliases (id, account_id, acct, uri, created_at, updated_at) VALUES (3101, 1001, 'alias@remote.example', 'https://remote.example/@alias', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), (3102, 1001, 'alias@remote.example', 'https://remote.example/@alias', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO account_aliases (id, account_id, acct, uri, created_at, updated_at) SELECT id, 1001, 'alias@remote.example', 'https://remote.example/@alias', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM generate_series(3103, 3602) AS id`,
+		`INSERT INTO account_aliases (id, account_id, acct, uri, created_at, updated_at) VALUES (3603, NULL, 'nullable-alias@remote.example', 'https://remote.example/@nullable-alias', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), (3604, NULL, 'nullable-alias@remote.example', 'https://remote.example/@nullable-alias', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO custom_filters (id, account_id, phrase, created_at, updated_at) VALUES (4001, 1001, 'migration', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO custom_filter_statuses (id, custom_filter_id, status_id, created_at, updated_at) VALUES (4101, 4001, 3001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), (4102, 4001, 3001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO identities (id, provider, uid, user_id, created_at, updated_at) VALUES (4201, 'oidc', 'duplicate-uid', 2001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), (4202, 'oidc', 'duplicate-uid', 2001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-		`INSERT INTO webauthn_credentials (id, external_id, public_key, nickname, user_id, created_at, updated_at) VALUES (4301, 'external-1', 'key-1', 'duplicate-key', 2001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), (4302, 'external-2', 'key-2', 'duplicate-key', 2001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		`INSERT INTO webauthn_credentials (id, external_id, public_key, nickname, user_id, created_at, updated_at) VALUES (4301, 'external-1', 'key-1', 'duplicate-key', 2001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), (4302, 'external-2', 'key-2', 'unique-key', 2001, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), (4303, 'external-3', 'key-3', 'nullable-key', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), (4304, 'external-4', 'key-4', 'nullable-key', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO oauth_applications (id, name, uid, secret, redirect_uri, scopes, created_at, updated_at) VALUES (5001, 'Migration', 'migration-uid', 'migration-secret', 'urn:ietf:wg:oauth:2.0:oob', 'read read:me crypto', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO oauth_access_tokens (id, token, created_at, scopes, application_id, resource_owner_id) VALUES (5001, 'migration-token', CURRENT_TIMESTAMP, 'read read:me crypto', 5001, 2001)`,
+		`INSERT INTO oauth_applications (id, name, uid, secret, redirect_uri, scopes, created_at, updated_at) VALUES (5002, 'Substring migration', 'substring-migration-uid', 'substring-migration-secret', 'urn:ietf:wg:oauth:2.0:oob', 'bread:me  crypto-scope', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		`INSERT INTO oauth_access_tokens (id, token, created_at, scopes, application_id, resource_owner_id) VALUES (5002, 'substring-migration-token', CURRENT_TIMESTAMP, 'read:me-extra crypto  read:me', 5002, 2001)`,
 		`INSERT INTO devices (id, access_token_id, account_id, device_id, name, fingerprint_key, identity_key, created_at, updated_at) VALUES (6001, 5001, 1001, 'device-1', 'Fixture', 'fingerprint', 'identity', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO one_time_keys (id, device_id, key_id, key, signature, created_at, updated_at) VALUES (6101, 6001, 'key-1', 'key', 'signature', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		`INSERT INTO encrypted_messages (id, device_id, from_account_id, from_device_id, body, digest, message_franking, created_at, updated_at) VALUES (6201, 6001, 1001, 'device-1', 'body', 'digest', 'franking', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,

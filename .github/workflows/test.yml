@@ -65,3 +65,37 @@ jobs:
       - name: Comment coverage
         if: github.event.pull_request.head.repo.full_name == github.repository
         uses: k1LoW/octocov-action@v1
+
+  schema-compatibility:
+    name: Mastodon schema compatibility (PostgreSQL ${{ matrix.postgresql }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        postgresql: ['14', '15']
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgresql }}-alpine
+        env:
+          POSTGRES_PASSWORD: paon
+          POSTGRES_DB: paon_schema_compatibility
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d paon_schema_compatibility"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Compare fresh and staged PostgreSQL catalogs
+        env:
+          PAON_TEST_DATABASE_URL: postgres://postgres:paon@127.0.0.1:5432/paon_schema_compatibility?sslmode=disable
+        run: go test -count=1 -mod=mod -tags=integration ./internal/paon/migrate

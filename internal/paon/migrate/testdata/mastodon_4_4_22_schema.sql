@@ -301,9 +301,7 @@ CREATE TABLE "accounts" (
   "reviewed_at" timestamp without time zone,
   "requested_review_at" timestamp without time zone,
   "indexable" boolean DEFAULT false NOT NULL,
-  "attribution_domains" character varying[] DEFAULT '{}'::character varying[],
-  "following_url" character varying DEFAULT '' NOT NULL,
-  "id_scheme" integer DEFAULT 1
+  "attribution_domains" character varying[] DEFAULT '{}'::character varying[]
 );
 
 -- paon:statement
@@ -543,16 +541,11 @@ CREATE TABLE "conversations" (
   id bigserial PRIMARY KEY,
   "uri" character varying,
   "created_at" timestamp without time zone NOT NULL,
-  "updated_at" timestamp without time zone NOT NULL,
-  "parent_status_id" bigint,
-  "parent_account_id" bigint
+  "updated_at" timestamp without time zone NOT NULL
 );
 
 -- paon:statement
 CREATE UNIQUE INDEX "index_conversations_on_uri" ON "conversations" ("uri" text_pattern_ops) WHERE (uri IS NOT NULL);
-
--- paon:statement
-CREATE UNIQUE INDEX "index_conversations_on_parent_status_id" ON "conversations" ("parent_status_id") WHERE (parent_status_id IS NOT NULL);
 
 -- paon:statement
 CREATE TABLE "custom_emoji_categories" (
@@ -766,7 +759,7 @@ CREATE TABLE "follows" (
 CREATE UNIQUE INDEX "index_follows_on_account_id_and_target_account_id" ON "follows" ("account_id", "target_account_id");
 
 -- paon:statement
-CREATE INDEX "index_follows_on_target_account_id_and_account_id" ON "follows" ("target_account_id", "account_id");
+CREATE INDEX "index_follows_on_target_account_id" ON "follows" ("target_account_id");
 
 -- paon:statement
 CREATE TABLE "generated_annual_reports" (
@@ -1489,8 +1482,7 @@ CREATE TABLE "status_stats" (
   "created_at" timestamp without time zone NOT NULL,
   "updated_at" timestamp without time zone NOT NULL,
   "untrusted_favourites_count" bigint,
-  "untrusted_reblogs_count" bigint,
-  "quotes_count" bigint DEFAULT 0 NOT NULL
+  "untrusted_reblogs_count" bigint
 );
 
 -- paon:statement
@@ -1550,9 +1542,6 @@ CREATE INDEX "index_statuses_20190820" ON "statuses" ("account_id", "id" DESC, "
 
 -- paon:statement
 CREATE INDEX "index_statuses_on_account_id" ON "statuses" ("account_id");
-
--- paon:statement
-CREATE INDEX "index_statuses_on_conversation_id" ON "statuses" ("conversation_id");
 
 -- paon:statement
 CREATE INDEX "index_statuses_on_deleted_at" ON "statuses" ("deleted_at") WHERE (deleted_at IS NOT NULL);
@@ -1851,8 +1840,7 @@ CREATE TABLE "fasp_providers" (
   "contact_email" character varying,
   "fediverse_account" character varying,
   "created_at" timestamp(6) without time zone NOT NULL,
-  "updated_at" timestamp(6) without time zone NOT NULL,
-  "delivery_last_failed_at" timestamp(6) without time zone
+  "updated_at" timestamp(6) without time zone NOT NULL
 );
 
 -- paon:statement
@@ -1951,7 +1939,7 @@ CREATE TABLE "quotes" (
 );
 
 -- paon:statement
-CREATE INDEX "index_quotes_on_account_id_and_quoted_account_id_and_id" ON "quotes" ("account_id", "quoted_account_id", "id");
+CREATE INDEX "index_quotes_on_account_id_and_quoted_account_id" ON "quotes" ("account_id", "quoted_account_id");
 
 -- paon:statement
 CREATE UNIQUE INDEX "index_quotes_on_activity_uri" ON "quotes" ("activity_uri") WHERE (activity_uri IS NOT NULL);
@@ -1963,27 +1951,10 @@ CREATE INDEX "index_quotes_on_approval_uri" ON "quotes" ("approval_uri") WHERE (
 CREATE INDEX "index_quotes_on_quoted_account_id" ON "quotes" ("quoted_account_id");
 
 -- paon:statement
-CREATE INDEX "index_quotes_on_quoted_status_id_and_id" ON "quotes" ("quoted_status_id", "id");
+CREATE INDEX "index_quotes_on_quoted_status_id" ON "quotes" ("quoted_status_id");
 
 -- paon:statement
 CREATE UNIQUE INDEX "index_quotes_on_status_id" ON "quotes" ("status_id");
-
--- paon:statement
-CREATE TABLE "username_blocks" (
-  id bigserial PRIMARY KEY,
-  "username" character varying NOT NULL,
-  "normalized_username" character varying NOT NULL,
-  "exact" boolean DEFAULT false NOT NULL,
-  "allow_with_approval" boolean DEFAULT false NOT NULL,
-  "created_at" timestamp(6) without time zone NOT NULL,
-  "updated_at" timestamp(6) without time zone NOT NULL
-);
-
--- paon:statement
-CREATE UNIQUE INDEX "index_username_blocks_on_username_lower_btree" ON "username_blocks" (lower((username)::text));
-
--- paon:statement
-CREATE INDEX "index_username_blocks_on_normalized_username" ON "username_blocks" ("normalized_username");
 
 -- paon:statement
 CREATE TABLE "rule_translations" (
@@ -3815,25 +3786,8 @@ INSERT INTO schema_migrations (version) VALUES
   ('20250627132728');
 
 -- paon:statement
-INSERT INTO schema_migrations (version) VALUES
-  ('20250717003848'),
-  ('20250805075010'),
-  ('20250819100545'),
-  ('20250820084312'),
-  ('20250828222741'),
-  ('20250902221600'),
-  ('20250909100506'),
-  ('20250911163952'),
-  ('20250912082651'),
-  ('20250924170259'),
-  ('20251002140103'),
-  ('20251007100627'),
-  ('20251007100813'),
-  ('20251007142305'),
-  ('20251023210145');
-
--- paon:statement
 INSERT INTO ar_internal_metadata (key, value, created_at, updated_at) VALUES ('environment', 'production', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
 -- paon:statement
-INSERT INTO ar_internal_metadata (key, value, created_at, updated_at) VALUES ('schema_sha1', '801766beefdd9b1d55fe6f8bf3bed91392aebab1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+INSERT INTO ar_internal_metadata (key, value, created_at, updated_at) VALUES ('schema_sha1', 'b53e3b8de778cd1b53158326b97afa9368f3237e', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+

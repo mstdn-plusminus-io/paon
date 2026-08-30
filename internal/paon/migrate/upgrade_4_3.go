@@ -294,6 +294,16 @@ func applyBatchedDuplicateBackfillStep(tx *gorm.DB, step upgradeStep) error {
 	if len(step.statements) == 0 {
 		return recordUpgradeVersion(tx, step.version)
 	}
+	requiresDedupe, err := duplicateBackfillRequiresDedupe(tx, step.version)
+	if err != nil {
+		return err
+	}
+	if !requiresDedupe {
+		if err := tx.Exec(step.statements[1]).Error; err != nil {
+			return fmt.Errorf("Mastodon 4.3 %s migration %s create unique index: %w", step.phase, step.version, err)
+		}
+		return recordUpgradeVersion(tx, step.version)
+	}
 	for batch := 1; ; batch++ {
 		result := tx.Exec(step.statements[0], migrationBatchSize)
 		if result.Error != nil {
@@ -311,6 +321,27 @@ func applyBatchedDuplicateBackfillStep(tx *gorm.DB, step upgradeStep) error {
 	return recordUpgradeVersion(tx, step.version)
 }
 
+func duplicateBackfillRequiresDedupe(tx *gorm.DB, version string) (bool, error) {
+	var query string
+	switch version {
+	case "20231018192110":
+		query = `SELECT EXISTS(SELECT 1 FROM webauthn_credentials WHERE user_id IS NOT NULL AND nickname IS NOT NULL GROUP BY user_id, nickname HAVING COUNT(*) > 1)`
+	case "20231018193209":
+		query = `SELECT EXISTS(SELECT 1 FROM account_aliases WHERE account_id IS NOT NULL AND uri IS NOT NULL GROUP BY account_id, uri HAVING COUNT(*) > 1)`
+	case "20231018193355":
+		query = `SELECT EXISTS(SELECT 1 FROM custom_filter_statuses WHERE status_id IS NOT NULL AND custom_filter_id IS NOT NULL GROUP BY status_id, custom_filter_id HAVING COUNT(*) > 1)`
+	case "20231018193659":
+		query = `SELECT EXISTS(SELECT 1 FROM identities WHERE uid IS NOT NULL AND provider IS NOT NULL GROUP BY uid, provider HAVING COUNT(*) > 1)`
+	default:
+		return false, fmt.Errorf("Mastodon 4.3 duplicate migration %s has no reviewed uniqueness predicate", version)
+	}
+	var required bool
+	if err := tx.Raw(query).Scan(&required).Error; err != nil {
+		return false, fmt.Errorf("Mastodon 4.3 duplicate migration %s preflight: %w", version, err)
+	}
+	return required, nil
+}
+
 func applyLocaleBackfill(tx *gorm.DB) error {
 	const version = "20240109103012"
 	applied, err := upgradeVersionApplied(tx, version)
@@ -325,7 +356,7 @@ func applyLocaleBackfill(tx *gorm.DB) error {
 		if len(ids) == 0 {
 			break
 		}
-		if err := tx.Exec(`UPDATE users SET locale = 'fr-CA', updated_at = CURRENT_TIMESTAMP WHERE id IN ?`, ids).Error; err != nil {
+		if err := tx.Exec(`UPDATE users SET locale = 'fr-CA' WHERE id IN ?`, ids).Error; err != nil {
 			return fmt.Errorf("Mastodon 4.3 locale backfill write: %w", err)
 		}
 	}
@@ -341,14 +372,14 @@ func applyProfileScopeBackfill(tx *gorm.DB) error {
 	for _, table := range []string{"oauth_applications", "oauth_access_tokens"} {
 		for {
 			var ids []int64
-			query := fmt.Sprintf(`SELECT id FROM %s WHERE scopes ~ '(^|[[:space:]])read:me([[:space:]]|$)' ORDER BY id ASC LIMIT ?`, table)
+			query := fmt.Sprintf(`SELECT id FROM %s WHERE scopes LIKE '%%read:me%%' ORDER BY id ASC LIMIT ?`, table)
 			if err := tx.Raw(query, migrationBatchSize).Scan(&ids).Error; err != nil {
 				return fmt.Errorf("Mastodon 4.3 profile scope backfill query %s: %w", table, err)
 			}
 			if len(ids) == 0 {
 				break
 			}
-			statement := fmt.Sprintf(`UPDATE %s SET scopes = array_to_string(array_replace(regexp_split_to_array(btrim(scopes), '\s+'), 'read:me', 'profile'), ' ') WHERE id IN ?`, table)
+			statement := fmt.Sprintf(`UPDATE %s SET scopes = replace(scopes, 'read:me', 'profile') WHERE id IN ?`, table)
 			if err := tx.Exec(statement, ids).Error; err != nil {
 				return fmt.Errorf("Mastodon 4.3 profile scope backfill write %s: %w", table, err)
 			}
@@ -444,20 +475,21 @@ func mastodon43ExpandSteps() []upgradeStep {
 		{version: "20231006183200", phase: "expand", statements: []string{`ALTER TABLE preview_cards_statuses ADD COLUMN url character varying`}},
 		{version: "20231210154528", phase: "expand", statements: []string{`ALTER TABLE users ADD COLUMN otp_secret character varying`}},
 		{version: "20231211234923", phase: "expand", statements: []string{
-			`CREATE TABLE follow_recommendation_mutes (id bigserial PRIMARY KEY, account_id bigint NOT NULL, target_account_id bigint NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE, FOREIGN KEY (target_account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
+			`CREATE TABLE follow_recommendation_mutes (id bigserial PRIMARY KEY, account_id bigint NOT NULL, target_account_id bigint NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_d36abd69ea FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE, CONSTRAINT fk_rails_a9f09ec9a8 FOREIGN KEY (target_account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
 			`CREATE UNIQUE INDEX idx_on_account_id_target_account_id_a8c8ddf44e ON follow_recommendation_mutes (account_id, target_account_id)`,
 			`CREATE INDEX index_follow_recommendation_mutes_on_target_account_id ON follow_recommendation_mutes (target_account_id)`,
 		}},
 		{version: "20231212073317", phase: "expand", statements: []string{`CREATE INDEX idx_on_account_id_language_sensitive_250461e1eb ON account_summaries (account_id, language, sensitive)`}},
 		{version: "20231222100226", phase: "expand", statements: []string{`ALTER TABLE email_domain_blocks ADD COLUMN allow_with_approval boolean DEFAULT false NOT NULL`}},
 		{version: "20240111033014", phase: "expand", statements: []string{
-			`CREATE TABLE generated_annual_reports (id bigserial PRIMARY KEY, account_id bigint NOT NULL, year integer NOT NULL, data jsonb NOT NULL, schema_version integer NOT NULL, viewed_at timestamp(6) without time zone, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, FOREIGN KEY (account_id) REFERENCES accounts(id))`,
+			`CREATE TABLE generated_annual_reports (id bigserial PRIMARY KEY, account_id bigint NOT NULL, year integer NOT NULL, data jsonb NOT NULL, schema_version integer NOT NULL, viewed_at timestamp(6) without time zone, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_4ca37f035c FOREIGN KEY (account_id) REFERENCES accounts(id))`,
 			`CREATE UNIQUE INDEX index_generated_annual_reports_on_account_id_and_year ON generated_annual_reports (account_id, year)`,
 		}},
 		{version: "20240221195424", phase: "expand", statements: []string{`ALTER TABLE notifications ADD COLUMN filtered boolean DEFAULT false NOT NULL`}},
 		{version: "20240221195828", phase: "expand", statements: []string{
 			`CREATE SEQUENCE notification_requests_id_seq`,
-			`CREATE TABLE notification_requests (id bigint DEFAULT nextval('notification_requests_id_seq') NOT NULL PRIMARY KEY, account_id bigint NOT NULL, from_account_id bigint NOT NULL, last_status_id bigint NOT NULL, notifications_count bigint DEFAULT 0 NOT NULL, dismissed boolean DEFAULT false NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE, FOREIGN KEY (from_account_id) REFERENCES accounts(id) ON DELETE CASCADE, FOREIGN KEY (last_status_id) REFERENCES statuses(id) ON DELETE SET NULL)`,
+			`CREATE TABLE notification_requests (id bigint DEFAULT nextval('notification_requests_id_seq') NOT NULL PRIMARY KEY, account_id bigint NOT NULL, from_account_id bigint NOT NULL, last_status_id bigint NOT NULL, notifications_count bigint DEFAULT 0 NOT NULL, dismissed boolean DEFAULT false NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_881c7f71c4 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE, CONSTRAINT fk_rails_5632f121b4 FOREIGN KEY (from_account_id) REFERENCES accounts(id) ON DELETE CASCADE, CONSTRAINT fk_rails_61c7aa9c1f FOREIGN KEY (last_status_id) REFERENCES statuses(id) ON DELETE SET NULL)`,
+			`ALTER SEQUENCE notification_requests_id_seq OWNED BY notification_requests.id`,
 			`CREATE UNIQUE INDEX index_notification_requests_on_account_id_and_from_account_id ON notification_requests (account_id, from_account_id)`,
 			`CREATE INDEX index_notification_requests_on_from_account_id ON notification_requests (from_account_id)`,
 			`CREATE INDEX index_notification_requests_on_last_status_id ON notification_requests (last_status_id)`,
@@ -465,12 +497,12 @@ func mastodon43ExpandSteps() []upgradeStep {
 		}},
 		{version: "20240221211359", phase: "expand", statements: []string{`ALTER TABLE notification_requests ALTER COLUMN id SET DEFAULT timestamp_id('notification_requests')`}},
 		{version: "20240222193403", phase: "expand", statements: []string{
-			`CREATE TABLE notification_permissions (id bigserial PRIMARY KEY, account_id bigint NOT NULL, from_account_id bigint NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE, FOREIGN KEY (from_account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
+			`CREATE TABLE notification_permissions (id bigserial PRIMARY KEY, account_id bigint NOT NULL, from_account_id bigint NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_7c0bed08df FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE, CONSTRAINT fk_rails_e3e0aaad70 FOREIGN KEY (from_account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
 			`CREATE INDEX index_notification_permissions_on_account_id ON notification_permissions (account_id)`,
 			`CREATE INDEX index_notification_permissions_on_from_account_id ON notification_permissions (from_account_id)`,
 		}},
 		{version: "20240222203722", phase: "expand", statements: []string{
-			`CREATE TABLE notification_policies (id bigserial PRIMARY KEY, account_id bigint NOT NULL, filter_not_following boolean DEFAULT false NOT NULL, filter_not_followers boolean DEFAULT false NOT NULL, filter_new_accounts boolean DEFAULT false NOT NULL, filter_private_mentions boolean DEFAULT true NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
+			`CREATE TABLE notification_policies (id bigserial PRIMARY KEY, account_id bigint NOT NULL, filter_not_following boolean DEFAULT false NOT NULL, filter_not_followers boolean DEFAULT false NOT NULL, filter_new_accounts boolean DEFAULT false NOT NULL, filter_private_mentions boolean DEFAULT true NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_506d62f0da FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
 			`CREATE UNIQUE INDEX index_notification_policies_on_account_id ON notification_policies (account_id)`,
 		}},
 		{version: "20240227191620", phase: "expand", statements: []string{`CREATE INDEX index_notifications_on_filtered ON notifications (account_id, id DESC, type) WHERE filtered = false`}},
@@ -480,13 +512,13 @@ func mastodon43ExpandSteps() []upgradeStep {
 			`CREATE INDEX index_relationship_severance_events_on_type_and_target_name ON relationship_severance_events (type, target_name)`,
 		}},
 		{version: "20240312105620", phase: "expand", statements: []string{
-			`CREATE TABLE severed_relationships (id bigserial PRIMARY KEY, relationship_severance_event_id bigint NOT NULL, local_account_id bigint NOT NULL, remote_account_id bigint NOT NULL, direction integer NOT NULL, show_reblogs boolean, notify boolean, languages character varying[], created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, FOREIGN KEY (relationship_severance_event_id) REFERENCES relationship_severance_events(id) ON DELETE CASCADE, FOREIGN KEY (local_account_id) REFERENCES accounts(id) ON DELETE CASCADE, FOREIGN KEY (remote_account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
+			`CREATE TABLE severed_relationships (id bigserial PRIMARY KEY, relationship_severance_event_id bigint NOT NULL, local_account_id bigint NOT NULL, remote_account_id bigint NOT NULL, direction integer NOT NULL, show_reblogs boolean, notify boolean, languages character varying[], created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_5054494e1e FOREIGN KEY (relationship_severance_event_id) REFERENCES relationship_severance_events(id) ON DELETE CASCADE, CONSTRAINT fk_rails_98ff099d4c FOREIGN KEY (local_account_id) REFERENCES accounts(id) ON DELETE CASCADE, CONSTRAINT fk_rails_f7afd97ba4 FOREIGN KEY (remote_account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
 			`CREATE UNIQUE INDEX index_severed_relationships_on_unique_tuples ON severed_relationships (relationship_severance_event_id, local_account_id, direction, remote_account_id)`,
 			`CREATE INDEX index_severed_relationships_on_local_account_and_event ON severed_relationships (local_account_id, relationship_severance_event_id)`,
 			`CREATE INDEX index_severed_relationships_on_remote_account_id ON severed_relationships (remote_account_id)`,
 		}},
 		{version: "20240320140159", phase: "expand", statements: []string{
-			`CREATE TABLE account_relationship_severance_events (id bigserial PRIMARY KEY, account_id bigint NOT NULL, relationship_severance_event_id bigint NOT NULL, relationships_count integer DEFAULT 0 NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE, FOREIGN KEY (relationship_severance_event_id) REFERENCES relationship_severance_events(id) ON DELETE CASCADE)`,
+			`CREATE TABLE account_relationship_severance_events (id bigserial PRIMARY KEY, account_id bigint NOT NULL, relationship_severance_event_id bigint NOT NULL, relationships_count integer DEFAULT 0 NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_030c916965 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE, CONSTRAINT fk_rails_8a34c3a361 FOREIGN KEY (relationship_severance_event_id) REFERENCES relationship_severance_events(id) ON DELETE CASCADE)`,
 			`CREATE UNIQUE INDEX idx_on_account_id_relationship_severance_event_id_7bd82bf20e ON account_relationship_severance_events (account_id, relationship_severance_event_id)`,
 			`CREATE INDEX index_account_relationship_severance_events_on_account_id ON account_relationship_severance_events (account_id)`,
 			`CREATE INDEX idx_on_relationship_severance_event_id_403f53e707 ON account_relationship_severance_events (relationship_severance_event_id)`,
@@ -501,12 +533,12 @@ func mastodon43ExpandSteps() []upgradeStep {
 		{version: "20240513123807", phase: "expand", statements: []string{`CREATE INDEX index_notifications_on_account_id_and_group_key ON notifications (account_id, group_key) WHERE group_key IS NOT NULL`}},
 		{version: "20240522041528", phase: "expand", statements: []string{
 			`ALTER TABLE preview_cards ADD COLUMN author_account_id bigint`,
-			`ALTER TABLE preview_cards ADD FOREIGN KEY (author_account_id) REFERENCES accounts(id) ON DELETE SET NULL`,
+			`ALTER TABLE preview_cards ADD CONSTRAINT fk_rails_dca4905b94 FOREIGN KEY (author_account_id) REFERENCES accounts(id) ON DELETE SET NULL`,
 			`CREATE INDEX index_preview_cards_on_author_account_id ON preview_cards (author_account_id) WHERE author_account_id IS NOT NULL`,
 		}},
 		{version: "20240713171841", phase: "expand", statements: []string{
 			`ALTER TABLE reports ADD COLUMN application_id bigint`,
-			`ALTER TABLE reports ADD CONSTRAINT reports_application_id_fkey FOREIGN KEY (application_id) REFERENCES oauth_applications(id) ON DELETE SET NULL NOT VALID`,
+			`ALTER TABLE reports ADD CONSTRAINT fk_rails_3deb8c7acb FOREIGN KEY (application_id) REFERENCES oauth_applications(id) ON DELETE SET NULL NOT VALID`,
 		}},
 		{version: "20240724181224", phase: "expand", statements: []string{
 			`ALTER TABLE oauth_access_grants ADD COLUMN code_challenge character varying`,
@@ -519,7 +551,6 @@ func mastodon43ExpandSteps() []upgradeStep {
 			`ALTER TABLE notification_policies ADD COLUMN for_private_mentions integer DEFAULT 1 NOT NULL`,
 			`ALTER TABLE notification_policies ADD COLUMN for_limited_accounts integer DEFAULT 1 NOT NULL`,
 		}},
-		{version: "20240909014637", phase: "expand", statements: []string{`ALTER TABLE accounts ADD COLUMN attribution_domains character varying[] DEFAULT '{}'::character varying[]`}},
 	}
 }
 
@@ -541,7 +572,7 @@ func mastodon43ValidateSteps() []upgradeStep {
 			`ALTER TABLE mentions ALTER COLUMN account_id SET NOT NULL`,
 			`ALTER TABLE mentions DROP CONSTRAINT mentions_account_id_null`,
 		}},
-		{version: "20240713171909", phase: "validate", statements: []string{`ALTER TABLE reports VALIDATE CONSTRAINT reports_application_id_fkey`}},
+		{version: "20240713171909", phase: "validate", statements: []string{`ALTER TABLE reports VALIDATE CONSTRAINT fk_rails_3deb8c7acb`}},
 	}
 }
 
@@ -560,7 +591,6 @@ func mastodon43ContractSteps() []upgradeStep {
 			`DROP TABLE system_keys`,
 			`DROP TABLE one_time_keys`,
 			`DROP TABLE encrypted_messages`,
-			`DROP SEQUENCE IF EXISTS encrypted_messages_id_seq`,
 			`DROP TABLE devices`,
 			`ALTER TABLE accounts DROP COLUMN devices_url`,
 		}},
@@ -570,12 +600,12 @@ func mastodon43ContractSteps() []upgradeStep {
 			`ALTER TABLE notification_policies DROP COLUMN filter_new_accounts`,
 			`ALTER TABLE notification_policies DROP COLUMN filter_private_mentions`,
 		}},
+		{version: "20240909014637", phase: "contract", statements: []string{`ALTER TABLE accounts ADD COLUMN attribution_domains character varying[] DEFAULT '{}'::character varying[]`}},
 		{version: "20240916190140", phase: "contract", statements: []string{
-			`UPDATE oauth_applications SET scopes = array_to_string(array_remove(regexp_split_to_array(btrim(scopes), '\s+'), 'crypto'), ' ') WHERE scopes ~ '(^|[[:space:]])crypto([[:space:]]|$)'`,
-			`UPDATE oauth_access_tokens SET scopes = array_to_string(array_remove(regexp_split_to_array(btrim(scopes), '\s+'), 'crypto'), ' ') WHERE scopes ~ '(^|[[:space:]])crypto([[:space:]]|$)'`,
+			`UPDATE oauth_applications SET scopes = TRIM(REPLACE(scopes, 'crypto', '')) WHERE scopes LIKE '%crypto%'`,
+			`UPDATE oauth_access_tokens SET scopes = TRIM(REPLACE(scopes, 'crypto', '')) WHERE scopes LIKE '%crypto%'`,
 		}},
 		{version: "20241007071624", phase: "contract", statements: []string{
-			`INSERT INTO ar_internal_metadata (key, value, created_at, updated_at) VALUES ('schema_sha1', 'd03e3ba56d365d37ac099782d9d80efbce3abb8b', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
 			`INSERT INTO schema_migrations (version) VALUES
 			  ('20180813113448'),
 			  ('20181116184611'),
@@ -635,22 +665,6 @@ func mastodon43ContractSteps() []upgradeStep {
 			  ('20230818142253'),
 			  ('20230904134623')
 			ON CONFLICT (version) DO NOTHING`,
-			`ALTER TABLE account_statuses_cleanup_policies ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE appeals ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE ar_internal_metadata ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE bulk_import_rows ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE bulk_imports ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE canonical_email_blocks ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE custom_filter_keywords ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE custom_filter_statuses ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE follow_recommendation_suppressions ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE preview_card_providers ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE preview_cards ALTER COLUMN published_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE software_updates ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE status_edits ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE tag_follows ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE user_roles ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
-			`ALTER TABLE webhooks ALTER COLUMN created_at TYPE timestamp(6) without time zone, ALTER COLUMN updated_at TYPE timestamp(6) without time zone`,
 		}},
 	}
 }

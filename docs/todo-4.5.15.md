@@ -28,7 +28,7 @@ port 4000、GORM AutoMigrate、Makefile は導入しない。
 - final-tree diff: 1,211 paths、34,792 insertions、11,437 deletions
 - target schema marker: `20251023210145`
 - target migration inventory: 554 markers（4.4.22 の 539 + 4.5 の 15）
-- target `db/schema.rb` SHA-1:
+- target fresh `db/schema.rb` SHA-1:
   `801766beefdd9b1d55fe6f8bf3bed91392aebab1`
 - target upstream tables: 107
 - Paon base: branch `feature/4.5.15` の分岐点 `ce8586c293a0e2474e98521e70cd9e58576dfec5`
@@ -62,8 +62,12 @@ workers、request/model/frontend specs、および
   `accounts.following_url` / `id_scheme` を追加する。
 - quote、conversation、status、follow の 4.5 indexesを追加し、置換前 index は
   acknowledged contract まで残す。
-- `ar_internal_metadata.schema_sha1` を
-  `801766beefdd9b1d55fe6f8bf3bed91392aebab1` にする。
+- fresh schemaの `ar_internal_metadata.schema_sha1` を
+  `801766beefdd9b1d55fe6f8bf3bed91392aebab1` にする。staged migrationでは値を
+  上書きせず、4.4 / 4.3 / 4.2 lineageの
+  `b53e3b8de778cd1b53158326b97afa9368f3237e` /
+  `d03e3ba56d365d37ac099782d9d80efbce3abb8b` /
+  `7d5086228b379c66ff21a4396f443ba4daac5752` を保持する。
 - GORM model は `Account.FollowingURL` / `IDScheme`、
   `FaspProvider.DeliveryLastFailedAt`、`Conversation.ParentStatusID` /
   `ParentAccountID`、`StatusStat.QuotesCount`、`UsernameBlock` を final catalog と合わせる。
@@ -93,7 +97,7 @@ workers、request/model/frontend specs、および
 | expand              | `20251007100627` | reverse follow lookup composite index                                                                                        |
 | contract            | `20251007100813` | 旧 target-account-only follow indexを削除                                                                                    |
 | expand              | `20251007142305` | new accountの `id_scheme` defaultをnumeric (`1`)へ変更                                                                       |
-| backfill + contract | `20251023210145` | `trends_as_landing_page` を `landing_page`へ変換し、最終 marker/SHAを記録                                                    |
+| backfill + contract | `20251023210145` | `trends_as_landing_page` を `landing_page`へ変換し、最終 markerを記録。source routeのSHAは保持                             |
 
 `internal/paon/migrate/upgrade_4_5.go` は advisory-lock、transaction、idempotent、
 resumable な expand/backfill/validate/contract を提供する。contract は全 4.4 web/worker
@@ -106,7 +110,8 @@ resumable な expand/backfill/validate/contract を提供する。contract は�
 
 - username block seed は normalize 後の値と unique constraint を満たし、再実行可能にする。
 - quote defaults backfill は malformed JSON を黙って破棄せず fail closed にする。
-- timeline/landing legacy YAML は boolean 以外を拒否し、既存明示値を壊さない。
+- timeline/landing legacy YAML はRuby同様に `nil` と `false` のみfalseとして扱い、
+  string、number、array、hashを含むそれ以外の値はtrueとして移行する。
 - conversation parent account/status、numeric account scheme、new quote indexes、follow index、
   FASP timestamp の null/default/index invariantsをvalidateする。
 - contract markerは全15 markerと final schema availabilityが成立した後だけ記録する。
@@ -116,13 +121,20 @@ resumable な expand/backfill/validate/contract を提供する。contract は�
 状態: **自動化gate実行済み / production-volume gate未実行**
 
 - [x] empty DB、4.4.22 populated DB、4.3.23 populated DB、4.2.19 populated DB の
-      4経路を実 PostgreSQL 14+ で実行する。
-- [ ] official 4.5.15 と Paon の relation、column type/default/nullability、index
-      expression/predicate/order、FK/delete action、sequence、function、view、seed、554 markers
-      を別々に構築した両DBの `pg_catalog` で比較する。final treeのstatic catalog比較と
-      Paon側の実PostgreSQL catalog/invariant検証は107 tables、921 columns、195 table indexes +
-      5 view indexes、143 FKs、554 markers、23 seedsで通過済みだが、official Rails DBとの
-      live `pg_catalog` differentialはproduction admission側に残す。
+      4経路を実 PostgreSQL 14 / 15 の両方で実行する。
+- [x] official 4.5.15 とPaonを別々に構築し、fresh、4.4.22-to-4.5.15、
+      4.3.23-to-4.5.15、4.2.19-to-4.5.15のroute別goldenで relation、physical column
+      position/dropped slot/type/default/nullability、index expression/predicate/order、
+      canonical FK名/delete action、sequence ownership、function、view、554 markers、
+      Active Record metadataを `pg_catalog` 比較する。全4経路をPostgreSQL 14 / 15で固定し、
+      freshのSHA `801766beefdd9b1d55fe6f8bf3bed91392aebab1` とstaged lineageの
+      `b53e3b8de778cd1b53158326b97afa9368f3237e` /
+      `d03e3ba56d365d37ac099782d9d80efbce3abb8b` /
+      `7d5086228b379c66ff21a4396f443ba4daac5752` をそれぞれ検証する。
+      username block seed 23件も別途固定する。
+- [x] 上記4経路をPostgreSQL 14 / 15で双方向に検証する。official Mastodon DBへ
+      Paon migratorを実行してmigration 0件、Paon DBへofficial v4.5.15 migratorを実行して
+      554 up / 0 downを確認し、双方とも実行後catalogがroute別goldenから変化しないことを確認する。
 - [ ] production-volume restore で lock/table rewrite、replica lag、disk headroom、
       backup/restore、old/new writer fenceを計測する。
 

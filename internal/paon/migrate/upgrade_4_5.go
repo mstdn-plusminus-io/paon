@@ -83,6 +83,9 @@ func runMastodon45Phase(ctx context.Context, database *gorm.DB, phase UpgradePha
 			if err := applyMastodon45Steps(tx, mastodon45ContractSteps()); err != nil {
 				return err
 			}
+			if _, err := reconcileCurrentMastodonCatalog(tx); err != nil {
+				return fmt.Errorf("reconcile canonical Mastodon 4.5 catalog before commit: %w", err)
+			}
 			if err := paondb.SchemaAvailable(tx); err != nil {
 				return fmt.Errorf("validate contracted Mastodon 4.5 schema before commit: %w", err)
 			}
@@ -126,11 +129,11 @@ func applyMastodon45Steps(tx *gorm.DB, steps []upgradeStep) error {
 func mastodon45ExpandSteps() []upgradeStep {
 	return []upgradeStep{
 		{version: "20250717003848", phase: "expand", statements: []string{
-			`CREATE TABLE username_blocks (id bigserial PRIMARY KEY, username character varying NOT NULL, normalized_username character varying NOT NULL, exact boolean DEFAULT false NOT NULL, allow_with_approval boolean DEFAULT false NOT NULL, created_at timestamp without time zone NOT NULL, updated_at timestamp without time zone NOT NULL)`,
+			`CREATE TABLE username_blocks (id bigserial PRIMARY KEY, username character varying NOT NULL, normalized_username character varying NOT NULL, exact boolean DEFAULT false NOT NULL, allow_with_approval boolean DEFAULT false NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL)`,
 			`CREATE UNIQUE INDEX index_username_blocks_on_username_lower_btree ON username_blocks (lower((username)::text))`,
 			`CREATE INDEX index_username_blocks_on_normalized_username ON username_blocks (normalized_username)`,
 		}},
-		{version: "20250805075010", phase: "expand", statements: []string{`ALTER TABLE fasp_providers ADD COLUMN delivery_last_failed_at timestamp without time zone`}},
+		{version: "20250805075010", phase: "expand", statements: []string{`ALTER TABLE fasp_providers ADD COLUMN delivery_last_failed_at timestamp(6) without time zone`}},
 		{version: "20250820084312", phase: "expand", statements: []string{`ALTER TABLE status_stats ADD COLUMN quotes_count bigint DEFAULT 0 NOT NULL`}},
 		{version: "20250828222741", phase: "expand", statements: []string{`ALTER TABLE conversations ADD COLUMN parent_status_id bigint, ADD COLUMN parent_account_id bigint`}},
 		{version: "20250902221600", phase: "expand", statements: []string{`CREATE INDEX index_statuses_on_conversation_id ON statuses (conversation_id)`}},
@@ -165,9 +168,7 @@ func mastodon45ContractSteps() []upgradeStep {
 			`DROP INDEX IF EXISTS index_quotes_on_quoted_status_id`,
 		}},
 		{version: "20251007100813", phase: "contract", statements: []string{`DROP INDEX IF EXISTS index_follows_on_target_account_id`}},
-		{version: "20251023210145", phase: "contract", statements: []string{
-			`INSERT INTO ar_internal_metadata (key, value, created_at, updated_at) VALUES ('schema_sha1', '801766beefdd9b1d55fe6f8bf3bed91392aebab1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
-		}},
+		{version: "20251023210145", phase: "contract", statements: nil},
 	}
 }
 
@@ -310,7 +311,7 @@ func settingIsFalse(value any) bool {
 }
 
 func migrateMastodon45TimelinePreviewSetting(tx *gorm.DB) error {
-	value, present, err := mastodon45BooleanSetting(tx, "timeline_preview")
+	value, present, err := mastodon45TruthySetting(tx, "timeline_preview")
 	if err != nil || !present {
 		return err
 	}
@@ -327,7 +328,7 @@ func migrateMastodon45TimelinePreviewSetting(tx *gorm.DB) error {
 }
 
 func migrateMastodon45LandingPageSetting(tx *gorm.DB) error {
-	value, present, err := mastodon45BooleanSetting(tx, "trends_as_landing_page")
+	value, present, err := mastodon45TruthySetting(tx, "trends_as_landing_page")
 	if err != nil || !present {
 		return err
 	}
@@ -338,7 +339,7 @@ func migrateMastodon45LandingPageSetting(tx *gorm.DB) error {
 	return upsertMastodon45Setting(tx, "landing_page", "--- "+landingPage+"\n")
 }
 
-func mastodon45BooleanSetting(tx *gorm.DB, name string) (bool, bool, error) {
+func mastodon45TruthySetting(tx *gorm.DB, name string) (bool, bool, error) {
 	var raw sql.NullString
 	err := tx.Raw(`SELECT value FROM settings WHERE var = ? LIMIT 1`, name).Row().Scan(&raw)
 	if err != nil {
@@ -354,11 +355,19 @@ func mastodon45BooleanSetting(tx *gorm.DB, name string) (bool, bool, error) {
 	if err := yaml.Unmarshal([]byte(raw.String), &value); err != nil {
 		return false, false, fmt.Errorf("Mastodon 4.5 decode %s setting: %w", name, err)
 	}
-	boolean, ok := value.(bool)
-	if !ok {
-		return false, false, fmt.Errorf("Mastodon 4.5 %s setting is %T, want boolean", name, value)
+	return mastodon45RubyTruthy(value), true, nil
+}
+
+func mastodon45RubyTruthy(value any) bool {
+	if value == nil {
+		return false
 	}
-	return boolean, true, nil
+	if boolean, ok := value.(bool); ok {
+		return boolean
+	}
+	// Ruby treats every value except nil and false as truthy. Preserve that
+	// behavior for legacy YAML strings, numbers, arrays, and hashes.
+	return true
 }
 
 func upsertMastodon45Setting(tx *gorm.DB, name string, value string) error {

@@ -96,6 +96,14 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 			return err
 		}
 		if current {
+			reconciled, err := reconcileCurrentMastodonCatalog(tx)
+			if err != nil {
+				return err
+			}
+			applied = applied || reconciled
+			if err := paondb.SchemaAvailable(tx); err != nil {
+				return fmt.Errorf("validate reconciled Mastodon 4.5 schema before commit: %w", err)
+			}
 			return nil
 		}
 		if legacy {
@@ -144,6 +152,9 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 		}
 		if err := seedFreshDatabase(tx); err != nil {
 			return err
+		}
+		if err := paondb.SchemaAvailable(tx); err != nil {
+			return fmt.Errorf("validate fresh Mastodon 4.5 schema before commit: %w", err)
 		}
 		applied = true
 		return nil

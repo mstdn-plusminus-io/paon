@@ -75,7 +75,7 @@ func TestMastodon45FreshSchemaContainsExactCatalogDelta(t *testing.T) {
 		`"id_scheme" integer DEFAULT 1`,
 		`"parent_status_id" bigint`,
 		`"parent_account_id" bigint`,
-		`"delivery_last_failed_at" timestamp without time zone`,
+		`"delivery_last_failed_at" timestamp(6) without time zone`,
 		`"quotes_count" bigint DEFAULT 0 NOT NULL`,
 		`CREATE TABLE "username_blocks"`,
 		`index_quotes_on_account_id_and_quoted_account_id_and_id`,
@@ -87,6 +87,23 @@ func TestMastodon45FreshSchemaContainsExactCatalogDelta(t *testing.T) {
 	} {
 		if !strings.Contains(schema, token) {
 			t.Errorf("fresh schema is missing %q", token)
+		}
+	}
+	usernameBlocksStart := strings.Index(schema, `CREATE TABLE "username_blocks" (`)
+	if usernameBlocksStart < 0 {
+		t.Fatal("fresh schema is missing table username_blocks")
+	}
+	usernameBlocksEnd := strings.Index(schema[usernameBlocksStart:], "\n);")
+	if usernameBlocksEnd < 0 {
+		t.Fatal("fresh schema table username_blocks has no terminator")
+	}
+	usernameBlocks := schema[usernameBlocksStart : usernameBlocksStart+usernameBlocksEnd]
+	for _, token := range []string{
+		`"created_at" timestamp(6) without time zone NOT NULL`,
+		`"updated_at" timestamp(6) without time zone NOT NULL`,
+	} {
+		if !strings.Contains(usernameBlocks, token) {
+			t.Errorf("fresh schema username_blocks is missing %q", token)
 		}
 	}
 	for _, obsolete := range []string{
@@ -174,6 +191,29 @@ func TestMastodon45BlockedUsernameNormalization(t *testing.T) {
 		if rubyBlankSettingValue(value) {
 			t.Fatalf("rubyBlankSettingValue(%#v) = true", value)
 		}
+	}
+}
+
+func TestMastodon45RubyTruthyMatchesRubySemantics(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value any
+		want  bool
+	}{
+		{name: "nil", value: nil, want: false},
+		{name: "false", value: false, want: false},
+		{name: "true", value: true, want: true},
+		{name: "zero", value: 0, want: true},
+		{name: "empty string", value: "", want: true},
+		{name: "false string", value: "false", want: true},
+		{name: "empty array", value: []any{}, want: true},
+		{name: "empty map", value: map[string]any{}, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := mastodon45RubyTruthy(test.value); got != test.want {
+				t.Fatalf("mastodon45RubyTruthy(%#v) = %v, want %v", test.value, got, test.want)
+			}
+		})
 	}
 }
 
