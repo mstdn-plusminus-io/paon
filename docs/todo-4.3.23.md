@@ -922,7 +922,7 @@ Rails/Sidekiq class を再導入せず、次の意味を Asynq task として追
 ### Schema/data gate
 
 - [ ] empty DB、upstream 4.2.19 reference populated DB、current Paon HEAD/実運用 populated DB（現在advertised 4.2.29）が同じ`20241007071624` final schemaへ到達する。
-- [ ] column type/default/nullability、index expression/predicate/order、FK/on-delete、function/view/seedを`pg_catalog`で上流targetと比較する。
+- [x] route別goldenでcolumn attnum/dropped slot/type/default/nullability、index、canonical FK名/on-delete、function全文、view、sequence ownership、全migration marker、Active Record metadataを`pg_catalog`比較する。Paon freshとMastodon fresh、Paon stagedとMastodon stagedをそれぞれ固定し、ランダムsaltとinstance固有OID等だけを除外する。
 - [ ] OTPのRails/Paon双方向ciphertextとTOTP code、backfill中断再開、contract前後backup/restoreを証明する。
 - [ ] final schemaに削除対象E2EE tables/columns、obsolete role/policy/request fieldsがなく、legacy OTP fallback columnsは存在する。
 

@@ -5,10 +5,10 @@ The authoritative empty-database result is `internal/paon/migrate/schema.sql`. T
 | Upstream version | Paon phase and implementation                                                              |
 | ---------------- | ------------------------------------------------------------------------------------------ |
 | `20231006183200` | expand: `preview_cards_statuses.url`                                                       |
-| `20231018192110` | backfill: lowest-ID WebAuthn duplicate cleanup, then unique user/nickname index            |
-| `20231018193209` | backfill: lowest-ID account-alias duplicate cleanup, then unique account/URI index         |
-| `20231018193355` | backfill: lowest-ID custom-filter-status duplicate cleanup, then unique tuple index        |
-| `20231018193659` | backfill: lowest-ID identity duplicate cleanup, then unique UID/provider index             |
+| `20231018192110` | backfill: create the unique WebAuthn index first; deduplicate only after a real violation   |
+| `20231018193209` | backfill: create the unique account-alias index first; deduplicate only after a real violation |
+| `20231018193355` | backfill: create the unique filter-status index first; deduplicate only after a real violation |
+| `20231018193659` | backfill: create the unique identity index first; deduplicate only after a real violation   |
 | `20231210154528` | expand: `users.otp_secret`                                                                 |
 | `20231211234923` | expand: `follow_recommendation_mutes`, indexes, cascade FKs                                |
 | `20231212073317` | expand: account-summary language/sensitive query index                                     |
@@ -37,7 +37,7 @@ The authoritative empty-database result is `internal/paon/migrate/schema.sql`. T
 | `20240513095755` | expand: notification group key                                                             |
 | `20240513123807` | expand: partial account/group-key index                                                    |
 | `20240522041528` | expand: preview-card author, partial index, nullifying FK                                  |
-| `20240603195202` | backfill: exact `read:me` scope token to `profile`                                         |
+| `20240603195202` | backfill: upstream substring replacement from `read:me` to `profile`                       |
 | `20240607093446` | validate: not-valid mention status check                                                   |
 | `20240607093954` | validate: status check, `NOT NULL`, temporary-check removal                                |
 | `20240607094603` | validate: not-valid mention account check                                                  |
@@ -51,8 +51,8 @@ The authoritative empty-database result is `internal/paon/migrate/schema.sql`. T
 | `20240808124338` | backfill: boolean policy to v2 enum                                                        |
 | `20240808124339` | backfill: post-deployment boolean-to-enum overwrite                                        |
 | `20240808125420` | contract: remove legacy policy boolean columns                                             |
-| `20240909014637` | expand: nullable attribution-domain array with empty-array default                         |
-| `20240916190140` | contract: remove exact `crypto` scope tokens                                               |
+| `20240909014637` | contract: add attribution domains after obsolete `devices_url` is removed, preserving upstream physical column order |
+| `20240916190140` | contract: upstream `TRIM(REPLACE(..., 'crypto', ''))` scope rewrite                        |
 | `20241007071624` | contract: permission FKs are already in final cascade shape; record target version         |
 
 The reverted `20240217175251` attachment-size bigint experiment is intentionally absent. Expand, backfill, validate, and contract each run in a separate advisory-locked PostgreSQL transaction. A failure rolls back the active phase and its newly recorded versions while earlier committed phases remain resumable. The contract transaction executes the complete final schema guard before commit, so destructive DDL and the target marker roll back together if the final shape is incomplete.

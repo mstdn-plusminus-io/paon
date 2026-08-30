@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	paonotp "github.com/mstdn-plusminus-io/paon/internal/paon/otp"
@@ -114,37 +113,32 @@ func notificationPolicyFromSettings(settings sql.NullString) (legacyNotification
 		return policy, false, errors.New("settings are not valid JSON")
 	}
 	required := false
-	if settingBoolean(values, "interactions.must_be_follower") {
+	if settingTruthy(values, "interactions.must_be_follower") {
 		policy.FilterNotFollowers = true
 		required = true
 	}
-	if settingBoolean(values, "interactions.must_be_following") {
+	if settingTruthy(values, "interactions.must_be_following") {
 		policy.FilterNotFollowing = true
 		required = true
 	}
-	if !settingBoolean(values, "interactions.must_be_following_dm") {
+	if !settingTruthy(values, "interactions.must_be_following_dm") {
 		policy.FilterPrivateMentions = false
 		required = true
 	}
 	return policy, required, nil
 }
 
-func settingBoolean(values map[string]any, key string) bool {
+func settingTruthy(values map[string]any, key string) bool {
 	value, exists := values[key]
-	if !exists {
+	if !exists || value == nil {
 		return false
 	}
-	switch typed := value.(type) {
-	case bool:
-		return typed
-	case float64:
-		return typed != 0
-	case string:
-		parsed, err := strconv.ParseBool(typed)
-		return err == nil && parsed
-	default:
-		return false
+	if boolean, ok := value.(bool); ok {
+		return boolean
 	}
+	// Oj deserializes JSON values into Ruby objects. Ruby treats every value
+	// except false and nil as truthy, including 0, empty strings, and "false".
+	return true
 }
 
 type legacyOTPRow struct {
@@ -257,12 +251,12 @@ func validateMastodon43UpgradeData(tx *gorm.DB, options Options) error {
 		query string
 	}{
 		{name: "NULL mentions", query: `SELECT COUNT(*) FROM mentions WHERE status_id IS NULL OR account_id IS NULL`},
-		{name: "duplicate account aliases", query: `SELECT COUNT(*) FROM (SELECT 1 FROM account_aliases GROUP BY account_id, uri HAVING COUNT(*) > 1) duplicates`},
-		{name: "duplicate custom filter statuses", query: `SELECT COUNT(*) FROM (SELECT 1 FROM custom_filter_statuses GROUP BY status_id, custom_filter_id HAVING COUNT(*) > 1) duplicates`},
-		{name: "duplicate identities", query: `SELECT COUNT(*) FROM (SELECT 1 FROM identities GROUP BY uid, provider HAVING COUNT(*) > 1) duplicates`},
-		{name: "duplicate WebAuthn nicknames", query: `SELECT COUNT(*) FROM (SELECT 1 FROM webauthn_credentials GROUP BY user_id, nickname HAVING COUNT(*) > 1) duplicates`},
+		{name: "duplicate account aliases", query: `SELECT COUNT(*) FROM (SELECT 1 FROM account_aliases WHERE account_id IS NOT NULL AND uri IS NOT NULL GROUP BY account_id, uri HAVING COUNT(*) > 1) duplicates`},
+		{name: "duplicate custom filter statuses", query: `SELECT COUNT(*) FROM (SELECT 1 FROM custom_filter_statuses WHERE status_id IS NOT NULL AND custom_filter_id IS NOT NULL GROUP BY status_id, custom_filter_id HAVING COUNT(*) > 1) duplicates`},
+		{name: "duplicate identities", query: `SELECT COUNT(*) FROM (SELECT 1 FROM identities WHERE uid IS NOT NULL AND provider IS NOT NULL GROUP BY uid, provider HAVING COUNT(*) > 1) duplicates`},
+		{name: "duplicate WebAuthn nicknames", query: `SELECT COUNT(*) FROM (SELECT 1 FROM webauthn_credentials WHERE user_id IS NOT NULL AND nickname IS NOT NULL GROUP BY user_id, nickname HAVING COUNT(*) > 1) duplicates`},
 		{name: "Canadian French legacy locales", query: `SELECT COUNT(*) FROM users WHERE locale = 'fr-QC'`},
-		{name: "legacy read:me scopes", query: `SELECT (SELECT COUNT(*) FROM oauth_applications WHERE scopes ~ '(^|[[:space:]])read:me([[:space:]]|$)') + (SELECT COUNT(*) FROM oauth_access_tokens WHERE scopes ~ '(^|[[:space:]])read:me([[:space:]]|$)')`},
+		{name: "legacy read:me scopes", query: `SELECT (SELECT COUNT(*) FROM oauth_applications WHERE scopes LIKE '%read:me%') + (SELECT COUNT(*) FROM oauth_access_tokens WHERE scopes LIKE '%read:me%')`},
 		{name: "invalid notification policy enum", query: `SELECT COUNT(*) FROM notification_policies WHERE for_not_following NOT IN (0,1,2) OR for_not_followers NOT IN (0,1,2) OR for_new_accounts NOT IN (0,1,2) OR for_private_mentions NOT IN (0,1,2) OR for_limited_accounts NOT IN (0,1,2)`},
 		{name: "notification policy v2 mismatch", query: `SELECT COUNT(*) FROM notification_policies WHERE for_not_following <> CASE WHEN filter_not_following THEN 1 ELSE 0 END OR for_not_followers <> CASE WHEN filter_not_followers THEN 1 ELSE 0 END OR for_new_accounts <> CASE WHEN filter_new_accounts THEN 1 ELSE 0 END OR for_private_mentions <> CASE WHEN filter_private_mentions THEN 1 ELSE 0 END`},
 	}
@@ -302,7 +296,7 @@ func validateMastodon43UpgradeData(tx *gorm.DB, options Options) error {
 
 func validateMastodon43ContractData(tx *gorm.DB) error {
 	var cryptoScopes int64
-	if err := tx.Raw(`SELECT (SELECT COUNT(*) FROM oauth_applications WHERE scopes ~ '(^|[[:space:]])crypto([[:space:]]|$)') + (SELECT COUNT(*) FROM oauth_access_tokens WHERE scopes ~ '(^|[[:space:]])crypto([[:space:]]|$)')`).Scan(&cryptoScopes).Error; err != nil {
+	if err := tx.Raw(`SELECT (SELECT COUNT(*) FROM oauth_applications WHERE scopes LIKE '%crypto%') + (SELECT COUNT(*) FROM oauth_access_tokens WHERE scopes LIKE '%crypto%')`).Scan(&cryptoScopes).Error; err != nil {
 		return fmt.Errorf("Mastodon 4.3 validate crypto scopes: %w", err)
 	}
 	if cryptoScopes != 0 {

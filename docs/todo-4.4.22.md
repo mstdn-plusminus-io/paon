@@ -110,30 +110,29 @@ routes、models/services/workers、request/model specs、frontend tests とす�
 
 ### DB44-01: final schema `20250627132728`
 
-- [ ] authoritative `internal/paon/migrate/schema.sql` を upstream 4.4.22 catalog と一致させる。
-- [ ] `quotes`、`rule_translations`、`tag_trends`、`terms_of_services`、
+- [x] authoritative `internal/paon/migrate/schema.sql` を upstream 4.4.22 catalog と一致させる。
+- [x] `quotes`、`rule_translations`、`tag_trends`、`terms_of_services`、
       `instance_moderation_notes`、FASP 5 tables、annual-report status counts を追加する。
-- [ ] `statuses.fetched_replies_at`、`statuses.quote_approval_policy`、
+- [x] `statuses.fetched_replies_at`、`statuses.quote_approval_policy`、
       `status_edits.quote_id`、`status_stats.untrusted_*_count`、`users.age_verified_at`、
       `users.require_tos_interstitial`、`announcements.notification_sent_at`、
       `web_push_subscriptions.standard` を追加する。
-- [ ] `imports` table、legacy user settings columns/index、legacy OTP columns、old public status
+- [x] `imports` table、legacy user settings columns/index、legacy OTP columns、old public status
       index、duplicate WebAuthn indexをfinal schemaから削除する。
-- [ ] polls、scheduled statuses、tombstones、push subscription、account aliases/notes/pins/
+- [x] polls、scheduled statuses、tombstones、push subscription、account aliases/notes/pins/
       conversations/domain blocks/deletion requests、markers、poll votes、invite requests の
       NOT NULL と cascade FK を exact matching する。
-- [ ] settings は global `var` unique contract とし polymorphic thing columns を削除する。
-- [ ] `ar_internal_metadata.schema_sha1` を
-      `b53e3b8de778cd1b53158326b97afa9368f3237e` にする。
+- [x] settings は global `var` unique contract とし polymorphic thing columns を削除する。
+- [x] fresh DBの `ar_internal_metadata.schema_sha1` を `b53e3b8de778cd1b53158326b97afa9368f3237e` とし、staged DBでは上流同様にsource schema SHAを保持する。
 
 ### DB44-02: staged 4.3→4.4 upgrade
 
-- [ ] `20241007071624` を明示的な supported source とし、expand/backfill/validate/contract
+- [x] `20241007071624` を明示的な supported source とし、expand/backfill/validate/contract
       の advisory-locked、idempotent、resumable upgrade を実装する。
-- [ ] advertised 4.2.29 DB `20230907150100` からは既存 4.3 phases を通して 4.4 phasesへ
+- [x] advertised 4.2.29 DB `20230907150100` からは既存 4.3 phases を通して 4.4 phasesへ
       連続到達できるようにする。
-- [ ] unknown/future/partial marker を fail closed し、4.4 の67 markerを個別に記録する。
-- [ ] destructive contract は旧 web/worker が停止し明示ackされた後だけ実行する。
+- [x] unknown/future/partial marker を fail closed し、4.4 の67 markerを個別に記録する。
+- [x] destructive contract は旧 web/worker が停止し明示ackされた後だけ実行する。
 
 ### DB44-03: data backfills
 
@@ -153,8 +152,8 @@ routes、models/services/workers、request/model specs、frontend tests とす�
 
 ### DB44-05: catalog and data gates
 
-- [ ] empty DB、4.3.23 populated DB、4.2.19 populated DB の3経路を実 PostgreSQLで試験する。
-- [ ] relations/columns/types/defaults/nullability/index expression/predicate/order/FK/delete action/
+- [x] empty DB、4.3.23 populated DB、4.2.19 populated DB の3経路を実 PostgreSQL 14/15で試験する。
+- [x] relations/columns/types/defaults/nullability/index expression/predicate/order/FK/delete action/
       sequences/views/functions/extensions/seeds/539 markers を `pg_catalog` で比較する。
 - [ ] production-volume lock、table rewrite、replica lag、disk headroom、backup/restoreをrunbook化する。
 

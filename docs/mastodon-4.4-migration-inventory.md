@@ -64,7 +64,7 @@ Encryption value cannot be decrypted into a valid TOTP key.
 | `20250129144813` | Drop the old public-status index after its replacement exists. |
 | `20250410144908` | Drop the drained legacy `imports` table. |
 | `20250520192024` | Drop legacy `encrypted_otp_secret*` columns after OTP validation. |
-| `20250627132728` | Record final schema SHA-1 `b53e3b8de778cd1b53158326b97afa9368f3237e`. |
+| `20250627132728` | Record the final migration marker; preserve the route-specific schema SHA set by the source schema load. |
 
 Contract requires `--phase=contract --acknowledge-contract` after every old
 web/worker process is stopped. Every phase is advisory-locked, transactional,

@@ -55,6 +55,15 @@ func TestNotificationPolicyFromLegacySettings(t *testing.T) {
 	if err != nil || required || policy.FilterNotFollowers || policy.FilterNotFollowing || !policy.FilterPrivateMentions {
 		t.Fatalf("default policy = %#v required=%v err=%v", policy, required, err)
 	}
+
+	rubyTruthy := sql.NullString{Valid: true, String: `{"interactions.must_be_follower":0,"interactions.must_be_following":"false","interactions.must_be_following_dm":""}`}
+	policy, required, err = notificationPolicyFromSettings(rubyTruthy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !required || !policy.FilterNotFollowers || !policy.FilterNotFollowing || !policy.FilterPrivateMentions {
+		t.Fatalf("Ruby-truthiness policy = %#v required=%v", policy, required)
+	}
 }
 
 func TestMigrationTOTPCodeVerifiesNormalizedSecret(t *testing.T) {
