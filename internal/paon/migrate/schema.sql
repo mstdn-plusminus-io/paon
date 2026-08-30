@@ -9,17 +9,42 @@ CREATE TABLE ar_internal_metadata (key character varying NOT NULL PRIMARY KEY, v
 
 -- paon:statement
 CREATE OR REPLACE FUNCTION timestamp_id(table_name text)
-RETURNS bigint AS $$
-DECLARE
-  time_part bigint;
-  sequence_base bigint;
-  tail bigint;
-BEGIN
-  time_part := (((date_part('epoch', now()) * 1000))::bigint << 16);
-  sequence_base := ('x' || substr(md5(table_name || '__PAON_TIMESTAMP_ID_SALT__' || time_part::text), 1, 4))::bit(16)::bigint;
-  tail := ((sequence_base + nextval(table_name || '_id_seq')) & 65535);
-  RETURN time_part | tail;
-END
+RETURNS bigint AS
+$$
+  DECLARE
+    time_part bigint;
+    sequence_base bigint;
+    tail bigint;
+  BEGIN
+    time_part := (
+      -- Get the time in milliseconds
+      ((date_part('epoch', now()) * 1000))::bigint
+      -- And shift it over two bytes
+      << 16);
+
+    sequence_base := (
+      'x' ||
+      -- Take the first two bytes (four hex characters)
+      substr(
+        -- Of the MD5 hash of the data we documented
+        md5(table_name || '__PAON_TIMESTAMP_ID_SALT__' || time_part::text),
+        1, 4
+      )
+    -- And turn it into a bigint
+    )::bit(16)::bigint;
+
+    -- Finally, add our sequence number to our base, and chop
+    -- it to the last two bytes
+    tail := (
+      (sequence_base + nextval(table_name || '_id_seq'))
+      & 65535);
+
+    -- Return the time part and the sequence part. OR appears
+    -- faster here than addition, but they're equivalent:
+    -- time_part has no trailing two bytes, and tail is only
+    -- the last two bytes.
+    RETURN time_part | tail;
+  END
 $$ LANGUAGE plpgsql VOLATILE;
 
 -- paon:statement
@@ -813,12 +838,12 @@ CREATE INDEX "index_invites_on_user_id" ON "invites" ("user_id");
 -- paon:statement
 CREATE TABLE "ip_blocks" (
   id bigserial PRIMARY KEY,
-  "created_at" timestamp without time zone NOT NULL,
-  "updated_at" timestamp without time zone NOT NULL,
-  "expires_at" timestamp without time zone,
   "ip" inet DEFAULT '0.0.0.0' NOT NULL,
   "severity" integer DEFAULT 0 NOT NULL,
-  "comment" text DEFAULT '' NOT NULL
+  "expires_at" timestamp without time zone,
+  "comment" text DEFAULT '' NOT NULL,
+  "created_at" timestamp without time zone NOT NULL,
+  "updated_at" timestamp without time zone NOT NULL
 );
 
 -- paon:statement
@@ -1785,400 +1810,400 @@ CREATE TABLE "webhooks" (
 CREATE UNIQUE INDEX "index_webhooks_on_url" ON "webhooks" ("url");
 
 -- paon:statement
-ALTER TABLE "account_aliases" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_aliases" ADD CONSTRAINT "fk_rails_fc91575d08" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_conversations" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_conversations" ADD CONSTRAINT "fk_rails_6f5278b6e9" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_conversations" ADD FOREIGN KEY ("conversation_id") REFERENCES "conversations" (id) ON DELETE CASCADE;
+ALTER TABLE "account_conversations" ADD CONSTRAINT "fk_rails_1491654f9f" FOREIGN KEY ("conversation_id") REFERENCES "conversations" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_deletion_requests" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_deletion_requests" ADD CONSTRAINT "fk_rails_45bf2626b9" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_domain_blocks" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_domain_blocks" ADD CONSTRAINT "fk_206c6029bd" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_migrations" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "account_migrations" ADD CONSTRAINT "fk_rails_d9a8dad070" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "account_migrations" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_migrations" ADD CONSTRAINT "fk_rails_c9f701caaf" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_moderation_notes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id);
+ALTER TABLE "account_moderation_notes" ADD CONSTRAINT "fk_rails_3f8b75089b" FOREIGN KEY ("account_id") REFERENCES "accounts" (id);
 
 -- paon:statement
-ALTER TABLE "account_moderation_notes" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id);
+ALTER TABLE "account_moderation_notes" ADD CONSTRAINT "fk_rails_dd62ed5ac3" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id);
 
 -- paon:statement
-ALTER TABLE "account_notes" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_notes" ADD CONSTRAINT "fk_rails_2801b48f1a" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_notes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_notes" ADD CONSTRAINT "fk_rails_4ee4503c69" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_pins" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_pins" ADD CONSTRAINT "fk_rails_a176e26c37" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_pins" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_pins" ADD CONSTRAINT "fk_rails_d44979e5dd" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_relationship_severance_events" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_relationship_severance_events" ADD CONSTRAINT "fk_rails_030c916965" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_relationship_severance_events" ADD FOREIGN KEY ("relationship_severance_event_id") REFERENCES "relationship_severance_events" (id) ON DELETE CASCADE;
+ALTER TABLE "account_relationship_severance_events" ADD CONSTRAINT "fk_rails_8a34c3a361" FOREIGN KEY ("relationship_severance_event_id") REFERENCES "relationship_severance_events" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_stats" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_stats" ADD CONSTRAINT "fk_rails_215bb31ff1" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_statuses_cleanup_policies" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_statuses_cleanup_policies" ADD CONSTRAINT "fk_rails_23d5f73cfe" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_warnings" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "account_warnings" ADD CONSTRAINT "fk_rails_a7ebbb1e37" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "account_warnings" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "account_warnings" ADD CONSTRAINT "fk_rails_a65a1bf71b" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "account_warnings" ADD FOREIGN KEY ("report_id") REFERENCES "reports" (id) ON DELETE CASCADE;
+ALTER TABLE "account_warnings" ADD CONSTRAINT "fk_rails_8f2bab4b16" FOREIGN KEY ("report_id") REFERENCES "reports" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "accounts" ADD FOREIGN KEY ("moved_to_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "accounts" ADD CONSTRAINT "fk_rails_2320833084" FOREIGN KEY ("moved_to_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "admin_action_logs" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "admin_action_logs" ADD CONSTRAINT "fk_rails_a7667297fa" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "announcement_mutes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "announcement_mutes" ADD CONSTRAINT "fk_rails_9c99f8e835" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "announcement_mutes" ADD FOREIGN KEY ("announcement_id") REFERENCES "announcements" (id) ON DELETE CASCADE;
+ALTER TABLE "announcement_mutes" ADD CONSTRAINT "fk_rails_e35401adf1" FOREIGN KEY ("announcement_id") REFERENCES "announcements" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "announcement_reactions" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "announcement_reactions" ADD CONSTRAINT "fk_rails_7444ad831f" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "announcement_reactions" ADD FOREIGN KEY ("announcement_id") REFERENCES "announcements" (id) ON DELETE CASCADE;
+ALTER TABLE "announcement_reactions" ADD CONSTRAINT "fk_rails_a1226eaa5c" FOREIGN KEY ("announcement_id") REFERENCES "announcements" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "announcement_reactions" ADD FOREIGN KEY ("custom_emoji_id") REFERENCES "custom_emojis" (id) ON DELETE CASCADE;
+ALTER TABLE "announcement_reactions" ADD CONSTRAINT "fk_rails_b742c91c0e" FOREIGN KEY ("custom_emoji_id") REFERENCES "custom_emojis" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "appeals" ADD FOREIGN KEY ("account_warning_id") REFERENCES "account_warnings" (id) ON DELETE CASCADE;
+ALTER TABLE "appeals" ADD CONSTRAINT "fk_rails_a99f14546e" FOREIGN KEY ("account_warning_id") REFERENCES "account_warnings" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "appeals" ADD FOREIGN KEY ("approved_by_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "appeals" ADD CONSTRAINT "fk_rails_9deb2f63ad" FOREIGN KEY ("approved_by_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "appeals" ADD FOREIGN KEY ("rejected_by_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "appeals" ADD CONSTRAINT "fk_rails_501c3a6e13" FOREIGN KEY ("rejected_by_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "appeals" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "appeals" ADD CONSTRAINT "fk_rails_ea84881569" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "backups" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE SET NULL;
+ALTER TABLE "backups" ADD CONSTRAINT "fk_rails_096669d221" FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "blocks" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "blocks" ADD CONSTRAINT "fk_9571bfabc1" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "blocks" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "blocks" ADD CONSTRAINT "fk_4269e03e65" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "bookmarks" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "bookmarks" ADD CONSTRAINT "fk_rails_9f6ac182a6" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "bookmarks" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "bookmarks" ADD CONSTRAINT "fk_rails_11207ffcfd" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "bulk_import_rows" ADD FOREIGN KEY ("bulk_import_id") REFERENCES "bulk_imports" (id) ON DELETE CASCADE;
+ALTER TABLE "bulk_import_rows" ADD CONSTRAINT "fk_rails_d39af34335" FOREIGN KEY ("bulk_import_id") REFERENCES "bulk_imports" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "bulk_imports" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "bulk_imports" ADD CONSTRAINT "fk_rails_1d89c0f8b2" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "canonical_email_blocks" ADD FOREIGN KEY ("reference_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "canonical_email_blocks" ADD CONSTRAINT "fk_rails_1ecb262096" FOREIGN KEY ("reference_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "conversation_mutes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "conversation_mutes" ADD CONSTRAINT "fk_225b4212bb" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "conversation_mutes" ADD FOREIGN KEY ("conversation_id") REFERENCES "conversations" (id) ON DELETE CASCADE;
+ALTER TABLE "conversation_mutes" ADD CONSTRAINT "fk_rails_5ab139311f" FOREIGN KEY ("conversation_id") REFERENCES "conversations" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "custom_filter_keywords" ADD FOREIGN KEY ("custom_filter_id") REFERENCES "custom_filters" (id) ON DELETE CASCADE;
+ALTER TABLE "custom_filter_keywords" ADD CONSTRAINT "fk_rails_5a49a74012" FOREIGN KEY ("custom_filter_id") REFERENCES "custom_filters" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "custom_filter_statuses" ADD FOREIGN KEY ("custom_filter_id") REFERENCES "custom_filters" (id) ON DELETE CASCADE;
+ALTER TABLE "custom_filter_statuses" ADD CONSTRAINT "fk_rails_e2ddaf5b14" FOREIGN KEY ("custom_filter_id") REFERENCES "custom_filters" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "custom_filter_statuses" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "custom_filter_statuses" ADD CONSTRAINT "fk_rails_2f6d20c0cf" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "custom_filters" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "custom_filters" ADD CONSTRAINT "fk_rails_8b8d786993" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "email_domain_blocks" ADD FOREIGN KEY ("parent_id") REFERENCES "email_domain_blocks" (id) ON DELETE CASCADE;
+ALTER TABLE "email_domain_blocks" ADD CONSTRAINT "fk_rails_408efe0a15" FOREIGN KEY ("parent_id") REFERENCES "email_domain_blocks" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "favourites" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "favourites" ADD CONSTRAINT "fk_5eb6c2b873" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "favourites" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "favourites" ADD CONSTRAINT "fk_b0e856845e" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "featured_tags" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "featured_tags" ADD CONSTRAINT "fk_rails_174efcf15f" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "featured_tags" ADD FOREIGN KEY ("tag_id") REFERENCES "tags" (id) ON DELETE CASCADE;
+ALTER TABLE "featured_tags" ADD CONSTRAINT "fk_rails_23a9055c7c" FOREIGN KEY ("tag_id") REFERENCES "tags" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "follow_recommendation_mutes" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "follow_recommendation_mutes" ADD CONSTRAINT "fk_rails_a9f09ec9a8" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "follow_recommendation_mutes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "follow_recommendation_mutes" ADD CONSTRAINT "fk_rails_d36abd69ea" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "follow_recommendation_suppressions" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "follow_recommendation_suppressions" ADD CONSTRAINT "fk_rails_dfb9a1dbe2" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "follow_requests" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "follow_requests" ADD CONSTRAINT "fk_9291ec025d" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "follow_requests" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "follow_requests" ADD CONSTRAINT "fk_76d644b0e7" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "follows" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "follows" ADD CONSTRAINT "fk_745ca29eac" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "follows" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "follows" ADD CONSTRAINT "fk_32ed1b5560" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "generated_annual_reports" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id);
+ALTER TABLE "generated_annual_reports" ADD CONSTRAINT "fk_rails_4ca37f035c" FOREIGN KEY ("account_id") REFERENCES "accounts" (id);
 
 -- paon:statement
-ALTER TABLE "identities" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "identities" ADD CONSTRAINT "fk_bea040f377" FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "imports" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "imports" ADD CONSTRAINT "fk_6db1b6e408" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "invites" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "invites" ADD CONSTRAINT "fk_rails_ff69dbb2ac" FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "list_accounts" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "list_accounts" ADD CONSTRAINT "fk_rails_85fee9d6ab" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "list_accounts" ADD FOREIGN KEY ("follow_request_id") REFERENCES "follow_requests" (id) ON DELETE CASCADE;
+ALTER TABLE "list_accounts" ADD CONSTRAINT "fk_rails_f11f9d1fcc" FOREIGN KEY ("follow_request_id") REFERENCES "follow_requests" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "list_accounts" ADD FOREIGN KEY ("follow_id") REFERENCES "follows" (id) ON DELETE CASCADE;
+ALTER TABLE "list_accounts" ADD CONSTRAINT "fk_rails_40f9cc29f1" FOREIGN KEY ("follow_id") REFERENCES "follows" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "list_accounts" ADD FOREIGN KEY ("list_id") REFERENCES "lists" (id) ON DELETE CASCADE;
+ALTER TABLE "list_accounts" ADD CONSTRAINT "fk_rails_e54e356c88" FOREIGN KEY ("list_id") REFERENCES "lists" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "lists" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "lists" ADD CONSTRAINT "fk_rails_3853b78dac" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "login_activities" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "login_activities" ADD CONSTRAINT "fk_rails_e4b6396b41" FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "markers" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "markers" ADD CONSTRAINT "fk_rails_a7009bc2b6" FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "media_attachments" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "media_attachments" ADD CONSTRAINT "fk_96dd81e81b" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "media_attachments" ADD FOREIGN KEY ("scheduled_status_id") REFERENCES "scheduled_statuses" (id) ON DELETE SET NULL;
+ALTER TABLE "media_attachments" ADD CONSTRAINT "fk_rails_31fc5aeef1" FOREIGN KEY ("scheduled_status_id") REFERENCES "scheduled_statuses" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "media_attachments" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE SET NULL;
+ALTER TABLE "media_attachments" ADD CONSTRAINT "fk_rails_3ec0cfdd70" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "mentions" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "mentions" ADD CONSTRAINT "fk_970d43f9d1" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "mentions" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "mentions" ADD CONSTRAINT "fk_rails_59edbe2887" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "mutes" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "mutes" ADD CONSTRAINT "fk_eecff219ea" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "mutes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "mutes" ADD CONSTRAINT "fk_b8d8daf315" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "notification_permissions" ADD FOREIGN KEY ("from_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "notification_permissions" ADD CONSTRAINT "fk_rails_e3e0aaad70" FOREIGN KEY ("from_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "notification_permissions" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "notification_permissions" ADD CONSTRAINT "fk_rails_7c0bed08df" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "notification_policies" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "notification_policies" ADD CONSTRAINT "fk_rails_506d62f0da" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "notification_requests" ADD FOREIGN KEY ("from_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "notification_requests" ADD CONSTRAINT "fk_rails_5632f121b4" FOREIGN KEY ("from_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "notification_requests" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "notification_requests" ADD CONSTRAINT "fk_rails_881c7f71c4" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "notification_requests" ADD FOREIGN KEY ("last_status_id") REFERENCES "statuses" (id) ON DELETE SET NULL;
+ALTER TABLE "notification_requests" ADD CONSTRAINT "fk_rails_61c7aa9c1f" FOREIGN KEY ("last_status_id") REFERENCES "statuses" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "notifications" ADD FOREIGN KEY ("from_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "notifications" ADD CONSTRAINT "fk_fbd6b0bf9e" FOREIGN KEY ("from_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "notifications" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "notifications" ADD CONSTRAINT "fk_c141c8ee55" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "oauth_access_grants" ADD FOREIGN KEY ("application_id") REFERENCES "oauth_applications" (id) ON DELETE CASCADE;
+ALTER TABLE "oauth_access_grants" ADD CONSTRAINT "fk_34d54b0a33" FOREIGN KEY ("application_id") REFERENCES "oauth_applications" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "oauth_access_grants" ADD FOREIGN KEY ("resource_owner_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "oauth_access_grants" ADD CONSTRAINT "fk_63b044929b" FOREIGN KEY ("resource_owner_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "oauth_access_tokens" ADD FOREIGN KEY ("application_id") REFERENCES "oauth_applications" (id) ON DELETE CASCADE;
+ALTER TABLE "oauth_access_tokens" ADD CONSTRAINT "fk_f5fc4c1ee3" FOREIGN KEY ("application_id") REFERENCES "oauth_applications" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "oauth_access_tokens" ADD FOREIGN KEY ("resource_owner_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "oauth_access_tokens" ADD CONSTRAINT "fk_e84df68546" FOREIGN KEY ("resource_owner_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "oauth_applications" ADD FOREIGN KEY ("owner_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "oauth_applications" ADD CONSTRAINT "fk_b0988c7c0a" FOREIGN KEY ("owner_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "poll_votes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "poll_votes" ADD CONSTRAINT "fk_rails_b6c18cf44a" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "poll_votes" ADD FOREIGN KEY ("poll_id") REFERENCES "polls" (id) ON DELETE CASCADE;
+ALTER TABLE "poll_votes" ADD CONSTRAINT "fk_rails_a6e6974b7e" FOREIGN KEY ("poll_id") REFERENCES "polls" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "polls" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "polls" ADD CONSTRAINT "fk_rails_5b19a0c011" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "polls" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "polls" ADD CONSTRAINT "fk_rails_3e0d9f1115" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "preview_card_trends" ADD FOREIGN KEY ("preview_card_id") REFERENCES "preview_cards" (id) ON DELETE CASCADE;
+ALTER TABLE "preview_card_trends" ADD CONSTRAINT "fk_rails_371593db34" FOREIGN KEY ("preview_card_id") REFERENCES "preview_cards" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "preview_cards" ADD FOREIGN KEY ("author_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "preview_cards" ADD CONSTRAINT "fk_rails_dca4905b94" FOREIGN KEY ("author_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "report_notes" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "report_notes" ADD CONSTRAINT "fk_rails_cae66353f3" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "report_notes" ADD FOREIGN KEY ("report_id") REFERENCES "reports" (id) ON DELETE CASCADE;
+ALTER TABLE "report_notes" ADD CONSTRAINT "fk_rails_7fa83a61eb" FOREIGN KEY ("report_id") REFERENCES "reports" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "reports" ADD FOREIGN KEY ("action_taken_by_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "reports" ADD CONSTRAINT "fk_bca45b75fd" FOREIGN KEY ("action_taken_by_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "reports" ADD FOREIGN KEY ("assigned_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "reports" ADD CONSTRAINT "fk_rails_4e7a498fb4" FOREIGN KEY ("assigned_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "reports" ADD FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "reports" ADD CONSTRAINT "fk_eb37af34f0" FOREIGN KEY ("target_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "reports" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "reports" ADD CONSTRAINT "fk_4b81f7522c" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "reports" ADD FOREIGN KEY ("application_id") REFERENCES "oauth_applications" (id) ON DELETE SET NULL;
+ALTER TABLE "reports" ADD CONSTRAINT "fk_rails_3deb8c7acb" FOREIGN KEY ("application_id") REFERENCES "oauth_applications" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "scheduled_statuses" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "scheduled_statuses" ADD CONSTRAINT "fk_rails_23bd9018f9" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "session_activations" ADD FOREIGN KEY ("access_token_id") REFERENCES "oauth_access_tokens" (id) ON DELETE CASCADE;
+ALTER TABLE "session_activations" ADD CONSTRAINT "fk_957e5bda89" FOREIGN KEY ("access_token_id") REFERENCES "oauth_access_tokens" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "session_activations" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "session_activations" ADD CONSTRAINT "fk_e5fda67334" FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "severed_relationships" ADD FOREIGN KEY ("local_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "severed_relationships" ADD CONSTRAINT "fk_rails_98ff099d4c" FOREIGN KEY ("local_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "severed_relationships" ADD FOREIGN KEY ("remote_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "severed_relationships" ADD CONSTRAINT "fk_rails_f7afd97ba4" FOREIGN KEY ("remote_account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "severed_relationships" ADD FOREIGN KEY ("relationship_severance_event_id") REFERENCES "relationship_severance_events" (id) ON DELETE CASCADE;
+ALTER TABLE "severed_relationships" ADD CONSTRAINT "fk_rails_5054494e1e" FOREIGN KEY ("relationship_severance_event_id") REFERENCES "relationship_severance_events" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "status_edits" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "status_edits" ADD CONSTRAINT "fk_rails_dc8988c545" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "status_edits" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "status_edits" ADD CONSTRAINT "fk_rails_a960f234a0" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "status_pins" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "status_pins" ADD CONSTRAINT "fk_d4cb435b62" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "status_pins" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "status_pins" ADD CONSTRAINT "fk_rails_65c05552f1" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "status_stats" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "status_stats" ADD CONSTRAINT "fk_rails_4a247aac42" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "status_trends" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "status_trends" ADD CONSTRAINT "fk_rails_a6b527ea49" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "status_trends" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "status_trends" ADD CONSTRAINT "fk_rails_68c610dc1a" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "statuses" ADD FOREIGN KEY ("in_reply_to_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
+ALTER TABLE "statuses" ADD CONSTRAINT "fk_c7fa917661" FOREIGN KEY ("in_reply_to_account_id") REFERENCES "accounts" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "statuses" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "statuses" ADD CONSTRAINT "fk_9bda1543f7" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "statuses" ADD FOREIGN KEY ("in_reply_to_id") REFERENCES "statuses" (id) ON DELETE SET NULL;
+ALTER TABLE "statuses" ADD CONSTRAINT "fk_rails_94a6f70399" FOREIGN KEY ("in_reply_to_id") REFERENCES "statuses" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "statuses" ADD FOREIGN KEY ("reblog_of_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "statuses" ADD CONSTRAINT "fk_rails_256483a9ab" FOREIGN KEY ("reblog_of_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "statuses_tags" ADD FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
+ALTER TABLE "statuses_tags" ADD CONSTRAINT "fk_rails_df0fe11427" FOREIGN KEY ("status_id") REFERENCES "statuses" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "statuses_tags" ADD FOREIGN KEY ("tag_id") REFERENCES "tags" (id) ON DELETE CASCADE;
+ALTER TABLE "statuses_tags" ADD CONSTRAINT "fk_3081861e21" FOREIGN KEY ("tag_id") REFERENCES "tags" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "tag_follows" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "tag_follows" ADD CONSTRAINT "fk_rails_091e831473" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "tag_follows" ADD FOREIGN KEY ("tag_id") REFERENCES "tags" (id) ON DELETE CASCADE;
+ALTER TABLE "tag_follows" ADD CONSTRAINT "fk_rails_0deefe597f" FOREIGN KEY ("tag_id") REFERENCES "tags" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "tombstones" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "tombstones" ADD CONSTRAINT "fk_rails_f95b861449" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "user_invite_requests" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "user_invite_requests" ADD CONSTRAINT "fk_rails_3773f15361" FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "users" ADD FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
+ALTER TABLE "users" ADD CONSTRAINT "fk_50500f500d" FOREIGN KEY ("account_id") REFERENCES "accounts" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "users" ADD FOREIGN KEY ("invite_id") REFERENCES "invites" (id) ON DELETE SET NULL;
+ALTER TABLE "users" ADD CONSTRAINT "fk_rails_8fb2a43e88" FOREIGN KEY ("invite_id") REFERENCES "invites" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "users" ADD FOREIGN KEY ("created_by_application_id") REFERENCES "oauth_applications" (id) ON DELETE SET NULL;
+ALTER TABLE "users" ADD CONSTRAINT "fk_rails_ecc9536e7c" FOREIGN KEY ("created_by_application_id") REFERENCES "oauth_applications" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "users" ADD FOREIGN KEY ("role_id") REFERENCES "user_roles" (id) ON DELETE SET NULL;
+ALTER TABLE "users" ADD CONSTRAINT "fk_rails_642f17018b" FOREIGN KEY ("role_id") REFERENCES "user_roles" (id) ON DELETE SET NULL;
 
 -- paon:statement
-ALTER TABLE "web_push_subscriptions" ADD FOREIGN KEY ("access_token_id") REFERENCES "oauth_access_tokens" (id) ON DELETE CASCADE;
+ALTER TABLE "web_push_subscriptions" ADD CONSTRAINT "fk_rails_751a9f390b" FOREIGN KEY ("access_token_id") REFERENCES "oauth_access_tokens" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "web_push_subscriptions" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "web_push_subscriptions" ADD CONSTRAINT "fk_rails_b006f28dac" FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "web_settings" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
+ALTER TABLE "web_settings" ADD CONSTRAINT "fk_11910667b2" FOREIGN KEY ("user_id") REFERENCES "users" (id) ON DELETE CASCADE;
 
 -- paon:statement
-ALTER TABLE "webauthn_credentials" ADD FOREIGN KEY ("user_id") REFERENCES "users" (id);
+ALTER TABLE "webauthn_credentials" ADD CONSTRAINT "fk_rails_a4355aef77" FOREIGN KEY ("user_id") REFERENCES "users" (id);
 
 -- paon:statement
 CREATE MATERIALIZED VIEW "instances" AS
