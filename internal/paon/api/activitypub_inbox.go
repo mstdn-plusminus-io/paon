@@ -86,7 +86,16 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 	}
 	var relayedThrough *models.Account
 	if activityPayloadDifferentActor(payload, actor) {
-		verifiedActor, err := s.activityPubLinkedDataSignatureActor(verificationBody, payload)
+		var verifiedActor *models.Account
+		if activityPubUnsignedAnnounce(originalBody, payload) {
+			verificationBody, verifiedActor, err = s.activityPubResolveRelayedAnnounce(ctx, payload, actor)
+			if err == nil {
+				originalBody = verificationBody
+				payload, err = parseActivityPayload(verificationBody)
+			}
+		} else {
+			verifiedActor, err = s.activityPubLinkedDataSignatureActor(verificationBody, payload)
+		}
 		if err != nil {
 			return activityPubEventNotAppliedf("activity actor does not match verified HTTP signature actor: %v", err)
 		}
