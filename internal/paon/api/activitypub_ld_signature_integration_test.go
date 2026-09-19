@@ -55,6 +55,7 @@ func TestRelayedMisskeySquareDeleteResolvesUnknownSignatureCreator(t *testing.T)
 		name            string
 		actorStatus     int
 		webfingerActor  string
+		webfingerXML    bool
 		rejectActorSave bool
 		wantRequests    []string
 		wantError       []string
@@ -63,6 +64,13 @@ func TestRelayedMisskeySquareDeleteResolvesUnknownSignatureCreator(t *testing.T)
 			name:           "unknown creator is fetched and Delete applied",
 			actorStatus:    http.StatusOK,
 			webfingerActor: misskeySquareDeleteActorURI,
+			wantRequests:   []string{misskeySquareDeleteActorURI, webfingerURL},
+		},
+		{
+			name:           "unknown creator with XRD WebFinger is fetched and Delete applied",
+			actorStatus:    http.StatusOK,
+			webfingerActor: misskeySquareDeleteActorURI,
+			webfingerXML:   true,
 			wantRequests:   []string{misskeySquareDeleteActorURI, webfingerURL},
 		},
 		{
@@ -75,6 +83,14 @@ func TestRelayedMisskeySquareDeleteResolvesUnknownSignatureCreator(t *testing.T)
 			name:           "WebFinger rejection preserves cause",
 			actorStatus:    http.StatusOK,
 			webfingerActor: "https://misskey-square.net/users/someone-else",
+			wantRequests:   []string{misskeySquareDeleteActorURI, webfingerURL},
+			wantError:      []string{"resolve linked-data signature creator", "webfinger response does not loop back to actor"},
+		},
+		{
+			name:           "XRD WebFinger cannot authenticate another actor",
+			actorStatus:    http.StatusOK,
+			webfingerActor: "https://misskey-square.net/users/someone-else",
+			webfingerXML:   true,
 			wantRequests:   []string{misskeySquareDeleteActorURI, webfingerURL},
 			wantError:      []string{"resolve linked-data signature creator", "webfinger response does not loop back to actor"},
 		},
@@ -139,6 +155,10 @@ func TestRelayedMisskeySquareDeleteResolvesUnknownSignatureCreator(t *testing.T)
 					}
 					return textResponse(http.StatusOK, "application/activity+json", string(body)), nil
 				case webfingerURL:
+					if tt.webfingerXML {
+						body := `<XRD xmlns="http://docs.oasis-open.org/ns/xri/xrd-1.0"><Subject>acct:pontyukidesu@misskey-square.net</Subject><Link rel="self" type="application/activity+json" href="` + tt.webfingerActor + `"/></XRD>`
+						return textResponse(http.StatusOK, "application/xrd+xml", body), nil
+					}
 					body, err := json.Marshal(map[string]any{
 						"subject": "acct:pontyukidesu@misskey-square.net",
 						"links": []map[string]any{{

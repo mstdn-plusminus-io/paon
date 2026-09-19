@@ -1267,7 +1267,37 @@ func fetchActivityWebFingerDocument(endpoint string) (activityWebFinger, error) 
 	if err != nil {
 		return activityWebFinger{}, err
 	}
+	return parseActivityWebFingerDocument(body)
+}
+
+func parseActivityWebFingerDocument(body []byte) (activityWebFinger, error) {
 	var doc activityWebFinger
+	// Some peers return legacy XRD even when JSON was requested. Resolve both
+	// representations through the same subject and actor loopback checks.
+	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("<")) {
+		decoder := xml.NewDecoder(bytes.NewReader(body))
+		if err := decoder.Decode(&doc); err != nil {
+			return activityWebFinger{}, fmt.Errorf("invalid webfinger XRD: %w", err)
+		}
+		for {
+			token, err := decoder.Token()
+			if errors.Is(err, io.EOF) {
+				return doc, nil
+			}
+			if err != nil {
+				return activityWebFinger{}, fmt.Errorf("invalid webfinger XRD: %w", err)
+			}
+			switch value := token.(type) {
+			case xml.CharData:
+				if len(bytes.TrimSpace(value)) == 0 {
+					continue
+				}
+			case xml.Comment, xml.ProcInst:
+				continue
+			}
+			return activityWebFinger{}, fmt.Errorf("invalid webfinger XRD: unexpected content after root element")
+		}
+	}
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return activityWebFinger{}, err
 	}
@@ -2130,12 +2160,13 @@ func activityHiddenServiceHost(host string) bool {
 }
 
 type activityWebFinger struct {
-	Subject string `json:"subject"`
+	XMLName xml.Name `json:"-" xml:"http://docs.oasis-open.org/ns/xri/xrd-1.0 XRD"`
+	Subject string   `json:"subject" xml:"http://docs.oasis-open.org/ns/xri/xrd-1.0 Subject"`
 	Links   []struct {
-		Rel  string `json:"rel"`
-		Type string `json:"type"`
-		Href string `json:"href"`
-	} `json:"links"`
+		Rel  string `json:"rel" xml:"rel,attr"`
+		Type string `json:"type" xml:"type,attr"`
+		Href string `json:"href" xml:"href,attr"`
+	} `json:"links" xml:"http://docs.oasis-open.org/ns/xri/xrd-1.0 Link"`
 }
 
 func (s *Server) upsertRemoteActivityActor(actor remoteActivityActor) (*models.Account, error) {
