@@ -75,7 +75,7 @@ task dev
 
 ## Go runtime
 
-`paon` uses the existing Mastodon PostgreSQL schema and serves the existing built UI assets. Mastodon 4.5 compatibility requires PostgreSQL 14 or newer and Redis/Valkey 7 or newer; startup and readiness checks reject older servers. The same web listener on port 3000 serves HTML, REST, ActivityPub, SSE, and WebSocket traffic; the worker role runs Asynq jobs.
+`paon` uses the existing Mastodon PostgreSQL schema and serves the existing built UI assets. Mastodon 4.6.6 compatibility requires PostgreSQL 14 or newer and Redis/Valkey 7 or newer; startup and readiness checks reject older servers. The same web listener on port 3000 serves HTML, REST, ActivityPub, SSE, and WebSocket traffic; the worker role runs Asynq jobs.
 
 Build and validate the local binaries:
 

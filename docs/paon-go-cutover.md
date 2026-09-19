@@ -1,4 +1,4 @@
-# Paon Mastodon 4.5 drain cutover runbook
+# Paon Mastodon 4.6 drain cutover runbook
 
 Paon supports a drain cutover. Sidekiq and Asynq are intentionally not treated as wire-compatible queues. Do not run Rails producers and Go producers at the same time.
 
@@ -52,15 +52,16 @@ Abort when any of these conditions is true:
    prefix. Remove `REDIS_NAMESPACE` after the confirmed cutover; 4.4 runtime
    configuration rejects it.
 
-7. For a supported 4.4.22 (`20250627132728`), 4.3.23 (`20241007071624`), or
-   4.2.19 (`20230907150100`) source, apply expand. Before backfill, verify that
+7. For a supported 4.5.15 (`20251023210145`), 4.4.22 (`20250627132728`),
+   4.3.23 (`20241007071624`), or 4.2.19 (`20230907150100`) source, apply expand.
+   Before backfill, verify that
    every old web/worker/streaming process is stopped. For a 4.2 source, pin
    `OTP_SECRET` and the three `ACTIVE_RECORD_ENCRYPTION_*` values in the
-   backup/restore inventory; the phase sequence completes the reviewed 4.3 and
-   4.4 inventories before 4.5. Complete the idempotent backfill/validation
-   phases, verify all 554 target markers, schema SHA-1
-   `801766beefdd9b1d55fe6f8bf3bed91392aebab1`, and captured row counts, then
-   explicitly acknowledge every pending irreversible contract:
+   backup/restore inventory; the phase sequence completes the reviewed 4.3,
+   4.4, and 4.5 inventories before 4.6. Complete the idempotent
+   backfill/validation phases, verify all 588 target markers, the route-specific
+   strict catalog golden, and captured row counts, then explicitly acknowledge
+   every pending irreversible contract:
 
    ```sh
    paon-migrate --phase=expand
@@ -83,7 +84,7 @@ Abort when any of these conditions is true:
 
 8. If this installation used Paon's legacy DynamoDB quote extension, keep all
    writers fenced and perform the one-way, read-only-source cutover after the
-   PostgreSQL 4.5 schema is final:
+   PostgreSQL 4.6 schema is final:
 
    ```sh
    paon-admin quotes cutover --dry-run
@@ -91,7 +92,7 @@ Abort when any of these conditions is true:
    ```
 
    Reconcile candidates/imported/skipped with the source count and investigate
-   every skipped row. PostgreSQL `quotes` is the only 4.5 runtime source of
+   every skipped row. PostgreSQL `quotes` is the only 4.6 runtime source of
    truth. Retain DynamoDB only for the approved rollback window; never enable a
    dual-write path.
 

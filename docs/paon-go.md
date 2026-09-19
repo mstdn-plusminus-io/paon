@@ -122,11 +122,12 @@ The standard `docker-compose.yml` defines PostgreSQL, Redis, Meilisearch, Go web
 
 GORM AutoMigrate is disabled. `internal/paon/migrate/schema.sql` is embedded into `paon-migrate`.
 
-- Empty database: the complete Mastodon 4.5.15-compatible schema, 554 reviewed migration markers, and seed rows are created atomically.
-- Mastodon 4.5.15 version `20251023210145`: the full schema guard and official schema SHA-1 check run without modifying data.
-- Mastodon 4.4.22 version `20250627132728`: run `paon-migrate --phase=expand`, then `--phase=backfill` and `--phase=validate`; after all 4.4 writers are stopped run `--phase=contract --acknowledge-contract`. The phases install the reviewed 15-marker 4.5 inventory, including official quote counters/indexes, conversation context, username blocks, numeric account identifiers, and timeline/landing/default-quote-policy backfills.
-- Mastodon 4.3.23 version `20241007071624`: the same phase sequence first completes the reviewed 4.4 inventory and then the 4.5 inventory. Backfill moves the legacy Redis tag-trend source into PostgreSQL; `MIGRATION_SKIP_TAG_TREND_BACKFILL=true` is accepted only after proving those Redis sets are empty or intentionally disposable.
-- Mastodon 4.2.19 version `20230907150100`: the phase sequence completes the reviewed 4.3, 4.4, and 4.5 inventories in order. The acknowledged contract invocation can finish the older contracts in one maintenance window. A bare `paon-migrate` always defaults to expand; acknowledgment is only a gate and never selects a destructive phase by itself.
+- Empty database: the complete Mastodon 4.6.6-compatible schema, 588 reviewed migration markers, and seed rows are created atomically.
+- Mastodon 4.6.6 version `20260611150940`: the full schema guard and official schema SHA-1 check run without modifying data.
+- Mastodon 4.5.15 version `20251023210145`: run `paon-migrate --phase=expand`, then `--phase=backfill` and `--phase=validate`; after all 4.5 writers are stopped run `--phase=contract --acknowledge-contract`. The phases install the reviewed 34-marker 4.6 inventory, including collections, email subscriptions, tagged objects, multiple ActivityPub keypairs, profile settings, role security, and theme-setting conversion.
+- Mastodon 4.4.22 version `20250627132728`: the same phase sequence first completes the reviewed 4.5 inventory and then the 4.6 inventory.
+- Mastodon 4.3.23 version `20241007071624`: the phase sequence completes the reviewed 4.4, 4.5, and 4.6 inventories. Backfill moves the legacy Redis tag-trend source into PostgreSQL; `MIGRATION_SKIP_TAG_TREND_BACKFILL=true` is accepted only after proving those Redis sets are empty or intentionally disposable.
+- Mastodon 4.2.19 version `20230907150100`: the phase sequence completes the reviewed 4.3, 4.4, 4.5, and 4.6 inventories in order. The acknowledged contract invocation can finish the older contracts in one maintenance window. A bare `paon-migrate` always defaults to expand; acknowledgment is only a gate and never selects a destructive phase by itself.
 - Partial or unsupported version: startup and migration are refused.
 
 See `docs/paon-go-schema-compatibility.md` for schema change requirements.
