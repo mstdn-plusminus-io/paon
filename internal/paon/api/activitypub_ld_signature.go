@@ -31,32 +31,47 @@ const (
 	activityPubJSONLDContextMaxBytes = 1 << 20
 )
 
-func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activityPayload) *models.Account {
-	if !payload.Signature.Present || payload.Signature.Type != "RsaSignature2017" || payload.Signature.Creator == "" || payload.Signature.SignatureValue == "" {
-		return nil
+func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activityPayload) (*models.Account, error) {
+	if !payload.Signature.Present {
+		return nil, fmt.Errorf("linked-data signature is missing")
+	}
+	if payload.Signature.Type != "RsaSignature2017" {
+		return nil, fmt.Errorf("unsupported linked-data signature type %q", payload.Signature.Type)
+	}
+	if payload.Signature.Creator == "" {
+		return nil, fmt.Errorf("linked-data signature creator is missing")
+	}
+	if payload.Signature.SignatureValue == "" {
+		return nil, fmt.Errorf("linked-data signature value is missing")
 	}
 	actor, err := s.activityPubLinkedDataSignatureCreatorActor(payload.Signature.Creator)
-	if err != nil || actor == nil {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("resolve linked-data signature creator %q: %w", payload.Signature.Creator, err)
+	}
+	if actor == nil {
+		return nil, fmt.Errorf("resolve linked-data signature creator %q: actor is missing", payload.Signature.Creator)
 	}
 	publicKey, err := activityPublicKey(actor.PublicKey)
 	if err != nil {
 		if strings.TrimSpace(actor.PublicKey) != "" {
-			return nil
+			return nil, fmt.Errorf("parse linked-data signature creator public key: %w", err)
 		}
 		actor, err = s.refreshActivityPubActorKey(payload.Signature.Creator, actor)
-		if err != nil || actor == nil {
-			return nil
+		if err != nil {
+			return nil, fmt.Errorf("refresh linked-data signature creator public key: %w", err)
+		}
+		if actor == nil {
+			return nil, fmt.Errorf("refresh linked-data signature creator public key: actor is missing")
 		}
 		publicKey, err = activityPublicKey(actor.PublicKey)
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("parse refreshed linked-data signature creator public key: %w", err)
 		}
 	}
-	if !verifyActivityPubLinkedDataSignature(body, publicKey) {
-		return nil
+	if err := verifyActivityPubLinkedDataSignatureWithError(body, publicKey); err != nil {
+		return nil, err
 	}
-	return actor
+	return actor, nil
 }
 
 func (s *Server) activityPubLinkedDataSignatureCreatorActor(creator string) (*models.Account, error) {
@@ -87,23 +102,30 @@ func (s *Server) activityPubLinkedDataSignatureCreatorActor(creator string) (*mo
 }
 
 func verifyActivityPubLinkedDataSignature(body []byte, publicKey *rsa.PublicKey) bool {
+	return verifyActivityPubLinkedDataSignatureWithError(body, publicKey) == nil
+}
+
+func verifyActivityPubLinkedDataSignatureWithError(body []byte, publicKey *rsa.PublicKey) error {
 	if publicKey == nil {
-		return false
+		return fmt.Errorf("linked-data signature public key is missing")
 	}
 	var document map[string]any
 	if err := json.Unmarshal(body, &document); err != nil {
-		return false
+		return fmt.Errorf("decode linked-data signature document: %w", err)
 	}
 	signatureValue, toVerify, err := activityPubLinkedDataSignatureVerificationString(document)
 	if err != nil {
-		return false
+		return fmt.Errorf("prepare linked-data signature verification: %w", err)
 	}
 	signature, err := decodeActivityPubLinkedDataSignatureValue(signatureValue)
 	if err != nil {
-		return false
+		return fmt.Errorf("decode linked-data signature value: %w", err)
 	}
 	digest := sha256.Sum256([]byte(toVerify))
-	return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature) == nil
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+		return fmt.Errorf("verify linked-data RSA signature: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) signActivityPubLinkedDataSignaturePayload(signer models.Account, payload map[string]any) (map[string]any, error) {
@@ -287,11 +309,11 @@ func activityPubLinkedDataSignatureVerificationString(document map[string]any) (
 	}
 	optionsHash, err := activityPubJSONLDHash(options)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("normalize linked-data signature options: %w", err)
 	}
 	documentHash, err := activityPubJSONLDHash(unsigned)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("normalize linked-data signature document: %w", err)
 	}
 	return signatureValue, optionsHash + documentHash, nil
 }
