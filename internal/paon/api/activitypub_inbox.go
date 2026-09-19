@@ -420,6 +420,11 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 	}
 	switch payload.Type {
 	case "Create":
+		if payload.Object.TypeExact == "CacheFile" {
+			// PeerTube redundancy announcements describe cached video files.
+			// There is no Mastodon state to apply or media to fetch for them.
+			return nil
+		}
 		s.scheduleActivityPubActorRefreshIfStale(actor, payload.ID)
 		if payload.ObjectReference && payload.Object.ID != "" {
 			return s.processActivityPubDereferencedCreate(payload, actor, target, relayedThrough, options)
@@ -474,9 +479,9 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 		if payload.Object.TypeExact == "Block" {
 			return s.processActivityPubUndoBlock(payload.Object, actor)
 		}
-	case "View":
-		// PeerTube federates aggregate video view counters as View
-		// activities. Mastodon has no state to apply for them, so accept the
+	case "View", "Download":
+		// PeerTube federates video view and download notifications.
+		// Mastodon has no state to apply for them, so accept the
 		// authenticated activity without sending it through retry/archive.
 		return nil
 	}
@@ -7393,7 +7398,7 @@ func activityJSONLDGraphMaps(object map[string]any) []map[string]any {
 
 func activityJSONLDTypeIsActivity(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Block", "Create", "Delete", "Flag", "Follow", "Like", "Move", "Reject", "Remove", "Undo", "Update", "View":
+	case "Accept", "Add", "Announce", "Block", "Create", "Delete", "Download", "Flag", "Follow", "Like", "Move", "Reject", "Remove", "Undo", "Update", "View":
 		return true
 	default:
 		return false
@@ -7830,6 +7835,11 @@ func activityTypeValues(value any) []string {
 
 func activityCompactType(value string) string {
 	value = strings.TrimSpace(value)
+	// Signed JSON-LD compaction expands PeerTube's CacheFile term to its
+	// extension IRI. Match only this term, not arbitrary PeerTube names.
+	if value == "https://joinpeertube.org/ns#CacheFile" || value == "pt:CacheFile" {
+		return "CacheFile"
+	}
 	if strings.HasPrefix(value, "https://www.w3.org/ns/activitystreams#") {
 		return strings.TrimPrefix(value, "https://www.w3.org/ns/activitystreams#")
 	}
@@ -7873,7 +7883,7 @@ func activityCompactType(value string) string {
 
 func activityKnownType(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "Collection", "CollectionPage", "Create", "Delete", "EncryptedMessage", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Question", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video", "View":
+	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "CacheFile", "Collection", "CollectionPage", "Create", "Delete", "Download", "EncryptedMessage", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Question", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video", "View":
 		return true
 	default:
 		return false
