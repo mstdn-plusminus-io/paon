@@ -417,6 +417,10 @@ func activityPubFullJSONLDContextExtensions() map[string]any {
 		"discoverable":              "toot:discoverable",
 		"indexable":                 "toot:indexable",
 		"memorial":                  "toot:memorial",
+		"suspended":                 "toot:suspended",
+		"fep":                       "https://w3id.org/fep/044f#",
+		"quote":                     map[string]any{"@id": "fep:quote", "@type": "@id"},
+		"quoteUri":                  "toot:quoteUri",
 		"votersCount":               "toot:votersCount",
 		"gts":                       "https://gotosocial.org/ns#",
 		"interactionPolicy":         map[string]any{"@id": "gts:interactionPolicy", "@type": "@id"},
@@ -705,98 +709,47 @@ func activityPubSchemaJSONLDContext() map[string]any {
 	}
 }
 
+// activityPubActivityStreamsJSONLDContext mirrors the W3C context at
+// https://www.w3.org/ns/activitystreams. Keep application extensions in
+// activityPubFullJSONLDContextExtensions: adding terms here changes the RDF
+// signed by remote servers, including otherwise undefined actor properties.
 func activityPubActivityStreamsJSONLDContext() map[string]any {
-	as := "https://www.w3.org/ns/activitystreams#"
 	ctx := map[string]any{
-		"@vocab":                    as,
-		"as":                        as,
-		"ostatus":                   "http://ostatus.org#",
-		"schema":                    "http://schema.org#",
-		"toot":                      "http://joinmastodon.org/ns#",
-		"misskey":                   "https://misskey-hub.net/ns#",
-		"gts":                       "https://gotosocial.org/ns#",
-		"fep":                       "https://w3id.org/fep/044f#",
-		"id":                        "@id",
-		"type":                      "@type",
-		"atomUri":                   "ostatus:atomUri",
-		"inReplyToAtomUri":          "ostatus:inReplyToAtomUri",
-		"content":                   as + "content",
-		"contentMap":                map[string]any{"@id": as + "content", "@container": "@language"},
-		"duration":                  map[string]any{"@id": as + "duration", "@type": "http://www.w3.org/2001/XMLSchema#duration"},
-		"height":                    map[string]any{"@id": as + "height", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger"},
-		"mediaType":                 as + "mediaType",
-		"name":                      as + "name",
-		"nameMap":                   map[string]any{"@id": as + "name", "@container": "@language"},
-		"published":                 map[string]any{"@id": as + "published", "@type": "http://www.w3.org/2001/XMLSchema#dateTime"},
-		"rel":                       as + "rel",
-		"source":                    as + "source",
-		"startIndex":                map[string]any{"@id": as + "startIndex", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger"},
-		"summary":                   as + "summary",
-		"summaryMap":                map[string]any{"@id": as + "summary", "@container": "@language"},
-		"totalItems":                map[string]any{"@id": as + "totalItems", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger"},
-		"updated":                   map[string]any{"@id": as + "updated", "@type": "http://www.w3.org/2001/XMLSchema#dateTime"},
-		"width":                     map[string]any{"@id": as + "width", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger"},
-		"manuallyApprovesFollowers": as + "manuallyApprovesFollowers",
-		"sensitive":                 as + "sensitive",
-		"votersCount":               "toot:votersCount",
-		"blurhash":                  "toot:blurhash",
-		"focalPoint":                map[string]any{"@id": "toot:focalPoint", "@container": "@list"},
-		"featured":                  map[string]any{"@id": "toot:featured", "@type": "@id"},
-		"featuredTags":              map[string]any{"@id": "toot:featuredTags", "@type": "@id"},
-		"discoverable":              "toot:discoverable",
-		"indexable":                 "toot:indexable",
-		"memorial":                  "toot:memorial",
-		"suspended":                 "toot:suspended",
-		"quoteUrl":                  as + "quoteUrl",
-		"quoteUri":                  "toot:quoteUri",
-		"quote":                     map[string]any{"@id": "fep:quote", "@type": "@id"},
-		"_misskey_quote":            "misskey:_misskey_quote",
-		"interactionPolicy":         "gts:interactionPolicy",
-		"canQuote":                  map[string]any{"@id": "gts:canQuote", "@type": "@id"},
-		"automaticApproval":         map[string]any{"@id": "gts:automaticApproval", "@type": "@id"},
-		"manualApproval":            map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
-		"PropertyValue":             "schema:PropertyValue",
-		"value":                     "schema:value",
-		"Emoji":                     "toot:Emoji",
-		"Device":                    "toot:Device",
-		"Ed25519Signature":          "toot:Ed25519Signature",
-		"Ed25519Key":                "toot:Ed25519Key",
-		"Curve25519Key":             "toot:Curve25519Key",
-		"publicKeyBase64":           "toot:publicKeyBase64",
-		"deviceId":                  "toot:deviceId",
-		"claim":                     map[string]any{"@id": "toot:claim", "@type": "@id"},
-		"fingerprintKey":            map[string]any{"@id": "toot:fingerprintKey", "@type": "@id"},
-		"identityKey":               map[string]any{"@id": "toot:identityKey", "@type": "@id"},
-		"devices":                   map[string]any{"@id": "toot:devices", "@type": "@id"},
-		"messageFranking":           "toot:messageFranking",
-		"messageType":               "toot:messageType",
-		"cipherText":                "toot:cipherText",
-		"Digest":                    as + "Digest",
-		"digestAlgorithm":           as + "digestAlgorithm",
-		"digestValue":               as + "digestValue",
+		"@vocab": "_:",
+		"xsd":    "http://www.w3.org/2001/XMLSchema#",
+		"as":     "https://www.w3.org/ns/activitystreams#",
+		"ldp":    "http://www.w3.org/ns/ldp#",
+		"vcard":  "http://www.w3.org/2006/vcard/ns#",
+		"id":     "@id",
+		"type":   "@type",
 	}
 	for _, term := range []string{
-		"Accept", "Activity", "Add", "Announce", "Application", "Arrive", "Article", "Audio", "Block", "Collection", "CollectionPage", "Create", "Delete", "Dislike", "Document", "EncryptedMessage", "Event", "Flag", "Follow", "Group", "Ignore", "Image", "IntransitiveActivity", "Invite", "Join", "Leave", "Like", "Listen", "Mention", "Move", "Note", "Object", "Offer", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Place", "Profile", "Question", "Read", "Reject", "Relationship", "Remove", "Service", "TentativeAccept", "TentativeReject", "Tombstone", "Travel", "Undo", "Update", "Video", "View",
+		"Accept", "Activity", "IntransitiveActivity", "Add", "Announce", "Application", "Arrive", "Article", "Audio", "Block", "Collection", "CollectionPage", "Relationship", "Create", "Delete", "Dislike", "Document", "Event", "Follow", "Flag", "Group", "Ignore", "Image", "Invite", "Join", "Leave", "Like", "Link", "Mention", "Note", "Object", "Offer", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Place", "Profile", "Question", "Reject", "Remove", "Service", "TentativeAccept", "TentativeReject", "Tombstone", "Undo", "Update", "Video", "View", "Listen", "Read", "Move", "Travel", "IsFollowing", "IsFollowedBy", "IsContact", "IsMember", "content", "name", "hreflang", "mediaType", "rel", "summary", "units", "preferredUsername", "source",
 	} {
-		ctx[term] = as + term
-	}
-	ctx["EncryptedMessage"] = "toot:EncryptedMessage"
-	ctx["Hashtag"] = as + "Hashtag"
-	for _, term := range []string{
-		"accuracy", "altitude", "latitude", "longitude", "radius",
-	} {
-		ctx[term] = map[string]any{"@id": as + term, "@type": "http://www.w3.org/2001/XMLSchema#float"}
+		ctx[term] = "as:" + term
 	}
 	for _, term := range []string{
-		"actor", "alsoKnownAs", "anyOf", "attachment", "attributedTo", "audience", "bcc", "bto", "cc", "context", "current", "describes", "endpoints", "first", "followers", "following", "formerType", "generator", "href", "icon", "image", "inReplyTo", "instrument", "items", "last", "liked", "likes", "location", "next", "object", "oneOf", "origin", "outbox", "partOf", "prev", "preview", "result", "replies", "sharedInbox", "shares", "subject", "tag", "target", "to", "url",
+		"subject", "relationship", "actor", "attributedTo", "attachment", "bcc", "bto", "cc", "context", "current", "first", "generator", "icon", "image", "inReplyTo", "items", "instrument", "last", "location", "next", "object", "oneOf", "anyOf", "origin", "prev", "preview", "replies", "result", "audience", "partOf", "tag", "target", "to", "url", "href", "describes", "formerType", "outbox", "following", "followers", "streams", "endpoints", "uploadMedia", "proxyUrl", "liked", "oauthAuthorizationEndpoint", "oauthTokenEndpoint", "provideClientKey", "signClientKey", "sharedInbox", "Public", "likes", "shares", "alsoKnownAs",
 	} {
-		ctx[term] = map[string]any{"@id": as + term, "@type": "@id"}
+		ctx[term] = map[string]any{"@id": "as:" + term, "@type": "@id"}
 	}
-	ctx["inbox"] = map[string]any{"@id": "http://www.w3.org/ns/ldp#inbox", "@type": "@id"}
-	ctx["orderedItems"] = map[string]any{"@id": as + "items", "@type": "@id", "@container": "@list"}
-	for _, term := range []string{"closed", "deleted", "endTime", "startTime"} {
-		ctx[term] = map[string]any{"@id": as + term, "@type": "http://www.w3.org/2001/XMLSchema#dateTime"}
+	for _, term := range []string{"closed", "endTime", "published", "startTime", "updated", "deleted"} {
+		ctx[term] = map[string]any{"@id": "as:" + term, "@type": "xsd:dateTime"}
 	}
+	for _, term := range []string{"accuracy", "altitude", "latitude", "longitude", "radius"} {
+		ctx[term] = map[string]any{"@id": "as:" + term, "@type": "xsd:float"}
+	}
+	for _, term := range []string{"height", "startIndex", "totalItems", "width"} {
+		ctx[term] = map[string]any{"@id": "as:" + term, "@type": "xsd:nonNegativeInteger"}
+	}
+	for _, term := range []string{"duration"} {
+		ctx[term] = map[string]any{"@id": "as:" + term, "@type": "xsd:duration"}
+	}
+	ctx["orderedItems"] = map[string]any{"@id": "as:items", "@type": "@id", "@container": "@list"}
+	ctx["contentMap"] = map[string]any{"@id": "as:content", "@container": "@language"}
+	ctx["nameMap"] = map[string]any{"@id": "as:name", "@container": "@language"}
+	ctx["summaryMap"] = map[string]any{"@id": "as:summary", "@container": "@language"}
+	ctx["inbox"] = map[string]any{"@id": "ldp:inbox", "@type": "@id"}
 	return ctx
 }
 

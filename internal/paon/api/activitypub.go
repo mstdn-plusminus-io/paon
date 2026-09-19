@@ -1266,6 +1266,8 @@ func activityPubActorContextForNestedSerializers(tags []any, icon map[string]any
 
 func activityPubOLMContextExtension() map[string]any {
 	return map[string]any{
+		"Digest":           "as:Digest",
+		"digest":           "as:digest",
 		"toot":             "http://joinmastodon.org/ns#",
 		"Device":           "toot:Device",
 		"Ed25519Signature": "toot:Ed25519Signature",
