@@ -93,14 +93,14 @@ tasks:
       - go run -mod=mod ./cmd/paon-routes > tmp/go-routes.json
 
   routes:audit:
-    desc: Compare Go routes with a Mastodon 4.5.15 Rails route manifest
+    desc: Compare Go routes with a Mastodon 4.6.6 Rails route manifest
     deps:
       - routes:go
     vars:
-      RAILS_ROUTES: '{{default "tmp/rails-routes-4.5.15.json" .PAON_RAILS_ROUTE_MANIFEST}}'
+      RAILS_ROUTES: '{{default "tmp/rails-routes-4.6.6.json" .PAON_RAILS_ROUTE_MANIFEST}}'
     preconditions:
       - sh: test -f "{{.RAILS_ROUTES}}"
-        msg: Set PAON_RAILS_ROUTE_MANIFEST to a generated Mastodon 4.5.15 Rails route manifest
+        msg: Set PAON_RAILS_ROUTE_MANIFEST to a generated Mastodon 4.6.6 Rails route manifest
     cmds:
       - go run -mod=mod ./cmd/paon-route-audit --rails "{{.RAILS_ROUTES}}" --go tmp/go-routes.json
 
@@ -115,7 +115,7 @@ tasks:
       - go run -mod=mod ./cmd/paon-differential --cases testdata/differential/core.json
 
   test:differential:
-    desc: Compare the complete public and seeded authenticated Mastodon 4.5.15 contract matrix
+    desc: Compare the complete public and seeded authenticated Mastodon 4.6.6 contract matrix
     deps:
       - test:differential:core
     preconditions:
