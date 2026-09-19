@@ -1044,6 +1044,26 @@ func TestStatusEditPollAndMediaChangesInvalidateRailsStatusCache(t *testing.T) {
 	}
 }
 
+func TestStatusCreateAndEditAllowPollWithMediaOnMastodon46(t *testing.T) {
+	serverSource, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fn := range []string{"createStatus", "updateStatus"} {
+		if functionBodyContains(t, serverSource, fn, "Media attachments can't be attached to polls") {
+			t.Fatalf("server.go:%s still rejects the Mastodon 4.6 poll-with-media contract", fn)
+		}
+	}
+
+	publishSource, err := os.ReadFile("scheduled_status_publish.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if functionBodyContains(t, publishSource, "publishScheduledStatus", `hasPoll && submittedMediaIDsPresent(mediaIDs)`) {
+		t.Fatal("scheduled publication still rejects the Mastodon 4.6 poll-with-media contract")
+	}
+}
+
 func TestUniqueInt64sDropsDuplicates(t *testing.T) {
 	got := uniqueInt64s([]int64{2, 0, 2, 3, 0, 3, 4})
 	want := []int64{2, 0, 3, 4}

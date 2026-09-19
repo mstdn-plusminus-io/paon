@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -43,7 +44,7 @@ func (s *Server) accountsByID(c *echo.Context) error {
 		if err := s.hydrateAccountCustomEmojis(&accounts[i]); err != nil {
 			return err
 		}
-		out = append(out, serializer.AccountFromModel(s.cfg, accounts[i]))
+		out = append(out, s.serializeAccount(accounts[i]))
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -162,6 +163,8 @@ type annualReportEntity struct {
 	Year          int             `json:"year"`
 	Data          json.RawMessage `json:"data"`
 	SchemaVersion int             `json:"schema_version"`
+	ShareURL      *string         `json:"share_url"`
+	AccountID     string          `json:"account_id"`
 }
 
 func (s *Server) annualReports(c *echo.Context) error {
@@ -170,11 +173,11 @@ func (s *Server) annualReports(c *echo.Context) error {
 		return err
 	}
 	var reports []models.GeneratedAnnualReport
-	if err := s.db.Where("account_id = ? AND viewed_at IS NULL", account.ID).Find(&reports).Error; err != nil {
+	if err := s.db.Preload("Account").Where("account_id = ? AND viewed_at IS NULL", account.ID).Find(&reports).Error; err != nil {
 		return err
 	}
 	accountIDs, statusIDs := annualReportReferencedIDs(reports)
-	accounts, err := s.annualReportAccounts(accountIDs)
+	accounts, err := s.annualReportAccounts(accountIDs, account)
 	if err != nil {
 		return err
 	}
@@ -188,7 +191,7 @@ func (s *Server) annualReports(c *echo.Context) error {
 		if !json.Valid(data) {
 			data = json.RawMessage(`{}`)
 		}
-		reportEntities = append(reportEntities, annualReportEntity{Year: report.Year, Data: data, SchemaVersion: report.SchemaVersion})
+		reportEntities = append(reportEntities, annualReportEntityFromModel(s, report, data))
 	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"annual_reports": reportEntities,
@@ -198,23 +201,20 @@ func (s *Server) annualReports(c *echo.Context) error {
 }
 
 func (s *Server) annualReport(c *echo.Context) error {
-	account, _, err := s.requireAccountScope(c, "write", "write:accounts")
+	account, _, err := s.requireAccountScope(c, "read", "read:accounts")
 	if err != nil {
 		return err
 	}
-	year, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		return apiError(c, http.StatusNotFound, "Record not found")
-	}
+	year := int(railsToInt64(c.Param("id")))
 	var report models.GeneratedAnnualReport
-	if err := s.db.Where("account_id = ? AND year = ?", account.ID, year).First(&report).Error; err != nil {
+	if err := s.db.Preload("Account").Where("account_id = ? AND year = ?", account.ID, year).First(&report).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return apiError(c, http.StatusNotFound, "Record not found")
 		}
 		return err
 	}
 	accountIDs, statusIDs := annualReportReferencedIDs([]models.GeneratedAnnualReport{report})
-	accounts, err := s.annualReportAccounts(accountIDs)
+	accounts, err := s.annualReportAccounts(accountIDs, account)
 	if err != nil {
 		return err
 	}
@@ -227,10 +227,111 @@ func (s *Server) annualReport(c *echo.Context) error {
 		data = json.RawMessage(`{}`)
 	}
 	return c.JSON(http.StatusOK, map[string]any{
-		"annual_reports": []annualReportEntity{{Year: report.Year, Data: data, SchemaVersion: report.SchemaVersion}},
+		"annual_reports": []annualReportEntity{annualReportEntityFromModel(s, report, data)},
 		"accounts":       accounts,
 		"statuses":       statuses,
 	})
+}
+
+func annualReportEntityFromModel(s *Server, report models.GeneratedAnnualReport, data json.RawMessage) annualReportEntity {
+	var shareURL *string
+	if report.ShareKey.Valid && strings.TrimSpace(report.ShareKey.String) != "" {
+		value := s.cfg.BaseURL() + "/@" + url.PathEscape(report.Account.Username) + "/wrapstodon/" + strconv.Itoa(report.Year) + "/" + url.PathEscape(report.ShareKey.String)
+		shareURL = &value
+	}
+	return annualReportEntity{
+		Year: report.Year, Data: data, SchemaVersion: report.SchemaVersion, ShareURL: shareURL,
+		AccountID: strconv.FormatInt(report.AccountID, 10),
+	}
+}
+
+func (s *Server) annualReportState(c *echo.Context) error {
+	account, _, err := s.requireAccountScope(c, "read", "read:accounts")
+	if err != nil {
+		return err
+	}
+	year := int(railsToInt64(c.Param("id")))
+	var count int64
+	if err := s.db.Model(&models.GeneratedAnnualReport{}).Where("account_id = ? AND year = ?", account.ID, year).Count(&count).Error; err != nil {
+		return err
+	}
+	state := "ineligible"
+	if count > 0 {
+		state = "available"
+	} else {
+		key := annualReportRefreshKey(account.ID, year)
+		if value, _ := s.redisCommand(c.Request().Context(), "HGET", key, "status"); value == "running" {
+			state = "generating"
+			if id, ok := asyncRefreshID(key, s.cfg.SecretKeyBase); ok {
+				s.setAsyncRefreshHeader(c, id, 2)
+			}
+		} else if campaign, ok := s.wrapstodonCampaign(time.Now().UTC()).(int); ok && campaign == year {
+			eligible, err := s.annualReportEligible(account.ID, year)
+			if err != nil {
+				return err
+			}
+			if eligible {
+				state = "eligible"
+			}
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]string{"state": state})
+}
+
+func (s *Server) generateAnnualReportAPI(c *echo.Context) error {
+	account, _, err := s.requireAccountScope(c, "write", "write:accounts")
+	if err != nil {
+		return err
+	}
+	year := int(railsToInt64(c.Param("id")))
+	campaign, ok := s.wrapstodonCampaign(time.Now().UTC()).(int)
+	if !ok || campaign != year {
+		return renderEmpty(c)
+	}
+	var count int64
+	if err := s.db.Model(&models.GeneratedAnnualReport{}).Where("account_id = ? AND year = ?", account.ID, year).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return renderEmpty(c)
+	}
+	key := annualReportRefreshKey(account.ID, year)
+	if value, _ := s.redisCommand(c.Request().Context(), "HGET", key, "status"); value == "running" {
+		if id, ok := asyncRefreshID(key, s.cfg.SecretKeyBase); ok {
+			s.setAsyncRefreshHeader(c, id, 2)
+		}
+		return c.NoContent(http.StatusAccepted)
+	}
+	id, err := s.createAsyncRefresh(c.Request().Context(), key, false)
+	if err != nil {
+		return err
+	}
+	if !s.enqueueGenerateAnnualReportTask(account.ID, year, key) {
+		_ = s.finishAsyncRefresh(c.Request().Context(), key)
+		return apiError(c, http.StatusServiceUnavailable, "Service Unavailable")
+	}
+	s.setAsyncRefreshHeader(c, id, 2)
+	return c.NoContent(http.StatusAccepted)
+}
+
+func annualReportRefreshKey(accountID int64, year int) string {
+	return "wrapstodon:" + strconv.FormatInt(accountID, 10) + ":" + strconv.Itoa(year)
+}
+
+func (s *Server) annualReportEligible(accountID int64, year int) (bool, error) {
+	start := time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(1, 0, 0)
+	startID, endID := annualReportSnowflakeRange(start, end)
+	var publicCount int64
+	if err := s.db.Model(&models.Status{}).Where("account_id = ? AND id BETWEEN ? AND ? AND visibility IN ? AND deleted_at IS NULL", accountID, startID, endID, []int{0, 1}).Count(&publicCount).Error; err != nil {
+		return false, err
+	}
+	if publicCount == 0 {
+		return false, nil
+	}
+	var taggedCount int64
+	err := s.db.Table("statuses").Joins("JOIN statuses_tags ON statuses_tags.status_id = statuses.id").Where("statuses.account_id = ? AND statuses.id BETWEEN ? AND ? AND statuses.deleted_at IS NULL", accountID, startID, endID).Count(&taggedCount).Error
+	return taggedCount > 0, err
 }
 
 func (s *Server) readAnnualReport(c *echo.Context) error {
@@ -238,10 +339,7 @@ func (s *Server) readAnnualReport(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	year, err := strconv.Atoi(firstNonEmpty(c.Param("id"), c.Param("year")))
-	if err != nil {
-		return apiError(c, http.StatusNotFound, "Record not found")
-	}
+	year := int(railsToInt64(firstNonEmpty(c.Param("id"), c.Param("year"))))
 	result := s.db.Model(&models.GeneratedAnnualReport{}).
 		Where("account_id = ? AND year = ?", account.ID, year).
 		Update("viewed_at", time.Now().UTC())
@@ -258,6 +356,9 @@ func annualReportReferencedIDs(reports []models.GeneratedAnnualReport) ([]int64,
 	accountIDs := []int64{}
 	statusIDs := []int64{}
 	for _, report := range reports {
+		if report.SchemaVersion == 2 && report.AccountID > 0 {
+			accountIDs = append(accountIDs, report.AccountID)
+		}
 		var data map[string]any
 		if json.Unmarshal(report.Data, &data) != nil {
 			continue
@@ -305,7 +406,7 @@ func anyPositiveInt64(value any) int64 {
 	return out
 }
 
-func (s *Server) annualReportAccounts(ids []int64) ([]serializer.Account, error) {
+func (s *Server) annualReportAccounts(ids []int64, currentAccounts ...*models.Account) ([]serializer.Account, error) {
 	if len(ids) == 0 {
 		return []serializer.Account{}, nil
 	}
@@ -314,11 +415,15 @@ func (s *Server) annualReportAccounts(ids []int64) ([]serializer.Account, error)
 		return nil, err
 	}
 	out := make([]serializer.Account, 0, len(rows))
+	var current *models.Account
+	if len(currentAccounts) > 0 {
+		current = currentAccounts[0]
+	}
 	for i := range rows {
 		if err := s.hydrateAccountCustomEmojis(&rows[i]); err != nil {
 			return nil, err
 		}
-		out = append(out, serializer.AccountFromModel(s.cfg, rows[i]))
+		out = append(out, s.serializeAccountForCurrent(rows[i], current))
 	}
 	return out, nil
 }

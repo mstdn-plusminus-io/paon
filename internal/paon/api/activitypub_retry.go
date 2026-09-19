@@ -231,6 +231,8 @@ func (s *Server) StartBackgroundWorkers(ctx context.Context) *BackgroundWorkers 
 	workers.Go(ctx, s.runFASPFollowRecommendationCleanupWorker)
 	workers.Go(ctx, s.runIPCleanupWorker)
 	workers.Go(ctx, s.runUserCleanupWorker)
+	workers.Go(ctx, s.runCollectionItemCleanupWorker)
+	workers.Go(ctx, s.runRemoteCollectionRepairWorker)
 	workers.Go(ctx, s.runAutoCloseRegistrationsWorker)
 	workers.Go(ctx, s.runPgHeroSpaceStatsWorker)
 	workers.Go(ctx, s.runAdminMetricsPrewarmWorker)

@@ -66,6 +66,7 @@ const (
 	asynqTaskRawDistribution             = "raw_distribution"
 	asynqTaskAccountRawDistribution      = "account:raw_distribution"
 	asynqTaskFeaturedCollectionSync      = "featured_collection:sync"
+	asynqTaskFeaturedCollectionsSync     = "featured_collections:sync"
 	asynqTaskFeaturedTagsSync            = "featured_tags:sync"
 	asynqTaskMoveDistribution            = "move:distribution"
 	asynqTaskPostUpgrade                 = "post_upgrade"
@@ -252,9 +253,10 @@ type asynqNotificationPairPayload struct {
 }
 
 type asynqAnnualReportPayload struct {
-	Version   int   `json:"version"`
-	AccountID int64 `json:"account_id"`
-	Year      int   `json:"year"`
+	Version    int    `json:"version"`
+	AccountID  int64  `json:"account_id"`
+	Year       int    `json:"year"`
+	RefreshKey string `json:"refresh_key,omitempty"`
 }
 
 // asynqResolveAccountPayload mirrors ResolveAccountWorker.perform(uri).
@@ -352,6 +354,12 @@ type asynqFeaturedCollectionPayload struct {
 	CollectionURI string `json:"collection_uri,omitempty"`
 	RequestID     string `json:"request_id,omitempty"`
 	SyncTags      bool   `json:"sync_tags,omitempty"`
+}
+
+type asynqFeaturedCollectionsPayload struct {
+	AccountID      int64  `json:"account_id"`
+	CollectionsURL string `json:"collections_url"`
+	RequestID      string `json:"request_id,omitempty"`
 }
 
 // asynqFeaturedTagsPayload mirrors ActivityPub::SynchronizeFeaturedTagsCollectionWorker.
@@ -830,11 +838,15 @@ func (s *Server) enqueueUnfilterNotificationsTask(ctx context.Context, accountID
 	return true
 }
 
-func (s *Server) enqueueGenerateAnnualReportTask(accountID int64, year int) bool {
+func (s *Server) enqueueGenerateAnnualReportTask(accountID int64, year int, refreshKeys ...string) bool {
 	if s == nil || s.asynqClient == nil || accountID == 0 || year < 2000 || year > 9999 {
 		return false
 	}
-	payload, err := marshalAsynqTaskPayload(asynqAnnualReportPayload{Version: asynqPayloadVersion43, AccountID: accountID, Year: year})
+	refreshKey := ""
+	if len(refreshKeys) > 0 {
+		refreshKey = refreshKeys[0]
+	}
+	payload, err := marshalAsynqTaskPayload(asynqAnnualReportPayload{Version: asynqPayloadVersion43, AccountID: accountID, Year: year, RefreshKey: refreshKey})
 	if err != nil {
 		return false
 	}
@@ -1956,6 +1968,21 @@ func (s *Server) enqueueFeaturedCollectionSyncTask(accountID int64, collectionUR
 	return asynqEnqueueAccepted(err)
 }
 
+func (s *Server) enqueueFeaturedCollectionsSyncTask(accountID int64, collectionsURL string, requestID string) bool {
+	if s == nil || s.asynqClient == nil || accountID == 0 || strings.TrimSpace(collectionsURL) == "" {
+		return false
+	}
+	payload, err := marshalAsynqTaskPayload(asynqFeaturedCollectionsPayload{AccountID: accountID, CollectionsURL: collectionsURL, RequestID: requestID})
+	if err != nil {
+		return false
+	}
+	task := asynq.NewTask(asynqTaskFeaturedCollectionsSync, payload)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = s.asynqClient.EnqueueContext(ctx, task, asynq.Queue(s.asynqQueue(asynqQueuePull)), asynq.Unique(24*time.Hour), asynq.Timeout(featuredCollectionWorkerTimeout))
+	return asynqEnqueueAccepted(err)
+}
+
 // enqueueFeaturedTagsSyncTask mirrors ActivityPub::SynchronizeFeaturedTagsCollectionWorker
 // on the pull queue with a one-day uniqueness window.
 func (s *Server) enqueueFeaturedTagsSyncTask(accountID int64, collectionURI string) bool {
@@ -2121,6 +2148,9 @@ func (s *Server) newAsynqServeMux() *asynq.ServeMux {
 	mux.HandleFunc(asynqTaskGenerateAnnualReport, s.handleAsynqGenerateAnnualReport)
 	mux.HandleFunc(asynqTaskNotificationMail, s.handleAsynqNotificationMail)
 	mux.HandleFunc(asynqTaskConfirmationMail, s.handleAsynqConfirmationMail)
+	mux.HandleFunc(asynqTaskEmailSubscriptionConfirmation, s.handleAsynqEmailSubscriptionConfirmation)
+	mux.HandleFunc(asynqTaskEmailSubscriptionDistribution, s.handleAsynqEmailSubscriptionDistribution)
+	mux.HandleFunc(asynqTaskEmailSubscriptionDelivery, s.handleAsynqEmailSubscriptionDelivery)
 	mux.HandleFunc(asynqTaskMailerDelivery, s.handleAsynqMailerDelivery)
 	mux.HandleFunc(asynqTaskDistributeTermsOfService, s.handleAsynqDistributeTermsOfService)
 	mux.HandleFunc(asynqTaskDistributeAnnouncement, s.handleAsynqDistributeAnnouncement)
@@ -2147,6 +2177,7 @@ func (s *Server) newAsynqServeMux() *asynq.ServeMux {
 	mux.HandleFunc(asynqTaskRawDistribution, s.handleAsynqRawDistribution)
 	mux.HandleFunc(asynqTaskAccountRawDistribution, s.handleAsynqAccountRawDistribution)
 	mux.HandleFunc(asynqTaskFeaturedCollectionSync, s.handleAsynqFeaturedCollectionSync)
+	mux.HandleFunc(asynqTaskFeaturedCollectionsSync, s.handleAsynqFeaturedCollectionsSync)
 	mux.HandleFunc(asynqTaskFeaturedTagsSync, s.handleAsynqFeaturedTagsSync)
 	mux.HandleFunc(asynqTaskMoveDistribution, s.handleAsynqMoveDistribution)
 	mux.HandleFunc(asynqTaskPostUpgrade, s.handleAsynqPostUpgrade)
@@ -2726,7 +2757,11 @@ func (s *Server) handleAsynqGenerateAnnualReport(ctx context.Context, t *asynq.T
 	if s == nil || s.db == nil || p.AccountID == 0 || p.Year < 2000 || p.Year > 9999 {
 		return nil
 	}
-	return s.generateAnnualReport(ctx, p.AccountID, p.Year)
+	err := s.generateAnnualReport(ctx, p.AccountID, p.Year)
+	if p.RefreshKey != "" {
+		_ = s.finishAsyncRefresh(ctx, p.RefreshKey)
+	}
+	return err
 }
 
 // handleAsynqFeedInsert mirrors FeedInsertWorker: check the feed filter at execution time,
@@ -3624,6 +3659,26 @@ func (s *Server) handleAsynqFeaturedCollectionSync(ctx context.Context, t *asynq
 		return workerLookupError("featured collection account lookup", err)
 	}
 	return activityFetchWorkerError(s.syncActivityPubFeaturedCollectionNowWithContext(workerCtx, &account, p.CollectionURI, p.RequestID, p.SyncTags))
+}
+
+func (s *Server) handleAsynqFeaturedCollectionsSync(ctx context.Context, t *asynq.Task) error {
+	var p asynqFeaturedCollectionsPayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("featured collections sync: %w", err)
+	}
+	if s == nil || s.db == nil || p.AccountID == 0 {
+		return nil
+	}
+	workerCtx, cleanup, acquired, err := s.featuredSyncContext(ctx, asynqTaskFeaturedCollectionsSync, p.AccountID)
+	if err != nil || !acquired {
+		return err
+	}
+	defer cleanup()
+	var account models.Account
+	if err := s.db.WithContext(workerCtx).Where("id = ?", p.AccountID).First(&account).Error; err != nil {
+		return workerLookupError("featured collections account lookup", err)
+	}
+	return activityFetchWorkerError(s.syncRemoteFeaturedCollectionsNow(workerCtx, &account, p.CollectionsURL, p.RequestID))
 }
 
 // handleAsynqFeaturedTagsSync mirrors ActivityPub::SynchronizeFeaturedTagsCollectionWorker:

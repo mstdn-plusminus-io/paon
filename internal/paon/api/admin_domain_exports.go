@@ -35,6 +35,9 @@ func (s *Server) newAdminExportDomainBlocksPage(c *echo.Context) error {
 }
 
 func (s *Server) exportAdminDomainAllowsCSV(c *echo.Context) error {
+	if !strings.HasSuffix(c.Request().URL.Path, ".csv") {
+		return s.notFound(c)
+	}
 	if _, handled, err := s.requireAdminFederationWebUser(c); handled || err != nil {
 		return err
 	}
@@ -55,6 +58,9 @@ func (s *Server) exportAdminDomainAllowsCSV(c *echo.Context) error {
 }
 
 func (s *Server) exportAdminDomainBlocksCSV(c *echo.Context) error {
+	if !strings.HasSuffix(c.Request().URL.Path, ".csv") {
+		return s.notFound(c)
+	}
 	if _, handled, err := s.requireAdminFederationWebUser(c); handled || err != nil {
 		return err
 	}

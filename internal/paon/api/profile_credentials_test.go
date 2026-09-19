@@ -77,6 +77,68 @@ func TestAccountUpdatePayloadAcceptsAndNormalizesAttributionDomains(t *testing.T
 	}
 }
 
+func TestMastodon46DisplayNameLimitIsFortyCharacters(t *testing.T) {
+	accepted := strings.Repeat("名", 40)
+	if _, err := accountUpdateMap(accountUpdatePayload{DisplayName: &accepted}); err != nil {
+		t.Fatalf("40-character display name was rejected: %v", err)
+	}
+	rejected := accepted + "名"
+	if _, err := accountUpdateMap(accountUpdatePayload{DisplayName: &rejected}); err == nil {
+		t.Fatal("41-character display name was accepted")
+	}
+}
+
+func TestMastodon46ProfilePayloadFieldsAreAccepted(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/profile", strings.NewReader(`{
+		"avatar_description":"avatar alt",
+		"header_description":"header alt",
+		"show_media":false,
+		"show_media_replies":false,
+		"show_featured":false
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	payload, err := parseAccountUpdatePayload(echo.NewContext(req, httptest.NewRecorder(), echo.New()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates, err := accountUpdateMap(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"avatar_description": "avatar alt", "header_description": "header alt",
+		"show_media": false, "show_media_replies": false, "show_featured": false,
+	} {
+		if got := updates[key]; got != want {
+			t.Fatalf("updates[%s] = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+func TestMastodon46ProfileRoutesAndScopesAreRegistered(t *testing.T) {
+	serverSource, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []string{
+		`e.GET("/api/v1/profile", s.profile)`,
+		`e.PUT("/api/v1/profile", s.updateProfile)`,
+		`e.PATCH("/api/v1/profile", s.updateProfile)`,
+	} {
+		if !strings.Contains(string(serverSource), route) {
+			t.Fatalf("server route missing %q", route)
+		}
+	}
+	profileSource, err := os.ReadFile("profile_credentials.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !functionBodyContains(t, profileSource, "profile", `s.requireUserScope(c, "profile", "read", "read:accounts")`) ||
+		!functionBodyContains(t, profileSource, "updateProfile", `s.requireUserScope(c, "write", "write:accounts")`) {
+		t.Fatal("profile routes do not enforce Mastodon 4.6 scopes")
+	}
+}
+
 func TestFollowRequestsCountExcludesSuspendedRequestersLikeMastodon44(t *testing.T) {
 	src, err := os.ReadFile("profile_credentials.go")
 	if err != nil {

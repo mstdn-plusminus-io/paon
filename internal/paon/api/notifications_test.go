@@ -87,10 +87,10 @@ func TestNotificationAccountPayloadsUseAccountSerializerPreloadsAndEmojiHydratio
 	}
 	checks := map[string][]string{
 		"notifications": {
-			`if err := s.hydrateNotificationAccounts(notifications); err != nil`,
+			`if err := s.hydrateNotificationAccounts(notifications, account); err != nil`,
 		},
 		"showNotification": {
-			`if err := s.hydrateNotificationAccounts(notifications); err != nil`,
+			`if err := s.hydrateNotificationAccounts(notifications, account); err != nil`,
 		},
 		"notificationQuery": {
 			`accountRelationSerializerPreloads(s.db.Model(&models.Notification{}), "FromAccount")`,

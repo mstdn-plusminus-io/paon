@@ -1,6 +1,9 @@
 package api
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestAccountMergingIncludesMastodon4422AccountReferences(t *testing.T) {
 	assertTable := func(name string, tables []string, want string) {
@@ -32,5 +35,13 @@ func TestAccountMergingKeepsMastodon4515AppealsAndWarningsSeparate(t *testing.T)
 	}
 	if !contains(accountMergingTargetTables, "account_warnings") || contains(accountMergingOwnedTables, "account_warnings") {
 		t.Fatalf("account warnings must move only through target_account_id: owned=%#v target=%#v", accountMergingOwnedTables, accountMergingTargetTables)
+	}
+}
+
+func TestAccountMergingIncludesMastodon46Collections(t *testing.T) {
+	for _, table := range []string{"collections", "collection_items"} {
+		if !slices.Contains(accountMergingOwnedTables, table) {
+			t.Fatalf("account_id merge tables are missing %s: %#v", table, accountMergingOwnedTables)
+		}
 	}
 }

@@ -2640,6 +2640,9 @@ func twoFactorAttemptsRedisKey(prefix string, userID int64, now time.Time) strin
 }
 
 func (s *Server) afterSignInRedirectPath(user *models.User, redirectTo string) string {
+	if s.userMissingRequiredTwoFactor(user) {
+		return requiredTwoFactorSetupPath
+	}
 	redirectTo = strings.TrimSpace(redirectTo)
 	if redirectTo == "" {
 		return "/"

@@ -20,6 +20,8 @@ type settingsHTMLOptions struct {
 	ErrorText                  string
 	Permissions                int64
 	SoftwareUpdateCheckEnabled bool
+	EmailSubscriptionsEnabled  bool
+	EmailSubscriptionsCount    int64
 	Functional                 bool
 	FunctionalOrMoved          bool
 	LimitedFederationMode      bool
@@ -97,7 +99,7 @@ func (s *Server) settingsHTMLWithOptions(path string, user models.User, account 
 	case "/settings/preferences/other":
 		return settingsPreferencesOtherHTMLWithMessages(user, account, settings, options.Notice, options.ErrorText, renderContext...), true, nil
 	case "/settings/privacy":
-		return settingsPrivacyHTMLWithMessages(account, settings, options.Notice, options.ErrorText, renderContext...), true, nil
+		return settingsPrivacyHTMLWithOptions(account, settings, options.Notice, options.ErrorText, options, renderContext...), true, nil
 	case "/settings/export":
 		backups, err := s.settingsBackups(user.ID)
 		if err != nil {
@@ -111,7 +113,12 @@ func (s *Server) settingsHTMLWithOptions(path string, user models.User, account 
 		return settingsExportHTML(totals, backups, canCreateBackup, renderContext...), true, err
 	case "/settings/two_factor_authentication_methods":
 		credentials, err := s.settingsWebauthnCredentials(user.ID)
-		return settingsTwoFactorMethodsHTML(user, credentials, renderContext...), true, err
+		if err != nil {
+			return "", true, err
+		}
+		role, err := s.requiredTwoFactorRole(&user)
+		required := role != nil && role.Require2FA
+		return settingsTwoFactorMethodsHTML(user, credentials, required, renderContext...), true, err
 	default:
 		return "", false, nil
 	}
@@ -646,6 +653,8 @@ func settingsPreferencesAppearanceHTMLWithMessages(user models.User, settings ma
 	body += `<div class="fields-row">` + settingsFieldRowColumn(settingsLocaleSelectField(user.Locale.String, loc)) + settingsFieldRowColumn(settingsTimeZoneSelectField(user.TimeZone.String, loc)) + `</div>`
 	themeField := settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_theme", "Theme"), "theme", stringSetting(settings, "theme", "system"), []string{"system", "default", "contrast", "mastodon-light", "single-column-chat-dark"}, true, loc)
 	body += strings.ReplaceAll(themeField, "Mastodon", applicationName)
+	body += settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_color_scheme", "Color scheme"), "web.color_scheme", stringSetting(settings, "web.color_scheme", "auto"), []string{"auto", "light", "dark"}, true, loc)
+	body += settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_contrast", "Contrast"), "web.contrast", stringSetting(settings, "web.contrast", "auto"), []string{"auto", "high"}, true, loc)
 	body += settingsPreferenceSelectFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_emoji_style", "Emoji style"), settingsT(loc, "simple_form.hints.defaults.setting_emoji_style", `How to display emojis. "Auto" will try using native emoji, but falls back to Twemoji for legacy browsers.`), "web.emoji_style", stringSetting(settings, "web.emoji_style", "auto"), []string{"auto", "native", "twemoji"}, false, loc)
 	if loc != "en" {
 		guideText := settingsT(loc, "appearance.localization.guide_link_text", "Join the translation effort")
@@ -791,16 +800,9 @@ func settingsPreferencesPostingDefaultsHTMLWithMessages(account models.Account, 
 	loc := settingsLocaleArg(locale...)
 	theme := settingsThemeArg(locale...)
 	privacy := settingsDefaultPrivacy(settings, account)
-	quoteHint := ""
-	if privacy == "unlisted" {
-		quoteHint = settingsT(loc, "simple_form.hints.defaults.setting_default_quote_policy_unlisted", "When people quote you, their post will also be hidden from trending timelines.")
-	} else if privacy == "private" {
-		quoteHint = settingsT(loc, "simple_form.hints.defaults.setting_default_quote_policy_private", "Followers-only posts authored on Paon cannot be quoted by others.")
-	}
 	body := settingsInlineFlashHTML(notice, errorText) + `<form class="simple_form edit_user" novalidate="novalidate" method="post" action="/settings/preferences/posting_defaults" id="edit_preferences"><input type="hidden" name="_method" value="put">`
 	body += `<div class="flash-message">` + html.EscapeString(settingsT(loc, "posting_defaults.explanation", "These defaults are applied to every new post. You can change them for an individual post in the composer.")) + `</div>`
 	body += settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_default_privacy", "Default post privacy"), "default_privacy", privacy, []string{"public", "unlisted", "private"}, false, loc)
-	body += settingsPreferenceSelectFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_default_quote_policy", "Who can quote"), quoteHint, "default_quote_policy", stringSetting(settings, "default_quote_policy", "public"), []string{"public", "followers", "nobody"}, false, loc)
 	languages := []string{""}
 	for _, language := range serializer.SupportedLanguages() {
 		languages = append(languages, language.Code)
@@ -853,6 +855,10 @@ func settingsPrivacyHTML(account models.Account, settings map[string]any, locale
 }
 
 func settingsPrivacyHTMLWithMessages(account models.Account, settings map[string]any, notice string, errorText string, locale ...string) string {
+	return settingsPrivacyHTMLWithOptions(account, settings, notice, errorText, settingsHTMLOptions{}, locale...)
+}
+
+func settingsPrivacyHTMLWithOptions(account models.Account, settings map[string]any, notice string, errorText string, options settingsHTMLOptions, locale ...string) string {
 	loc := settingsLocaleArg(locale...)
 	theme := settingsThemeArg(locale...)
 	applicationName := settingsApplicationNameArg(locale)
@@ -870,6 +876,20 @@ func settingsPrivacyHTMLWithMessages(account models.Account, settings map[string
 	body += `<h4>` + html.EscapeString(settingsT(loc, "privacy.privacy", "Privacy")) + `</h4><p class="lead">` + settingsT(loc, "privacy.privacy_hint_html", "Control how much information you disclose for the benefit of others.") + `</p>`
 	body += settingsCheckboxFieldWithHint(settingsT(loc, "simple_form.labels.account.show_collections", "Show follows and followers on profile"), settingsT(loc, "simple_form.hints.account.show_collections", "People will be able to browse through your follows and followers."), "account[show_collections]", showCollections)
 	body += settingsCheckboxFieldWithHint(settingsT(loc, "simple_form.labels.settings.show_application", "Display from which app you sent a post"), settingsT(loc, "simple_form.hints.settings.show_application", "You will always be able to see which app published your post regardless."), "account[settings][show_application]", rawBool(settings["show_application"], true))
+	if options.EmailSubscriptionsEnabled {
+		emailSubscriptionsEnabled := rawBool(settings["email_subscriptions"], false)
+		body += `<h4>` + html.EscapeString(settingsT(loc, "privacy.email_subscriptions", "Send posts via email")) + `</h4><p class="lead">` + settingsT(loc, "privacy.email_subscriptions_hint_html", "Add an email sign-up form to your profile that appears for logged-out users. When visitors enter their email address and opt in, Mastodon will send email updates for your public posts.") + `</p>`
+		if options.EmailSubscriptionsCount > 0 || emailSubscriptionsEnabled {
+			statusClass := "negative"
+			statusLabel := settingsT(loc, "email_subscriptions.inactive", "Inactive")
+			if emailSubscriptionsEnabled {
+				statusClass = "positive"
+				statusLabel = settingsT(loc, "email_subscriptions.active", "Active")
+			}
+			body += `<div class="table-wrapper"><table class="table mini-table"><tbody><tr><th>` + html.EscapeString(settingsT(loc, "email_subscriptions.status", "Status")) + `</th><td><span class="status-badge ` + statusClass + `">` + html.EscapeString(statusLabel) + `</span></td></tr><tr><th>` + html.EscapeString(settingsT(loc, "email_subscriptions.subscribers", "Subscribers")) + `</th><td>` + html.EscapeString(formatRailsInteger(options.EmailSubscriptionsCount)) + `</td></tr></tbody></table></div>`
+		}
+		body += settingsCheckboxFieldWithHint(settingsT(loc, "simple_form.labels.settings.email_subscriptions", "Enable email sign-ups"), settingsT(loc, "simple_form.hints.settings.email_subscriptions", "Disabling retains existing subscribers but stops sending emails."), "account[settings][email_subscriptions]", emailSubscriptionsEnabled)
+	}
 	body += settingsSubmitButton(settingsT(loc, "generic.save_changes", "Save changes")) + `</form>`
 	title := settingsT(loc, "privacy.title", "Privacy settings")
 	return settingsPageShellWithHeadingTitle(title, title, settingsNavigationArg(locale, loc), body, loc, theme, "", "")
@@ -1057,16 +1077,25 @@ func (s *Server) settingsWebauthnCredentials(userID int64) ([]models.WebauthnCre
 	return s.webauthnCredentialsForUser(userID)
 }
 
-func settingsTwoFactorMethodsHTML(user models.User, credentials []models.WebauthnCredential, locale ...string) string {
+func settingsTwoFactorMethodsHTML(user models.User, credentials []models.WebauthnCredential, requiredByRole bool, locale ...string) string {
 	loc := settingsLocaleArg(locale...)
 	theme := settingsThemeArg(locale...)
 	webauthnAction := `<a class="table-action-link" data-method="get" href="/settings/security_keys/new"><i class="fa fa-key fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.add", "Add")) + `</a>`
 	if len(credentials) > 0 {
 		webauthnAction = `<a class="table-action-link" data-method="get" href="/settings/security_keys"><i class="fa fa-pencil fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.edit", "Edit")) + `</a>`
 	}
-	body := `<p class="hint"><span class="positive-hint"><i class="fa fa-check fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.enabled", "Two-factor authentication is enabled")) + `</span></p><div class="table-wrapper"><table class="table"><thead><tr><th>` + html.EscapeString(settingsT(loc, "two_factor_authentication.methods", "Methods")) + `</th><th></th></tr></thead><tbody><tr><td>` + html.EscapeString(settingsT(loc, "two_factor_authentication.otp", "Authenticator app")) + `</td><td><a class="table-action-link" data-method="post" href="/settings/otp_authentication"><i class="fa fa-pencil fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.edit", "Edit")) + `</a></td></tr><tr><td>` + html.EscapeString(settingsT(loc, "two_factor_authentication.webauthn", "Security key")) + `</td><td>` + webauthnAction + `</td></tr></tbody></table></div><hr class="spacer"><h3>` + html.EscapeString(settingsT(loc, "two_factor_authentication.recovery_codes", "Recovery codes")) + `</h3><p class="muted-hint">` + html.EscapeString(settingsT(loc, "two_factor_authentication.lost_recovery_codes", "Generate new recovery codes if you have lost yours.")) + `</p><hr class="spacer"><div class="simple_form"><a class="block-button" data-method="post" href="/settings/two_factor_authentication/recovery_codes">` + html.EscapeString(settingsT(loc, "two_factor_authentication.generate_recovery_codes", "Generate recovery codes")) + `</a></div>`
+	body := ""
+	if requiredByRole {
+		requirement := settingsT(loc, "two_factor_authentication.role_requirement", "Your role requires two-factor authentication.")
+		requirement = strings.ReplaceAll(requirement, "%{domain}", "this server")
+		body += `<div class="flash-message">` + html.EscapeString(requirement) + `</div>`
+	}
+	body += `<p class="hint"><span class="positive-hint"><i class="fa fa-check fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.enabled", "Two-factor authentication is enabled")) + `</span></p><div class="table-wrapper"><table class="table"><thead><tr><th>` + html.EscapeString(settingsT(loc, "two_factor_authentication.methods", "Methods")) + `</th><th></th></tr></thead><tbody><tr><td>` + html.EscapeString(settingsT(loc, "two_factor_authentication.otp", "Authenticator app")) + `</td><td><a class="table-action-link" data-method="post" href="/settings/otp_authentication"><i class="fa fa-pencil fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.edit", "Edit")) + `</a></td></tr><tr><td>` + html.EscapeString(settingsT(loc, "two_factor_authentication.webauthn", "Security key")) + `</td><td>` + webauthnAction + `</td></tr></tbody></table></div><hr class="spacer"><h3>` + html.EscapeString(settingsT(loc, "two_factor_authentication.recovery_codes", "Recovery codes")) + `</h3><p class="muted-hint">` + html.EscapeString(settingsT(loc, "two_factor_authentication.lost_recovery_codes", "Generate new recovery codes if you have lost yours.")) + `</p><hr class="spacer"><div class="simple_form"><a class="block-button" data-method="post" href="/settings/two_factor_authentication/recovery_codes">` + html.EscapeString(settingsT(loc, "two_factor_authentication.generate_recovery_codes", "Generate recovery codes")) + `</a></div>`
 	title := settingsT(loc, "settings.two_factor_authentication", "Two-factor authentication")
-	headingAction := `<div class="content__heading__actions"><a class="button button--destructive" data-method="post" href="/settings/two_factor_authentication_methods/disable">` + html.EscapeString(settingsT(loc, "two_factor_authentication.disable", "Disable")) + `</a></div>`
+	headingAction := ""
+	if !requiredByRole {
+		headingAction = `<div class="content__heading__actions"><a class="button button--destructive" data-method="post" href="/settings/two_factor_authentication_methods/disable">` + html.EscapeString(settingsT(loc, "two_factor_authentication.disable", "Disable")) + `</a></div>`
+	}
 	return settingsPageShellWithHeading(title, settingsNavigationArg(locale, loc), body, loc, theme, "", headingAction)
 }
 
@@ -1285,6 +1314,10 @@ func settingsOptionLabel(locale string, name string, option string) string {
 		return settingsT(locale, "themes."+option, option)
 	case strings.HasSuffix(name, "[web.emoji_style]"):
 		return settingsT(locale, "emoji_styles."+option, option)
+	case strings.HasSuffix(name, "[web.color_scheme]"):
+		return settingsT(locale, "color_scheme."+option, option)
+	case strings.HasSuffix(name, "[web.contrast]"):
+		return settingsT(locale, "contrast."+option, option)
 	case strings.HasSuffix(name, "[web.display_media]"):
 		return settingsT(locale, "simple_form.labels.defaults.setting_display_media_"+strings.ReplaceAll(option, "-", "_"), option)
 	case strings.HasSuffix(name, "[notification_emails.software_updates]"):
@@ -1368,7 +1401,26 @@ func settingsTVars(locale string, key string, fallback string, vars map[string]s
 }
 
 func settingsWebTheme(settings map[string]any) string {
-	return normalizedWebTheme(stringSetting(settings, "theme", "system"))
+	theme := normalizedWebTheme(stringSetting(settings, "theme", "default"))
+	if theme != "default" && theme != "system" {
+		return theme
+	}
+	colorScheme := stringSetting(settings, "web.color_scheme", "auto")
+	contrast := stringSetting(settings, "web.contrast", "auto")
+	switch {
+	case colorScheme == "light" && contrast == "high":
+		return "mastodon-light-contrast"
+	case colorScheme == "light":
+		return "mastodon-light"
+	case colorScheme == "dark" && contrast == "high":
+		return "contrast"
+	case colorScheme == "dark":
+		return "default"
+	case contrast == "high":
+		return "system-high"
+	default:
+		return "system"
+	}
 }
 
 func settingsDefaultPrivacy(settings map[string]any, account models.Account) string {

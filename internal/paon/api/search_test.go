@@ -57,7 +57,7 @@ func TestEmptySearchResultUsesRailsSearchSerializerShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != `{"accounts":[],"statuses":[],"hashtags":[]}` {
+	if string(body) != `{"accounts":[],"statuses":[],"hashtags":[],"collections":[]}` {
 		t.Fatalf("empty search result = %s", string(body))
 	}
 }

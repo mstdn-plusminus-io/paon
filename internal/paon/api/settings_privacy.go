@@ -77,7 +77,25 @@ func (s *Server) updateSettingsPrivacy(c *echo.Context) error {
 func (s *Server) renderSettingsPrivacyError(c *echo.Context, account models.Account, user *models.User, errorText string) error {
 	settings := decodeUserSettings(user.Settings.String)
 	locale := s.webLocale(c, user)
-	return c.HTML(http.StatusOK, settingsPrivacyHTMLWithMessages(account, settings, "", errorText, locale, settingsWebTheme(settings)))
+	permissions, _ := s.computedUserPermissions(user)
+	enabled, count, _ := s.settingsPrivacyEmailSubscriptionState(account.ID, permissions)
+	return c.HTML(http.StatusOK, settingsPrivacyHTMLWithOptions(account, settings, "", errorText, settingsHTMLOptions{
+		Permissions:               permissions,
+		EmailSubscriptionsEnabled: enabled,
+		EmailSubscriptionsCount:   count,
+	}, locale, settingsWebTheme(settings)))
+}
+
+func (s *Server) settingsPrivacyEmailSubscriptionState(accountID int64, permissions int64) (bool, int64, error) {
+	permitted := permissions&(rolePermissionAdministrator|rolePermissionManageEmailSubscriptions) != 0
+	if s == nil || s.db == nil || accountID <= 0 || !s.cfg.EmailSubscriptionsEnabled || !s.settingBoolValue("email_subscriptions", false) || !permitted {
+		return false, 0, nil
+	}
+	var count int64
+	if err := s.db.Model(&models.EmailSubscription{}).Where("account_id = ? AND confirmed_at IS NOT NULL", accountID).Count(&count).Error; err != nil {
+		return false, 0, err
+	}
+	return true, count, nil
 }
 
 var errSettingsPrivacyMissingAccountRoot = errors.New("settings privacy account root parameter is missing")
@@ -107,6 +125,9 @@ func parseSettingsPrivacyPayload(c *echo.Context) (accountUpdatePayload, map[str
 	}
 	if value, ok := nestedFormBool(req.Form, "account[settings][show_application]"); ok {
 		settings["show_application"] = value
+	}
+	if value, ok := nestedFormBool(req.Form, "account[settings][email_subscriptions]"); ok {
+		settings["email_subscriptions"] = value
 	}
 	return payload, settings, nil
 }

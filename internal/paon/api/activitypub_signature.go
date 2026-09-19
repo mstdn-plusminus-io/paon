@@ -315,37 +315,43 @@ func (s *Server) verifyActivityPubSignature(c *echo.Context, body []byte) (*mode
 	if err := validateActivityDigest(c.Request(), headers, body); err != nil {
 		return nil, err
 	}
-	account, err := s.activityPubActorFromKeyIDWithSourceStoplight(c, params["keyId"])
+	resolved, err := s.activityPubKeypairFromKeyIDWithSourceStoplight(c, params["keyId"])
 	if err != nil {
 		return nil, activityPubSignatureActorResolutionError(err)
+	}
+	if err := activityPubResolvedKeypairValidityError(params["keyId"], resolved, time.Now().UTC()); err != nil {
+		return nil, err
 	}
 	signature, err := decodeActivitySignatureParam(params["signature"])
 	if err != nil {
 		return nil, fmt.Errorf("invalid signature encoding")
 	}
-	publicKey, err := activityPublicKey(account.PublicKey)
+	publicKey, err := activityPublicKey(resolved.Keypair.PublicKey)
 	if err == nil {
 		if verifyActivitySignedString(c.Request(), params, headers, publicKey, signature, true) == nil {
-			return account, nil
+			return &resolved.Account, nil
 		}
 		if verifyActivitySignedString(c.Request(), params, headers, publicKey, signature, false) == nil {
-			return account, nil
+			return &resolved.Account, nil
 		}
 	}
-	refreshed, err := s.refreshActivityPubActorKeyWithSourceStoplight(c, params["keyId"], account)
+	refreshed, err := s.refreshActivityPubResolvedKeypairWithSourceStoplight(c, params["keyId"], resolved)
 	if err != nil {
 		return nil, activityPubSignatureActorResolutionError(err)
 	}
-	if refreshed != nil && refreshed.PublicKey != "" && refreshed.PublicKey != account.PublicKey {
-		publicKey, err = activityPublicKey(refreshed.PublicKey)
+	if err := activityPubResolvedKeypairValidityError(params["keyId"], refreshed, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	if refreshed != nil {
+		publicKey, err = activityPublicKey(refreshed.Keypair.PublicKey)
 		if err != nil {
 			return nil, err
 		}
 		if verifyActivitySignedString(c.Request(), params, headers, publicKey, signature, true) == nil {
-			return refreshed, nil
+			return &refreshed.Account, nil
 		}
 		if verifyActivitySignedString(c.Request(), params, headers, publicKey, signature, false) == nil {
-			return refreshed, nil
+			return &refreshed.Account, nil
 		}
 	}
 	return nil, errActivitySignatureFailed
@@ -736,93 +742,19 @@ func validateActivityDigest(req *http.Request, headers []string, body []byte) er
 }
 
 func (s *Server) activityPubActorFromKeyID(keyID string) (*models.Account, error) {
-	if s.db == nil {
-		return nil, fmt.Errorf("database is not available")
+	resolved, err := s.activityPubKeypairFromKeyID(keyID)
+	if err != nil || resolved == nil {
+		return nil, err
 	}
-	if disallowed, err := s.activityPubKeyIDDomainNotAllowed(keyID); err != nil || disallowed {
-		if err != nil {
-			return nil, err
-		}
-		return nil, errActivitySignatureDomainNotAllowed
-	}
-	var account models.Account
-	query := s.db.Preload("AccountStat")
-	resolvedAcct := ""
-	localAcctKeyID := false
-	if strings.HasPrefix(keyID, "acct:") {
-		username, domain, ok := activityPubAcctKeyIDUsernameDomain(keyID)
-		if !ok {
-			return nil, fmt.Errorf("public key not found")
-		}
-		resolvedAcct = username + "@" + domain
-		if activityHostWithNormalizedName(domain) == activityHostWithNormalizedName(s.cfg.LocalDomain) {
-			localAcctKeyID = true
-			query = query.Where("lower(username) = lower(?) AND domain IS NULL", username)
-		} else {
-			query = query.Where("lower(username) = lower(?) AND lower(domain) = lower(?)", username, domain)
-		}
-	} else {
-		if s.localActivityURI(keyID) {
-			return nil, fmt.Errorf("public key not found")
-		}
-		actorURI := keyID
-		if before, _, ok := strings.Cut(keyID, "#"); ok {
-			actorURI = before
-		}
-		query = query.Where("uri = ?", actorURI)
-	}
-	err := query.First(&account).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		if strings.HasPrefix(keyID, "acct:") {
-			if localAcctKeyID {
-				return nil, fmt.Errorf("public key not found")
-			}
-			return s.fetchAndStoreActivityActorForAcct(resolvedAcct)
-		}
-		if strings.HasPrefix(keyID, "http://") || strings.HasPrefix(keyID, "https://") {
-			return s.fetchAndStoreActivityActorForKeyID(keyID)
-		}
-		return nil, fmt.Errorf("public key not found")
-	}
-	return &account, err
+	return &resolved.Account, nil
 }
 
 func (s *Server) activityPubActorFromKeyIDWithSourceStoplight(c *echo.Context, keyID string) (*models.Account, error) {
-	if s.db == nil {
-		return nil, fmt.Errorf("database is not available")
-	}
-	if disallowed, err := s.activityPubKeyIDDomainNotAllowed(keyID); err != nil || disallowed {
-		if err != nil {
-			return nil, err
-		}
-		return nil, errActivitySignatureDomainNotAllowed
-	}
-	if strings.HasPrefix(keyID, "acct:") {
-		return activityPubSignatureSourceStoplightWrap(s, c, func() (*models.Account, error) {
-			return s.activityPubActorFromKeyID(keyID)
-		})
-	}
-	if s.localActivityURI(keyID) {
-		return nil, fmt.Errorf("public key not found")
-	}
-	actorURI := keyID
-	if before, _, ok := strings.Cut(keyID, "#"); ok {
-		actorURI = before
-	}
-	var account models.Account
-	err := s.db.Preload("AccountStat").Where("uri = ?", actorURI).First(&account).Error
-	if err == nil {
-		return &account, nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
+	resolved, err := s.activityPubKeypairFromKeyIDWithSourceStoplight(c, keyID)
+	if err != nil || resolved == nil {
 		return nil, err
 	}
-	if strings.HasPrefix(keyID, "http://") || strings.HasPrefix(keyID, "https://") {
-		return activityPubSignatureSourceStoplightWrap(s, c, func() (*models.Account, error) {
-			return s.fetchAndStoreActivityActorForKeyID(keyID)
-		})
-	}
-	return nil, fmt.Errorf("public key not found")
+	return &resolved.Account, nil
 }
 
 func activityPubAcctKeyIDUsernameDomain(keyID string) (string, string, bool) {
@@ -989,7 +921,7 @@ func (s *Server) fetchAndStoreActivityActorForAcctDB(database *gorm.DB, acct str
 	if actor.ID != actorURL {
 		return nil, fmt.Errorf("webfinger response does not loop back to actor")
 	}
-	if actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+	if actor.ID == "" || !activityRemoteActorHasPublicKey(actor) {
 		return nil, fmt.Errorf("public key not found")
 	}
 	account, err := s.upsertRemoteActivityActorDB(database, actor)
@@ -1014,13 +946,14 @@ func (s *Server) fetchAndStoreActivityActorForKeyID(keyID string) (*models.Accou
 			return nil, err
 		}
 	}
-	if actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+	if actor.ID == "" || !activityRemoteActorHasPublicKey(actor) {
 		return nil, fmt.Errorf("public key not found")
 	}
-	if actor.PublicKey.ID != "" && actor.PublicKey.ID != keyID && actor.PublicKey.Owner != keyID && actor.PublicKey.Owner != actor.ID {
+	if !activityRemoteActorContainsPublicKeyID(actor, keyID) {
 		return nil, fmt.Errorf("public key not found")
 	}
-	if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
+	actor, err = verifyRemoteActivityActorWebFingerResolved(actor)
+	if err != nil {
 		return nil, err
 	}
 	return s.upsertRemoteActivityActor(actor)
@@ -1034,7 +967,7 @@ func (s *Server) refreshKnownActivityPubActorOnlyKey(account *models.Account) (*
 	if err != nil {
 		return nil, err
 	}
-	if actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+	if actor.ID == "" || !activityRemoteActorHasPublicKey(actor) {
 		return nil, fmt.Errorf("public key not found")
 	}
 	if actor.ID != account.URI {
@@ -1069,7 +1002,7 @@ func (s *Server) refreshKnownActivityPubActorOnlyKey(account *models.Account) (*
 		updates["created_at"] = activityActorPublishedAt(actor.Published, account.CreatedAt)
 	}
 	if !activityActorLocallySuspended(*account) {
-		updates["public_key"] = actor.PublicKey.PublicKeyPem
+		updates["public_key"] = ""
 	}
 	for key, value := range activityActorSuspensionUpdatesForTransition(suspensionTransition, now) {
 		updates[key] = value
@@ -1085,6 +1018,10 @@ func (s *Server) refreshKnownActivityPubActorOnlyKey(account *models.Account) (*
 	keyChanged := false
 	var customEmojiChanges []models.CustomEmoji
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		oldKeyMaterials, err := activityPubAccountKeyMaterials(tx, account.ID, account.PublicKey)
+		if err != nil {
+			return err
+		}
 		if !suspendedAfterUpdate {
 			skipMedia, err := activityPubActorSkipsMedia(tx, account)
 			if err != nil {
@@ -1104,8 +1041,18 @@ func (s *Server) refreshKnownActivityPubActorOnlyKey(account *models.Account) (*
 		if activityActorLocallySuspended(*account) {
 			return nil
 		}
-		keyChanged = activityPubActorKeyChanged(account.PublicKey, actor.PublicKey.PublicKeyPem)
-		return clearActivityPubActorTombstonesOnKeyChange(tx, account.ID, account.PublicKey, actor.PublicKey.PublicKeyPem)
+		persistedKeys, err := syncRemoteActivityActorKeypairs(tx, account.ID, actor.PublicKeys, now)
+		if err != nil {
+			return err
+		}
+		if len(persistedKeys) == 0 {
+			return fmt.Errorf("public key not found")
+		}
+		keyChanged = activityPubAllPublicKeysChanged(oldKeyMaterials, persistedKeys, now)
+		if keyChanged {
+			return tx.Where("account_id = ?", account.ID).Delete(&models.Tombstone{}).Error
+		}
+		return nil
 	}); err != nil {
 		return nil, err
 	}
@@ -1135,7 +1082,11 @@ func (s *Server) fetchActivityActorForPublicKeyDocument(keyID string) (remoteAct
 		return remoteActivityActor{}, err
 	}
 	if actor, err := s.parseRemoteActivityActor(resource.body); err == nil {
-		return s.fetchActivityActorPublicKey(actor), nil
+		actor = s.fetchActivityActorPublicKey(actor)
+		if !activityRemoteActorContainsPublicKeyID(actor, keyID) {
+			return remoteActivityActor{}, fmt.Errorf("public key not found")
+		}
+		return actor, nil
 	}
 	key, err := parseRemoteActivityPublicKey(resource.body)
 	if err != nil {
@@ -1145,24 +1096,22 @@ func (s *Server) fetchActivityActorForPublicKeyDocument(keyID string) (remoteAct
 	if err != nil {
 		return remoteActivityActor{}, err
 	}
-	if activityRemoteActorPublicKeyRawID(actor.PublicKey) != activityRawNonBlank(key.IDRaw, key.ID) {
+	actor = s.fetchActivityActorPublicKey(actor)
+	if !activityRemoteActorContainsPublicKeyID(actor, activityRawNonBlank(key.IDRaw, key.ID)) {
 		return remoteActivityActor{}, fmt.Errorf("public key not found")
 	}
-	if actor.PublicKey.PublicKeyPem == "" {
-		actor.PublicKey.PublicKeyPem = key.PublicKeyPem
+	found := false
+	for index := range actor.PublicKeys {
+		if activityRawNonBlank(actor.PublicKeys[index].IDRaw, actor.PublicKeys[index].ID) == activityRawNonBlank(key.IDRaw, key.ID) {
+			actor.PublicKeys[index] = key
+			found = true
+			break
+		}
 	}
-	if actor.PublicKey.ID == "" {
-		actor.PublicKey.ID = key.ID
+	if !found {
+		actor.PublicKeys = append(actor.PublicKeys, key)
 	}
-	if actor.PublicKey.Owner == "" {
-		actor.PublicKey.Owner = key.Owner
-	}
-	if actor.PublicKey.IDRaw == "" {
-		actor.PublicKey.IDRaw = activityRawNonBlank(key.IDRaw, key.ID)
-	}
-	if actor.PublicKey.OwnerRaw == "" {
-		actor.PublicKey.OwnerRaw = activityRawNonBlank(key.OwnerRaw, key.Owner)
-	}
+	setActivityRemoteActorPublicKeys(&actor, actor.PublicKeys)
 	return actor, nil
 }
 
@@ -1176,7 +1125,11 @@ func fetchActivityActorForPublicKeyDocument(keyID string) (remoteActivityActor, 
 		return remoteActivityActor{}, err
 	}
 	if actor, err := parseRemoteActivityActor(resource.body); err == nil {
-		return fetchActivityActorPublicKey(actor), nil
+		actor = fetchActivityActorPublicKey(actor)
+		if !activityRemoteActorContainsPublicKeyID(actor, keyID) {
+			return remoteActivityActor{}, fmt.Errorf("public key not found")
+		}
+		return actor, nil
 	}
 	key, err := parseRemoteActivityPublicKey(resource.body)
 	if err != nil {
@@ -1186,24 +1139,22 @@ func fetchActivityActorForPublicKeyDocument(keyID string) (remoteActivityActor, 
 	if err != nil {
 		return remoteActivityActor{}, err
 	}
-	if activityRemoteActorPublicKeyRawID(actor.PublicKey) != activityRawNonBlank(key.IDRaw, key.ID) {
+	actor = fetchActivityActorPublicKey(actor)
+	if !activityRemoteActorContainsPublicKeyID(actor, activityRawNonBlank(key.IDRaw, key.ID)) {
 		return remoteActivityActor{}, fmt.Errorf("public key not found")
 	}
-	if actor.PublicKey.PublicKeyPem == "" {
-		actor.PublicKey.PublicKeyPem = key.PublicKeyPem
+	found := false
+	for index := range actor.PublicKeys {
+		if activityRawNonBlank(actor.PublicKeys[index].IDRaw, actor.PublicKeys[index].ID) == activityRawNonBlank(key.IDRaw, key.ID) {
+			actor.PublicKeys[index] = key
+			found = true
+			break
+		}
 	}
-	if actor.PublicKey.ID == "" {
-		actor.PublicKey.ID = key.ID
+	if !found {
+		actor.PublicKeys = append(actor.PublicKeys, key)
 	}
-	if actor.PublicKey.Owner == "" {
-		actor.PublicKey.Owner = key.Owner
-	}
-	if actor.PublicKey.IDRaw == "" {
-		actor.PublicKey.IDRaw = activityRawNonBlank(key.IDRaw, key.ID)
-	}
-	if actor.PublicKey.OwnerRaw == "" {
-		actor.PublicKey.OwnerRaw = activityRawNonBlank(key.OwnerRaw, key.Owner)
-	}
+	setActivityRemoteActorPublicKeys(&actor, actor.PublicKeys)
 	return actor, nil
 }
 
@@ -1539,68 +1490,21 @@ func (s *Server) fetchActivityActorDepth(actorURL string, depth int) (remoteActi
 }
 
 func fetchActivityActorPublicKey(actor remoteActivityActor) remoteActivityActor {
-	if actor.PublicKey.PublicKeyPem != "" || actor.PublicKey.ID == "" {
+	if actor.PublicKeySource == nil && len(actor.PublicKeys) > 0 {
 		return actor
 	}
-	resource, err := fetchActivityResourceWithMetadata(actor.PublicKey.ID)
-	if err != nil {
-		return actor
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(resource.body, &raw); err != nil {
-		return actor
-	}
-	if graphKey := activityJSONLDGraphPublicKey(raw); graphKey != nil {
-		raw = graphKey
-	}
-	if pemValue := activityJSONLDString(raw, "publicKeyPem"); pemValue != "" {
-		actor.PublicKey.PublicKeyPem = pemValue
-	}
-	if owner := activityJSONLDObjectID(raw, "owner"); owner != "" {
-		actor.PublicKey.Owner = owner
-	}
-	if ownerRaw := activityJSONLDValueOrID(activityJSONLDValue(raw, "owner")); ownerRaw != "" && actor.PublicKey.OwnerRaw == "" {
-		actor.PublicKey.OwnerRaw = ownerRaw
-	}
-	if id := activityJSONLDID(raw); id != "" {
-		actor.PublicKey.ID = id
-	}
-	if idRaw := activityJSONLDValueOrID(activityJSONLDValue(raw, "id")); idRaw != "" && actor.PublicKey.IDRaw == "" {
-		actor.PublicKey.IDRaw = idRaw
-	}
+	setActivityRemoteActorPublicKeys(&actor, activityRemoteActorPublicKeys(actor.ID, actor.PublicKeySource, fetchRemoteActivityPublicKeyDocument))
 	return actor
 }
 
 func (s *Server) fetchActivityActorPublicKey(actor remoteActivityActor) remoteActivityActor {
-	if actor.PublicKey.PublicKeyPem != "" || actor.PublicKey.ID == "" {
+	if s == nil {
+		return fetchActivityActorPublicKey(actor)
+	}
+	if actor.PublicKeySource == nil && len(actor.PublicKeys) > 0 {
 		return actor
 	}
-	resource, err := s.fetchActivityResourceWithRepresentative(actor.PublicKey.ID)
-	if err != nil {
-		return actor
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(resource.body, &raw); err != nil {
-		return actor
-	}
-	if graphKey := activityJSONLDGraphPublicKey(raw); graphKey != nil {
-		raw = graphKey
-	}
-	if pemValue := activityJSONLDString(raw, "publicKeyPem"); pemValue != "" {
-		actor.PublicKey.PublicKeyPem = pemValue
-	}
-	if owner := activityJSONLDObjectID(raw, "owner"); owner != "" {
-		actor.PublicKey.Owner = owner
-	}
-	if ownerRaw := activityJSONLDValueOrID(activityJSONLDValue(raw, "owner")); ownerRaw != "" && actor.PublicKey.OwnerRaw == "" {
-		actor.PublicKey.OwnerRaw = ownerRaw
-	}
-	if id := activityJSONLDID(raw); id != "" {
-		actor.PublicKey.ID = id
-	}
-	if idRaw := activityJSONLDValueOrID(activityJSONLDValue(raw, "id")); idRaw != "" && actor.PublicKey.IDRaw == "" {
-		actor.PublicKey.IDRaw = idRaw
-	}
+	setActivityRemoteActorPublicKeys(&actor, activityRemoteActorPublicKeys(actor.ID, actor.PublicKeySource, s.fetchRemoteActivityPublicKeyDocument))
 	return actor
 }
 
@@ -1618,6 +1522,8 @@ type remoteActivityPublicKey struct {
 	Owner        string
 	OwnerRaw     string
 	PublicKeyPem string
+	ExpiresAt    sql.NullTime
+	Revoked      bool
 }
 
 func parseRemoteActivityPublicKey(body []byte) (remoteActivityPublicKey, error) {
@@ -1631,13 +1537,7 @@ func parseRemoteActivityPublicKey(body []byte) (remoteActivityPublicKey, error) 
 	if graphKey := activityJSONLDGraphPublicKey(raw); graphKey != nil {
 		raw = graphKey
 	}
-	key := remoteActivityPublicKey{
-		ID:           activityJSONLDID(raw),
-		IDRaw:        activityJSONLDValueOrID(activityJSONLDValue(raw, "id")),
-		Owner:        activityJSONLDObjectID(raw, "owner"),
-		OwnerRaw:     activityJSONLDValueOrID(activityJSONLDValue(raw, "owner")),
-		PublicKeyPem: activityJSONLDString(raw, "publicKeyPem"),
-	}
+	key := activityRemotePublicKeyFromObject(raw)
 	if key.ID == "" || key.Owner == "" || key.PublicKeyPem == "" {
 		return remoteActivityPublicKey{}, fmt.Errorf("public key not found")
 	}
@@ -1692,7 +1592,13 @@ func parseRemoteActivityActorWithImageFetcher(body []byte, imageFetcher func(str
 		return remoteActivityActor{}, fmt.Errorf("remote actor missing inbox")
 	}
 	publicKeyValue := activityJSONLDValue(raw, "publicKey")
+	publicKeys := activityRemoteActorPublicKeys(actorID, publicKeyValue, nil)
+	// Keep the legacy first-value projection for parser/API compatibility. The
+	// persisted key inventory below still accepts only owner-validated keys.
 	publicKey := activityRemoteActorPublicKey(publicKeyValue)
+	if len(publicKeys) > 0 {
+		publicKey = publicKeys[0]
+	}
 	featuredValue := activityJSONLDValue(raw, "featured")
 	featuredTagsValue := activityJSONLDValue(raw, "featuredTags")
 	sharedInboxURL := activityActorSharedInboxURLFromObject(raw)
@@ -1700,6 +1606,7 @@ func parseRemoteActivityActorWithImageFetcher(body []byte, imageFetcher func(str
 		ID:                        actorID,
 		Type:                      typ,
 		PreferredUsername:         activityJSONLDString(raw, "preferredUsername"),
+		Webfinger:                 activityJSONLDString(raw, "webfinger"),
 		Name:                      activityJSONLDString(raw, "name"),
 		Summary:                   activityJSONLDString(raw, "summary"),
 		Published:                 activityJSONLDString(raw, "published"),
@@ -1711,10 +1618,17 @@ func parseRemoteActivityActorWithImageFetcher(body []byte, imageFetcher func(str
 		Featured:                  activityActorCollectionURI(featuredValue),
 		FeaturedCollection:        activityCollectionInlinePage(featuredValue),
 		FeaturedTags:              activityActorCollectionURI(featuredTagsValue),
+		FeaturedCollections:       activityActorCollectionURI(activityJSONLDValue(raw, "featuredCollections")),
 		SharedInboxURL:            sharedInboxURL,
 		ManuallyApprovesFollowers: activityBoolValue(activityJSONLDValue(raw, "manuallyApprovesFollowers")),
 		Discoverable:              activityBoolValue(activityJSONLDValue(raw, "discoverable")),
 		Indexable:                 activityBoolValue(activityJSONLDValue(raw, "indexable")),
+		ShowMedia:                 activityBoolValue(activityJSONLDValue(raw, "showMedia")),
+		ShowMediaSet:              activityJSONLDValue(raw, "showMedia") != nil,
+		ShowMediaReplies:          activityBoolValue(activityJSONLDValue(raw, "showRepliesInMedia")),
+		ShowMediaRepliesSet:       activityJSONLDValue(raw, "showRepliesInMedia") != nil,
+		ShowFeatured:              activityBoolValue(activityJSONLDValue(raw, "showFeatured")),
+		ShowFeaturedSet:           activityJSONLDValue(raw, "showFeatured") != nil,
 		Memorial:                  activityBoolValue(activityJSONLDValue(raw, "memorial")),
 		Suspended:                 activityRailsSuspendedTruthy(activityJSONLDValue(raw, "suspended")),
 		MovedTo:                   activityJSONLDValue(raw, "movedTo"),
@@ -1722,12 +1636,16 @@ func parseRemoteActivityActorWithImageFetcher(body []byte, imageFetcher func(str
 		AttributionDomains:        activityJSONLDValue(raw, "attributionDomains"),
 		Attachment:                activityJSONLDValue(raw, "attachment"),
 		AvatarRemoteURL:           activityActorImageURLWithFetcher(activityJSONLDValue(raw, "icon"), imageFetcher),
+		AvatarDescription:         activityActorImageDescription(activityJSONLDValue(raw, "icon")),
 		HeaderRemoteURL:           activityActorImageURLWithFetcher(activityJSONLDValue(raw, "image"), imageFetcher),
+		HeaderDescription:         activityActorImageDescription(activityJSONLDValue(raw, "image")),
 		Tags:                      activityRailsTagList(activityJSONLDValue(raw, "tag")),
 		PublicKey:                 publicKey,
+		PublicKeys:                publicKeys,
+		PublicKeySource:           publicKeyValue,
 	}
-	if strings.TrimSpace(actor.PreferredUsername) == "" {
-		return remoteActivityActor{}, fmt.Errorf("remote actor missing preferredUsername")
+	if strings.TrimSpace(actor.PreferredUsername) == "" && !remoteActivityActorHasUsableWebfinger(actor) {
+		return remoteActivityActor{}, fmt.Errorf("remote actor missing preferredUsername and webfinger")
 	}
 	if len([]rune(actor.PreferredUsername)) > 2048 {
 		return remoteActivityActor{}, fmt.Errorf("remote actor preferredUsername exceeds 2048 characters")
@@ -1737,21 +1655,9 @@ func parseRemoteActivityActorWithImageFetcher(body []byte, imageFetcher func(str
 	return actor, nil
 }
 
-func activityRemoteActorPublicKey(value any) struct {
-	ID           string `json:"id"`
-	IDRaw        string `json:"-"`
-	Owner        string `json:"owner"`
-	OwnerRaw     string `json:"-"`
-	PublicKeyPem string `json:"publicKeyPem"`
-} {
+func activityRemoteActorPublicKey(value any) remoteActivityPublicKey {
 	value = activityJSONLDSingle(value)
-	var key struct {
-		ID           string `json:"id"`
-		IDRaw        string `json:"-"`
-		Owner        string `json:"owner"`
-		OwnerRaw     string `json:"-"`
-		PublicKeyPem string `json:"publicKeyPem"`
-	}
+	var key remoteActivityPublicKey
 	if id := activityPubObjectID(value); id != "" {
 		key.ID = id
 	}
@@ -1759,26 +1665,12 @@ func activityRemoteActorPublicKey(value any) struct {
 		key.IDRaw = idRaw
 	}
 	if object, ok := activityJSONLDSingle(value).(map[string]any); ok {
-		if id := activityJSONLDID(object); id != "" {
-			key.ID = id
-		}
-		if idRaw := activityJSONLDValueOrID(object); idRaw != "" {
-			key.IDRaw = idRaw
-		}
-		key.Owner = activityJSONLDObjectID(object, "owner")
-		key.OwnerRaw = activityJSONLDValueOrID(activityJSONLDValue(object, "owner"))
-		key.PublicKeyPem = activityJSONLDString(object, "publicKeyPem")
+		key = activityRemotePublicKeyFromObject(object)
 	}
 	return key
 }
 
-func activityRemoteActorPublicKeyRawID(key struct {
-	ID           string `json:"id"`
-	IDRaw        string `json:"-"`
-	Owner        string `json:"owner"`
-	OwnerRaw     string `json:"-"`
-	PublicKeyPem string `json:"publicKeyPem"`
-}) string {
+func activityRemoteActorPublicKeyRawID(key remoteActivityPublicKey) string {
 	return activityRawNonBlank(key.IDRaw, key.ID)
 }
 
@@ -2242,6 +2134,10 @@ func (s *Server) upsertRemoteActivityActorDB(database *gorm.DB, actor remoteActi
 }
 
 func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor remoteActivityActor, requestID string) (*models.Account, error) {
+	actor = s.fetchActivityActorPublicKey(actor)
+	if !activityRemoteActorHasPublicKey(actor) {
+		return nil, fmt.Errorf("public key not found")
+	}
 	parsed, err := url.Parse(actor.ID)
 	if err != nil || parsed.Host == "" {
 		return nil, fmt.Errorf("invalid remote actor")
@@ -2251,11 +2147,11 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 		return nil, err
 	}
 	defer releaseAccountLock()
-	username := railsAccountUsernameValue(firstNonEmpty(actor.PreferredUsername, pathBase(parsed.Path)))
+	username := railsAccountUsernameValue(firstNonEmpty(actor.VerifiedUsername, actor.PreferredUsername, pathBase(parsed.Path)))
 	if username == "" || !railsRemoteUsernamePattern.MatchString(username) {
 		return nil, fmt.Errorf("invalid remote actor")
 	}
-	domain := normalizeDeliveryStatsHost(parsed.Hostname())
+	domain := normalizeDeliveryStatsHost(firstNonEmpty(actor.VerifiedDomain, parsed.Hostname()))
 	if domain == "" {
 		return nil, fmt.Errorf("invalid remote actor")
 	}
@@ -2278,9 +2174,15 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 		SharedInboxURL:    actor.SharedInbox(),
 		FollowersURL:      actor.Followers,
 		FollowingURL:      actor.Following,
+		CollectionsURL:    sql.NullString{String: actor.FeaturedCollections, Valid: actor.FeaturedCollections != ""},
 		Protocol:          1,
 		ActorType:         sql.NullString{String: firstNonEmpty(actor.Type, "Person"), Valid: true},
 		LastWebfingeredAt: sql.NullTime{Time: now, Valid: true},
+		ShowMedia:         !actor.ShowMediaSet || actor.ShowMedia,
+		ShowMediaReplies:  !actor.ShowMediaRepliesSet || actor.ShowMediaReplies,
+		ShowFeatured:      !actor.ShowFeaturedSet || actor.ShowFeatured,
+		AvatarDescription: actor.AvatarDescription,
+		HeaderDescription: actor.HeaderDescription,
 	}
 	if domainBlock != nil {
 		severity, ok := domainBlock.SeverityInt()
@@ -2297,7 +2199,7 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 		account.SuspensionOrigin = sql.NullInt64{Int64: 1, Valid: true}
 	}
 	if !activityActorLocallySuspended(account) {
-		account.PublicKey = actor.PublicKey.PublicKeyPem
+		account.PublicKey = ""
 	}
 	newAccountSuspended := account.SuspendedAt.Valid
 	var outboxInfo activityActorCollectionInfo
@@ -2367,6 +2269,10 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 			suspensionTransition = activityActorSuspensionTransitionFor(existing, actor.Suspended)
 			suspendedAfterUpdate := activityActorSuspendedAfterRemoteUpdate(existing, actor.Suspended)
 			finalSuspended = suspendedAfterUpdate
+			oldKeyMaterials, err := activityPubAccountKeyMaterials(tx, existing.ID, existing.PublicKey)
+			if err != nil {
+				return err
+			}
 			updates := map[string]any{
 				"updated_at":          now,
 				"uri":                 account.URI,
@@ -2380,7 +2286,7 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 				"last_webfingered_at": account.LastWebfingeredAt,
 			}
 			if !activityActorLocallySuspended(existing) {
-				updates["public_key"] = account.PublicKey
+				updates["public_key"] = ""
 			}
 			if actor.Published != "" {
 				updates["created_at"] = account.CreatedAt
@@ -2401,7 +2307,17 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 				updates["memorial"] = account.Memorial
 				updates["discoverable"] = account.Discoverable
 				updates["indexable"] = account.Indexable
+				if actor.ShowMediaSet {
+					updates["show_media"] = actor.ShowMedia
+				}
+				if actor.ShowMediaRepliesSet {
+					updates["show_media_replies"] = actor.ShowMediaReplies
+				}
+				if actor.ShowFeaturedSet {
+					updates["show_featured"] = actor.ShowFeatured
+				}
 				updates["featured_collection_url"] = account.FeaturedCollectionURL
+				updates["collections_url"] = sql.NullString{String: actor.FeaturedCollections, Valid: actor.FeaturedCollections != ""}
 				if movedToSet {
 					updates["moved_to_account_id"] = movedToID
 				}
@@ -2415,7 +2331,9 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 				}
 				if !skipMedia {
 					updates["avatar_remote_url"] = account.AvatarRemoteURL
+					updates["avatar_description"] = account.AvatarDescription
 					updates["header_remote_url"] = account.HeaderRemoteURL
+					updates["header_description"] = account.HeaderDescription
 					if actor.AvatarRemoteURL == "" || s.cfg.DisableRemoteMediaCache {
 						clearActivityPubActorAvatarMediaUpdates(updates)
 					}
@@ -2428,8 +2346,20 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 				return err
 			}
 			if !activityActorLocallySuspended(existing) {
-				keyChanged = activityPubActorKeyChanged(existing.PublicKey, account.PublicKey)
-				if err := clearActivityPubActorTombstonesOnKeyChange(tx, existing.ID, existing.PublicKey, account.PublicKey); err != nil {
+				persistedKeys, err := syncRemoteActivityActorKeypairs(tx, existing.ID, actor.PublicKeys, now)
+				if err != nil {
+					return err
+				}
+				keyChanged = activityPubAllPublicKeysChanged(oldKeyMaterials, persistedKeys, now)
+				if keyChanged {
+					if err := tx.Where("account_id = ?", existing.ID).Delete(&models.Tombstone{}).Error; err != nil {
+						return err
+					}
+				}
+				if len(persistedKeys) == 0 {
+					return fmt.Errorf("public key not found")
+				}
+				if err := tx.Model(&models.Account{}).Where("id = ?", existing.ID).Update("public_key", "").Error; err != nil {
 					return err
 				}
 			}
@@ -2468,6 +2398,15 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 		}
 		if err := tx.Omit(clause.Associations).Create(&account).Error; err != nil {
 			return err
+		}
+		if !activityActorLocallySuspended(account) {
+			persistedKeys, err := syncRemoteActivityActorKeypairs(tx, account.ID, actor.PublicKeys, now)
+			if err != nil {
+				return err
+			}
+			if len(persistedKeys) == 0 {
+				return fmt.Errorf("public key not found")
+			}
 		}
 		createdAccount = true
 		if !newAccountSuspended {
@@ -2548,6 +2487,7 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 			_ = s.syncRemoteStatusPinsFromActivityCollection(&account, *actor.FeaturedCollection, requestID)
 		}
 		s.syncActivityPubFeaturedTagsBestEffort(&account, actor.FeaturedTags)
+		s.syncRemoteFeaturedCollectionsBestEffort(&account, actor.FeaturedCollections, requestID)
 	}
 	return &account, nil
 }
@@ -2708,7 +2648,7 @@ func (s *Server) activityActorForMovedToURI(actorURI string, requestID string) (
 		return nil, err
 	}
 	actor, err := s.fetchActivityActor(actorLookupURI)
-	if err != nil || actor.ID == "" || actor.PublicKey.PublicKeyPem == "" || activityPubObjectID(actor.MovedTo) != "" {
+	if err != nil || actor.ID == "" || !activityRemoteActorHasPublicKey(actor) || activityPubObjectID(actor.MovedTo) != "" {
 		return nil, nil
 	}
 	return s.upsertRemoteActivityActorForRequest(actor, requestID)
@@ -2834,6 +2774,9 @@ type remoteActivityActor struct {
 	ID                        string `json:"id"`
 	Type                      string `json:"type"`
 	PreferredUsername         string `json:"preferredUsername"`
+	Webfinger                 string `json:"webfinger"`
+	VerifiedUsername          string
+	VerifiedDomain            string
 	Name                      string `json:"name"`
 	Summary                   string `json:"summary"`
 	Published                 string `json:"published"`
@@ -2845,27 +2788,32 @@ type remoteActivityActor struct {
 	Featured                  string `json:"featured"`
 	FeaturedCollection        *activityCollection
 	FeaturedTags              string `json:"featuredTags"`
+	FeaturedCollections       string `json:"featuredCollections"`
 	SharedInboxURL            string `json:"sharedInbox"`
 	ManuallyApprovesFollowers bool   `json:"manuallyApprovesFollowers"`
 	Discoverable              bool   `json:"discoverable"`
 	Indexable                 bool   `json:"indexable"`
-	Memorial                  bool   `json:"memorial"`
-	Suspended                 bool   `json:"suspended"`
-	MovedTo                   any    `json:"movedTo"`
-	AlsoKnownAs               any    `json:"alsoKnownAs"`
-	AttributionDomains        any    `json:"attributionDomains"`
-	Attachment                any    `json:"attachment"`
+	ShowMedia                 bool   `json:"showMedia"`
+	ShowMediaSet              bool
+	ShowMediaReplies          bool `json:"showRepliesInMedia"`
+	ShowMediaRepliesSet       bool
+	ShowFeatured              bool `json:"showFeatured"`
+	ShowFeaturedSet           bool
+	Memorial                  bool `json:"memorial"`
+	Suspended                 bool `json:"suspended"`
+	MovedTo                   any  `json:"movedTo"`
+	AlsoKnownAs               any  `json:"alsoKnownAs"`
+	AttributionDomains        any  `json:"attributionDomains"`
+	Attachment                any  `json:"attachment"`
 	AvatarRemoteURL           string
+	AvatarDescription         string
 	HeaderRemoteURL           string
+	HeaderDescription         string
 	Tags                      []activityTag
-	PublicKey                 struct {
-		ID           string `json:"id"`
-		IDRaw        string `json:"-"`
-		Owner        string `json:"owner"`
-		OwnerRaw     string `json:"-"`
-		PublicKeyPem string `json:"publicKeyPem"`
-	} `json:"publicKey"`
-	Endpoints map[string]any `json:"endpoints"`
+	PublicKey                 remoteActivityPublicKey
+	PublicKeys                []remoteActivityPublicKey
+	PublicKeySource           any
+	Endpoints                 map[string]any `json:"endpoints"`
 }
 
 func (a remoteActivityActor) SharedInbox() string {

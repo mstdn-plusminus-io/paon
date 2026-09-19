@@ -132,24 +132,27 @@ func (s *Server) verifyActivityPubHTTPMessageSignature(c *echo.Context, body []b
 	if err != nil {
 		return nil, err
 	}
-	account, err := s.activityPubActorFromKeyIDWithSourceStoplight(c, input.KeyID)
+	resolved, err := s.activityPubKeypairFromKeyIDWithSourceStoplight(c, input.KeyID)
 	if err != nil {
 		return nil, activityPubSignatureActorResolutionError(err)
 	}
-	if account == nil {
-		return nil, fmt.Errorf("public key not found for key %s", input.KeyID)
+	if err := activityPubResolvedKeypairValidityError(input.KeyID, resolved, time.Now().UTC()); err != nil {
+		return nil, err
 	}
-	if publicKey, keyErr := activityPublicKey(account.PublicKey); keyErr == nil && verifyActivityHTTPMessageSignature(publicKey, signature, base) == nil {
-		return account, nil
+	if publicKey, keyErr := activityPublicKey(resolved.Keypair.PublicKey); keyErr == nil && verifyActivityHTTPMessageSignature(publicKey, signature, base) == nil {
+		return &resolved.Account, nil
 	}
-	refreshed, err := s.refreshActivityPubActorKeyWithSourceStoplight(c, input.KeyID, account)
+	refreshed, err := s.refreshActivityPubResolvedKeypairWithSourceStoplight(c, input.KeyID, resolved)
 	if err != nil {
 		return nil, activityPubSignatureActorResolutionError(err)
 	}
-	if refreshed != nil && refreshed.PublicKey != "" {
-		publicKey, keyErr := activityPublicKey(refreshed.PublicKey)
+	if err := activityPubResolvedKeypairValidityError(input.KeyID, refreshed, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	if refreshed != nil {
+		publicKey, keyErr := activityPublicKey(refreshed.Keypair.PublicKey)
 		if keyErr == nil && verifyActivityHTTPMessageSignature(publicKey, signature, base) == nil {
-			return refreshed, nil
+			return &refreshed.Account, nil
 		}
 	}
 	return nil, errActivitySignatureFailed

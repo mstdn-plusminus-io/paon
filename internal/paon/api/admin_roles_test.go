@@ -36,11 +36,13 @@ func TestAdminRolePermissionsFromForm(t *testing.T) {
 	values.Add("user_role[permissions_as_keys][]", "manage_users")
 	values.Add("user_role[permissions_as_keys][]", "manage_roles")
 	values.Add("user_role[permissions_as_keys]", "invite_users")
+	values.Add("user_role[permissions_as_keys][]", "invite_bypass_approval")
+	values.Add("user_role[permissions_as_keys][]", "manage_email_subscriptions")
 	values.Add("user_role[permissions_as_keys][]", "unknown")
 	values.Add("user_role[permissions_as_keys][]", "manage_users")
 
 	got := adminRolePermissionsFromForm(values)
-	want := rolePermissionManageUsers | rolePermissionManageRoles | rolePermissionInviteUsers
+	want := rolePermissionManageUsers | rolePermissionManageRoles | rolePermissionInviteUsers | rolePermissionInviteBypassApproval | rolePermissionManageEmailSubscriptions
 	if got != want {
 		t.Fatalf("permissions = %d, want %d", got, want)
 	}
@@ -126,12 +128,14 @@ func TestAdminRoleModelsLoadAllRolesLikeRails(t *testing.T) {
 
 func TestAdminRoleFormHTMLIncludesRailsFields(t *testing.T) {
 	html := adminRoleFormHTML(models.UserRole{
-		ID:          3,
-		Name:        "Mods",
-		Color:       "ff0000",
-		Position:    7,
-		Permissions: rolePermissionManageUsers | rolePermissionManageRoles,
-		Highlighted: true,
+		ID:              3,
+		Name:            "Mods",
+		Color:           "ff0000",
+		Position:        7,
+		Permissions:     rolePermissionManageUsers | rolePermissionManageRoles,
+		Highlighted:     true,
+		Require2FA:      true,
+		CollectionLimit: 25,
 	}, false, "bad", "en")
 	for _, want := range []string{
 		"Edit &#39;Mods&#39; role",
@@ -142,6 +146,8 @@ func TestAdminRoleFormHTMLIncludesRailsFields(t *testing.T) {
 		`value="7"`,
 		`name="user_role[color]" type="color" value="#ff0000"`,
 		`name="user_role[highlighted]" value="1" checked`,
+		`name="user_role[require_2fa]" value="1" checked`,
+		`name="user_role[collection_limit]" value="25"`,
 		`name="user_role[permissions_as_keys][]" value="manage_users" checked`,
 		`name="user_role[permissions_as_keys][]" value="manage_roles" checked`,
 		"Save changes",
@@ -157,10 +163,18 @@ func TestAdminRoleFormHTMLIncludesRailsFields(t *testing.T) {
 	}
 }
 
-func TestAdminEveryoneRoleFormOnlyShowsInvitePermission(t *testing.T) {
-	html := adminRoleFormHTML(models.UserRole{ID: -99, Permissions: rolePermissionInviteUsers}, false, "", "en")
+func TestAdminEveryoneRoleFormOnlyShowsSafeInvitePermissions(t *testing.T) {
+	html := adminRoleFormHTML(models.UserRole{ID: -99, Permissions: rolePermissionInviteUsers | rolePermissionInviteBypassApproval, CollectionLimit: 10}, false, "", "en")
 	if !strings.Contains(html, `value="invite_users" checked`) {
 		t.Fatalf("everyone form missing invite permission: %s", html)
+	}
+	if !strings.Contains(html, `value="invite_bypass_approval" checked`) {
+		t.Fatalf("everyone form missing invite approval bypass permission: %s", html)
+	}
+	for _, required := range []string{`name="user_role[require_2fa]"`, `name="user_role[collection_limit]" value="10"`} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("everyone form missing %q: %s", required, html)
+		}
 	}
 	for _, unwanted := range []string{`value="manage_users"`, `value="administrator"`, `name="user_role[name]"`} {
 		if strings.Contains(html, unwanted) {

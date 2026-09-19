@@ -1607,3 +1607,14 @@ func TestFromEnvReadsSelfDestructWithoutTreatingWhitespaceAsEnabled(t *testing.T
 		t.Fatalf("blank SelfDestruct = %q", got)
 	}
 }
+
+func TestMastodon46EmailSubscriptionsAreEnabledUnlessExplicitlyDisabled(t *testing.T) {
+	t.Setenv("DISABLE_EMAIL_SUBSCRIPTIONS", "")
+	if !FromEnv().EmailSubscriptionsEnabled {
+		t.Fatal("email subscriptions defaulted to disabled")
+	}
+	t.Setenv("DISABLE_EMAIL_SUBSCRIPTIONS", "true")
+	if FromEnv().EmailSubscriptionsEnabled {
+		t.Fatal("DISABLE_EMAIL_SUBSCRIPTIONS=true was ignored")
+	}
+}

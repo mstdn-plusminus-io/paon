@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
@@ -71,7 +72,7 @@ func TestRailsAPICORSHeadersApplyToAPIResponses(t *testing.T) {
 	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatalf("missing API CORS header: %#v", rec.Header())
 	}
-	if rec.Header().Get("Access-Control-Expose-Headers") == "" {
+	if exposed := rec.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(exposed, "Mastodon-Async-Refresh") {
 		t.Fatalf("missing API exposed headers: %#v", rec.Header())
 	}
 }

@@ -31,100 +31,49 @@ const (
 
 func quoteApprovalPolicyFromName(name string) (int, bool) {
 	switch strings.TrimSpace(name) {
-	case "public":
+	case "public", "followers", "nobody":
+		// Paon deliberately keeps Mastodon's wire-level policy values while
+		// making quote authorization unconditional. Restrictive values are
+		// accepted for drop-in API compatibility and normalized to public.
 		return quotePolicyPublic << 16, true
-	case "followers":
-		return quotePolicyFollowers << 16, true
-	case "nobody":
-		return 0, true
 	default:
 		return 0, false
 	}
 }
 
 func quoteApprovalPolicyName(policy int) string {
-	switch policy >> 16 {
-	case quotePolicyPublic:
-		return "public"
-	case quotePolicyFollowers:
-		return "followers"
-	default:
-		return "nobody"
-	}
+	return "public"
 }
 
 func quoteApprovalPolicyForPayload(payload statusUpdatePayload, account models.Account) (int, bool) {
-	name := payload.QuoteApprovalPolicy
-	if !payload.HasQuoteApprovalPolicy || strings.TrimSpace(name) == "" {
-		name = stringSettingValue(userSettingsForAccount(account), "default_quote_policy")
-		if name == "" {
-			name = "public"
-		}
+	if !payload.HasQuoteApprovalPolicy || strings.TrimSpace(payload.QuoteApprovalPolicy) == "" {
+		return quotePolicyPublic << 16, true
 	}
-	return quoteApprovalPolicyFromName(name)
+	return quoteApprovalPolicyFromName(payload.QuoteApprovalPolicy)
 }
 
 func quotePolicyKeys(value int, automatic bool) []string {
 	if automatic {
-		value >>= 16
-	} else {
-		value &= 0xffff
+		return []string{"public"}
 	}
-	out := make([]string, 0, 4)
-	for _, item := range []struct {
-		name string
-		flag int
-	}{
-		{"unsupported_policy", quotePolicyUnknown},
-		{"public", quotePolicyPublic},
-		{"followers", quotePolicyFollowers},
-		{"following", quotePolicyFollowing},
-	} {
-		if value&item.flag != 0 {
-			out = append(out, item.name)
-		}
-	}
-	return out
+	return []string{}
 }
 
 func quotePolicyDecisionWithRelations(status models.Status, viewer *models.Account, viewerFollowsAuthor bool, authorFollowsViewer bool) quotePolicyDecision {
 	if viewer == nil || viewer.ID == 0 || status.Visibility == 3 || status.ReblogOfID.Valid {
 		return quotePolicyDenied
 	}
-	if status.AccountID == viewer.ID {
-		return quotePolicyAutomatic
-	}
-	automatic := status.QuoteApprovalPolicy >> 16
-	manual := status.QuoteApprovalPolicy & 0xffff
-	if automatic&quotePolicyPublic != 0 || automatic&quotePolicyFollowers != 0 && viewerFollowsAuthor || automatic&quotePolicyFollowing != 0 && authorFollowsViewer {
-		return quotePolicyAutomatic
-	}
-	if manual&quotePolicyPublic != 0 || manual&quotePolicyFollowers != 0 && viewerFollowsAuthor || manual&quotePolicyFollowing != 0 && authorFollowsViewer {
-		return quotePolicyManual
-	}
-	if (automatic|manual)&quotePolicyUnknown != 0 {
-		return quotePolicyUndecided
-	}
-	return quotePolicyDenied
+	// Relationship and persisted policy bits are intentionally ignored. Access
+	// to the underlying status is still checked by the caller, including
+	// visibility and block/domain-block rules.
+	return quotePolicyAutomatic
 }
 
 func (s *Server) quotePolicyForAccount(ctx context.Context, status models.Status, viewer *models.Account) (quotePolicyDecision, error) {
 	if viewer == nil || viewer.ID == 0 || status.Visibility == 3 || status.ReblogOfID.Valid {
 		return quotePolicyDenied, nil
 	}
-	if status.AccountID == viewer.ID {
-		return quotePolicyAutomatic, nil
-	}
-	db := s.db.WithContext(nonNilContext(ctx))
-	var viewerFollowsAuthor int64
-	if err := db.Model(&models.Follow{}).Where("account_id = ? AND target_account_id = ?", viewer.ID, status.AccountID).Count(&viewerFollowsAuthor).Error; err != nil {
-		return quotePolicyDenied, err
-	}
-	var authorFollowsViewer int64
-	if err := db.Model(&models.Follow{}).Where("account_id = ? AND target_account_id = ?", status.AccountID, viewer.ID).Count(&authorFollowsViewer).Error; err != nil {
-		return quotePolicyDenied, err
-	}
-	return quotePolicyDecisionWithRelations(status, viewer, viewerFollowsAuthor > 0, authorFollowsViewer > 0), nil
+	return quotePolicyDecisionWithRelations(status, viewer, false, false), nil
 }
 
 // quoteDeniedByAccountRelationship mirrors the relationship checks in
@@ -248,29 +197,7 @@ func (s *Server) localQuoteAuthorizationURI(account models.Account, quoteID int6
 }
 
 func activityPubQuoteInteractionPolicy(s *Server, status models.Status) map[string]any {
-	automatic := status.QuoteApprovalPolicy >> 16
-	approved := make([]string, 0, 3)
-	if automatic&quotePolicyPublic != 0 {
-		approved = append(approved, activityPubPublicIRI)
-	}
-	if automatic&quotePolicyFollowers != 0 {
-		followers := strings.TrimSpace(status.Account.FollowersURL)
-		if followers == "" {
-			followers = activityPubAccountTagManagerURI(s, status.Account) + "/followers"
-		}
-		approved = append(approved, followers)
-	}
-	if automatic&quotePolicyFollowing != 0 {
-		following := strings.TrimSpace(status.Account.FollowingURL)
-		if following == "" {
-			following = activityPubAccountTagManagerURI(s, status.Account) + "/following"
-		}
-		approved = append(approved, following)
-	}
-	if len(approved) == 0 {
-		approved = append(approved, activityPubAccountTagManagerURI(s, status.Account))
-	}
-	return map[string]any{"canQuote": map[string]any{"automaticApproval": approved}}
+	return map[string]any{"canQuote": map[string]any{"automaticApproval": []string{activityPubPublicIRI}}}
 }
 
 func activityPubAddQuoteFields(s *Server, status models.Status, note map[string]any) {
@@ -615,14 +542,9 @@ func (s *Server) revokeStatusQuote(c *echo.Context) error {
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
-	changed, err := s.transitionQuoteState(c.Request().Context(), &quote, quoteRejectedState(quote.State), sql.NullString{})
-	if err != nil {
-		return err
-	}
-	if changed {
-		s.publishQuoteStateUpdate(c.Request().Context(), quote.StatusID)
-		_ = s.deliverDeleteQuoteAuthorization(c.Request().Context(), quote, *target)
-	}
+	// Keep the Mastodon endpoint and response shape for clients, but do not let
+	// it revoke authorization. Paon's quote policy deliberately permits every
+	// otherwise-visible local or remote account to quote a local post.
 	status, err := s.findStatus(strconv.FormatInt(quote.StatusID, 10))
 	if err != nil {
 		return err

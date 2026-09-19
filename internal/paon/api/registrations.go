@@ -835,7 +835,7 @@ func (s *Server) createLocalUserAccount(tx *gorm.DB, payload accountCreatePayloa
 	if err != nil {
 		return nil, err
 	}
-	approved := accountApprovedForRegistration(s.registrationMode(), options.Invite, options.IPRestriction.RequiresApproval)
+	approved := accountApprovedForRegistration(s.registrationMode(), options.Invite, options.IPRestriction.RequiresApproval, s.inviteBypassesApproval(options.Invite))
 	confirmationToken := randomHex(16)
 	user := models.User{
 		AccountID:              account.ID,
@@ -1096,11 +1096,15 @@ func ipMatchesBlock(remoteIP string, blockValue string) bool {
 	return blockIP != nil && blockIP.Equal(ip)
 }
 
-func accountApprovedForRegistration(mode string, invite *models.Invite, requiresApproval bool) bool {
+func accountApprovedForRegistration(mode string, invite *models.Invite, requiresApproval bool, inviteBypassesApproval bool) bool {
 	if requiresApproval {
 		return false
 	}
-	return mode == "open" || invite != nil
+	return mode == "open" || invite != nil && inviteBypassesApproval
+}
+
+func (s *Server) inviteBypassesApproval(invite *models.Invite) bool {
+	return invite != nil && invite.User.ID != 0 && s.userCan(&invite.User, rolePermissionInviteBypassApproval)
 }
 
 func (s *Server) findUsableInvite(code string, now time.Time) (*models.Invite, error) {

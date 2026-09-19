@@ -96,6 +96,8 @@ func normalizeLandingPage(value string) string {
 		return "about"
 	case "local_feed":
 		return "local_feed"
+	case "overview":
+		return "overview"
 	default:
 		return "trends"
 	}

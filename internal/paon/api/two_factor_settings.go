@@ -40,6 +40,14 @@ func (s *Server) disableSettingsTwoFactor(c *echo.Context) error {
 	if !user.OTPRequiredForLogin {
 		return c.Redirect(http.StatusFound, "/settings/otp_authentication")
 	}
+	role, err := s.requiredTwoFactorRole(user)
+	if err != nil {
+		return err
+	}
+	if role != nil && role.Require2FA {
+		message := settingsTVars(locale, "two_factor_authentication.role_requirement", "Your role on %{domain} requires two-factor authentication.", map[string]string{"domain": firstNonEmpty(s.cfg.LocalDomain, s.cfg.WebDomain)})
+		return c.Redirect(http.StatusFound, "/settings/two_factor_authentication_methods?error="+url.QueryEscape(message))
+	}
 	if err := s.disableTwoFactorForUser(user.ID); err != nil {
 		return err
 	}
@@ -59,11 +67,17 @@ func (s *Server) settingsOTPAuthenticationPage(c *echo.Context) error {
 	}
 	locale := s.webLocale(c, user)
 	theme := settingsWebTheme(decodeUserSettings(user.Settings.String))
+	requirementNotice := c.QueryParam("notice")
+	if role, roleErr := s.requiredTwoFactorRole(user); roleErr != nil {
+		return roleErr
+	} else if role != nil && role.Require2FA {
+		requirementNotice = settingsTVars(locale, "two_factor_authentication.role_requirement", "Your role on %{domain} requires two-factor authentication.", map[string]string{"domain": firstNonEmpty(s.cfg.LocalDomain, s.cfg.WebDomain)})
+	}
 	renderArgs, err := s.settingsRenderArgs(c.Request().URL.Path, locale, theme, user, nil)
 	if err != nil {
 		return err
 	}
-	return c.HTML(http.StatusOK, otpAuthenticationHTML(c.QueryParam("notice"), c.QueryParam("error"), renderArgs...))
+	return c.HTML(http.StatusOK, otpAuthenticationHTML(requirementNotice, c.QueryParam("error"), renderArgs...))
 }
 
 func (s *Server) createSettingsOTPAuthentication(c *echo.Context) error {

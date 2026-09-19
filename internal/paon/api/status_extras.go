@@ -121,7 +121,7 @@ func (s *Server) statusHistory(c *echo.Context) error {
 	if err := s.authorizeTokenScopeIfPresent(c, "read", "read:statuses"); err != nil {
 		return err
 	}
-	status, _, err := s.findVisibleStatusForRequest(c, c.Param("id"))
+	status, current, err := s.findVisibleStatusForRequest(c, c.Param("id"))
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
@@ -137,6 +137,15 @@ func (s *Server) statusHistory(c *echo.Context) error {
 	if len(edits) == 0 {
 		edits = []models.StatusEdit{statusSnapshotEdit(*status)}
 	}
+	accounts := make([]*models.Account, 0, len(edits))
+	for i := range edits {
+		if edits[i].Account.ID != 0 {
+			accounts = append(accounts, &edits[i].Account)
+		}
+	}
+	if err := s.hydrateAccountFeaturePolicies(accounts, current); err != nil {
+		return err
+	}
 
 	out := make([]serializer.StatusEdit, 0, len(edits))
 	for _, edit := range edits {
@@ -147,7 +156,7 @@ func (s *Server) statusHistory(c *echo.Context) error {
 			return err
 		}
 		edit.CustomEmojis = emojis
-		out = append(out, serializer.StatusEditFromModel(s.cfg, edit))
+		out = append(out, serializer.StatusEditFromModel(s.cfg, edit, current))
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -409,7 +418,7 @@ func (s *Server) favouritedBy(c *echo.Context) error {
 	if len(rows) > 0 {
 		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, rows[0].ID, rows[len(rows)-1].ID, "since_id", len(rows) == limitValue))
 	}
-	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
+	return c.JSON(http.StatusOK, s.serializeAccounts(accounts, current))
 }
 
 func (s *Server) rebloggedBy(c *echo.Context) error {
@@ -452,7 +461,7 @@ func (s *Server) rebloggedBy(c *echo.Context) error {
 	if len(rows) > 0 {
 		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, rows[0].ID, rows[len(rows)-1].ID, "since_id", len(rows) == limitValue))
 	}
-	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
+	return c.JSON(http.StatusOK, s.serializeAccounts(accounts, current))
 }
 
 func (s *Server) currentAccountForOptionalRequestToken(c *echo.Context) (*models.Account, error) {

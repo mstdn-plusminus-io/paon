@@ -47,6 +47,7 @@ func setAppAssets(r *web.Renderer) {
 			"default":                 r.Asset("default.css"),
 			"contrast":                r.Asset("contrast.css"),
 			"mastodon-light":          r.Asset("mastodon-light.css"),
+			"mastodon-light-contrast": r.Asset("mastodon-light-contrast.css"),
 			"single-column-chat-dark": r.Asset("single-column-chat-dark.css"),
 		},
 		commonJS:        r.Asset("common.js"),
@@ -102,6 +103,7 @@ func currentAppAssets() appAssetPaths {
 				"default":                 firstNonEmpty(v.themeCSS, "/packs/css/default.css"),
 				"contrast":                "/packs/css/contrast.css",
 				"mastodon-light":          "/packs/css/mastodon-light.css",
+				"mastodon-light-contrast": "/packs/css/mastodon-light-contrast.css",
 				"single-column-chat-dark": "/packs/css/single-column-chat-dark.css",
 			}
 		}
@@ -116,6 +118,7 @@ func currentAppAssets() appAssetPaths {
 			"default":                 "/packs/css/default.css",
 			"contrast":                "/packs/css/contrast.css",
 			"mastodon-light":          "/packs/css/mastodon-light.css",
+			"mastodon-light-contrast": "/packs/css/mastodon-light-contrast.css",
 			"single-column-chat-dark": "/packs/css/single-column-chat-dark.css",
 		},
 		commonJS:        "/packs/js/common.js",
@@ -186,14 +189,26 @@ func buildAppHead(title string, theme ...string) string {
 	themeColorTags := `    <meta name="theme-color" content="#181820" media="(prefers-color-scheme: dark)">
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">`
 	themeStyleTags := `    <link rel="stylesheet" href="` + html.EscapeString(a.themes["mastodon-light"]) + `" media="not all and (prefers-color-scheme: dark)" crossorigin="anonymous">
-    <link rel="stylesheet" href="` + html.EscapeString(a.themes["default"]) + `" media="(prefers-color-scheme: dark)" crossorigin="anonymous">`
-	if themeName != "system" {
+	<link rel="stylesheet" href="` + html.EscapeString(a.themes["default"]) + `" media="(prefers-color-scheme: dark)" crossorigin="anonymous">
+	<link rel="stylesheet" href="` + html.EscapeString(a.themes["mastodon-light-contrast"]) + `" media="(prefers-color-scheme: light) and (prefers-contrast: more)" crossorigin="anonymous">
+	<link rel="stylesheet" href="` + html.EscapeString(a.themes["contrast"]) + `" media="(prefers-color-scheme: dark) and (prefers-contrast: more)" crossorigin="anonymous">`
+	if themeName == "system-high" {
+		themeStyleTags = `    <link rel="stylesheet" href="` + html.EscapeString(a.themes["mastodon-light-contrast"]) + `" media="not all and (prefers-color-scheme: dark)" crossorigin="anonymous">
+	<link rel="stylesheet" href="` + html.EscapeString(a.themes["contrast"]) + `" media="(prefers-color-scheme: dark)" crossorigin="anonymous">`
+	} else if themeName != "system" {
 		themeColor := "#181820"
-		if themeName == "mastodon-light" {
+		if themeName == "mastodon-light" || themeName == "mastodon-light-contrast" {
 			themeColor = "#ffffff"
 		}
 		themeColorTags = `    <meta name="theme-color" content="` + themeColor + `">`
 		themeStyleTags = `    <link rel="stylesheet" href="` + html.EscapeString(a.themes[themeName]) + `" media="all" crossorigin="anonymous">`
+		if themeName == "mastodon-light" {
+			themeStyleTags += `
+	<link rel="stylesheet" href="` + html.EscapeString(a.themes["mastodon-light-contrast"]) + `" media="(prefers-contrast: more)" crossorigin="anonymous">`
+		} else if themeName == "default" {
+			themeStyleTags += `
+	<link rel="stylesheet" href="` + html.EscapeString(a.themes["contrast"]) + `" media="(prefers-contrast: more)" crossorigin="anonymous">`
+		}
 	}
 	return `<meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -218,7 +233,7 @@ func buildAppHead(title string, theme ...string) string {
 
 func normalizedWebTheme(theme string) string {
 	switch strings.TrimSpace(theme) {
-	case "system", "default", "contrast", "mastodon-light", "single-column-chat-dark":
+	case "system", "system-high", "default", "contrast", "mastodon-light", "mastodon-light-contrast", "single-column-chat-dark":
 		return strings.TrimSpace(theme)
 	default:
 		return "system"

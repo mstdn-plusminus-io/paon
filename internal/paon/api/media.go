@@ -40,7 +40,7 @@ var (
 	errMediaAttachmentNotReady = errors.New("media attachment is not ready")
 )
 
-const maxMediaDescriptionLength = 1500
+const maxMediaDescriptionLength = 10000
 const mediaThumbnailMaxPixels = 230400
 const mediaDefaultImageSizeLimit = 40 * 1024 * 1024
 const mediaDefaultVideoSizeLimit = 90 * 1024 * 1024

@@ -196,6 +196,23 @@ func TestActivityPubFlagReportFallbackIDUsesRailsPayloadURI(t *testing.T) {
 	}
 }
 
+func TestMastodon46ActivityPubFlagIncludesReportedCollections(t *testing.T) {
+	server := &Server{cfg: config.Config{LocalDomain: "example.com", WebDomain: "example.com", Scheme: "https"}}
+	target := models.Account{ID: 7, Username: "bob", Domain: sql.NullString{String: "remote.example", Valid: true}, URI: "https://remote.example/users/bob"}
+	report := models.Report{URI: sql.NullString{String: "https://example.com/payloads/report", Valid: true}}
+	actor := models.Account{ID: -99, Username: instanceActorUsername}
+	collections := []models.Collection{{ID: 91, AccountID: 7, URI: sql.NullString{String: "https://remote.example/collections/91", Valid: true}}}
+
+	payload := activityPubFlagReport(server, report, target, nil, actor, collections)
+	objects, ok := payload["object"].([]string)
+	if !ok || len(objects) != 2 {
+		t.Fatalf("Flag objects = %#v", payload["object"])
+	}
+	if got, want := objects[1], "https://remote.example/collections/91"; got != want {
+		t.Fatalf("collection Flag object = %q, want %q", got, want)
+	}
+}
+
 func TestOrderReportForwardStatusesPreservesReportStatusIDOrder(t *testing.T) {
 	statuses := []models.Status{{ID: 3}, {ID: 1}, {ID: 2}}
 	got := orderReportForwardStatuses(models.Int64Array{2, 1, 2, 9}, statuses)

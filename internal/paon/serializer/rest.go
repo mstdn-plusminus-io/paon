@@ -297,37 +297,50 @@ func SupportedLanguageRows() [][]string {
 }
 
 type Account struct {
-	ID              string        `json:"id"`
-	Username        string        `json:"username"`
-	Acct            string        `json:"acct"`
-	DisplayName     string        `json:"display_name"`
-	Locked          bool          `json:"locked"`
-	Bot             bool          `json:"bot"`
-	Discoverable    *bool         `json:"discoverable"`
-	Indexable       bool          `json:"indexable"`
-	HideCollections *bool         `json:"hide_collections"`
-	Group           bool          `json:"group"`
-	CreatedAt       string        `json:"created_at"`
-	Note            string        `json:"note"`
-	URL             string        `json:"url"`
-	URI             string        `json:"uri"`
-	Avatar          string        `json:"avatar"`
-	AvatarStatic    string        `json:"avatar_static"`
-	Header          string        `json:"header"`
-	HeaderStatic    string        `json:"header_static"`
-	FollowersCount  int64         `json:"followers_count"`
-	FollowingCount  int64         `json:"following_count"`
-	StatusesCount   int64         `json:"statuses_count"`
-	LastStatusAt    *string       `json:"last_status_at"`
-	Moved           *Account      `json:"moved,omitempty"`
-	Emojis          []CustomEmoji `json:"emojis"`
-	Fields          []Field       `json:"fields"`
-	Roles           []any         `json:"-"`
-	Local           bool          `json:"-"`
-	Suspended       *bool         `json:"suspended,omitempty"`
-	Limited         *bool         `json:"limited,omitempty"`
-	Memorial        *bool         `json:"memorial,omitempty"`
-	NoIndex         *bool         `json:"noindex,omitempty"`
+	ID                 string                 `json:"id"`
+	Username           string                 `json:"username"`
+	Acct               string                 `json:"acct"`
+	DisplayName        string                 `json:"display_name"`
+	Locked             bool                   `json:"locked"`
+	Bot                bool                   `json:"bot"`
+	Discoverable       *bool                  `json:"discoverable"`
+	Indexable          bool                   `json:"indexable"`
+	HideCollections    *bool                  `json:"hide_collections"`
+	Group              bool                   `json:"group"`
+	CreatedAt          string                 `json:"created_at"`
+	Note               string                 `json:"note"`
+	URL                string                 `json:"url"`
+	URI                string                 `json:"uri"`
+	Avatar             string                 `json:"avatar"`
+	AvatarStatic       string                 `json:"avatar_static"`
+	AvatarDescription  string                 `json:"avatar_description"`
+	Header             string                 `json:"header"`
+	HeaderStatic       string                 `json:"header_static"`
+	HeaderDescription  string                 `json:"header_description"`
+	FollowersCount     int64                  `json:"followers_count"`
+	FollowingCount     int64                  `json:"following_count"`
+	StatusesCount      int64                  `json:"statuses_count"`
+	LastStatusAt       *string                `json:"last_status_at"`
+	Moved              *Account               `json:"moved,omitempty"`
+	Emojis             []CustomEmoji          `json:"emojis"`
+	Fields             []Field                `json:"fields"`
+	Roles              []any                  `json:"-"`
+	Local              bool                   `json:"-"`
+	Suspended          *bool                  `json:"suspended,omitempty"`
+	Limited            *bool                  `json:"limited,omitempty"`
+	Memorial           *bool                  `json:"memorial,omitempty"`
+	NoIndex            *bool                  `json:"noindex,omitempty"`
+	ShowMedia          bool                   `json:"show_media"`
+	ShowMediaReplies   bool                   `json:"show_media_replies"`
+	ShowFeatured       bool                   `json:"show_featured"`
+	FeatureApproval    AccountFeatureApproval `json:"feature_approval"`
+	EmailSubscriptions *bool                  `json:"email_subscriptions,omitempty"`
+}
+
+type AccountFeatureApproval struct {
+	Automatic   []string `json:"automatic"`
+	Manual      []string `json:"manual"`
+	CurrentUser string   `json:"current_user"`
 }
 
 func (a Account) MarshalJSON() ([]byte, error) {
@@ -358,6 +371,125 @@ type CredentialAccount struct {
 	Account
 	Source CredentialSource `json:"source"`
 	Role   any              `json:"role"`
+}
+
+type Profile struct {
+	ID                 string        `json:"id"`
+	DisplayName        string        `json:"display_name"`
+	Note               string        `json:"note"`
+	Fields             []SourceField `json:"fields"`
+	FormattedNote      string        `json:"formatted_note"`
+	FormattedFields    []Field       `json:"formatted_fields"`
+	Avatar             *string       `json:"avatar"`
+	AvatarStatic       *string       `json:"avatar_static"`
+	AvatarDescription  string        `json:"avatar_description"`
+	Header             *string       `json:"header"`
+	HeaderStatic       *string       `json:"header_static"`
+	HeaderDescription  string        `json:"header_description"`
+	Locked             bool          `json:"locked"`
+	Bot                bool          `json:"bot"`
+	HideCollections    *bool         `json:"hide_collections"`
+	Discoverable       *bool         `json:"discoverable"`
+	Indexable          bool          `json:"indexable"`
+	ShowMedia          bool          `json:"show_media"`
+	ShowMediaReplies   bool          `json:"show_media_replies"`
+	ShowFeatured       bool          `json:"show_featured"`
+	AttributionDomains []string      `json:"attribution_domains"`
+	FeaturedTags       []FeaturedTag `json:"featured_tags"`
+}
+
+type ShallowTag struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+type CollectionItem struct {
+	ID        string  `json:"id"`
+	State     string  `json:"state"`
+	CreatedAt string  `json:"created_at"`
+	AccountID *string `json:"account_id,omitempty"`
+}
+
+type Collection struct {
+	ID           string           `json:"id"`
+	URI          string           `json:"uri"`
+	Name         string           `json:"name"`
+	Description  *string          `json:"description"`
+	Language     *string          `json:"language"`
+	AccountID    string           `json:"account_id"`
+	Local        bool             `json:"local"`
+	Sensitive    bool             `json:"sensitive"`
+	Discoverable bool             `json:"discoverable"`
+	URL          string           `json:"url"`
+	ItemCount    int              `json:"item_count"`
+	CreatedAt    string           `json:"created_at"`
+	UpdatedAt    string           `json:"updated_at"`
+	Tag          *ShallowTag      `json:"tag"`
+	Items        []CollectionItem `json:"items"`
+}
+
+type CollectionWithAccounts struct {
+	Collection Collection `json:"collection"`
+	Accounts   []Account  `json:"accounts"`
+}
+
+func CollectionFromModel(cfg config.Config, collection models.Collection, tag *models.Tag, items []models.CollectionItem) Collection {
+	uri := strings.TrimSpace(collection.URI.String)
+	collectionURL := strings.TrimSpace(collection.URL.String)
+	if collection.Local {
+		uri = cfg.BaseURL() + "/ap/users/" + strconv.FormatInt(collection.AccountID, 10) + "/collections/" + strconv.FormatInt(collection.ID, 10)
+		collectionURL = cfg.BaseURL() + "/collections/" + strconv.FormatInt(collection.ID, 10)
+	} else if collectionURL == "" {
+		collectionURL = uri
+	}
+	var description *string
+	if collection.Local && collection.Description.Valid {
+		value := collection.Description.String
+		description = &value
+	} else if !collection.Local && collection.DescriptionHTML.Valid {
+		value := sanitizeStatusContentHTML(collection.DescriptionHTML.String)
+		description = &value
+	}
+	var shallowTag *ShallowTag
+	if tag != nil && tag.ID != 0 {
+		shallowTag = &ShallowTag{Name: tag.DisplayNameValue(), URL: cfg.BaseURL() + "/tags/" + url.PathEscape(tag.Name)}
+	}
+	serializedItems := make([]CollectionItem, 0, len(items))
+	for _, item := range items {
+		serializedItems = append(serializedItems, CollectionItemFromModel(item))
+	}
+	return Collection{
+		ID: strconv.FormatInt(collection.ID, 10), URI: uri, Name: collection.Name,
+		Description: description, Language: stringPtr(collection.Language), AccountID: strconv.FormatInt(collection.AccountID, 10),
+		Local: collection.Local, Sensitive: collection.Sensitive, Discoverable: collection.Discoverable, URL: collectionURL,
+		ItemCount: len(serializedItems), CreatedAt: restTimestamp(collection.CreatedAt), UpdatedAt: restTimestamp(collection.UpdatedAt),
+		Tag: shallowTag, Items: serializedItems,
+	}
+}
+
+func CollectionItemFromModel(item models.CollectionItem) CollectionItem {
+	var accountID *string
+	if item.AccountID.Valid && (item.State == 0 || item.State == 1) {
+		value := strconv.FormatInt(item.AccountID.Int64, 10)
+		accountID = &value
+	}
+	return CollectionItem{
+		ID: strconv.FormatInt(item.ID, 10), State: collectionItemStateName(item.State),
+		CreatedAt: restTimestamp(item.CreatedAt), AccountID: accountID,
+	}
+}
+
+func collectionItemStateName(state int) string {
+	switch state {
+	case 1:
+		return "accepted"
+	case 2:
+		return "rejected"
+	case 3:
+		return "revoked"
+	default:
+		return "pending"
+	}
 }
 
 func (a CredentialAccount) MarshalJSON() ([]byte, error) {
@@ -435,6 +567,7 @@ type CustomEmoji struct {
 	StaticURL       string `json:"static_url"`
 	VisibleInPicker bool   `json:"visible_in_picker"`
 	Category        any    `json:"category,omitempty"`
+	Featured        *bool  `json:"featured,omitempty"`
 }
 
 type Status struct {
@@ -468,6 +601,7 @@ type Status struct {
 	Poll               any                 `json:"poll"`
 	Quote              any                 `json:"quote"`
 	QuoteApproval      StatusQuoteApproval `json:"quote_approval"`
+	TaggedCollections  []Collection        `json:"tagged_collections"`
 	Favourited         *bool               `json:"favourited,omitempty"`
 	Reblogged          *bool               `json:"reblogged,omitempty"`
 	Muted              *bool               `json:"muted,omitempty"`
@@ -652,24 +786,25 @@ func (m MediaAttachment) MarshalJSON() ([]byte, error) {
 }
 
 type PreviewCard struct {
-	URL              string              `json:"url"`
-	Title            string              `json:"title"`
-	Description      string              `json:"description"`
-	Language         *string             `json:"language"`
-	Type             string              `json:"type"`
-	AuthorName       string              `json:"author_name"`
-	AuthorURL        string              `json:"author_url"`
-	ProviderName     string              `json:"provider_name"`
-	ProviderURL      string              `json:"provider_url"`
-	HTML             string              `json:"html"`
-	Width            int                 `json:"width"`
-	Height           int                 `json:"height"`
-	Image            *string             `json:"image"`
-	ImageDescription string              `json:"image_description"`
-	EmbedURL         string              `json:"embed_url"`
-	Blurhash         *string             `json:"blurhash"`
-	PublishedAt      *string             `json:"published_at"`
-	Authors          []PreviewCardAuthor `json:"authors"`
+	URL                string              `json:"url"`
+	Title              string              `json:"title"`
+	Description        string              `json:"description"`
+	Language           *string             `json:"language"`
+	Type               string              `json:"type"`
+	AuthorName         string              `json:"author_name"`
+	AuthorURL          string              `json:"author_url"`
+	ProviderName       string              `json:"provider_name"`
+	ProviderURL        string              `json:"provider_url"`
+	HTML               string              `json:"html"`
+	Width              int                 `json:"width"`
+	Height             int                 `json:"height"`
+	Image              *string             `json:"image"`
+	ImageDescription   string              `json:"image_description"`
+	EmbedURL           string              `json:"embed_url"`
+	Blurhash           *string             `json:"blurhash"`
+	PublishedAt        *string             `json:"published_at"`
+	Authors            []PreviewCardAuthor `json:"authors"`
+	MissingAttribution *bool               `json:"missing_attribution,omitempty"`
 }
 
 type PreviewCardAuthor struct {
@@ -742,9 +877,10 @@ type TagDetail struct {
 }
 
 type Search struct {
-	Accounts []Account   `json:"accounts"`
-	Statuses []Status    `json:"statuses"`
-	Hashtags []TagDetail `json:"hashtags"`
+	Accounts    []Account    `json:"accounts"`
+	Statuses    []Status     `json:"statuses"`
+	Hashtags    []TagDetail  `json:"hashtags"`
+	Collections []Collection `json:"collections"`
 }
 
 type AdminTag struct {
@@ -824,6 +960,14 @@ type Notification struct {
 	Report            any                                `json:"report,omitempty"`
 	Event             *AccountRelationshipSeveranceEvent `json:"event,omitempty"`
 	ModerationWarning *AccountWarning                    `json:"moderation_warning,omitempty"`
+	Fallback          *NotificationFallback              `json:"fallback,omitempty"`
+	Collection        *Collection                        `json:"collection,omitempty"`
+}
+
+type NotificationFallback struct {
+	Title       string `json:"title"`
+	Summary     string `json:"summary"`
+	Description any    `json:"description"`
 }
 
 type AccountRelationshipSeveranceEvent struct {
@@ -856,6 +1000,7 @@ type Report struct {
 	CreatedAt     string   `json:"created_at"`
 	StatusIDs     []string `json:"status_ids"`
 	RuleIDs       []string `json:"rule_ids"`
+	CollectionIDs []string `json:"collection_ids"`
 	TargetAccount Account  `json:"target_account"`
 }
 
@@ -1051,6 +1196,7 @@ type Relationship struct {
 	BlockedBy           bool     `json:"blocked_by"`
 	Muting              bool     `json:"muting"`
 	MutingNotifications bool     `json:"muting_notifications"`
+	MutingExpiresAt     *string  `json:"muting_expires_at"`
 	Requested           bool     `json:"requested"`
 	RequestedBy         bool     `json:"requested_by"`
 	DomainBlocking      bool     `json:"domain_blocking"`
@@ -1147,6 +1293,7 @@ type Instance struct {
 	Contact          map[string]any      `json:"contact"`
 	Rules            []any               `json:"rules"`
 	APIVersions      map[string]int      `json:"api_versions,omitempty"`
+	Wrapstodon       any                 `json:"wrapstodon"`
 	Stats            map[string]string   `json:"-"`
 	URI              string              `json:"-"`
 	Email            string              `json:"email,omitempty"`
@@ -1239,11 +1386,12 @@ var mediaAttachmentMimeTypes = []string{
 }
 
 type Role struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Permissions string `json:"permissions"`
-	Color       string `json:"color"`
-	Highlighted bool   `json:"highlighted"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Permissions     string `json:"permissions"`
+	Color           string `json:"color"`
+	Highlighted     bool   `json:"highlighted"`
+	CollectionLimit int    `json:"collection_limit"`
 }
 
 type InitialStateServerSettings struct {
@@ -1460,6 +1608,8 @@ func CustomEmojiFromModel(cfg config.Config, emoji models.CustomEmoji) CustomEmo
 		VisibleInPicker: emoji.VisibleInPicker,
 	}
 	if emoji.Category.ID != 0 {
+		featured := emoji.Category.FeaturedEmojiID.Valid && emoji.Category.FeaturedEmojiID.Int64 == emoji.ID
+		out.Featured = &featured
 		if emoji.Category.Name.Valid {
 			category := emoji.Category.Name.String
 			out.Category = &category
@@ -1553,7 +1703,7 @@ func InstanceDomainBlockFromModel(block models.DomainBlock, withComment bool) In
 func ConversationFromModel(cfg config.Config, conversation models.AccountConversation, currentAccount *models.Account) Conversation {
 	accounts := make([]Account, 0, len(conversation.ParticipantAccounts))
 	for _, account := range conversation.ParticipantAccounts {
-		accounts = append(accounts, AccountFromModel(cfg, account))
+		accounts = append(accounts, AccountFromModelForCurrent(cfg, account, currentAccount))
 	}
 	var lastStatus *Status
 	if conversation.LastStatus != nil && conversation.LastStatus.ID != 0 {
@@ -1569,10 +1719,14 @@ func ConversationFromModel(cfg config.Config, conversation models.AccountConvers
 }
 
 func AccountFromModel(cfg config.Config, account models.Account) Account {
-	return accountFromModel(cfg, account, true)
+	return accountFromModel(cfg, account, true, nil)
 }
 
-func accountFromModel(cfg config.Config, account models.Account, includeMoved bool) Account {
+func AccountFromModelForCurrent(cfg config.Config, account models.Account, currentAccount *models.Account) Account {
+	return accountFromModel(cfg, account, true, currentAccount)
+}
+
+func accountFromModel(cfg config.Config, account models.Account, includeMoved bool, currentAccount *models.Account) Account {
 	stats := account.AccountStat
 	lastStatusAt := dateString(stats.LastStatusAt)
 
@@ -1586,7 +1740,7 @@ func accountFromModel(cfg config.Config, account models.Account, includeMoved bo
 	}
 	var moved *Account
 	if !suspended && includeMoved && account.MovedToAccount != nil && account.MovedToAccount.ID != 0 {
-		item := accountFromModel(cfg, *account.MovedToAccount, false)
+		item := accountFromModel(cfg, *account.MovedToAccount, false, currentAccount)
 		moved = &item
 	}
 	emojis := customEmojis(cfg, account.CustomEmojis)
@@ -1600,40 +1754,111 @@ func accountFromModel(cfg config.Config, account models.Account, includeMoved bo
 	if suspended {
 		discoverable = boolPtrIf(true, false)
 	}
+	var emailSubscriptions *bool
+	if account.EmailSubscriptionsVisible {
+		enabled := account.EmailSubscriptionsValue
+		emailSubscriptions = &enabled
+	}
 
 	return Account{
-		ID:              strconv.FormatInt(account.ID, 10),
-		Username:        account.Username,
-		Acct:            account.Acct(),
-		DisplayName:     emptyIf(suspended, account.DisplayName),
-		Locked:          !suspended && account.Locked,
-		Bot:             !suspended && account.ActorType.Valid && (account.ActorType.String == "Application" || account.ActorType.String == "Service"),
-		Discoverable:    discoverable,
-		Indexable:       !suspended && account.Indexable,
-		HideCollections: boolPtr(account.HideCollections),
-		Group:           account.ActorType.Valid && account.ActorType.String == "Group",
-		CreatedAt:       accountCreatedAt(account.CreatedAt),
-		Note:            emptyIf(suspended, accountBioHTML(cfg, account)),
-		URL:             accountURL(cfg, account),
-		URI:             accountURI(cfg, account),
-		Avatar:          accountAvatar(cfg, account, false),
-		AvatarStatic:    accountAvatar(cfg, account, true),
-		Header:          accountHeader(cfg, account, false),
-		HeaderStatic:    accountHeader(cfg, account, true),
-		FollowersCount:  stats.FollowersCount,
-		FollowingCount:  stats.FollowingCount,
-		StatusesCount:   stats.StatusesCount,
-		LastStatusAt:    lastStatusAt,
-		Moved:           moved,
-		Emojis:          emojis,
-		Fields:          fields,
-		Roles:           AccountRolesFromModel(account),
-		Local:           account.Local(),
-		Suspended:       boolPtrIf(suspended, suspended),
-		Limited:         boolPtrIf(limited, limited),
-		Memorial:        boolPtrIf(memorial, memorial),
-		NoIndex:         noIndex,
+		ID:                 strconv.FormatInt(account.ID, 10),
+		Username:           account.Username,
+		Acct:               account.Acct(),
+		DisplayName:        emptyIf(suspended, account.DisplayName),
+		Locked:             !suspended && account.Locked,
+		Bot:                !suspended && account.ActorType.Valid && (account.ActorType.String == "Application" || account.ActorType.String == "Service"),
+		Discoverable:       discoverable,
+		Indexable:          !suspended && account.Indexable,
+		HideCollections:    boolPtr(account.HideCollections),
+		Group:              account.ActorType.Valid && account.ActorType.String == "Group",
+		CreatedAt:          accountCreatedAt(account.CreatedAt),
+		Note:               emptyIf(suspended, accountBioHTML(cfg, account)),
+		URL:                accountURL(cfg, account),
+		URI:                accountURI(cfg, account),
+		Avatar:             accountAvatar(cfg, account, false),
+		AvatarStatic:       accountAvatar(cfg, account, true),
+		AvatarDescription:  emptyIf(suspended, account.AvatarDescription),
+		Header:             accountHeader(cfg, account, false),
+		HeaderStatic:       accountHeader(cfg, account, true),
+		HeaderDescription:  emptyIf(suspended, account.HeaderDescription),
+		FollowersCount:     stats.FollowersCount,
+		FollowingCount:     stats.FollowingCount,
+		StatusesCount:      stats.StatusesCount,
+		LastStatusAt:       lastStatusAt,
+		Moved:              moved,
+		Emojis:             emojis,
+		Fields:             fields,
+		Roles:              AccountRolesFromModel(account),
+		Local:              account.Local(),
+		Suspended:          boolPtrIf(suspended, suspended),
+		Limited:            boolPtrIf(limited, limited),
+		Memorial:           boolPtrIf(memorial, memorial),
+		NoIndex:            noIndex,
+		ShowMedia:          account.ShowMedia,
+		ShowMediaReplies:   account.ShowMediaReplies,
+		ShowFeatured:       account.ShowFeatured,
+		FeatureApproval:    accountFeatureApproval(account, currentAccount),
+		EmailSubscriptions: emailSubscriptions,
 	}
+}
+
+func accountFeatureApproval(account models.Account, currentAccount *models.Account) AccountFeatureApproval {
+	automatic := []string{}
+	manual := []string{}
+	if account.Local() {
+		if account.Discoverable.Valid && account.Discoverable.Bool {
+			if account.Locked {
+				automatic = []string{"followers"}
+			} else {
+				automatic = []string{"public"}
+			}
+		}
+	} else {
+		automatic = interactionPolicyKeyNames(account.FeatureApprovalPolicy >> 16)
+		manual = interactionPolicyKeyNames(account.FeatureApprovalPolicy & 0xffff)
+	}
+	current := "denied"
+	if account.FeaturePolicyCurrentUser != "" {
+		current = account.FeaturePolicyCurrentUser
+		return AccountFeatureApproval{Automatic: automatic, Manual: manual, CurrentUser: current}
+	}
+	if currentAccount != nil {
+		switch {
+		case currentAccount.ID == account.ID:
+			current = "automatic"
+		case stringSliceContains(automatic, "public"):
+			current = "automatic"
+		case stringSliceContains(manual, "public"):
+			current = "manual"
+		case account.FeatureApprovalPolicy == 0 && !account.Local():
+			current = "missing"
+		case stringSliceContains(automatic, "unsupported_policy") || stringSliceContains(manual, "unsupported_policy"):
+			current = "unknown"
+		}
+	}
+	return AccountFeatureApproval{Automatic: automatic, Manual: manual, CurrentUser: current}
+}
+
+func stringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func interactionPolicyKeyNames(value int) []string {
+	out := []string{}
+	for _, item := range []struct {
+		name string
+		flag int
+	}{{"unsupported_policy", 1 << 0}, {"public", 1 << 1}, {"followers", 1 << 2}, {"following", 1 << 3}, {"disabled", 1 << 4}} {
+		if value&item.flag != 0 {
+			out = append(out, item.name)
+		}
+	}
+	return out
 }
 
 func accountCreatedAt(createdAt time.Time) string {
@@ -1667,7 +1892,11 @@ func SuggestionFromModel(cfg config.Config, account models.Account, source strin
 	return SuggestionFromModelWithSources(cfg, account, []string{source})
 }
 
-func SuggestionFromModelWithSources(cfg config.Config, account models.Account, sources []string) Suggestion {
+func SuggestionFromModelWithSources(cfg config.Config, account models.Account, sources []string, currentAccounts ...*models.Account) Suggestion {
+	var current *models.Account
+	if len(currentAccounts) > 0 {
+		current = currentAccounts[0]
+	}
 	sources = append([]string(nil), sources...)
 	legacySource := "global"
 	if len(sources) > 0 {
@@ -1676,7 +1905,7 @@ func SuggestionFromModelWithSources(cfg config.Config, account models.Account, s
 	return Suggestion{
 		Source:  legacySource,
 		Sources: sources,
-		Account: AccountFromModel(cfg, account),
+		Account: AccountFromModelForCurrent(cfg, account, current),
 	}
 }
 
@@ -1697,8 +1926,59 @@ func CredentialAccountFromModel(cfg config.Config, account models.Account, user 
 	return CredentialAccountFromModelWithRole(cfg, account, user, followRequestsCount, nil, nil)
 }
 
+func ProfileFromModel(cfg config.Config, account models.Account, featuredTags []models.FeaturedTag) Profile {
+	var avatar, avatarStatic, header, headerStatic *string
+	if account.AvatarFileName.Valid && strings.TrimSpace(account.AvatarFileName.String) != "" {
+		value := accountAvatar(cfg, account, false)
+		staticValue := accountAvatar(cfg, account, true)
+		avatar, avatarStatic = &value, &staticValue
+	}
+	if account.HeaderFileName.Valid && strings.TrimSpace(account.HeaderFileName.String) != "" {
+		value := accountHeader(cfg, account, false)
+		staticValue := accountHeader(cfg, account, true)
+		header, headerStatic = &value, &staticValue
+	}
+	return Profile{
+		ID:                 strconv.FormatInt(account.ID, 10),
+		DisplayName:        account.DisplayName,
+		Note:               account.Note,
+		Fields:             sourceFieldsFromJSON(account.Fields),
+		FormattedNote:      accountBioHTML(cfg, account),
+		FormattedFields:    fieldsFromJSON(cfg, account),
+		Avatar:             avatar,
+		AvatarStatic:       avatarStatic,
+		AvatarDescription:  account.AvatarDescription,
+		Header:             header,
+		HeaderStatic:       headerStatic,
+		HeaderDescription:  account.HeaderDescription,
+		Locked:             account.Locked,
+		Bot:                account.ActorType.Valid && (account.ActorType.String == "Application" || account.ActorType.String == "Service"),
+		HideCollections:    boolPtr(account.HideCollections),
+		Discoverable:       boolPtr(account.Discoverable),
+		Indexable:          account.Indexable,
+		ShowMedia:          account.ShowMedia,
+		ShowMediaReplies:   account.ShowMediaReplies,
+		ShowFeatured:       account.ShowFeatured,
+		AttributionDomains: append([]string{}, account.AttributionDomains...),
+		FeaturedTags:       serializeFeaturedTagsFromModels(cfg, featuredTags),
+	}
+}
+
+func serializeFeaturedTagsFromModels(cfg config.Config, featuredTags []models.FeaturedTag) []FeaturedTag {
+	out := make([]FeaturedTag, 0, len(featuredTags))
+	for _, featured := range featuredTags {
+		out = append(out, FeaturedTagFromModel(cfg, featured))
+	}
+	return out
+}
+
 func CredentialAccountFromModelWithRole(cfg config.Config, account models.Account, user models.User, followRequestsCount int64, role *models.UserRole, everyone *models.UserRole) CredentialAccount {
-	base := AccountFromModel(cfg, account)
+	if account.Local() && (!account.Discoverable.Valid || !account.Discoverable.Bool) {
+		account.FeaturePolicyCurrentUser = "denied"
+	} else {
+		account.FeaturePolicyCurrentUser = "automatic"
+	}
+	base := AccountFromModelForCurrent(cfg, account, &account)
 	settings := userSettings(user)
 	var rolePayload any
 	if role != nil {
@@ -1757,14 +2037,18 @@ func repliesPolicyName(value int) string {
 	}
 }
 
-func MutedAccountFromModel(cfg config.Config, account models.Account, expiresAt sql.NullTime) MutedAccount {
+func MutedAccountFromModel(cfg config.Config, account models.Account, expiresAt sql.NullTime, currentAccounts ...*models.Account) MutedAccount {
+	var current *models.Account
+	if len(currentAccounts) > 0 {
+		current = currentAccounts[0]
+	}
 	var expires *string
 	if expiresAt.Valid && expiresAt.Time.After(time.Now().UTC()) {
 		value := restTimestamp(expiresAt.Time)
 		expires = &value
 	}
 	return MutedAccount{
-		Account:       AccountFromModel(cfg, account),
+		Account:       AccountFromModelForCurrent(cfg, account, current),
 		MuteExpiresAt: expires,
 	}
 }
@@ -1780,10 +2064,7 @@ func statusFromModel(cfg config.Config, status models.Status, currentAccount *mo
 	if status.Reblog != nil && status.Reblog.ID != 0 {
 		policyStatus = *status.Reblog
 	}
-	currentQuotePolicy := policyStatus.QuotePolicyCurrentUser
-	if currentQuotePolicy == "" {
-		currentQuotePolicy = "denied"
-	}
+	quoteApproval := paonPublicQuoteApproval(policyStatus, currentAccount)
 	item := Status{
 		ID:                 strconv.FormatInt(status.ID, 10),
 		CreatedAt:          restTimestamp(status.CreatedAt),
@@ -1802,20 +2083,17 @@ func statusFromModel(cfg config.Config, status models.Status, currentAccount *mo
 		QuotesCount:        statusStatCount(status.StatusStat.QuotesCount),
 		EditedAt:           timePtr(status.EditedAt),
 		Content:            statusContentHTML(cfg, status),
-		Account:            AccountFromModel(cfg, status.Account),
+		Account:            AccountFromModelForCurrent(cfg, status.Account, currentAccount),
 		Application:        statusApplicationFromModel(status, currentAccount),
 		ApplicationPresent: showStatusApplication(status, currentAccount),
 		MediaAttachments:   mediaAttachments(cfg, orderedStatusMediaAttachments(status)),
 		Mentions:           mentions(cfg, status.Mentions),
 		Tags:               tags(cfg, status.Tags),
 		Emojis:             customEmojis(cfg, status.CustomEmojis),
-		Card:               previewCardFromStatus(cfg, status),
+		Card:               previewCardFromStatus(cfg, status, currentAccount),
 		Poll:               PollFromModel(cfg, status.Poll, currentAccount),
-		QuoteApproval: StatusQuoteApproval{
-			Automatic:   quotePolicyKeyNames(policyStatus.QuoteApprovalPolicy >> 16),
-			Manual:      quotePolicyKeyNames(policyStatus.QuoteApprovalPolicy & 0xffff),
-			CurrentUser: currentQuotePolicy,
-		},
+		QuoteApproval:      quoteApproval,
+		TaggedCollections:  statusTaggedCollections(cfg, status.TaggedCollections),
 	}
 	item.Quote = quoteFromModel(cfg, status.Quote, currentAccount, shallow)
 
@@ -1842,6 +2120,30 @@ func statusFromModel(cfg config.Config, status models.Status, currentAccount *mo
 	}
 
 	return item
+}
+
+func statusTaggedCollections(cfg config.Config, collections []models.Collection) []Collection {
+	out := make([]Collection, 0, len(collections))
+	for _, collection := range collections {
+		out = append(out, CollectionFromModel(cfg, collection, collection.RESTTag, collection.RESTItems))
+	}
+	return out
+}
+
+// Paon deliberately does not implement Mastodon's quote approval gate. Public
+// and unlisted original posts are always quoteable, regardless of the bitmap
+// stored by Mastodon in the shared database. We keep the 4.5+ REST envelope so
+// clients can use the same payload shape on either application.
+func paonPublicQuoteApproval(status models.Status, currentAccount *models.Account) StatusQuoteApproval {
+	approval := StatusQuoteApproval{Automatic: []string{}, Manual: []string{}, CurrentUser: "denied"}
+	if status.ReblogOfID.Valid || status.Visibility > 1 {
+		return approval
+	}
+	approval.Automatic = []string{"public"}
+	if currentAccount != nil {
+		approval.CurrentUser = "automatic"
+	}
+	return approval
 }
 
 func statusInteractionCounts(status models.Status) (int64, int64) {
@@ -2006,7 +2308,11 @@ func StatusSourceFromModel(status models.Status) StatusSource {
 	}
 }
 
-func StatusEditFromModel(cfg config.Config, edit models.StatusEdit) StatusEdit {
+func StatusEditFromModel(cfg config.Config, edit models.StatusEdit, currentAccounts ...*models.Account) StatusEdit {
+	var current *models.Account
+	if len(currentAccounts) > 0 {
+		current = currentAccounts[0]
+	}
 	var sensitive *bool
 	if edit.Sensitive.Valid {
 		value := edit.Sensitive.Bool
@@ -2022,7 +2328,7 @@ func StatusEditFromModel(cfg config.Config, edit models.StatusEdit) StatusEdit {
 	}
 	var account *Account
 	if edit.AccountID.Valid && edit.Account.ID != 0 {
-		value := AccountFromModel(cfg, edit.Account)
+		value := AccountFromModelForCurrent(cfg, edit.Account, current)
 		account = &value
 	}
 	media := edit.OrderedMediaAttachments
@@ -2125,20 +2431,22 @@ type InstanceRegistrationOptions struct {
 }
 
 type InstanceMetadata struct {
-	Title             string
-	TitleSet          bool
-	ShortDescription  string
-	Description       string
-	ContactEmail      string
-	ContactAccount    *models.Account
-	Thumbnail         *models.SiteUpload
-	AppIcon           *models.SiteUpload
-	AppIconURLs       map[string]string
-	PreviewImageURL   string
-	Rules             []models.Rule
-	StatusPageURL     string
-	TermsOfServiceURL string
-	TimelinesAccess   map[string]any
+	Title                string
+	TitleSet             bool
+	ShortDescription     string
+	Description          string
+	ContactEmail         string
+	ContactAccount       *models.Account
+	Thumbnail            *models.SiteUpload
+	ThumbnailDescription string
+	AppIcon              *models.SiteUpload
+	AppIconURLs          map[string]string
+	PreviewImageURL      string
+	Rules                []models.Rule
+	StatusPageURL        string
+	TermsOfServiceURL    string
+	TimelinesAccess      map[string]any
+	Wrapstodon           any
 }
 
 func InstanceFromConfig(cfg config.Config, stats map[string]string) Instance {
@@ -2187,7 +2495,7 @@ func InstanceFromConfigWithOptions(cfg config.Config, stats map[string]string, r
 		Usage: map[string]any{
 			"users": map[string]any{"active_month": activeMonthValue},
 		},
-		Thumbnail: InstanceThumbnailFromSiteUpload(cfg, metadata.Thumbnail, metadata.PreviewImageURL),
+		Thumbnail: InstanceThumbnailFromSiteUpload(cfg, metadata.Thumbnail, metadata.PreviewImageURL, metadata.ThumbnailDescription),
 		Icon:      instanceIcons(cfg, metadata.AppIcon, metadata.AppIconURLs),
 		Languages: []string{cfg.Locale()},
 		Configuration: map[string]any{
@@ -2206,6 +2514,8 @@ func InstanceFromConfigWithOptions(cfg config.Config, stats map[string]string, r
 				"max_featured_tags":             10,
 				"max_pinned_statuses":           5,
 				"max_profile_fields":            4,
+				"profile_field_name_limit":      255,
+				"profile_field_value_limit":     255,
 			},
 			"vapid": map[string]any{
 				"public_key": optionalStringAny(cfg.VapidPublicKey),
@@ -2217,7 +2527,7 @@ func InstanceFromConfigWithOptions(cfg config.Config, stats map[string]string, r
 			},
 			"media_attachments": map[string]any{
 				"supported_mime_types":   append([]string{}, mediaAttachmentMimeTypes...),
-				"description_limit":      1_500,
+				"description_limit":      10_000,
 				"image_size_limit":       imageSizeLimit(cfg),
 				"image_matrix_limit":     matrixLimit(cfg),
 				"video_size_limit":       videoSizeLimit(cfg),
@@ -2249,7 +2559,8 @@ func InstanceFromConfigWithOptions(cfg config.Config, stats map[string]string, r
 			"account": contactAccount,
 		},
 		Rules:       InstanceRulesFromModels(metadata.Rules),
-		APIVersions: map[string]int{"mastodon": 7},
+		APIVersions: map[string]int{"mastodon": config.DefaultMastodonAPIVersion},
+		Wrapstodon:  metadata.Wrapstodon,
 		Stats:       stats,
 		URI:         cfg.LocalDomain,
 	}
@@ -2277,14 +2588,18 @@ func instanceIcons(cfg config.Config, appIcon *models.SiteUpload, fallbackURLs m
 	return out
 }
 
-func InstanceThumbnailFromSiteUpload(cfg config.Config, upload *models.SiteUpload, fallbackURL string) map[string]any {
+func InstanceThumbnailFromSiteUpload(cfg config.Config, upload *models.SiteUpload, fallbackURL string, description ...string) map[string]any {
 	if upload == nil || !upload.FileFileName.Valid || upload.FileFileName.String == "" {
-		return map[string]any{"url": fallbackPreviewImageURL(cfg, fallbackURL)}
+		return map[string]any{
+			"url":         fallbackPreviewImageURL(cfg, fallbackURL),
+			"description": "Two smiling cartoon mastodons (who look like elephants) toss a paper plane between them. They're surrounded by a bright blue sky and floating planets with trees and more mastodons on them.",
+		}
 	}
 	oneX := siteUploadAssetURL(cfg, upload.ID, "@1x", siteUploadStyleFilename(upload.Var, "@1x", upload.FileFileName.String))
 	twoX := siteUploadAssetURL(cfg, upload.ID, "@2x", siteUploadStyleFilename(upload.Var, "@2x", upload.FileFileName.String))
 	out := map[string]any{
-		"url": oneX,
+		"url":         oneX,
+		"description": firstString(description),
 		"versions": map[string]string{
 			"@1x": oneX,
 			"@2x": twoX,
@@ -2294,6 +2609,13 @@ func InstanceThumbnailFromSiteUpload(cfg config.Config, upload *models.SiteUploa
 		out["blurhash"] = upload.Blurhash.String
 	}
 	return out
+}
+
+func firstString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 func InstanceV1ThumbnailFromSiteUpload(cfg config.Config, upload *models.SiteUpload, fallbackURL string) string {
@@ -2434,7 +2756,7 @@ func MediaAttachmentFromModel(cfg config.Config, attachment models.MediaAttachme
 	return items[0]
 }
 
-func PreviewCardFromModel(cfg config.Config, card models.PreviewCard) PreviewCard {
+func PreviewCardFromModel(cfg config.Config, card models.PreviewCard, currentAccounts ...*models.Account) PreviewCard {
 	authors := []PreviewCardAuthor{}
 	if card.AuthorName != "" || card.AuthorURL != "" || card.AuthorAccountID.Valid {
 		var authorAccount *Account
@@ -2444,25 +2766,31 @@ func PreviewCardFromModel(cfg config.Config, card models.PreviewCard) PreviewCar
 		}
 		authors = append(authors, PreviewCardAuthor{Name: card.AuthorName, URL: card.AuthorURL, Account: authorAccount})
 	}
+	var missingAttribution *bool
+	if len(currentAccounts) > 0 && currentAccounts[0] != nil {
+		missing := card.UnverifiedAuthorAccountID.Valid && card.UnverifiedAuthorAccountID.Int64 == currentAccounts[0].ID
+		missingAttribution = &missing
+	}
 	return PreviewCard{
-		URL:              card.URL,
-		Title:            card.Title,
-		Description:      card.Description,
-		Language:         stringPtr(card.Language),
-		Type:             previewCardType(card.Type),
-		AuthorName:       card.AuthorName,
-		AuthorURL:        card.AuthorURL,
-		ProviderName:     card.ProviderName,
-		ProviderURL:      card.ProviderURL,
-		HTML:             sanitizePreviewCardOEmbedHTML(card.HTML),
-		Width:            card.Width,
-		Height:           card.Height,
-		Image:            previewCardImageURL(cfg, card),
-		ImageDescription: card.ImageDescription,
-		EmbedURL:         card.EmbedURL,
-		Blurhash:         stringPtr(card.Blurhash),
-		PublishedAt:      timePtr(card.PublishedAt),
-		Authors:          authors,
+		URL:                card.URL,
+		Title:              card.Title,
+		Description:        card.Description,
+		Language:           stringPtr(card.Language),
+		Type:               previewCardType(card.Type),
+		AuthorName:         card.AuthorName,
+		AuthorURL:          card.AuthorURL,
+		ProviderName:       card.ProviderName,
+		ProviderURL:        card.ProviderURL,
+		HTML:               sanitizePreviewCardOEmbedHTML(card.HTML),
+		Width:              card.Width,
+		Height:             card.Height,
+		Image:              previewCardImageURL(cfg, card),
+		ImageDescription:   card.ImageDescription,
+		EmbedURL:           card.EmbedURL,
+		Blurhash:           stringPtr(card.Blurhash),
+		PublishedAt:        timePtr(card.PublishedAt),
+		Authors:            authors,
+		MissingAttribution: missingAttribution,
 	}
 }
 
@@ -2640,7 +2968,7 @@ func ScheduledStatusFromModel(cfg config.Config, status models.ScheduledStatus) 
 	// strings, so accept both forms to keep the shared PostgreSQL schema
 	// drop-in compatible in either direction.
 	params["quoted_status_id"] = scheduledStatusQuotedStatusID(params["quoted_status_id"])
-	params["quote_approval_policy"] = scheduledStatusQuoteApprovalPolicy(params["quote_approval_policy"])
+	params["quote_approval_policy"] = scheduledStatusQuoteApprovalPolicy(params["visibility"])
 	var scheduledAt *string
 	if status.ScheduledAt.Valid {
 		value := restTimestamp(status.ScheduledAt.Time)
@@ -2669,43 +2997,14 @@ func scheduledStatusQuotedStatusID(value any) any {
 	return nil
 }
 
-func scheduledStatusQuoteApprovalPolicy(value any) string {
-	if text, ok := value.(string); ok {
-		text = strings.TrimSpace(text)
-		switch text {
-		case "public", "followers", "nobody", "unsupported_policy", "following":
-			return text
-		}
-		if parsed, err := strconv.ParseInt(text, 10, 64); err == nil {
-			return scheduledStatusQuoteApprovalPolicyFromBits(parsed)
-		}
-		return "nobody"
-	}
-	if number, ok := value.(float64); ok {
-		integer := int64(number)
-		if float64(integer) == number {
-			return scheduledStatusQuoteApprovalPolicyFromBits(integer)
+func scheduledStatusQuoteApprovalPolicy(visibility any) string {
+	if text, ok := visibility.(string); ok {
+		switch strings.TrimSpace(text) {
+		case "private", "direct":
+			return "nobody"
 		}
 	}
-	return "nobody"
-}
-
-func scheduledStatusQuoteApprovalPolicyFromBits(value int64) string {
-	automatic := value >> 16
-	for _, item := range []struct {
-		name string
-		flag int64
-	}{
-		{"unsupported_policy", 1 << 0},
-		{"public", 1 << 1},
-		{"followers", 1 << 2},
-		{"following", 1 << 3},
-	} {
-		if automatic&item.flag != 0 {
-			return item.name
-		}
-	}
-	return "nobody"
+	return "public"
 }
 
 func NotificationFromModel(cfg config.Config, notification models.Notification, currentAccount *models.Account) Notification {
@@ -2718,7 +3017,7 @@ func NotificationFromModel(cfg config.Config, notification models.Notification, 
 		Type:      notification.ResolvedType(),
 		CreatedAt: restTimestamp(notification.CreatedAt),
 		GroupKey:  groupKey,
-		Account:   AccountFromModel(cfg, notification.FromAccount),
+		Account:   AccountFromModelForCurrent(cfg, notification.FromAccount, currentAccount),
 	}
 	if notification.Filtered {
 		filtered := true
@@ -2729,7 +3028,7 @@ func NotificationFromModel(cfg config.Config, notification models.Notification, 
 		item.Status = &status
 	}
 	if notification.ResolvedType() == "admin.report" && notification.Report != nil && notification.Report.ID != 0 {
-		item.Report = ReportFromModel(cfg, *notification.Report)
+		item.Report = ReportFromModel(cfg, *notification.Report, currentAccount)
 	}
 	if notification.ResolvedType() == "severed_relationships" && notification.SeveranceEvent != nil {
 		event := AccountRelationshipSeveranceEventFromModel(*notification.SeveranceEvent)
@@ -2802,7 +3101,11 @@ func notificationStatusType(kind string) bool {
 	}
 }
 
-func ReportFromModel(cfg config.Config, report models.Report) Report {
+func ReportFromModel(cfg config.Config, report models.Report, currentAccounts ...*models.Account) Report {
+	var current *models.Account
+	if len(currentAccounts) > 0 {
+		current = currentAccounts[0]
+	}
 	return Report{
 		ID:            strconv.FormatInt(report.ID, 10),
 		ActionTaken:   report.ActionTakenAt.Valid,
@@ -2813,7 +3116,8 @@ func ReportFromModel(cfg config.Config, report models.Report) Report {
 		CreatedAt:     restTimestamp(report.CreatedAt),
 		StatusIDs:     int64Strings(report.StatusIDs),
 		RuleIDs:       int64Strings(report.RuleIDs),
-		TargetAccount: AccountFromModel(cfg, report.TargetAccount),
+		CollectionIDs: int64Strings(report.CollectionIDs),
+		TargetAccount: AccountFromModelForCurrent(cfg, report.TargetAccount, current),
 	}
 }
 
@@ -3154,11 +3458,12 @@ func mediaAttachmentAcceptContentTypes() []string {
 
 func RoleFromModel(role models.UserRole, everyone *models.UserRole) *Role {
 	return &Role{
-		ID:          strconv.FormatInt(role.ID, 10),
-		Name:        role.Name,
-		Permissions: strconv.FormatInt(computedRolePermissions(role, everyone), 10),
-		Color:       role.Color,
-		Highlighted: role.Highlighted,
+		ID:              strconv.FormatInt(role.ID, 10),
+		Name:            role.Name,
+		Permissions:     strconv.FormatInt(computedRolePermissions(role, everyone), 10),
+		Color:           role.Color,
+		Highlighted:     role.Highlighted,
+		CollectionLimit: role.CollectionLimit,
 	}
 }
 
@@ -4220,12 +4525,12 @@ func mediaAttachmentsSortedByID(attachments []models.MediaAttachment) []models.M
 	return out
 }
 
-func previewCardFromStatus(cfg config.Config, status models.Status) any {
+func previewCardFromStatus(cfg config.Config, status models.Status, currentAccounts ...*models.Account) any {
 	card, ok := status.FirstPreviewCard()
 	if !ok {
 		return nil
 	}
-	return PreviewCardFromModel(cfg, card)
+	return PreviewCardFromModel(cfg, card, currentAccounts...)
 }
 
 func previewCardType(value int) string {

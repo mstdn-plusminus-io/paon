@@ -44,6 +44,8 @@ type notificationGroupEntity struct {
 	Event                    *serializer.AccountRelationshipSeveranceEvent `json:"event,omitempty"`
 	ModerationWarning        *serializer.AccountWarning                    `json:"moderation_warning,omitempty"`
 	AnnualReport             *annualReportEventEntity                      `json:"annual_report,omitempty"`
+	Fallback                 *serializer.NotificationFallback              `json:"fallback,omitempty"`
+	Collection               *serializer.Collection                        `json:"collection,omitempty"`
 }
 
 type annualReportEventEntity struct {
@@ -51,13 +53,14 @@ type annualReportEventEntity struct {
 }
 
 type partialNotificationAccount struct {
-	ID           string `json:"id"`
-	Acct         string `json:"acct"`
-	Locked       bool   `json:"locked"`
-	Bot          bool   `json:"bot"`
-	URL          string `json:"url"`
-	Avatar       string `json:"avatar"`
-	AvatarStatic string `json:"avatar_static"`
+	ID                string `json:"id"`
+	Acct              string `json:"acct"`
+	Locked            bool   `json:"locked"`
+	Bot               bool   `json:"bot"`
+	URL               string `json:"url"`
+	Avatar            string `json:"avatar"`
+	AvatarStatic      string `json:"avatar_static"`
+	AvatarDescription string `json:"avatar_description"`
 }
 
 func (s *Server) groupedNotifications(c *echo.Context) error {
@@ -78,7 +81,7 @@ func (s *Server) groupedNotifications(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	groups, accounts, statuses, err := s.notificationGroupEnvelope(account, rows, notifications, notificationGroupPageRange(c, rows, pageLimit))
+	groups, accounts, statuses, err := s.notificationGroupEnvelope(c, account, rows, notifications, notificationGroupPageRange(c, rows, pageLimit))
 	if err != nil {
 		return err
 	}
@@ -128,7 +131,7 @@ func (s *Server) showGroupedNotification(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	groups, accounts, statuses, err := s.notificationGroupEnvelope(account, rows, notifications, nil)
+	groups, accounts, statuses, err := s.notificationGroupEnvelope(c, account, rows, notifications, nil)
 	if err != nil {
 		return err
 	}
@@ -171,7 +174,7 @@ func (s *Server) groupedNotificationAccounts(c *echo.Context) error {
 		if err := s.hydrateAccountCustomEmojis(&notifications[i].FromAccount); err != nil {
 			return err
 		}
-		out = append(out, serializer.AccountFromModel(s.cfg, notifications[i].FromAccount))
+		out = append(out, s.serializeAccountForCurrent(notifications[i].FromAccount, account))
 	}
 	if len(notifications) > 0 {
 		c.Response().Header().Set("Link", paginationLink(c, notifications[0].ID, notifications[len(notifications)-1].ID))
@@ -284,7 +287,10 @@ func (s *Server) notificationsForGroupRows(account *models.Account, rows []notif
 	if err := s.hydrateNotificationSpecialEvents(ordered); err != nil {
 		return nil, err
 	}
-	if err := s.hydrateNotificationAccounts(ordered); err != nil {
+	if err := s.hydrateNotificationCollections(ordered); err != nil {
+		return nil, err
+	}
+	if err := s.hydrateNotificationAccounts(ordered, account); err != nil {
 		return nil, err
 	}
 	if err := s.hydrateNotificationStatusRelationships(ordered, account); err != nil {
@@ -335,7 +341,7 @@ func notificationGroupPageRange(c *echo.Context, rows []notificationGroupRow, pa
 	return page
 }
 
-func (s *Server) notificationGroupEnvelope(account *models.Account, rows []notificationGroupRow, notifications []models.Notification, pageRange *notificationPageRange) ([]notificationGroupEntity, []serializer.Account, []serializer.Status, error) {
+func (s *Server) notificationGroupEnvelope(c *echo.Context, account *models.Account, rows []notificationGroupRow, notifications []models.Notification, pageRange *notificationPageRange) ([]notificationGroupEntity, []serializer.Account, []serializer.Status, error) {
 	notificationsByID := make(map[int64]models.Notification, len(notifications))
 	for _, notification := range notifications {
 		notificationsByID[notification.ID] = notification
@@ -375,7 +381,7 @@ func (s *Server) notificationGroupEnvelope(account *models.Account, rows []notif
 			}
 			entity.SampleAccountIDs = append(entity.SampleAccountIDs, strconv.FormatInt(samples[i].ID, 10))
 			if _, exists := accountsByID[samples[i].ID]; !exists {
-				accountsByID[samples[i].ID] = serializer.AccountFromModel(s.cfg, samples[i])
+				accountsByID[samples[i].ID] = s.serializeAccountForCurrent(samples[i], account)
 				accountOrder = append(accountOrder, samples[i].ID)
 			}
 		}
@@ -388,7 +394,7 @@ func (s *Server) notificationGroupEnvelope(account *models.Account, rows []notif
 			}
 		}
 		if notification.Report != nil {
-			report := serializer.ReportFromModel(s.cfg, *notification.Report)
+			report := serializer.ReportFromModel(s.cfg, *notification.Report, account)
 			entity.Report = &report
 		}
 		if notification.SeveranceEvent != nil {
@@ -402,6 +408,15 @@ func (s *Server) notificationGroupEnvelope(account *models.Account, rows []notif
 		if notification.AnnualReport != nil {
 			entity.AnnualReport = &annualReportEventEntity{Year: strconv.Itoa(notification.AnnualReport.Year)}
 		}
+		if notification.TargetCollection != nil {
+			resource, err := s.collectionResource(*notification.TargetCollection, account)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			collection := serializer.CollectionFromModel(s.cfg, resource.Collection, resource.Tag, resource.Items)
+			entity.Collection = &collection
+		}
+		entity.Fallback = s.notificationFallback(c, notification, samples)
 		groups = append(groups, entity)
 	}
 	accounts := make([]serializer.Account, 0, len(accountOrder))
@@ -484,7 +499,7 @@ func ungroupedNotificationID(groupKey string) (int64, bool) {
 }
 
 func notificationV2PaginationLink(c *echo.Context, first int64, last int64) string {
-	return paginationLinkWithAllowedParams(c, first, last, "min_id", true, true, []string{"limit", "include_filtered", "types[]", "exclude_types[]", "grouped_types[]"})
+	return paginationLinkWithAllowedParams(c, first, last, "min_id", true, true, []string{"limit", "include_filtered", "types[]", "exclude_types[]", "grouped_types[]", "supported_types[]", "supported_types"})
 }
 
 func notificationPartialAvatarAccounts(groups []notificationGroupEntity, accounts []serializer.Account) ([]serializer.Account, []partialNotificationAccount) {
@@ -526,7 +541,7 @@ func notificationPartialAvatarAccounts(groups []notificationGroupEntity, account
 			partialIDs[id] = struct{}{}
 			partial = append(partial, partialNotificationAccount{
 				ID: account.ID, Acct: account.Acct, Locked: account.Locked, Bot: account.Bot,
-				URL: account.URL, Avatar: account.Avatar, AvatarStatic: account.AvatarStatic,
+				URL: account.URL, Avatar: account.Avatar, AvatarStatic: account.AvatarStatic, AvatarDescription: account.AvatarDescription,
 			})
 		}
 	}
@@ -604,6 +619,7 @@ type notificationPolicyV2 struct {
 	ForNewAccounts     string                    `json:"for_new_accounts"`
 	ForPrivateMentions string                    `json:"for_private_mentions"`
 	ForLimitedAccounts string                    `json:"for_limited_accounts"`
+	ForBots            string                    `json:"for_bots"`
 	Summary            notificationPolicySummary `json:"summary"`
 }
 
@@ -612,6 +628,7 @@ type notificationPolicyV1 struct {
 	FilterNotFollowers    bool                      `json:"filter_not_followers"`
 	FilterNewAccounts     bool                      `json:"filter_new_accounts"`
 	FilterPrivateMentions bool                      `json:"filter_private_mentions"`
+	FilterBots            bool                      `json:"filter_bots"`
 	Summary               notificationPolicySummary `json:"summary"`
 }
 
@@ -671,6 +688,7 @@ func (s *Server) notificationPolicy(c *echo.Context, update bool, legacy bool) e
 			FilterNotFollowers:    policy.ForNotFollowers != 0,
 			FilterNewAccounts:     policy.ForNewAccounts != 0,
 			FilterPrivateMentions: policy.ForPrivateMentions != 0,
+			FilterBots:            policy.ForBots != 0,
 			Summary:               summary,
 		})
 	}
@@ -678,6 +696,7 @@ func (s *Server) notificationPolicy(c *echo.Context, update bool, legacy bool) e
 		ForNotFollowing: notificationPolicyActionName(policy.ForNotFollowing), ForNotFollowers: notificationPolicyActionName(policy.ForNotFollowers),
 		ForNewAccounts: notificationPolicyActionName(policy.ForNewAccounts), ForPrivateMentions: notificationPolicyActionName(policy.ForPrivateMentions),
 		ForLimitedAccounts: notificationPolicyActionName(policy.ForLimitedAccounts), Summary: summary,
+		ForBots: notificationPolicyActionName(policy.ForBots),
 	})
 }
 
@@ -701,6 +720,7 @@ func updateNotificationPolicyFromRequest(c *echo.Context, policy *models.Notific
 		}{
 			{"filter_not_following", &policy.ForNotFollowing}, {"filter_not_followers", &policy.ForNotFollowers},
 			{"filter_new_accounts", &policy.ForNewAccounts}, {"filter_private_mentions", &policy.ForPrivateMentions},
+			{"filter_bots", &policy.ForBots},
 		}
 		for _, field := range fields {
 			if value := oauthRawParamValue(c, field.name); value != "" {
@@ -720,6 +740,7 @@ func updateNotificationPolicyFromRequest(c *echo.Context, policy *models.Notific
 		{"for_not_following", &policy.ForNotFollowing}, {"for_not_followers", &policy.ForNotFollowers},
 		{"for_new_accounts", &policy.ForNewAccounts}, {"for_private_mentions", &policy.ForPrivateMentions},
 		{"for_limited_accounts", &policy.ForLimitedAccounts},
+		{"for_bots", &policy.ForBots},
 	}
 	for _, field := range fields {
 		value := oauthRawParamValue(c, field.name)
@@ -859,7 +880,7 @@ func (s *Server) serializeNotificationRequests(requests []models.NotificationReq
 		}
 		out = append(out, notificationRequestEntity{
 			ID: strconv.FormatInt(requests[i].ID, 10), CreatedAt: requests[i].CreatedAt.UTC().Format(time.RFC3339Nano), UpdatedAt: requests[i].UpdatedAt.UTC().Format(time.RFC3339Nano),
-			NotificationsCount: strconv.FormatInt(requests[i].NotificationsCount, 10), Account: serializer.AccountFromModel(s.cfg, requests[i].FromAccount), LastStatus: lastStatus,
+			NotificationsCount: strconv.FormatInt(requests[i].NotificationsCount, 10), Account: s.serializeAccountForCurrent(requests[i].FromAccount, account), LastStatus: lastStatus,
 		})
 	}
 	return out, nil

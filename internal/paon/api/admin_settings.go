@@ -393,12 +393,13 @@ func adminSettingsBrandingHTML(settings adminBrandingSettings, notice string, er
 	title := adminT(loc, "admin.settings.branding.title", "Branding")
 	landingPage := normalizeLandingPage(settings.LandingPage)
 	var landingOptions strings.Builder
-	for _, page := range []string{"trends", "about", "local_feed"} {
+	for _, page := range []string{"overview", "trends", "about", "local_feed"} {
 		selected := ""
 		if page == landingPage {
 			selected = " selected"
 		}
 		label := map[string]string{
+			"overview":   adminT(loc, "admin.settings.landing_page.values.overview", "Overview"),
 			"trends":     adminT(loc, "admin.settings.landing_page.values.trends", "Trending content"),
 			"about":      adminT(loc, "admin.settings.landing_page.values.about", "About this server"),
 			"local_feed": adminT(loc, "admin.settings.landing_page.values.local_feed", "Local feed"),

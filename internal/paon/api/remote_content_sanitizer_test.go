@@ -35,6 +35,15 @@ func TestSanitizeRemoteNoteContentPreservesAllowedTags(t *testing.T) {
 	}
 }
 
+func TestMastodon46SanitizerPreservesLangOnAllAllowedElements(t *testing.T) {
+	out := sanitizeRemoteNoteContent(`<p lang="ja" class="h-entry bad"><span lang="en">hello</span><a lang="fr" href="https://example.test">lien</a><strong lang="de">text</strong></p>`)
+	for _, want := range []string{`<p lang="ja" class="h-entry">`, `<span lang="en">`, `<a href="https://example.test" lang="fr"`, `<strong lang="de">`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("sanitized content missing %q: %s", want, out)
+		}
+	}
+}
+
 func TestSanitizeRemoteNoteContentAppliesRailsClassAndElementAllowlist(t *testing.T) {
 	in := `<p><span class="invisible bad p-name e-content">x</span><img src="https://x.example/emoji.png" alt=":x:"><a href="https://x.example" class="mention bad u-url" translate="no" title="x">link</a><div>block</div></p>`
 	out := sanitizeRemoteNoteContent(in)

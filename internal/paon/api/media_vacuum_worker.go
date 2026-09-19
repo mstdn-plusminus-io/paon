@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"gorm.io/gorm"
 )
 
 const (
@@ -38,7 +39,16 @@ func (s *Server) vacuumMediaAttachments(ctx context.Context, now time.Time) int 
 	return cleaned
 }
 
-func (s *Server) vacuumCachedRemoteMediaAttachments(ctx context.Context, now time.Time) int {
+func (s *Server) vacuumMediaAttachmentsKeepingInteractions(ctx context.Context, now time.Time) int {
+	if s == nil || s.db == nil {
+		return 0
+	}
+	cleaned := s.vacuumOrphanedMediaAttachments(ctx, now.Add(-orphanedMediaAttachmentTTL))
+	cleaned += s.vacuumCachedRemoteMediaAttachments(ctx, now, true)
+	return cleaned
+}
+
+func (s *Server) vacuumCachedRemoteMediaAttachments(ctx context.Context, now time.Time, keepInteractedValues ...bool) int {
 	days, ok := s.mediaCacheRetentionDays()
 	if !ok {
 		return 0
@@ -46,13 +56,18 @@ func (s *Server) vacuumCachedRemoteMediaAttachments(ctx context.Context, now tim
 	cutoff := now.Add(-time.Duration(days) * 24 * time.Hour)
 	cleaned := 0
 	lastID := int64(0)
+	keepInteracted := len(keepInteractedValues) > 0 && keepInteractedValues[0]
 	for {
 		var attachments []models.MediaAttachment
-		if err := s.db.WithContext(ctx).
+		query := s.db.WithContext(ctx).
 			Where("id > ?", lastID).
 			Where("remote_url <> ''").
 			Where("file_file_name IS NOT NULL").
-			Where("created_at < ? AND updated_at < ?", cutoff, cutoff).
+			Where("created_at < ? AND updated_at < ?", cutoff, cutoff)
+		if keepInteracted {
+			query = mediaAttachmentsWithoutLocalInteraction(query)
+		}
+		if err := query.
 			Order("id ASC").
 			Limit(mediaVacuumBatchSize).
 			Find(&attachments).Error; err != nil {
@@ -75,6 +90,40 @@ func (s *Server) vacuumCachedRemoteMediaAttachments(ctx context.Context, now tim
 			cleaned++
 		}
 	}
+}
+
+func mediaAttachmentsWithoutLocalInteraction(query *gorm.DB) *gorm.DB {
+	return query.
+		Where(`NOT EXISTS (
+			SELECT 1 FROM favourites
+			JOIN accounts ON accounts.id = favourites.account_id
+			WHERE favourites.status_id = media_attachments.status_id AND accounts.domain IS NULL
+		)`).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM bookmarks WHERE bookmarks.status_id = media_attachments.status_id
+		)`).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM statuses interactions
+			JOIN accounts ON accounts.id = interactions.account_id
+			WHERE interactions.in_reply_to_id = media_attachments.status_id AND accounts.domain IS NULL
+		)`).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM statuses interactions
+			JOIN accounts ON accounts.id = interactions.account_id
+			WHERE interactions.reblog_of_id = media_attachments.status_id AND accounts.domain IS NULL
+		)`).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM quotes
+			JOIN statuses interactions ON interactions.id = quotes.status_id
+			JOIN accounts ON accounts.id = interactions.account_id
+			WHERE quotes.quoted_status_id = media_attachments.status_id AND accounts.domain IS NULL
+		)`).
+		Where(`NOT EXISTS (
+			SELECT 1 FROM quotes
+			JOIN statuses interacted ON interacted.id = quotes.quoted_status_id
+			JOIN accounts ON accounts.id = interacted.account_id
+			WHERE quotes.status_id = media_attachments.status_id AND accounts.domain IS NULL
+		)`)
 }
 
 func (s *Server) vacuumOrphanedMediaAttachments(ctx context.Context, cutoff time.Time) int {

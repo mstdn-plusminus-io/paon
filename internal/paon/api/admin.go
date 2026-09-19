@@ -50,6 +50,7 @@ var (
 	adminReportsPaginationParams = []string{
 		"limit",
 		"resolved",
+		"unresolved",
 		"account_id",
 		"target_account_id",
 	}
@@ -1305,7 +1306,11 @@ func queryParamPresent(c *echo.Context, key string) bool {
 
 func (s *Server) adminReportQuery(c *echo.Context) *gorm.DB {
 	query := s.adminReportBaseQuery()
-	if queryParamPresent(c, "resolved") {
+	resolved := truthy(c.QueryParam("resolved"))
+	unresolved := truthy(c.QueryParam("unresolved"))
+	if resolved && unresolved {
+		// Mastodon 4.6 treats both flags together as an explicit request for all reports.
+	} else if resolved {
 		query = query.Where("reports.action_taken_at IS NOT NULL")
 	} else {
 		query = query.Where("reports.action_taken_at IS NULL")
@@ -1334,6 +1339,9 @@ func (s *Server) adminReportBaseQuery() *gorm.DB {
 func (s *Server) loadAdminReport(id string) (*models.Report, error) {
 	var report models.Report
 	if err := s.adminReportBaseQuery().Where("reports.id = ?", id).First(&report).Error; err != nil {
+		return nil, err
+	}
+	if err := s.hydrateReportCollectionIDs(&report); err != nil {
 		return nil, err
 	}
 	return &report, nil

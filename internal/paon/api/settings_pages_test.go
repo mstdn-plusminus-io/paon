@@ -269,7 +269,7 @@ func TestSettingsTwoFactorMethodsHTMLRendersExistingActions(t *testing.T) {
 		ID:        7,
 		Nickname:  "YubiKey",
 		CreatedAt: time.Date(2026, 6, 20, 1, 2, 3, 0, time.UTC),
-	}}, "en")
+	}}, false, "en")
 	for _, want := range []string{
 		`href="/settings/two_factor_authentication/recovery_codes"`,
 		`href="/settings/two_factor_authentication_methods/disable"`,
@@ -284,6 +284,16 @@ func TestSettingsTwoFactorMethodsHTMLRendersExistingActions(t *testing.T) {
 	}
 	if strings.Contains(html, `account-security__tabs`) {
 		t.Fatalf("two factor html must not add non-Rails content tabs: %s", html)
+	}
+}
+
+func TestMastodon46RequiredTwoFactorCannotBeDisabled(t *testing.T) {
+	html := settingsTwoFactorMethodsHTML(models.User{OTPRequiredForLogin: true}, nil, true, "en")
+	if strings.Contains(html, `href="/settings/two_factor_authentication_methods/disable"`) {
+		t.Fatalf("role-required 2FA rendered the disable action: %s", html)
+	}
+	if !strings.Contains(html, "requires two-factor authentication") {
+		t.Fatalf("role-required 2FA omitted its explanation: %s", html)
 	}
 }
 

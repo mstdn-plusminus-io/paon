@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
 func TestMastodon44AnnualReportShowAndReadRoutes(t *testing.T) {
@@ -28,7 +30,7 @@ func TestAnnualReportShowScopesYearToCurrentAccountAndHydratesReferences(t *test
 	}
 	body := functionBody(t, src, "annualReport")
 	for _, want := range []string{
-		`requireAccountScope(c, "write", "write:accounts")`,
+		`requireAccountScope(c, "read", "read:accounts")`,
 		`Where("account_id = ? AND year = ?", account.ID, year)`,
 		`annualReportReferencedIDs`,
 		`annualReportAccounts`,
@@ -37,5 +39,17 @@ func TestAnnualReportShowScopesYearToCurrentAccountAndHydratesReferences(t *test
 		if !strings.Contains(body, want) {
 			t.Fatalf("annualReport missing %q", want)
 		}
+	}
+}
+
+func TestMastodon46SchemaTwoAnnualReportReferencesItsOwner(t *testing.T) {
+	accounts, statuses := annualReportReferencedIDs([]models.GeneratedAnnualReport{
+		{AccountID: 42, SchemaVersion: 2, Data: models.JSONValue(`{"top_statuses":{"by_reblogs":"99","by_favourites":null,"by_replies":null}}`)},
+	})
+	if len(accounts) != 1 || accounts[0] != 42 {
+		t.Fatalf("schema 2 account ids = %#v", accounts)
+	}
+	if len(statuses) != 1 || statuses[0] != 99 {
+		t.Fatalf("schema 2 status ids = %#v", statuses)
 	}
 }

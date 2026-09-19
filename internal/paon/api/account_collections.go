@@ -32,7 +32,7 @@ func (s *Server) blocks(c *echo.Context) error {
 	for _, row := range rows {
 		out = append(out, accountCollectionItem{ID: row.ID, Account: row.TargetAccount})
 	}
-	return s.accountCollectionResponse(c, out, limitValue)
+	return s.accountCollectionResponse(c, out, limitValue, account)
 }
 
 func (s *Server) mutes(c *echo.Context) error {
@@ -50,8 +50,15 @@ func (s *Server) mutes(c *echo.Context) error {
 	}
 
 	out := make([]serializer.MutedAccount, 0, len(rows))
+	accounts := make([]*models.Account, 0, len(rows))
+	for i := range rows {
+		accounts = append(accounts, &rows[i].TargetAccount)
+	}
+	if err := s.hydrateAccountFeaturePolicies(accounts, account); err != nil {
+		return err
+	}
 	for _, row := range rows {
-		out = append(out, serializer.MutedAccountFromModel(s.cfg, row.TargetAccount, row.ExpiresAt))
+		out = append(out, serializer.MutedAccountFromModel(s.cfg, row.TargetAccount, row.ExpiresAt, account))
 	}
 	if len(rows) > 0 {
 		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, rows[0].ID, rows[len(rows)-1].ID, "since_id", len(rows) == limitValue))
@@ -78,7 +85,7 @@ func accountCollectionQuery(c *echo.Context, query *gorm.DB, table string, accou
 	return query.Order(table + ".id DESC").Limit(limitValue)
 }
 
-func (s *Server) accountCollectionResponse(c *echo.Context, rows []accountCollectionItem, limitValue int) error {
+func (s *Server) accountCollectionResponse(c *echo.Context, rows []accountCollectionItem, limitValue int, current *models.Account) error {
 	accounts := make([]models.Account, 0, len(rows))
 	for _, row := range rows {
 		accounts = append(accounts, row.Account)
@@ -86,5 +93,5 @@ func (s *Server) accountCollectionResponse(c *echo.Context, rows []accountCollec
 	if len(rows) > 0 {
 		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, rows[0].ID, rows[len(rows)-1].ID, "since_id", len(rows) == limitValue))
 	}
-	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
+	return c.JSON(http.StatusOK, s.serializeAccounts(accounts, current))
 }

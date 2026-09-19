@@ -526,6 +526,7 @@ func purgeAccountDeletionExtraAssociations(database *gorm.DB, accountIDs *gorm.D
 		"account_migrations",
 		"account_conversations",
 		"custom_filters",
+		"collections",
 		"lists",
 		"report_notes",
 		"tag_follows",
@@ -538,6 +539,9 @@ func purgeAccountDeletionExtraAssociations(database *gorm.DB, accountIDs *gorm.D
 		return err
 	}
 	if destroyRows {
+		if err := database.Exec("DELETE FROM collection_items WHERE account_id IN (?)", accountIDs).Error; err != nil {
+			return err
+		}
 		if err := database.Exec("DELETE FROM account_moderation_notes WHERE target_account_id IN (?)", accountIDs).Error; err != nil {
 			return err
 		}

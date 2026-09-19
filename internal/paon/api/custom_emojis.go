@@ -11,6 +11,7 @@ import (
 )
 
 func (s *Server) hydrateAccountCustomEmojis(account *models.Account) error {
+	s.hydrateAccountEmailSubscriptions([]*models.Account{account})
 	return s.hydrateAccountCustomEmojisDepth(account, 0)
 }
 

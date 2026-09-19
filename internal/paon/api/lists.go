@@ -211,7 +211,7 @@ func (s *Server) listAccounts(c *echo.Context) error {
 	if !unlimited && len(accounts) > 0 {
 		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, accounts[0].ID, accounts[len(accounts)-1].ID, "since_id", len(accounts) == limitValue))
 	}
-	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
+	return c.JSON(http.StatusOK, s.serializeAccounts(accounts, account))
 }
 
 func (s *Server) addListAccounts(c *echo.Context) error {

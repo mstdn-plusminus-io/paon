@@ -40,7 +40,7 @@ func TestParseSettingsPreferencesPayloadAcceptsRailsNestedSettings(t *testing.T)
 	if !locale.Valid || locale.String != "ja" {
 		t.Fatalf("locale = %#v", locale)
 	}
-	if settings["web.auto_play"] != true || settings["web.use_system_scrollbars"] != true || settings["web.display_media"] != "show_all" || settings["default_privacy"] != "private" || settings["default_quote_policy"] != "nobody" {
+	if settings["web.auto_play"] != true || settings["web.use_system_scrollbars"] != true || settings["web.display_media"] != "show_all" || settings["default_privacy"] != "private" || settings["default_quote_policy"] != "public" {
 		t.Fatalf("settings = %#v", settings)
 	}
 	languages := updates["chosen_languages"].(models.StringArray)
@@ -64,6 +64,57 @@ func TestMastodon45EmojiStylePreferenceIsValidatedAndRendered(t *testing.T) {
 	}
 	if _, err := preferencesSettingsFromForm(map[string][]string{"user[settings][web.emoji_style]": {"invalid"}}); err == nil {
 		t.Fatal("invalid emoji style was accepted")
+	}
+}
+
+func TestMastodon46ColorSchemeAndContrastPreferencesAreValidatedRenderedAndApplied(t *testing.T) {
+	html := settingsPreferencesAppearanceHTML(models.User{}, map[string]any{
+		"theme":            "default",
+		"web.color_scheme": "light",
+		"web.contrast":     "high",
+	}, "en")
+	for _, want := range []string{
+		`name="user[settings_attributes][web.color_scheme]"`,
+		`name="user[settings_attributes][web.contrast]"`,
+		`value="light" selected`,
+		`value="high" selected`,
+		"Color scheme",
+		"Contrast",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("Mastodon 4.6 theme preference is missing %q: %s", want, html)
+		}
+	}
+
+	for key, values := range map[string][]string{
+		"web.color_scheme": {"auto", "light", "dark"},
+		"web.contrast":     {"auto", "high"},
+	} {
+		for _, value := range values {
+			settings, err := preferencesSettingsFromForm(map[string][]string{"user[settings][" + key + "]": {value}})
+			if err != nil || settings[key] != value {
+				t.Fatalf("%s %q = %#v, %v", key, value, settings, err)
+			}
+		}
+		if _, err := preferencesSettingsFromForm(map[string][]string{"user[settings][" + key + "]": {"invalid"}}); err == nil {
+			t.Fatalf("invalid %s was accepted", key)
+		}
+	}
+
+	for _, test := range []struct {
+		settings map[string]any
+		want     string
+	}{
+		{map[string]any{"theme": "default", "web.color_scheme": "auto", "web.contrast": "auto"}, "system"},
+		{map[string]any{"theme": "default", "web.color_scheme": "dark", "web.contrast": "auto"}, "default"},
+		{map[string]any{"theme": "default", "web.color_scheme": "dark", "web.contrast": "high"}, "contrast"},
+		{map[string]any{"theme": "default", "web.color_scheme": "light", "web.contrast": "auto"}, "mastodon-light"},
+		{map[string]any{"theme": "default", "web.color_scheme": "light", "web.contrast": "high"}, "mastodon-light-contrast"},
+		{map[string]any{"theme": "default", "web.color_scheme": "auto", "web.contrast": "high"}, "system-high"},
+	} {
+		if got := settingsWebTheme(test.settings); got != test.want {
+			t.Fatalf("settingsWebTheme(%#v) = %q, want %q", test.settings, got, test.want)
+		}
 	}
 }
 
@@ -134,10 +185,14 @@ func TestPreferencesSettingsRejectsInvalidEnum(t *testing.T) {
 	}
 }
 
-func TestMastodon45DefaultQuotePolicyIsSavedAndRenderedOnPostingDefaults(t *testing.T) {
+func TestPaonQuotePolicyInputIsNormalizedAndHiddenFromPostingDefaults(t *testing.T) {
 	settings := map[string]any{"theme": "system"}
-	applyUserSettingsAttributes(settings, map[string]any{"default_quote_policy": "followers"})
-	if settings["default_quote_policy"] != "followers" {
+	attributes, err := preferencesSettingsFromForm(map[string][]string{"user[settings][default_quote_policy]": {"followers"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyUserSettingsAttributes(settings, attributes)
+	if settings["default_quote_policy"] != "public" {
 		t.Fatalf("saved default_quote_policy = %#v", settings["default_quote_policy"])
 	}
 
@@ -145,23 +200,17 @@ func TestMastodon45DefaultQuotePolicyIsSavedAndRenderedOnPostingDefaults(t *test
 	english := settingsPreferencesPostingDefaultsHTML(account, settings, "en")
 	for _, want := range []string{
 		`action="/settings/preferences/posting_defaults"`,
-		`name="user[settings_attributes][default_quote_policy]"`,
-		`value="followers" selected`,
-		`Who can quote`,
 		`These settings will be used as defaults when you create new posts`,
 	} {
 		if !strings.Contains(english, want) {
-			t.Fatalf("English quote policy setting is missing %q: %s", want, english)
+			t.Fatalf("English posting defaults are missing %q: %s", want, english)
 		}
 	}
-	if strings.Index(english, `value="public"`) > strings.Index(english, `value="followers"`) || strings.Index(english, `value="followers"`) > strings.Index(english, `value="nobody"`) {
-		t.Fatalf("quote policy option order does not match Mastodon 4.5: %s", english)
-	}
-
-	japanese := settingsPreferencesPostingDefaultsHTML(models.Account{Locked: true}, settings, "ja")
-	for _, want := range []string{"引用できるユーザー", "フォロワーのみ", "デフォルトとして使用", "フォロワーのみの投稿はほかのユーザーから引用できません"} {
-		if !strings.Contains(japanese, want) {
-			t.Fatalf("Japanese quote policy setting is missing %q: %s", want, japanese)
+	for _, page := range []string{english, settingsPreferencesPostingDefaultsHTML(models.Account{Locked: true}, settings, "ja")} {
+		for _, removed := range []string{"default_quote_policy", "Who can quote", "引用できるユーザー"} {
+			if strings.Contains(page, removed) {
+				t.Fatalf("removed quote permission control %q is still rendered: %s", removed, page)
+			}
 		}
 	}
 }

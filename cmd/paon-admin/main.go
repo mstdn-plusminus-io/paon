@@ -370,13 +370,14 @@ func runDomains(ctx context.Context, operations *api.Operations, args []string) 
 func runVacuum(ctx context.Context, operations *api.Operations, args []string) error {
 	flags := flag.NewFlagSet("vacuum", flag.ContinueOnError)
 	confirm := flags.Bool("confirm", false, "run the destructive vacuum")
+	keepInteracted := flags.Bool("keep-interacted", false, "preserve remote media attached to statuses interacted with by local accounts")
 	if err := flags.Parse(commandFlagArgs(args)); err != nil {
 		return err
 	}
-	if flags.NArg() != 1 || !*confirm {
-		return errors.New("usage: paon-admin vacuum <statuses|media|preview-cards|feeds> --confirm")
+	if flags.NArg() != 1 || !*confirm || (*keepInteracted && flags.Arg(0) != "media") {
+		return errors.New("usage: paon-admin vacuum <statuses|media|preview-cards|feeds> [--keep-interacted] --confirm")
 	}
-	result, err := operations.Vacuum(ctx, flags.Arg(0), time.Now().UTC())
+	result, err := operations.VacuumWithOptions(ctx, flags.Arg(0), time.Now().UTC(), api.OperationVacuumOptions{KeepInteracted: *keepInteracted})
 	if err != nil {
 		return err
 	}

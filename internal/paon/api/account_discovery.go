@@ -42,7 +42,7 @@ func (s *Server) endorsements(c *echo.Context) error {
 	if len(accounts) > 0 && !unlimited {
 		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, accounts[0].ID, accounts[len(accounts)-1].ID, "since_id", len(accounts) == limitValue))
 	}
-	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
+	return c.JSON(http.StatusOK, s.serializeAccounts(accounts, account))
 }
 
 func (s *Server) accountEndorsements(c *echo.Context) error {
@@ -75,7 +75,8 @@ func (s *Server) accountEndorsements(c *echo.Context) error {
 	if len(accounts) > 0 {
 		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, accounts[0].ID, accounts[len(accounts)-1].ID, "since_id", len(accounts) == limitValue))
 	}
-	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
+	current, _, _ := s.currentAccount(c)
+	return c.JSON(http.StatusOK, s.serializeAccounts(accounts, current))
 }
 
 func (s *Server) identityProofs(c *echo.Context) error {
@@ -111,7 +112,7 @@ func (s *Server) familiarFollowers(c *echo.Context) error {
 		}
 		out = append(out, serializer.FamiliarFollowers{
 			ID:       strconv.FormatInt(target.ID, 10),
-			Accounts: serializeAccounts(s.cfg, followers),
+			Accounts: s.serializeAccounts(followers, account),
 		})
 	}
 	return c.JSON(http.StatusOK, out)

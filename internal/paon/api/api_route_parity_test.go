@@ -1362,12 +1362,12 @@ func TestRailsSettingsWebRoutesStayRegistered(t *testing.T) {
 			t.Fatalf("server.go missing Rails settings web route %q", route)
 		}
 	}
-	for _, forbidden := range []string{
+	for _, route := range []string{
 		`e.GET("/admin/export_domain_blocks/export", s.exportAdminDomainBlocksCSV)`,
 		`e.GET("/admin/export_domain_allows/export", s.exportAdminDomainAllowsCSV)`,
 	} {
-		if strings.Contains(string(src), forbidden) {
-			t.Fatalf("server.go must not expose Rails CSV-constrained route without .csv: %q", forbidden)
+		if !strings.Contains(string(src), route) {
+			t.Fatalf("server.go missing Mastodon 4.6 extension-optional CSV route %q", route)
 		}
 	}
 }

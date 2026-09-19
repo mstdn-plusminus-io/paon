@@ -305,12 +305,15 @@ func TestAccountStatusesUsesVisibilityGuard(t *testing.T) {
 		{"accountStatuses", `JOIN status_pins ON status_pins.status_id = statuses.id AND status_pins.account_id = ?`},
 		{"accountStatuses", `Order("status_pins.created_at DESC")`},
 		{"accountStatuses", `accountStatusTagQueryValue(c.QueryParam("tagged"))`},
+		{"accountStatuses", `truthy(c.QueryParam("exclude_direct"))`},
+		{"accountStatuses", `query = query.Where("statuses.visibility <> ?", 3)`},
 		{"accountStatuses", `query = applyOnlyMediaFilterForAccount(c, query, target.ID)`},
 		{"applyAccountStatusReblogFilters", `account_status_reblog_blocked_by.target_account_id = ?`},
 		{"accountStatusReblogsMayOccur", `strings.TrimSpace(c.QueryParam("tagged")) == ""`},
 		{"accountStatusTagQueryValue", `normalizedSearchTagName(raw)`},
 		{"accountBlocksAccountOrDomain", `models.AccountDomainBlock{}`},
 		{"applyOnlyMediaFilterForAccount", `timeline_media.account_id = ?`},
+		{"applyOnlyMediaFilterForAccount", `cardinality(statuses.ordered_media_attachment_ids) > 0`},
 	} {
 		if !functionBodyContains(t, src, check.fn, check.want) {
 			t.Fatalf("server.go:%s does not contain %q", check.fn, check.want)

@@ -26,7 +26,8 @@ var remoteNoteContentPolicy = func() *bluemonday.Policy {
 	)
 	p.AllowAttrs("href").OnElements("a")
 	p.AllowAttrs("rel").OnElements("a")
-	p.AllowAttrs("class").OnElements("a", "span")
+	p.AllowAttrs("lang").Globally()
+	p.AllowAttrs("class").OnElements("a", "span", "p")
 	p.AllowAttrs("translate").OnElements("a", "span")
 	p.AllowAttrs("start", "reversed").OnElements("ol")
 	p.AllowAttrs("value").OnElements("li")
@@ -172,6 +173,8 @@ func mastodonStrictNormalizeNode(node *nethtml.Node) {
 				}
 			case "span":
 				child.Attr = mastodonStrictNormalizeClassAndTranslate(child.Attr, true)
+			case "p":
+				child.Attr = mastodonStrictNormalizeClassAndTranslate(child.Attr, true)
 			}
 		}
 		child = next
@@ -231,6 +234,8 @@ func mastodonStrictNormalizeClassAndTranslate(attrs []nethtml.Attribute, allowCl
 			if attr.Val == "no" {
 				out = append(out, nethtml.Attribute{Key: "translate", Val: "no"})
 			}
+		case "lang":
+			out = append(out, nethtml.Attribute{Key: "lang", Val: attr.Val})
 		}
 	}
 	return out

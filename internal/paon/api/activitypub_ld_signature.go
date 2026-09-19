@@ -9,7 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -21,7 +20,6 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/piprate/json-gold/ld"
-	"gorm.io/gorm"
 )
 
 const (
@@ -39,28 +37,18 @@ func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activi
 	if err := json.Unmarshal(body, &document); err != nil || activityPubHasUnsupportedSignedJSONLDFeature(document) {
 		return nil
 	}
-	actor, err := s.activityPubLinkedDataSignatureCreatorActor(payload.Signature.Creator)
-	if err != nil || actor == nil {
+	resolved, err := s.activityPubLinkedDataSignatureCreatorKeypair(payload.Signature.Creator)
+	if err != nil || resolved == nil || activityPubResolvedKeypairValidityError(payload.Signature.Creator, resolved, time.Now().UTC()) != nil {
 		return nil
 	}
-	publicKey, err := activityPublicKey(actor.PublicKey)
+	publicKey, err := activityPublicKey(resolved.Keypair.PublicKey)
 	if err != nil {
-		if strings.TrimSpace(actor.PublicKey) != "" {
-			return nil
-		}
-		actor, err = s.refreshActivityPubActorKey(payload.Signature.Creator, actor)
-		if err != nil || actor == nil {
-			return nil
-		}
-		publicKey, err = activityPublicKey(actor.PublicKey)
-		if err != nil {
-			return nil
-		}
+		return nil
 	}
 	if !verifyActivityPubLinkedDataSignature(body, publicKey) {
 		return nil
 	}
-	return actor
+	return &resolved.Account
 }
 
 // Mastodon 4.3.23 deliberately does not grant linked-data-signature authority
@@ -88,23 +76,18 @@ func activityPubHasUnsupportedSignedJSONLDFeature(value any) bool {
 	return false
 }
 
-func (s *Server) activityPubLinkedDataSignatureCreatorActor(creator string) (*models.Account, error) {
+func (s *Server) activityPubLinkedDataSignatureCreatorKeypair(creator string) (*activityPubResolvedKeypair, error) {
 	if s == nil || s.db == nil || strings.TrimSpace(creator) == "" {
 		return nil, nil
 	}
 	if s.localActivityURI(creator) {
-		return s.localAccountFromActivityURI(creator)
+		account, err := s.localAccountFromActivityURI(creator)
+		if err != nil || account == nil {
+			return nil, err
+		}
+		return activityPubLegacyResolvedKeypair(*account, creator), nil
 	}
-	actorURI := creator
-	if before, _, ok := strings.Cut(creator, "#"); ok {
-		actorURI = before
-	}
-	var account models.Account
-	err := s.db.Preload("AccountStat").Where("uri = ?", actorURI).First(&account).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	}
-	return &account, err
+	return s.activityPubKeypairFromKeyID(creator)
 }
 
 func verifyActivityPubLinkedDataSignature(body []byte, publicKey *rsa.PublicKey) bool {
@@ -480,6 +463,11 @@ func activityPubJSONLDDocumentLoader() ld.DocumentLoader {
 	misskey := map[string]any{"@context": activityPubMisskeyJSONLDContext()}
 	ostatus := map[string]any{"@context": activityPubOStatusJSONLDContext()}
 	schema := map[string]any{"@context": activityPubSchemaJSONLDContext()}
+	webfinger := map[string]any{"@context": map[string]any{
+		"webfinger": map[string]any{"@id": "https://purl.archive.org/socialweb/webfinger#webfinger", "@type": "http://www.w3.org/2001/XMLSchema#string"},
+		"wf":        "https://purl.archive.org/socialweb/webfinger#",
+		"xsd":       "http://www.w3.org/2001/XMLSchema#",
+	}}
 	for _, uri := range []string{"https://www.w3.org/ns/activitystreams", "http://www.w3.org/ns/activitystreams", "https://www.w3.org/ns/activitystreams/", "http://www.w3.org/ns/activitystreams/", "https://www.w3.org/ns/activitystreams#", "http://www.w3.org/ns/activitystreams#"} {
 		loader.AddDocument(uri, activityStreams)
 	}
@@ -491,6 +479,9 @@ func activityPubJSONLDDocumentLoader() ld.DocumentLoader {
 	}
 	for _, uri := range []string{"https://w3id.org/fep/044f", "https://w3id.org/fep/044f#"} {
 		loader.AddDocument(uri, fep044f)
+	}
+	for _, uri := range []string{"https://purl.archive.org/socialweb/webfinger", "http://purl.archive.org/socialweb/webfinger"} {
+		loader.AddDocument(uri, webfinger)
 	}
 	for _, uri := range []string{"http://joinmastodon.org/ns", "http://joinmastodon.org/ns#", "http://joinmastodon.org/ns/", "https://joinmastodon.org/ns", "https://joinmastodon.org/ns#", "https://joinmastodon.org/ns/"} {
 		loader.AddDocument(uri, toot)

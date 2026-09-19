@@ -9,10 +9,11 @@ import (
 	"testing"
 
 	"github.com/labstack/echo/v5"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
 func TestParseSettingsPrivacyPayloadAppliesRailsInversions(t *testing.T) {
-	body := "account%5Bdiscoverable%5D=1&account%5Bunlocked%5D=0&account%5Bindexable%5D=1&account%5Bshow_collections%5D=1&account%5Bsettings%5D%5Bindexable%5D=0&account%5Bsettings%5D%5Bshow_application%5D=1"
+	body := "account%5Bdiscoverable%5D=1&account%5Bunlocked%5D=0&account%5Bindexable%5D=1&account%5Bshow_collections%5D=1&account%5Bsettings%5D%5Bindexable%5D=0&account%5Bsettings%5D%5Bshow_application%5D=1&account%5Bsettings%5D%5Bemail_subscriptions%5D=0&account%5Bsettings%5D%5Bemail_subscriptions%5D=1"
 	req := httptest.NewRequest(http.MethodPut, "/settings/privacy", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	c := echo.NewContext(req, httptest.NewRecorder(), echo.New())
@@ -33,8 +34,33 @@ func TestParseSettingsPrivacyPayloadAppliesRailsInversions(t *testing.T) {
 	if payload.HideCollections == nil || *payload.HideCollections {
 		t.Fatalf("hide_collections = %#v", payload.HideCollections)
 	}
-	if settings["noindex"] != true || settings["show_application"] != true {
+	if settings["noindex"] != true || settings["show_application"] != true || settings["email_subscriptions"] != true {
 		t.Fatalf("settings = %#v", settings)
+	}
+}
+
+func TestSettingsPrivacyEmailSubscriptionControlMatchesMastodon46(t *testing.T) {
+	account := models.Account{ID: 42}
+	settings := map[string]any{"email_subscriptions": true}
+	html := settingsPrivacyHTMLWithOptions(account, settings, "", "", settingsHTMLOptions{
+		EmailSubscriptionsEnabled: true,
+		EmailSubscriptionsCount:   1234,
+	}, "en")
+	for _, want := range []string{
+		`name="account[settings][email_subscriptions]"`,
+		`name="account[settings][email_subscriptions]" value="1" checked`,
+		`status-badge positive`,
+		`Active`,
+		`Subscribers`,
+		`1,234`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("email subscription privacy control missing %q: %s", want, html)
+		}
+	}
+	hidden := settingsPrivacyHTMLWithOptions(account, settings, "", "", settingsHTMLOptions{}, "en")
+	if strings.Contains(hidden, `account[settings][email_subscriptions]`) || strings.Contains(hidden, `email-subscription-posts`) {
+		t.Fatalf("email subscription control escaped its deployment/role gate: %s", hidden)
 	}
 }
 

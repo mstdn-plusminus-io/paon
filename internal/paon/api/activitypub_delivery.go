@@ -301,7 +301,7 @@ func activityPubStatusDeliveryUnsafeReach(activity map[string]any) bool {
 }
 
 func activityPubStatusDeliverySynchronizeFollowers(status models.Status, activity map[string]any) bool {
-	return status.Visibility == 2 && !activityPubStatusDeliveryUnsafeReach(activity)
+	return status.Visibility == 2 && status.Account.AccountStat.FollowersCount < 25_000 && !activityPubStatusDeliveryUnsafeReach(activity)
 }
 
 func (s *Server) deliverActivityPubPollUpdate(status models.Status) error {

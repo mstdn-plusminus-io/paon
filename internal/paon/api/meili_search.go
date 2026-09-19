@@ -119,6 +119,9 @@ func (s *Server) searchMeiliIDs(ctx context.Context, index string, query string,
 	if !s.cfg.MeiliEnabled || strings.TrimSpace(s.cfg.MeiliHost) == "" {
 		return nil, errMeiliDisabled
 	}
+	if s.meiliSearchStoplightOpen(ctx) {
+		return nil, errMeiliSearchStoplightOpen
+	}
 	finishTelemetry := func(int, error) {}
 	if s.cfg.OpenTelemetryEnabled {
 		ctx, finishTelemetry = telemetry.StartSearch(ctx, options.Offset, options.Limit)
@@ -150,12 +153,19 @@ func (s *Server) searchMeiliIDs(ctx context.Context, index string, query string,
 
 	res, err := meiliHTTPClient.Do(req)
 	if err != nil {
+		if meiliSearchStoplightTracksError(err) {
+			s.trackMeiliSearchStoplightFailure(context.Background())
+		}
 		return nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		if res.StatusCode >= 500 {
+			s.trackMeiliSearchStoplightFailure(context.Background())
+		}
 		return nil, fmt.Errorf("meilisearch %s returned %s", s.cfg.MeiliPrefix+index, res.Status)
 	}
+	s.trackMeiliSearchStoplightSuccess(context.Background())
 
 	var payload meiliSearchResponse
 	if err := decodeMeiliJSONResponse(res, &payload); err != nil {

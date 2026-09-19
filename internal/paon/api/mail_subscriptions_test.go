@@ -62,6 +62,20 @@ func TestRailsSignedGlobalIDUserIDAcceptsRails72JSONMetadata(t *testing.T) {
 	}
 }
 
+func TestRailsSignedGlobalIDSupportsEmailSubscriptionModel(t *testing.T) {
+	token := railsSignedGlobalIDForModel("EmailSubscription", 456, railsSignedGlobalIDPurposeUnsubscribe, "secret-key-base-for-test")
+	gid, ok := railsSignedGlobalIDMessage(token, "secret-key-base-for-test", railsSignedGlobalIDPurposeUnsubscribe, time.Now)
+	if !ok {
+		t.Fatal("generated EmailSubscription signed global ID did not verify")
+	}
+	if id, ok := railsGlobalIDModelID(gid, "EmailSubscription"); !ok || id != 456 {
+		t.Fatalf("EmailSubscription global ID = %q, id=%d ok=%v", gid, id, ok)
+	}
+	if _, ok := railsGlobalIDModelID(gid, "User"); ok {
+		t.Fatal("EmailSubscription global ID was accepted as User")
+	}
+}
+
 func TestMailSubscriptionInvalidTokenReturnsNotFoundLikeRails(t *testing.T) {
 	s := &Server{cfg: config.Config{SecretKeyBase: "secret-key-base-for-test"}}
 	if _, _, err := s.unsubscribeTokenUser("invalid-token"); !errors.Is(err, gorm.ErrRecordNotFound) {

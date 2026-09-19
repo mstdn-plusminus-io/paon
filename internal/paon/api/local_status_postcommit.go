@@ -78,6 +78,7 @@ func (s *Server) runLocalStatusCreatePostCommit(effects localStatusCreatePostCom
 	if err := s.enqueueFASPContentLifecycle(ctx, created, "new"); err != nil {
 		s.logLocalStatusPostCommitError(effects, "fasp_content_lifecycle", err)
 	}
+	s.enqueueEmailSubscriptionStatus(ctx, created)
 	if created.InReplyToID.Valid {
 		if err := s.enqueueFASPTrendForStatus(ctx, created, "reply"); err != nil {
 			s.logLocalStatusPostCommitError(effects, "fasp_reply_trend", err)

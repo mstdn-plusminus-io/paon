@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
@@ -11,7 +13,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const annualReportSchemaVersion = 1
+const annualReportSchemaVersion = 2
 
 type annualReportCountItem struct {
 	Name  string `json:"name,omitempty" gorm:"column:name"`
@@ -53,13 +55,17 @@ func (s *Server) generateAnnualReport(ctx context.Context, accountID int64, year
 		return err
 	}
 	now := time.Now().UTC()
-	report := models.GeneratedAnnualReport{AccountID: accountID, Year: year, Data: models.JSONValue(body), SchemaVersion: annualReportSchemaVersion, CreatedAt: now, UpdatedAt: now}
+	report := models.GeneratedAnnualReport{
+		AccountID: accountID, Year: year, Data: models.JSONValue(body), SchemaVersion: annualReportSchemaVersion,
+		ShareKey: sql.NullString{String: randomHex(8), Valid: true}, CreatedAt: now, UpdatedAt: now,
+	}
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "account_id"}, {Name: "year"}}, DoNothing: true}).Create(&report).Error
 }
 
 func (s *Server) annualReportData(ctx context.Context, accountID int64, start time.Time, end time.Time) (map[string]any, error) {
 	db := s.db.WithContext(ctx)
-	base := db.Table("statuses AS annual_statuses").Where("annual_statuses.account_id = ? AND annual_statuses.created_at >= ? AND annual_statuses.created_at < ? AND annual_statuses.deleted_at IS NULL", accountID, start, end)
+	startID, endID := annualReportSnowflakeRange(start, end)
+	base := db.Table("statuses AS annual_statuses").Where("annual_statuses.account_id = ? AND annual_statuses.id BETWEEN ? AND ? AND annual_statuses.deleted_at IS NULL", accountID, startID, endID)
 	count := func(condition string, args ...any) (int64, error) {
 		var value int64
 		query := base
@@ -80,7 +86,7 @@ func (s *Server) annualReportData(ctx context.Context, accountID int64, start ti
 	if err != nil {
 		return nil, err
 	}
-	standalone, err := count("annual_statuses.in_reply_to_id IS NULL AND annual_statuses.reblog_of_id IS NULL")
+	standalone, err := count("(annual_statuses.reply = FALSE OR annual_statuses.in_reply_to_account_id = ?) AND annual_statuses.reblog_of_id IS NULL", accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -93,51 +99,35 @@ func (s *Server) annualReportData(ctx context.Context, accountID int64, start ti
 	if err != nil {
 		return nil, err
 	}
-	mostUsedApps := []annualReportCountItem{}
-	if err := base.Select("oauth_applications.name AS name, COUNT(*) AS count").
-		Joins("JOIN oauth_applications ON oauth_applications.id = annual_statuses.application_id").
-		Group("oauth_applications.name").Order("count DESC").Limit(10).Scan(&mostUsedApps).Error; err != nil {
-		return nil, err
-	}
-	commonlyInteracted := []annualReportAccountCountItem{}
-	if err := base.Select("annual_statuses.in_reply_to_account_id AS account_id, COUNT(*) AS count").
-		Where("annual_statuses.in_reply_to_account_id IS NOT NULL AND annual_statuses.in_reply_to_account_id <> ?", accountID).
-		Group("annual_statuses.in_reply_to_account_id").Having("COUNT(*) > 1").Order("count DESC").Limit(40).Scan(&commonlyInteracted).Error; err != nil {
-		return nil, err
-	}
 	topHashtags := []annualReportCountItem{}
 	if err := db.Table("tags").Select("COALESCE(tags.display_name, tags.name) AS name, COUNT(*) AS count").
 		Joins("JOIN statuses_tags ON statuses_tags.tag_id = tags.id").
 		Joins("JOIN statuses annual_statuses ON annual_statuses.id = statuses_tags.status_id").
-		Where("annual_statuses.account_id = ? AND annual_statuses.created_at >= ? AND annual_statuses.created_at < ? AND annual_statuses.deleted_at IS NULL", accountID, start, end).
-		Group("tags.id").Having("COUNT(*) > 1").Order("count DESC").Limit(40).Scan(&topHashtags).Error; err != nil {
+		Where("annual_statuses.account_id = ? AND annual_statuses.id BETWEEN ? AND ? AND annual_statuses.deleted_at IS NULL", accountID, startID, endID).
+		Group("COALESCE(tags.display_name, tags.name)").Having("COUNT(*) > 1").Order("count DESC").Limit(1).Scan(&topHashtags).Error; err != nil {
 		return nil, err
 	}
-	mostReblogged := []annualReportAccountCountItem{}
-	if err := base.Select("reblogged.account_id AS account_id, COUNT(*) AS count").
-		Joins("JOIN statuses reblogged ON reblogged.id = annual_statuses.reblog_of_id").
-		Group("reblogged.account_id").Having("COUNT(*) > 1").Order("count DESC").Limit(10).Scan(&mostReblogged).Error; err != nil {
+	var followers int64
+	if err := db.Model(&models.Follow{}).Where("target_account_id = ? AND created_at >= ? AND created_at < ?", accountID, start, end).Count(&followers).Error; err != nil {
 		return nil, err
 	}
-	series, err := annualReportTimeSeries(db, accountID, start, end)
-	if err != nil {
-		return nil, err
+	for key, value := range topStatuses {
+		if id, ok := value.(int64); ok && id > 0 {
+			topStatuses[key] = strconv.FormatInt(id, 10)
+		}
 	}
-	percentiles, err := annualReportPercentiles(db, accountID, start, end, total)
-	if err != nil {
-		return nil, err
-	}
+	topStatuses["by_favourites"] = nil
+	topStatuses["by_replies"] = nil
 	return map[string]any{
-		"archetype":                         annualReportArchetype(standalone, replies, reblogs, polls),
-		"type_distribution":                 map[string]int64{"total": total, "reblogs": reblogs, "replies": replies, "standalone": standalone},
-		"top_statuses":                      topStatuses,
-		"most_used_apps":                    mostUsedApps,
-		"commonly_interacted_with_accounts": commonlyInteracted,
-		"time_series":                       series,
-		"top_hashtags":                      topHashtags,
-		"most_reblogged_accounts":           mostReblogged,
-		"percentiles":                       percentiles,
+		"archetype":    annualReportArchetype(standalone, replies, reblogs, polls),
+		"top_statuses": topStatuses,
+		"time_series":  []map[string]any{{"month": 12, "statuses": total, "followers": followers}},
+		"top_hashtags": topHashtags,
 	}, nil
+}
+
+func annualReportSnowflakeRange(start time.Time, end time.Time) (int64, int64) {
+	return mastodonSnowflakeIDAt(start, true), mastodonSnowflakeIDAt(end.Add(-time.Second), true)
 }
 
 func annualReportArchetype(standalone int64, replies int64, reblogs int64, polls int64) string {
@@ -158,13 +148,9 @@ func annualReportArchetype(standalone int64, replies int64, reblogs int64, polls
 
 func annualReportTopStatuses(base *gorm.DB) (map[string]any, error) {
 	out := map[string]any{"by_reblogs": nil, "by_favourites": nil, "by_replies": nil}
-	excluded := []int64{}
-	for _, item := range []struct{ key, column string }{{"by_reblogs", "reblogs_count"}, {"by_favourites", "favourites_count"}, {"by_replies", "replies_count"}} {
+	for _, item := range []struct{ key, column string }{{"by_reblogs", "reblogs_count"}} {
 		var row struct{ ID int64 }
-		query := base.Select("annual_statuses.id").Joins("JOIN status_stats ON status_stats.status_id = annual_statuses.id").Where("annual_statuses.visibility = ?", 0)
-		if len(excluded) > 0 {
-			query = query.Where("annual_statuses.id NOT IN ?", excluded)
-		}
+		query := base.Select("annual_statuses.id").Joins("JOIN status_stats ON status_stats.status_id = annual_statuses.id").Where("annual_statuses.visibility IN ?", []int{0, 1})
 		err := query.Order("status_stats." + item.column + " DESC").First(&row).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			continue
@@ -173,7 +159,6 @@ func annualReportTopStatuses(base *gorm.DB) (map[string]any, error) {
 			return nil, err
 		}
 		out[item.key] = row.ID
-		excluded = append(excluded, row.ID)
 	}
 	return out, nil
 }

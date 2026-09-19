@@ -114,8 +114,8 @@ func preferencesSettingsFromForm(values map[string][]string) (map[string]any, er
 		}
 		settings[key] = value
 	}
-	if settings["default_privacy"] == "private" {
-		settings["default_quote_policy"] = "nobody"
+	if _, present := settings["default_quote_policy"]; present {
+		settings["default_quote_policy"] = "public"
 	}
 	return settings, nil
 }
@@ -176,6 +176,8 @@ func preferencesBoolSettingKeys() map[string]struct{} {
 func preferencesStringSettingKeys() map[string][]string {
 	return map[string][]string{
 		"theme":                                nil,
+		"web.color_scheme":                     {"auto", "light", "dark"},
+		"web.contrast":                         {"auto", "high"},
 		"web.emoji_style":                      {"auto", "native", "twemoji"},
 		"web.display_media":                    {"default", "show_all", "hide_all"},
 		"notification_emails.software_updates": {"none", "critical", "patch", "all"},

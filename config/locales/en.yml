@@ -1,5 +1,41 @@
 ---
 en:
+  color_scheme:
+    auto: Automatic
+    dark: Dark
+    light: Light
+  contrast:
+    auto: Automatic
+    high: High
+  email_subscriptions:
+    active: Active
+    confirmation:
+      action: Confirm subscription
+      body: Confirm that you want email updates from %{name}.
+      ignore: Ignore this message if you did not request it.
+      subject: Confirm email updates from %{name}
+    confirmed:
+      body: You will receive new public posts from %{name} by email.
+      title: Subscription confirmed
+    notification:
+      subject:
+        plural: New posts from %{name}
+        singular: New post from %{name}
+    inactive: Inactive
+    status: Status
+    subscribers: Subscribers
+    unsubscribe:
+      action: Yes, unsubscribe
+      complete: Unsubscribed
+      confirmation: Confirm that you want to stop receiving email updates from %{name}.
+      label: Unsubscribe
+      success: You will no longer receive email updates from %{name}.
+      title: Unsubscribe
+  simple_form:
+    labels:
+      defaults:
+        setting_color_scheme: Color scheme
+        setting_contrast: Contrast
   about:
     about_mastodon_html: 'The social network of the future: No ads, no corporate surveillance, ethical design, and decentralization! Own your data with Mastodon!'
     contact_missing: Not set
@@ -1010,6 +1046,9 @@ en:
       branding:
         preamble: Your server's branding differentiates it from other servers in the network. This information may be displayed across a variety of environments, such as Mastodon's web interface, native applications, in link previews on other websites and within messaging apps, and so on. For this reason, it is best to keep this information clear, short and concise.
         title: Branding
+      landing_page:
+        values:
+          overview: Overview
       captcha_enabled:
         desc_html: This relies on external scripts from hCaptcha, which may be a security and privacy concern. In addition, <strong>this can make the registration process significantly less accessible to some (especially disabled) people</strong>. For these reasons, please consider alternative measures such as approval-based or invite-based registration.
         title: Require new users to solve a CAPTCHA to confirm their account
@@ -1928,6 +1967,8 @@ en:
     posting_defaults: Posting defaults
     public_timelines: Public timelines
   privacy:
+    email_subscriptions: Send posts via email
+    email_subscriptions_hint_html: Add an email sign-up form to your profile that appears for logged-out users. When visitors enter their email address and opt in, Mastodon will send email updates for your public posts.
     errors:
       invalid: Privacy update is invalid
     hint_html: "<strong>Customize how you want your profile and your posts to be found.</strong> A variety of features in Mastodon can help you reach a wider audience when enabled. Take a moment to review these settings to make sure they fit your use case."
@@ -2190,6 +2231,7 @@ en:
     recovery_codes: Backup recovery codes
     recovery_codes_regenerated: Recovery codes successfully regenerated
     recovery_instructions_html: If you ever lose access to your phone, you can use one of the recovery codes below to regain access to your account. <strong>Keep the recovery codes safe</strong>. For example, you may print them and store them with other important documents.
+    role_requirement: Your role on %{domain} requires two-factor authentication.
     webauthn: Security keys
   user_mailer:
     appeal_approved:

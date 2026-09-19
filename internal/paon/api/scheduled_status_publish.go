@@ -73,7 +73,7 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 		return nil, nil
 	}
 	hasPoll := payload.HasPoll && payload.Poll != nil
-	if (submittedMediaIDsPresent(mediaIDs) && submittedMediaIDsCount(mediaIDs) > s.maxMediaAttachments()) || (hasPoll && submittedMediaIDsPresent(mediaIDs)) {
+	if submittedMediaIDsPresent(mediaIDs) && submittedMediaIDsCount(mediaIDs) > s.maxMediaAttachments() {
 		s.deleteScheduledStatusBestEffort(ctx, scheduled.ID)
 		return nil, nil
 	}
@@ -287,6 +287,7 @@ func (s *Server) publishScheduledStatus(ctx context.Context, scheduled models.Sc
 	if err := s.enqueueFASPContentLifecycle(ctx, *created, "new"); err != nil {
 		return nil, err
 	}
+	s.enqueueEmailSubscriptionStatus(ctx, *created)
 	if created.InReplyToID.Valid {
 		if err := s.enqueueFASPTrendForStatus(ctx, *created, "reply"); err != nil {
 			return nil, err

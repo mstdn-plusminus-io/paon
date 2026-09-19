@@ -43,6 +43,8 @@ var backgroundWorkerConcurrencyInventory = map[string]backgroundWorkerSemantics{
 	"runFASPFollowRecommendationCleanupWorker": {Concurrency: backgroundWorkerSingleton, Proof: "scheduler cadence marker"},
 	"runIPCleanupWorker":                       {Concurrency: backgroundWorkerSingleton, Proof: "scheduler cadence marker"},
 	"runUserCleanupWorker":                     {Concurrency: backgroundWorkerSingleton, Proof: "scheduler cadence marker"},
+	"runCollectionItemCleanupWorker":           {Concurrency: backgroundWorkerSingleton, Proof: "hourly scheduler cadence marker"},
+	"runRemoteCollectionRepairWorker":          {Concurrency: backgroundWorkerSingleton, Proof: "daily scheduler cadence marker"},
 	"runAutoCloseRegistrationsWorker":          {Concurrency: backgroundWorkerSingleton, Proof: "scheduler cadence marker and PostgreSQL advisory transition lock"},
 	"runPgHeroSpaceStatsWorker":                {Concurrency: backgroundWorkerSingleton, Proof: "scheduler cadence marker"},
 	"runAdminMetricsPrewarmWorker":             {Concurrency: backgroundWorkerSingleton, Proof: "scheduler cadence marker"},

@@ -217,6 +217,19 @@ func TestAccountDeletionRemovesTagFollowsLikeMastodon44(t *testing.T) {
 	}
 }
 
+func TestAccountDeletionRemovesMastodon46Collections(t *testing.T) {
+	src, err := os.ReadFile("account_deletion_worker.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, src, "purgeAccountDeletionExtraAssociations")
+	for _, want := range []string{`"collections"`, `DELETE FROM collection_items WHERE account_id IN (?)`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("account deletion is missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestStreamingKillPayloadParsesForSystemStreams(t *testing.T) {
 	message, ok := redisPubSubMessage([]any{"message", "mastodon:timeline:system:42", streamingKillPayload()})
 	if !ok {

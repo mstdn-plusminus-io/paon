@@ -167,7 +167,7 @@ func TestWebfingerMatchesRailsJRDContentType(t *testing.T) {
 		t.Fatalf("subject = %#v", out["subject"])
 	}
 	links, ok := out["links"].([]any)
-	if !ok || len(links) != 3 {
+	if !ok || len(links) != 5 {
 		t.Fatalf("links = %#v", out["links"])
 	}
 	profileLink, ok := links[0].(map[string]any)
@@ -181,6 +181,14 @@ func TestWebfingerMatchesRailsJRDContentType(t *testing.T) {
 	subscribeLink, ok := links[2].(map[string]any)
 	if !ok || subscribeLink["rel"] != "http://ostatus.org/schema/1.0/subscribe" || subscribeLink["template"] != "https://example.com/authorize_interaction?uri={uri}" {
 		t.Fatalf("subscribe link = %#v", links[2])
+	}
+	createLink, ok := links[3].(map[string]any)
+	if !ok || createLink["rel"] != "https://w3id.org/fep/3b86/Create" || createLink["template"] != "https://example.com/share?text={content}" {
+		t.Fatalf("Create intent link = %#v", links[3])
+	}
+	objectLink, ok := links[4].(map[string]any)
+	if !ok || objectLink["rel"] != "https://w3id.org/fep/3b86/Object" || objectLink["template"] != "https://example.com/authorize_interaction?uri={object}" {
+		t.Fatalf("Object intent link = %#v", links[4])
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "max-age=259200, public" {
 		t.Fatalf("Cache-Control = %q", got)
@@ -723,12 +731,12 @@ func TestActivityPubActorObjectContextMatchesRailsExtensions(t *testing.T) {
 	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "example.com", LocalDomain: "example.com"}}
 	actor := activityPubActorObject(server, models.Account{ID: 42, Username: "alice"})
 	contexts, ok := actor["@context"].([]any)
-	if !ok || len(contexts) != 3 || contexts[0] != "https://www.w3.org/ns/activitystreams" || contexts[1] != "https://w3id.org/security/v1" {
+	if !ok || len(contexts) != 4 || contexts[0] != "https://www.w3.org/ns/activitystreams" || contexts[1] != "https://w3id.org/security/v1" || contexts[2] != "https://purl.archive.org/socialweb/webfinger" {
 		t.Fatalf("actor context = %#v", actor["@context"])
 	}
-	extension, ok := contexts[2].(map[string]any)
+	extension, ok := contexts[3].(map[string]any)
 	if !ok {
-		t.Fatalf("actor context extension = %#v", contexts[2])
+		t.Fatalf("actor context extension = %#v", contexts[3])
 	}
 	for _, want := range []string{
 		"manuallyApprovesFollowers",
@@ -742,6 +750,11 @@ func TestActivityPubActorObjectContextMatchesRailsExtensions(t *testing.T) {
 		"memorial",
 		"suspended",
 		"attributionDomains",
+		"showFeatured",
+		"showMedia",
+		"showRepliesInMedia",
+		"interactionPolicy",
+		"canFeature",
 	} {
 		if _, ok := extension[want]; !ok {
 			t.Fatalf("actor context extension missing %q: %#v", want, extension)
@@ -1500,6 +1513,9 @@ func TestActivityPubPrivateStatusDeliverySynchronizesFollowersLikeRails(t *testi
 	}
 	if activityPubStatusDeliverySynchronizeFollowers(models.Status{Visibility: 0}, map[string]any{"type": "Create"}) {
 		t.Fatal("public Create should not synchronize followers")
+	}
+	if activityPubStatusDeliverySynchronizeFollowers(models.Status{Visibility: 2, Account: models.Account{AccountStat: models.AccountStat{FollowersCount: 25_000}}}, map[string]any{"type": "Create"}) {
+		t.Fatal("private Create at the 25k follower guard should not synchronize followers")
 	}
 	if got := activityPubInboxOrigin("https://Remote.Example/inbox"); got != "https://remote.example" {
 		t.Fatalf("origin = %q", got)

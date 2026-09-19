@@ -1076,7 +1076,7 @@ func (s *Server) relationshipsForAccounts(accountID int64, ids []int64, accounts
 	if err != nil {
 		return nil, err
 	}
-	muting, mutingNotifications, err := s.muteMaps(accountID, ids)
+	muting, mutingNotifications, mutingExpiresAt, err := s.muteMaps(accountID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -1111,6 +1111,7 @@ func (s *Server) relationshipsForAccounts(accountID int64, ids []int64, accounts
 			BlockedBy:           blockedBy[id],
 			Muting:              muting[id],
 			MutingNotifications: mutingNotifications[id],
+			MutingExpiresAt:     mutingExpiresAt[id],
 			Requested:           req != nil,
 			RequestedBy:         requestedBy[id] != nil,
 			DomainBlocking:      domainBlocking[id],
@@ -1243,18 +1244,23 @@ func (s *Server) idSet(model any, where string, arg1 any, arg2 any, column strin
 	return out, nil
 }
 
-func (s *Server) muteMaps(accountID int64, ids []int64) (map[int64]bool, map[int64]bool, error) {
+func (s *Server) muteMaps(accountID int64, ids []int64) (map[int64]bool, map[int64]bool, map[int64]*string, error) {
 	rows := []models.Mute{}
 	if err := s.db.Where("account_id = ? AND target_account_id IN ?", accountID, ids).Find(&rows).Error; err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	muting := map[int64]bool{}
 	notifications := map[int64]bool{}
+	expiresAt := map[int64]*string{}
 	for _, row := range rows {
 		muting[row.TargetAccountID] = true
 		notifications[row.TargetAccountID] = row.HideNotifications
+		if row.ExpiresAt.Valid {
+			value := row.ExpiresAt.Time.UTC().Format(time.RFC3339)
+			expiresAt[row.TargetAccountID] = &value
+		}
 	}
-	return muting, notifications, nil
+	return muting, notifications, expiresAt, nil
 }
 
 func (s *Server) noteMap(accountID int64, ids []int64) (map[int64]string, error) {
@@ -1513,7 +1519,7 @@ func relationshipNotificationPolicyDecision(tx *gorm.DB, accountID int64, fromAc
 		return false, false, err
 	}
 	var sender models.Account
-	if err := tx.Select("id", "created_at", "silenced_at").Where("id = ?", fromAccountID).First(&sender).Error; err != nil {
+	if err := tx.Select("id", "created_at", "silenced_at", "actor_type").Where("id = ?", fromAccountID).First(&sender).Error; err != nil {
 		return false, false, err
 	}
 	var senderFollow models.Follow
@@ -1543,6 +1549,9 @@ func relationshipNotificationPolicyDecision(tx *gorm.DB, accountID int64, fromAc
 		}
 		if sender.SilencedAt.Valid {
 			actions = append(actions, policy.ForLimitedAccounts)
+		}
+		if sender.ActorType.Valid && (sender.ActorType.String == "Application" || sender.ActorType.String == "Service") {
+			actions = append(actions, policy.ForBots)
 		}
 	}
 	if notFollower {

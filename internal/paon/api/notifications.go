@@ -30,6 +30,8 @@ var notificationTypes = map[string]struct{}{
 	"severed_relationships": {},
 	"moderation_warning":    {},
 	"annual_report":         {},
+	"added_to_collection":   {},
+	"collection_update":     {},
 }
 
 func (s *Server) notifications(c *echo.Context) error {
@@ -74,7 +76,10 @@ func (s *Server) notifications(c *echo.Context) error {
 	if err := s.hydrateNotificationSpecialEvents(notifications); err != nil {
 		return err
 	}
-	if err := s.hydrateNotificationAccounts(notifications); err != nil {
+	if err := s.hydrateNotificationCollections(notifications); err != nil {
+		return err
+	}
+	if err := s.hydrateNotificationAccounts(notifications, account); err != nil {
 		return err
 	}
 	if err := s.hydrateNotificationStatusRelationships(notifications, account); err != nil {
@@ -85,11 +90,16 @@ func (s *Server) notifications(c *echo.Context) error {
 		c.Response().Header().Set("Link", notificationPaginationLink(c, notifications[0].ID, notifications[len(notifications)-1].ID))
 	}
 
-	return c.JSON(http.StatusOK, serializeNotificationsWithFilters(s.cfg, notifications, account, s.accountFilters(account)))
+	items := serializeNotificationsWithFilters(s.cfg, notifications, account, s.accountFilters(account))
+	if err := s.applyNotificationCollections(items, notifications, account); err != nil {
+		return err
+	}
+	s.applyNotificationFallbacks(c, notifications, items)
+	return c.JSON(http.StatusOK, items)
 }
 
 func notificationPaginationLink(c *echo.Context, first int64, last int64) string {
-	return paginationLinkWithAllowedParams(c, first, last, "min_id", true, true, []string{"limit", "account_id", "types[]", "exclude_types[]", "include_filtered"})
+	return paginationLinkWithAllowedParams(c, first, last, "min_id", true, true, []string{"limit", "account_id", "types[]", "exclude_types[]", "include_filtered", "supported_types[]", "supported_types"})
 }
 
 func (s *Server) showNotification(c *echo.Context) error {
@@ -114,13 +124,23 @@ func (s *Server) showNotification(c *echo.Context) error {
 	if err := s.hydrateNotificationSpecialEvents(notifications); err != nil {
 		return err
 	}
-	if err := s.hydrateNotificationAccounts(notifications); err != nil {
+	if err := s.hydrateNotificationCollections(notifications); err != nil {
+		return err
+	}
+	if err := s.hydrateNotificationAccounts(notifications, account); err != nil {
 		return err
 	}
 	if err := s.hydrateNotificationStatusRelationships(notifications, account); err != nil {
 		return err
 	}
-	return c.JSON(http.StatusOK, notificationWithStatusFilters(s.cfg, notifications[0], account, s.accountFilters(account)))
+	item := notificationWithStatusFilters(s.cfg, notifications[0], account, s.accountFilters(account))
+	items := []serializer.Notification{item}
+	if err := s.applyNotificationCollections(items, notifications, account); err != nil {
+		return err
+	}
+	item = items[0]
+	s.applyNotificationFallback(c, notifications[0], &item, nil)
+	return c.JSON(http.StatusOK, item)
 }
 
 func (s *Server) clearNotifications(c *echo.Context) error {
@@ -259,6 +279,9 @@ func (s *Server) hydrateNotificationReports(notifications []models.Notification)
 		return err
 	}
 	for i := range reports {
+		if err := s.hydrateReportCollectionIDs(&reports[i]); err != nil {
+			return err
+		}
 		for _, notificationIndex := range indexesByID[reports[i].ID] {
 			notifications[notificationIndex].Report = &reports[i]
 		}
@@ -336,7 +359,54 @@ func (s *Server) hydrateNotificationSpecialEvents(notifications []models.Notific
 	return nil
 }
 
-func (s *Server) hydrateNotificationAccounts(notifications []models.Notification) error {
+func (s *Server) hydrateNotificationCollections(notifications []models.Notification) error {
+	for i := range notifications {
+		var collectionID int64
+		switch notifications[i].ResolvedType() {
+		case "collection_update":
+			collectionID = notifications[i].ActivityID
+		case "added_to_collection":
+			var item models.CollectionItem
+			if err := s.db.Select("collection_id").Where("id = ?", notifications[i].ActivityID).First(&item).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					continue
+				}
+				return err
+			}
+			collectionID = item.CollectionID
+		}
+		if collectionID == 0 {
+			continue
+		}
+		collection, err := s.findCollection(strconv.FormatInt(collectionID, 10))
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return err
+		}
+		notifications[i].TargetCollection = collection
+	}
+	return nil
+}
+
+func (s *Server) applyNotificationCollections(items []serializer.Notification, notifications []models.Notification, current *models.Account) error {
+	for i := range items {
+		if i >= len(notifications) || notifications[i].TargetCollection == nil {
+			continue
+		}
+		resource, err := s.collectionResource(*notifications[i].TargetCollection, current)
+		if err != nil {
+			return err
+		}
+		collection := serializer.CollectionFromModel(s.cfg, resource.Collection, resource.Tag, resource.Items)
+		items[i].Collection = &collection
+	}
+	return nil
+}
+
+func (s *Server) hydrateNotificationAccounts(notifications []models.Notification, currentAccounts ...*models.Account) error {
+	accounts := []*models.Account{}
 	for i := range notifications {
 		if err := s.hydrateAccountCustomEmojis(&notifications[i].FromAccount); err != nil {
 			return err
@@ -346,8 +416,16 @@ func (s *Server) hydrateNotificationAccounts(notifications []models.Notification
 				return err
 			}
 		}
+		accounts = append(accounts, &notifications[i].FromAccount)
+		if notifications[i].Report != nil && notifications[i].Report.TargetAccount.ID != 0 {
+			accounts = append(accounts, &notifications[i].Report.TargetAccount)
+		}
 	}
-	return nil
+	var current *models.Account
+	if len(currentAccounts) > 0 {
+		current = currentAccounts[0]
+	}
+	return s.hydrateAccountFeaturePolicies(accounts, current)
 }
 
 func (s *Server) hydrateNotificationStatusRelationships(notifications []models.Notification, account *models.Account) error {

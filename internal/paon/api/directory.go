@@ -5,7 +5,6 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
-	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
 	"gorm.io/gorm"
 )
 
@@ -25,11 +24,8 @@ func (s *Server) directory(c *echo.Context) error {
 		return err
 	}
 
-	out := make([]serializer.Account, 0, len(accounts))
-	for _, account := range accounts {
-		out = append(out, serializer.AccountFromModel(s.cfg, account))
-	}
-	return c.JSON(http.StatusOK, out)
+	current, _, _ := s.currentAccount(c)
+	return c.JSON(http.StatusOK, s.serializeAccounts(accounts, current))
 }
 
 func (s *Server) profileDirectoryEnabled() bool {

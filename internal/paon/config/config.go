@@ -195,6 +195,9 @@ type Config struct {
 	BulkSMTPTLS                             bool
 	BulkSMTPStartTLS                        bool
 	BulkSMTPStartTLSRequired                bool
+	EmailSubscriptionsEnabled               bool
+	DonationCampaignsURL                    string
+	DonationCampaignsEnvironment            string
 	FFmpegBinary                            string
 	FFmpegBinarySet                         bool
 	FFprobeBinary                           string
@@ -623,6 +626,9 @@ func FromEnv() Config {
 		BulkSMTPTLS:                             os.Getenv("BULK_SMTP_TLS") == "true" || os.Getenv("BULK_SMTP_SSL") == "true",
 		BulkSMTPStartTLS:                        smtpStartTLSForEnv("BULK_SMTP_ENABLE_STARTTLS", "BULK_SMTP_ENABLE_STARTTLS_AUTO"),
 		BulkSMTPStartTLSRequired:                os.Getenv("BULK_SMTP_ENABLE_STARTTLS") == "always",
+		EmailSubscriptionsEnabled:               os.Getenv("DISABLE_EMAIL_SUBSCRIPTIONS") != "true",
+		DonationCampaignsURL:                    strings.TrimSpace(os.Getenv("DONATION_CAMPAIGNS_URL")),
+		DonationCampaignsEnvironment:            strings.TrimSpace(os.Getenv("DONATION_CAMPAIGNS_ENVIRONMENT")),
 		FFmpegBinary:                            envOrDefault("FFMPEG_BINARY", "ffmpeg"),
 		FFmpegBinarySet:                         envIsSet("FFMPEG_BINARY"),
 		FFprobeBinary:                           envOrDefault("FFPROBE_BINARY", "ffprobe"),

@@ -38,12 +38,18 @@ func railsSignedGlobalIDUserID(token string, secretKeyBase string, now func() ti
 }
 
 func railsSignedGlobalIDForUser(userID int64, secretKeyBase string) string {
-	if userID <= 0 || strings.TrimSpace(secretKeyBase) == "" {
+	return railsSignedGlobalIDForModel("User", userID, railsSignedGlobalIDPurposeUnsubscribe, secretKeyBase)
+}
+
+func railsSignedGlobalIDForModel(model string, id int64, purpose string, secretKeyBase string) string {
+	model = strings.TrimSpace(model)
+	purpose = strings.TrimSpace(purpose)
+	if model == "" || id <= 0 || purpose == "" || strings.TrimSpace(secretKeyBase) == "" {
 		return ""
 	}
 	envelope := railsMessageEnvelope{}
-	envelope.Rails.Data = "gid://mastodon/User/" + strconv.FormatInt(userID, 10)
-	envelope.Rails.Purpose = railsSignedGlobalIDPurposeUnsubscribe
+	envelope.Rails.Data = "gid://mastodon/" + model + "/" + strconv.FormatInt(id, 10)
+	envelope.Rails.Purpose = purpose
 	message, err := json.Marshal(envelope)
 	if err != nil {
 		return ""
@@ -155,12 +161,16 @@ func railsBase64URLDecode(encoded string) ([]byte, error) {
 }
 
 func railsGlobalIDUserID(gid string) (int64, bool) {
+	return railsGlobalIDModelID(gid, "User")
+}
+
+func railsGlobalIDModelID(gid string, model string) (int64, bool) {
 	parsed, err := url.Parse(gid)
 	if err != nil || parsed.Scheme != "gid" {
 		return 0, false
 	}
 	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(segments) != 2 || segments[0] != "User" {
+	if len(segments) != 2 || segments[0] != model {
 		return 0, false
 	}
 	userID, err := strconv.ParseInt(segments[1], 10, 64)

@@ -97,6 +97,12 @@ func TestMediaContentTypeSupportedMatchesRailsMediaTypes(t *testing.T) {
 	}
 }
 
+func TestMastodon46MediaDescriptionLimit(t *testing.T) {
+	if maxMediaDescriptionLength != 10000 {
+		t.Fatalf("maxMediaDescriptionLength = %d, want 10000", maxMediaDescriptionLength)
+	}
+}
+
 func TestMediaOriginalThumbnailEligibility(t *testing.T) {
 	if !mediaOriginalRequiresReadableImage("image/png", 0) || !mediaOriginalCanGenerateThumbnail("image/webp", 0) {
 		t.Fatal("readable images should require validation and allow thumbnail generation")

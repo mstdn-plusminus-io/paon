@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -41,6 +42,7 @@ var importTypeByName = map[string]int{
 	"domain_blocking": 3,
 	"bookmarks":       4,
 	"lists":           5,
+	"custom_filters":  6,
 }
 
 var importNameByType = map[int]string{
@@ -50,6 +52,7 @@ var importNameByType = map[int]string{
 	3: "domain_blocking",
 	4: "bookmarks",
 	5: "lists",
+	6: "custom_filters",
 }
 
 var importDefaultHeaders = map[string][]string{
@@ -88,6 +91,7 @@ var importFailureFilename = map[string]string{
 	"domain_blocking": "blocked_domains_failures.csv",
 	"bookmarks":       "bookmarks_failures.csv",
 	"lists":           "lists_failures.csv",
+	"custom_filters":  "custom_filters_failures.json",
 }
 
 func (s *Server) settingsImportsPage(c *echo.Context) error {
@@ -134,7 +138,28 @@ func (s *Server) createSettingsImport(c *echo.Context) error {
 	if err != nil {
 		return s.renderSettingsImportsError(c, account.ID, user, settingsT(locale, "imports.errors.required", "CSV file is required"))
 	}
-	rows, err := parseImportCSV(fileHeader, importType)
+	mediaType, _, _ := mime.ParseMediaType(fileHeader.Header.Get("Content-Type"))
+	var rows []map[string]any
+	if mediaType == "application/json" {
+		if importType != "custom_filters" {
+			return s.renderSettingsImportsError(c, account.ID, user, settingsT(locale, "imports.errors.incompatible_type", "Incompatible with the selected import type"))
+		}
+		file, openErr := fileHeader.Open()
+		if openErr != nil {
+			return s.renderSettingsImportsError(c, account.ID, user, openErr.Error())
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, importFileSizeLimit+1))
+		_ = file.Close()
+		if readErr != nil || len(data) > importFileSizeLimit {
+			return s.renderSettingsImportsError(c, account.ID, user, "JSON file is invalid")
+		}
+		rows, err = parseCustomFilterImport(data)
+	} else {
+		if importType == "custom_filters" {
+			return s.renderSettingsImportsError(c, account.ID, user, settingsT(locale, "imports.errors.incompatible_type", "Incompatible with the selected import type"))
+		}
+		rows, err = parseImportCSV(fileHeader, importType)
+	}
 	if err != nil {
 		return s.renderSettingsImportsError(c, account.ID, user, importErrorText(locale, err))
 	}
@@ -150,6 +175,13 @@ func (s *Server) createSettingsImport(c *echo.Context) error {
 	}
 	now := time.Now().UTC()
 	guessedType := guessedImportType(fileHeader.Filename, rows, importType)
+	missingStatus := false
+	if importType == "custom_filters" {
+		missingStatus, err = s.customFilterImportMissingStatus(rows)
+		if err != nil {
+			return err
+		}
+	}
 	bulkImport := models.BulkImport{
 		Type:             typeValue,
 		State:            bulkImportStateUnconfirmed,
@@ -158,6 +190,7 @@ func (s *Server) createSettingsImport(c *echo.Context) error {
 		ProcessedItems:   0,
 		Overwrite:        overwrite,
 		LikelyMismatched: guessedType != "" && guessedType != importType,
+		MissingStatus:    missingStatus,
 		OriginalFilename: fileHeader.Filename,
 		AccountID:        account.ID,
 		CreatedAt:        now,
@@ -321,6 +354,8 @@ func (s *Server) processBulkImport(ctx context.Context, bulkImportID int64) erro
 		err = s.processBookmarkImport(bulkImport)
 	case importTypeByName["lists"]:
 		err = s.processListImport(bulkImport)
+	case importTypeByName["custom_filters"]:
+		err = s.processCustomFilterImport(bulkImport)
 	default:
 		err = fmt.Errorf("unknown import type: %d", bulkImport.Type)
 	}
@@ -652,9 +687,112 @@ func (s *Server) processBulkImportRow(ctx context.Context, rowID int64) error {
 		return s.processBookmarkImportRow(ctx, bulkImport, row)
 	case importTypeByName["lists"]:
 		return s.processListImportRow(ctx, bulkImport, row)
+	case importTypeByName["custom_filters"]:
+		return s.processCustomFilterImportRow(ctx, bulkImport, row)
 	default:
 		return s.progressBulkImport(ctx, bulkImport.ID, false)
 	}
+}
+
+func (s *Server) processCustomFilterImport(bulkImport models.BulkImport) error {
+	now := time.Now().UTC()
+	var rows []models.BulkImportRow
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("bulk_import_id = ?", bulkImport.ID).Order("id ASC").Find(&rows).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.BulkImport{}).Where("id = ?", bulkImport.ID).Updates(map[string]any{"state": bulkImportStateInProgress, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		if !bulkImport.Overwrite {
+			return nil
+		}
+		var filterIDs []int64
+		if err := tx.Model(&models.CustomFilter{}).Where("account_id = ?", bulkImport.AccountID).Pluck("id", &filterIDs).Error; err != nil {
+			return err
+		}
+		if len(filterIDs) > 0 {
+			if err := tx.Where("custom_filter_id IN ?", filterIDs).Delete(&models.CustomFilterKeyword{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("custom_filter_id IN ?", filterIDs).Delete(&models.CustomFilterStatus{}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Where("account_id = ?", bulkImport.AccountID).Delete(&models.CustomFilter{}).Error
+	}); err != nil {
+		return err
+	}
+	return s.enqueueOrProcessImportRows(context.Background(), rows)
+}
+
+func (s *Server) processCustomFilterImportRow(ctx context.Context, bulkImport models.BulkImport, row models.BulkImportRow) error {
+	values := map[string]any{}
+	if json.Unmarshal(row.Data, &values) != nil {
+		return s.progressBulkImport(ctx, bulkImport.ID, false)
+	}
+	title := fmt.Sprint(values["title"])
+	if strings.TrimSpace(title) == "" || len([]rune(title)) > 256 {
+		return s.progressBulkImport(ctx, bulkImport.ID, false)
+	}
+	contexts := models.StringArray{}
+	validContexts := map[string]struct{}{"home": {}, "notifications": {}, "public": {}, "thread": {}, "account": {}}
+	for _, value := range anySlice(values["context"]) {
+		if contextValue := strings.TrimSpace(fmt.Sprint(value)); contextValue != "" {
+			if _, ok := validContexts[contextValue]; !ok {
+				return s.progressBulkImport(ctx, bulkImport.ID, false)
+			}
+			contexts = append(contexts, contextValue)
+		}
+	}
+	if len(contexts) == 0 {
+		return s.progressBulkImport(ctx, bulkImport.ID, false)
+	}
+	action, ok := filterActionValue(fmt.Sprint(values["action"]))
+	if !ok {
+		return s.progressBulkImport(ctx, bulkImport.ID, false)
+	}
+	now := time.Now().UTC()
+	filter := models.CustomFilter{AccountID: models.CustomFilterAccountID(bulkImport.AccountID), Phrase: title, Context: contexts, Action: action, CreatedAt: now, UpdatedAt: now}
+	if raw := strings.TrimSpace(fmt.Sprint(values["expires_at"])); raw != "" && raw != "<nil>" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			filter.ExpiresAt = sql.NullTime{Time: parsed, Valid: true}
+		}
+	}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&filter).Error; err != nil {
+			return err
+		}
+		for _, raw := range anySlice(values["keywords_attributes"]) {
+			keyword, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			row := models.CustomFilterKeyword{CustomFilterID: filter.ID, Keyword: fmt.Sprint(keyword["keyword"]), WholeWord: railsBool(keyword["whole_word"], true), CreatedAt: now, UpdatedAt: now}
+			if strings.TrimSpace(row.Keyword) == "" || len([]rune(row.Keyword)) > 512 {
+				return fmt.Errorf("custom filter keyword is too long")
+			}
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		for _, rawURI := range anySlice(values["statuses"]) {
+			uri := strings.TrimSpace(fmt.Sprint(rawURI))
+			var status models.Status
+			if uri == "" || tx.Select("id").Where("uri = ?", uri).First(&status).Error != nil {
+				continue
+			}
+			join := models.CustomFilterStatus{CustomFilterID: filter.ID, StatusID: status.ID, CreatedAt: now, UpdatedAt: now}
+			if err := tx.Create(&join).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("id = ?", row.ID).Delete(&models.BulkImportRow{}).Error; err != nil {
+			return err
+		}
+		return s.progressBulkImportTx(tx, bulkImport.ID, 1, 1, now)
+	})
+	return err
 }
 
 func (s *Server) processRelationshipImportRow(ctx context.Context, bulkImport models.BulkImport, row models.BulkImportRow) error {
@@ -1758,19 +1896,36 @@ func (s *Server) settingsImportFailuresCSV(c *echo.Context) error {
 	if err != nil {
 		return webAuthResponseError(err)
 	}
-	if !settingsImportFailuresCSVRequested(c) {
-		return noContentError(http.StatusNotAcceptable)
-	}
 	bulkImport, err := s.findBulkImport(account.ID, c.Param("id"), bulkImportStateFinished)
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	typeName := importNameByType[bulkImport.Type]
-	headers := importFailureHeaders(typeName)
 	var rows []models.BulkImportRow
 	if err := s.db.Where("bulk_import_id = ?", bulkImport.ID).Order("id ASC").Find(&rows).Error; err != nil {
 		return err
 	}
+	if typeName == "custom_filters" {
+		if !settingsImportFailuresJSONRequested(c) {
+			return noContentError(http.StatusNotAcceptable)
+		}
+		items := make([]json.RawMessage, 0, len(rows))
+		for _, row := range rows {
+			if json.Valid(row.Data) {
+				items = append(items, json.RawMessage(row.Data))
+			}
+		}
+		body, err := json.Marshal(map[string]any{"custom_filters": items})
+		if err != nil {
+			return err
+		}
+		c.Response().Header().Set("Content-Disposition", `attachment; filename="custom_filters_failures.json"`)
+		return c.Blob(http.StatusOK, "application/json; charset=utf-8", body)
+	}
+	if !settingsImportFailuresCSVRequested(c) {
+		return noContentError(http.StatusNotAcceptable)
+	}
+	headers := importFailureHeaders(typeName)
 	return c.Blob(http.StatusOK, "text/csv; charset=utf-8", csvBytes(importFailureFilename[typeName], headers, func(w *csv.Writer) error {
 		for _, row := range rows {
 			values := map[string]any{}
@@ -1781,6 +1936,20 @@ func (s *Server) settingsImportFailuresCSV(c *echo.Context) error {
 		}
 		return nil
 	}, c))
+}
+
+func settingsImportFailuresJSONRequested(c *echo.Context) bool {
+	format := strings.ToLower(strings.TrimSpace(c.Param("format")))
+	if format == "json" || strings.HasSuffix(strings.ToLower(c.Request().URL.Path), ".json") {
+		return true
+	}
+	for _, part := range strings.Split(c.Request().Header.Get("Accept"), ",") {
+		mediaType, q, _ := parseAcceptEntry(part)
+		if q > 0 && mediaType == "application/json" {
+			return true
+		}
+	}
+	return false
 }
 
 func settingsImportFailuresCSVRequested(c *echo.Context) bool {
@@ -2108,7 +2277,11 @@ func importsHTML(imports []models.BulkImport, noticeText string, errorText strin
 		if failed > 0 {
 			failedText := strconv.Itoa(failed)
 			if bulkImport.State == bulkImportStateFinished {
-				rows.WriteString(`<a href="/settings/imports/` + strconv.FormatInt(bulkImport.ID, 10) + `/failures.csv">` + failedText + `</a>`)
+				extension := ".csv"
+				if importNameByType[bulkImport.Type] == "custom_filters" {
+					extension = ".json"
+				}
+				rows.WriteString(`<a href="/settings/imports/` + strconv.FormatInt(bulkImport.ID, 10) + `/failures` + extension + `">` + failedText + `</a>`)
 			} else {
 				rows.WriteString(failedText)
 			}
@@ -2129,7 +2302,7 @@ func importsHTML(imports []models.BulkImport, noticeText string, errorText strin
 	dataHint := strings.ReplaceAll(settingsT(loc, "simple_form.hints.imports.data", "CSV file exported from another Mastodon server"), "Mastodon", applicationName)
 	return authPageHTML(settingsT(loc, "settings.import", "Import"), noticeText, errorText, `
 	<form class="simple_form new_form_import" id="new_form_import" novalidate="novalidate" method="post" action="/settings/imports" enctype="multipart/form-data">
-	  <div class="field-group"><div class="input with_block_label grouped_select required form_import_type field_with_hint"><label class="grouped_select required" for="form_import_type">`+html.EscapeString(settingsT(loc, "imports.type", "Import type"))+required+`</label><span class="hint">`+html.EscapeString(settingsT(loc, "imports.preface", "You can import data that you have exported from another server."))+`</span><div class="label_input"><select class="grouped_select required" id="form_import_type" name="form_import[type]"><optgroup label="`+html.EscapeString(settingsT(loc, "imports.type_groups.constructive", "Import"))+`"><option value="following">`+html.EscapeString(importTypeLabel(loc, "following"))+`</option><option value="bookmarks">`+html.EscapeString(importTypeLabel(loc, "bookmarks"))+`</option><option value="lists">`+html.EscapeString(importTypeLabel(loc, "lists"))+`</option></optgroup><optgroup label="`+html.EscapeString(settingsT(loc, "imports.type_groups.destructive", "Block and mute"))+`"><option value="muting">`+html.EscapeString(importTypeLabel(loc, "muting"))+`</option><option value="blocking">`+html.EscapeString(importTypeLabel(loc, "blocking"))+`</option><option value="domain_blocking">`+html.EscapeString(importTypeLabel(loc, "domain_blocking"))+`</option></optgroup></select></div></div></div>
+	  <div class="field-group"><div class="input with_block_label grouped_select required form_import_type field_with_hint"><label class="grouped_select required" for="form_import_type">`+html.EscapeString(settingsT(loc, "imports.type", "Import type"))+required+`</label><span class="hint">`+html.EscapeString(settingsT(loc, "imports.preface", "You can import data that you have exported from another server."))+`</span><div class="label_input"><select class="grouped_select required" id="form_import_type" name="form_import[type]"><optgroup label="`+html.EscapeString(settingsT(loc, "imports.type_groups.constructive", "Import"))+`"><option value="following">`+html.EscapeString(importTypeLabel(loc, "following"))+`</option><option value="bookmarks">`+html.EscapeString(importTypeLabel(loc, "bookmarks"))+`</option><option value="lists">`+html.EscapeString(importTypeLabel(loc, "lists"))+`</option></optgroup><optgroup label="`+html.EscapeString(settingsT(loc, "imports.type_groups.destructive", "Block and mute"))+`"><option value="muting">`+html.EscapeString(importTypeLabel(loc, "muting"))+`</option><option value="blocking">`+html.EscapeString(importTypeLabel(loc, "blocking"))+`</option><option value="domain_blocking">`+html.EscapeString(importTypeLabel(loc, "domain_blocking"))+`</option><option value="custom_filters">`+html.EscapeString(importTypeLabel(loc, "custom_filters"))+`</option></optgroup></select></div></div></div>
 	  <div class="fields-row"><div class="fields-group fields-row__column fields-row__column-6"><div class="input with_block_label file required form_import_data field_with_hint"><label class="file required" for="form_import_data">`+html.EscapeString(settingsT(loc, "simple_form.labels.defaults.data", "Data"))+required+`</label><span class="hint">`+html.EscapeString(dataHint)+`</span><div class="label_input"><input class="file required" type="file" name="form_import[data]" id="form_import_data"></div></div></div>
 	  <div class="fields-group fields-row__column fields-row__column-6"><div class="input radio_buttons optional form_import_mode"><ul><input type="hidden" name="form_import[mode]" value=""><li class="radio"><label for="form_import_mode_merge"><input class="radio_buttons optional" type="radio" value="merge" checked name="form_import[mode]" id="form_import_mode_merge">`+html.EscapeString(settingsT(loc, "imports.modes.merge", "Merge"))+`<span class="hint">`+html.EscapeString(settingsT(loc, "imports.modes.merge_long", "Keep existing records and add new ones"))+`</span></label></li><li class="radio"><label for="form_import_mode_overwrite"><input class="radio_buttons optional" type="radio" value="overwrite" name="form_import[mode]" id="form_import_mode_overwrite">`+html.EscapeString(settingsT(loc, "imports.modes.overwrite", "Overwrite"))+`<span class="hint">`+html.EscapeString(settingsT(loc, "imports.modes.overwrite_long", "Replace existing records"))+`</span></label></li></ul></div></div></div>
 	  <div class="actions"><button name="button" type="submit" class="button">`+html.EscapeString(settingsT(loc, "imports.upload", "Upload"))+`</button></div>
@@ -2141,6 +2314,9 @@ func importConfirmHTML(bulkImport models.BulkImport, localeAndTheme ...string) s
 	warning := ""
 	if bulkImport.LikelyMismatched {
 		warning = `<div class="flash-message warning">` + html.EscapeString(settingsT(loc, "imports.mismatched_types_warning", "This CSV looks like a different import type.")) + `</div>`
+	}
+	if bulkImport.MissingStatus {
+		warning += `<div class="flash-message warning">` + html.EscapeString(settingsT(loc, "imports.errors.status_not_found_warning", "Some statuses referenced by this import could not be found.")) + `</div>`
 	}
 	typeName := importNameByType[bulkImport.Type]
 	return authPageHTML(settingsT(loc, "imports.titles."+typeName, "Confirm import"), "", "", `
@@ -2208,6 +2384,10 @@ func importErrorText(locale string, err error) string {
 		return webT(locale, "imports.errors.over_rows_processing_limit", map[string]string{"count": strconv.Itoa(importRowsProcessingLimit)})
 	case strings.HasPrefix(text, "CSV file is invalid: "):
 		return webT(locale, "imports.errors.invalid_csv_file", map[string]string{"error": strings.TrimPrefix(text, "CSV file is invalid: ")})
+	case text == "JSON file is incompatible with the selected import type":
+		return settingsT(locale, "imports.errors.incompatible_type", "Incompatible with the selected import type")
+	case strings.HasPrefix(text, "JSON file has more than "):
+		return webT(locale, "imports.errors.over_rows_processing_limit", map[string]string{"count": strconv.Itoa(importRowsProcessingLimit)})
 	default:
 		return text
 	}

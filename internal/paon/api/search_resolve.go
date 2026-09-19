@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -13,32 +14,115 @@ import (
 	"gorm.io/gorm"
 )
 
-func (s *Server) resolveSearchURL(query string, searchType string, offset int, current ...*models.Account) ([]models.Account, []models.Status, bool, error) {
+func (s *Server) resolveSearchURL(query string, searchType string, offset int, current ...*models.Account) ([]models.Account, []models.Status, []models.Collection, bool, error) {
 	if !searchURLQuery(query) {
-		return nil, nil, false, nil
+		return nil, nil, nil, false, nil
 	}
 	if offset > 0 {
-		return nil, nil, true, nil
+		return nil, nil, nil, true, nil
 	}
 	if searchIncludesType(searchType, "accounts") {
 		account, err := s.resolveSearchAccountURL(query)
 		if err != nil {
-			return nil, nil, true, err
+			return nil, nil, nil, true, err
 		}
 		if account != nil && account.ID != 0 && !account.SuspendedAt.Valid {
-			return []models.Account{*account}, nil, true, nil
+			return []models.Account{*account}, nil, nil, true, nil
 		}
 	}
 	if searchIncludesType(searchType, "statuses") {
 		status, err := s.resolveSearchStatusURL(query, firstAccount(current))
 		if err != nil {
-			return nil, nil, true, err
+			return nil, nil, nil, true, err
 		}
 		if status != nil && status.ID != 0 {
-			return nil, []models.Status{*status}, true, nil
+			return nil, []models.Status{*status}, nil, true, nil
 		}
 	}
-	return nil, nil, true, nil
+	if searchType == "" || searchType == "collections" {
+		collection, err := s.resolveSearchCollectionURL(query, firstAccount(current))
+		if err != nil {
+			return nil, nil, nil, true, err
+		}
+		if collection != nil && collection.ID != 0 {
+			return nil, nil, []models.Collection{*collection}, true, nil
+		}
+	}
+	return nil, nil, nil, true, nil
+}
+
+func (s *Server) resolveSearchCollectionURL(raw string, current *models.Account) (*models.Collection, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return nil, nil
+	}
+	if s.localActivityHost(parsed.Host) {
+		parts := strings.Split(strings.Trim(path.Clean(parsed.Path), "/"), "/")
+		id := ""
+		if len(parts) == 2 && parts[0] == "collections" {
+			id = parts[1]
+		} else if len(parts) == 5 && parts[0] == "ap" && parts[1] == "users" && parts[3] == "collections" {
+			id = parts[4]
+		}
+		if id == "" {
+			return nil, nil
+		}
+		collection, err := s.findCollection(id)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return s.authorizedResolvedCollection(collection, current)
+	}
+	var known models.Collection
+	if err := accountRelationSerializerPreloads(s.db.Model(&models.Collection{}), "Account").Where("collections.uri = ? OR collections.url = ?", raw, raw).First(&known).Error; err == nil {
+		return s.authorizedResolvedCollection(&known, current)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	payload, err := s.fetchActivityResourcePayloadWithUserAgentAndSigner(raw, paonUserAgent(s.cfg), current)
+	if err != nil || len(payload.RawBody) == 0 {
+		return nil, nil
+	}
+	var document map[string]any
+	if json.Unmarshal(payload.RawBody, &document) != nil {
+		return nil, nil
+	}
+	object := parseActivityObject(document)
+	if object.TypeExact != "FeaturedCollection" || object.ID == "" || object.AttributedTo == "" {
+		return nil, nil
+	}
+	owner, err := s.accountFromActivityURI(object.AttributedTo)
+	if err != nil || owner == nil {
+		return nil, err
+	}
+	collection, err := s.findOrCreateRemoteFeaturedCollection(owner, object.ID)
+	if err != nil || collection == nil {
+		return collection, err
+	}
+	if err := s.processActivityPubFeaturedCollectionUpdate(activityPayload{Object: object}, owner); err != nil {
+		return nil, err
+	}
+	return s.authorizedResolvedCollection(collection, current)
+}
+
+func (s *Server) authorizedResolvedCollection(collection *models.Collection, current *models.Account) (*models.Collection, error) {
+	if collection == nil || current == nil || current.ID == 0 || collection.AccountID == current.ID {
+		return collection, nil
+	}
+	blocked, err := s.accountBlocksAccountOrDomain(collection.AccountID, current)
+	if err != nil {
+		return nil, err
+	}
+	if blocked {
+		return nil, nil
+	}
+	return collection, nil
 }
 
 func searchURLQuery(query string) bool {
@@ -76,7 +160,8 @@ func (s *Server) resolveSearchAccountURL(raw string) (*models.Account, error) {
 func (s *Server) resolveSearchRemoteAccountURL(raw string) (*models.Account, error) {
 	actor, err := s.fetchActivityActor(raw)
 	if err == nil && actor.ID != "" && actor.PublicKey.PublicKeyPem != "" {
-		if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
+		actor, err = verifyRemoteActivityActorWebFingerResolved(actor)
+		if err != nil {
 			return nil, nil
 		}
 		return s.upsertRemoteActivityActorForRequest(actor, remoteStatusDiscoveryRequestID("", raw))

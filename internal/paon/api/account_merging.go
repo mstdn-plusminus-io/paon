@@ -33,6 +33,8 @@ var accountMergingOwnedTables = []string{
 	"notification_permissions",
 	"notification_requests",
 	"quotes",
+	"collections",
+	"collection_items",
 }
 
 var accountMergingTargetTables = []string{

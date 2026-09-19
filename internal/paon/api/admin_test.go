@@ -636,7 +636,10 @@ func TestAdminReportQueryDefaultsToRailsUnresolvedScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`if queryParamPresent(c, "resolved")`,
+		`resolved := truthy(c.QueryParam("resolved"))`,
+		`unresolved := truthy(c.QueryParam("unresolved"))`,
+		`if resolved && unresolved`,
+		`} else if resolved {`,
 		`query = query.Where("reports.action_taken_at IS NOT NULL")`,
 		`query = query.Where("reports.action_taken_at IS NULL")`,
 		`if queryParamPresent(c, "account_id")`,
@@ -647,9 +650,6 @@ func TestAdminReportQueryDefaultsToRailsUnresolvedScope(t *testing.T) {
 		if !functionBodyContains(t, src, "adminReportQuery", want) {
 			t.Fatalf("admin.go:adminReportQuery does not contain %q", want)
 		}
-	}
-	if functionBodyContains(t, src, "adminReportQuery", `resolved == "true" || resolved == "1"`) {
-		t.Fatal("adminReportQuery must match Rails ReportFilter: presence of resolved selects resolved reports")
 	}
 	if functionBodyContains(t, src, "adminReportQuery", `if accountID := c.QueryParam("account_id"); accountID != ""`) ||
 		functionBodyContains(t, src, "adminReportQuery", `if targetAccountID := c.QueryParam("target_account_id"); targetAccountID != ""`) {

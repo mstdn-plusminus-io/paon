@@ -24,11 +24,16 @@ import (
 type accountUpdatePayload struct {
 	DisplayName        *string         `json:"display_name"`
 	Note               *string         `json:"note"`
+	AvatarDescription  *string         `json:"avatar_description"`
+	HeaderDescription  *string         `json:"header_description"`
 	Locked             *bool           `json:"locked"`
 	Bot                *bool           `json:"bot"`
 	Discoverable       *bool           `json:"discoverable"`
 	HideCollections    *bool           `json:"hide_collections"`
 	Indexable          *bool           `json:"indexable"`
+	ShowMedia          *bool           `json:"show_media"`
+	ShowMediaReplies   *bool           `json:"show_media_replies"`
+	ShowFeatured       *bool           `json:"show_featured"`
 	AttributionDomains *[]string       `json:"attribution_domains"`
 	FieldsAttributes   []profileField  `json:"fields_attributes"`
 	RawFields          json.RawMessage `json:"-"`
@@ -47,7 +52,103 @@ type profileField struct {
 	VerifiedAt *string `json:"verified_at,omitempty"`
 }
 
+type accountProfileValidationError struct {
+	Field       string
+	Label       string
+	Code        string
+	Description string
+}
+
+func (e accountProfileValidationError) Error() string {
+	return "Validation failed: " + e.Label + " " + e.Description
+}
+
+func renderAccountProfileValidationError(c *echo.Context, err error) error {
+	validation, ok := err.(accountProfileValidationError)
+	if !ok {
+		return err
+	}
+	return c.JSON(http.StatusUnprocessableEntity, map[string]any{
+		"error": validation.Error(),
+		"details": map[string]any{validation.Field: []map[string]string{{
+			"error": validation.Code, "description": validation.Description,
+		}}},
+	})
+}
+
 var profileNoteURLPattern = regexp.MustCompile(`(^|[\s(])https?://[^\s<]+`)
+
+func (s *Server) profile(c *echo.Context) error {
+	c.Response().Header().Set("Vary", "Authorization")
+	user, _, err := s.requireUserScope(c, "profile", "read", "read:accounts")
+	if err != nil {
+		return err
+	}
+	account, err := s.accountForUser(user)
+	if err != nil {
+		return err
+	}
+	featured, err := s.findFeaturedTags(account.ID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, serializer.ProfileFromModel(s.cfg, *account, featured))
+}
+
+func (s *Server) updateProfile(c *echo.Context) error {
+	c.Response().Header().Set("Vary", "Authorization")
+	user, _, err := s.requireUserScope(c, "write", "write:accounts")
+	if err != nil {
+		return err
+	}
+	account, err := s.accountForUser(user)
+	if err != nil {
+		return err
+	}
+	payload, err := parseAccountUpdatePayload(c)
+	if err != nil {
+		return apiError(c, http.StatusBadRequest, "Malformed request")
+	}
+	updates, err := accountUpdateMap(payload)
+	if err != nil {
+		return renderAccountProfileValidationError(c, err)
+	}
+	accountChanged := len(updates) > 0
+	if accountChanged {
+		now := time.Now().UTC()
+		updates["updated_at"] = now
+		if err := s.updateAccountRowsAndTags(*account, updates, payload.Note, now); err != nil {
+			return err
+		}
+	}
+	uploadsChanged, err := s.applyProfileUploads(c, account.ID)
+	if err != nil {
+		return err
+	}
+	accountChanged = accountChanged || uploadsChanged
+	reloaded, err := s.findAccountByID(strconv.FormatInt(account.ID, 10))
+	if err != nil {
+		return err
+	}
+	if accountChanged {
+		s.triggerAccountWebhook("account.updated", reloaded.ID)
+		_ = s.enqueueFASPAccountLifecycleUpdate(c.Request().Context(), *account, *reloaded)
+		if payload.RawFields != nil || len(payload.FieldsAttributes) > 0 {
+			s.enqueueVerifyAccountLinksIfNeeded(c.Request().Context(), *reloaded, time.Now().UTC())
+		}
+		if payload.Locked != nil && account.Locked && !*payload.Locked {
+			if err := s.authorizePendingFollowRequestsForUnlockedAccount(c.Request().Context(), *reloaded); err != nil {
+				return err
+			}
+		}
+		_ = s.enqueueActivityPubAccountUpdate(*reloaded, activityPubAccountUpdateDebounceDelay)
+	}
+	featured, err := s.findFeaturedTags(reloaded.ID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, serializer.ProfileFromModel(s.cfg, *reloaded, featured))
+}
 
 func (s *Server) updateCredentials(c *echo.Context) error {
 	c.Response().Header().Set("Vary", "Authorization")
@@ -65,7 +166,7 @@ func (s *Server) updateCredentials(c *echo.Context) error {
 	}
 	updates, err := accountUpdateMap(payload)
 	if err != nil {
-		return err
+		return renderAccountProfileValidationError(c, err)
 	}
 	accountChanged := len(updates) > 0
 	if len(updates) > 0 {
@@ -439,11 +540,16 @@ func parseAccountUpdatePayload(c *echo.Context) (accountUpdatePayload, error) {
 		}
 		decodeRaw(raw, "display_name", &payload.DisplayName)
 		decodeRaw(raw, "note", &payload.Note)
+		decodeRaw(raw, "avatar_description", &payload.AvatarDescription)
+		decodeRaw(raw, "header_description", &payload.HeaderDescription)
 		decodeRaw(raw, "locked", &payload.Locked)
 		decodeRaw(raw, "bot", &payload.Bot)
 		decodeRaw(raw, "discoverable", &payload.Discoverable)
 		decodeRaw(raw, "hide_collections", &payload.HideCollections)
 		decodeRaw(raw, "indexable", &payload.Indexable)
+		decodeRaw(raw, "show_media", &payload.ShowMedia)
+		decodeRaw(raw, "show_media_replies", &payload.ShowMediaReplies)
+		decodeRaw(raw, "show_featured", &payload.ShowFeatured)
 		decodeRaw(raw, "attribution_domains", &payload.AttributionDomains)
 		if rawFields, ok := raw["fields_attributes"]; ok {
 			payload.RawFields = rawFields
@@ -466,11 +572,16 @@ func parseAccountUpdatePayload(c *echo.Context) (accountUpdatePayload, error) {
 	}
 	payload.DisplayName = stringPtrFromForm(c, "display_name")
 	payload.Note = stringPtrFromForm(c, "note")
+	payload.AvatarDescription = stringPtrFromForm(c, "avatar_description")
+	payload.HeaderDescription = stringPtrFromForm(c, "header_description")
 	payload.Locked = boolPtrFromForm(c, "locked")
 	payload.Bot = boolPtrFromForm(c, "bot")
 	payload.Discoverable = boolPtrFromForm(c, "discoverable")
 	payload.HideCollections = boolPtrFromForm(c, "hide_collections")
 	payload.Indexable = boolPtrFromForm(c, "indexable")
+	payload.ShowMedia = boolPtrFromForm(c, "show_media")
+	payload.ShowMediaReplies = boolPtrFromForm(c, "show_media_replies")
+	payload.ShowFeatured = boolPtrFromForm(c, "show_featured")
 	if values, ok := req.Form["attribution_domains[]"]; ok {
 		copyValues := append([]string(nil), values...)
 		payload.AttributionDomains = &copyValues
@@ -487,17 +598,31 @@ func accountUpdateMap(payload accountUpdatePayload) (map[string]any, error) {
 	updates := map[string]any{}
 	if payload.DisplayName != nil {
 		displayName := strings.TrimSpace(*payload.DisplayName)
-		if len([]rune(displayName)) > 30 {
-			return nil, apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: Display name is too long"}
+		if len([]rune(displayName)) > 40 {
+			return nil, accountProfileValidationError{Field: "display_name", Label: "Display name", Code: "ERR_TOO_LONG", Description: "is too long (maximum is 40 characters)"}
 		}
 		updates["display_name"] = displayName
 	}
 	if payload.Note != nil {
 		note := strings.TrimSpace(*payload.Note)
 		if profileNoteTooLong(note, 500) {
-			return nil, apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: Bio is too long"}
+			return nil, accountProfileValidationError{Field: "note", Label: "Bio", Code: "ERR_TOO_LONG", Description: "is too long (maximum is 500 characters)"}
 		}
 		updates["note"] = note
+	}
+	if payload.AvatarDescription != nil {
+		description := *payload.AvatarDescription
+		if len([]rune(description)) > 150 {
+			return nil, accountProfileValidationError{Field: "avatar_description", Label: "Avatar description", Code: "ERR_TOO_LONG", Description: "is too long (maximum is 150 characters)"}
+		}
+		updates["avatar_description"] = description
+	}
+	if payload.HeaderDescription != nil {
+		description := *payload.HeaderDescription
+		if len([]rune(description)) > 150 {
+			return nil, accountProfileValidationError{Field: "header_description", Label: "Header description", Code: "ERR_TOO_LONG", Description: "is too long (maximum is 150 characters)"}
+		}
+		updates["header_description"] = description
 	}
 	if payload.Locked != nil {
 		updates["locked"] = *payload.Locked
@@ -518,10 +643,19 @@ func accountUpdateMap(payload accountUpdatePayload) (map[string]any, error) {
 	if payload.Indexable != nil {
 		updates["indexable"] = *payload.Indexable
 	}
+	if payload.ShowMedia != nil {
+		updates["show_media"] = *payload.ShowMedia
+	}
+	if payload.ShowMediaReplies != nil {
+		updates["show_media_replies"] = *payload.ShowMediaReplies
+	}
+	if payload.ShowFeatured != nil {
+		updates["show_featured"] = *payload.ShowFeatured
+	}
 	if payload.AttributionDomains != nil {
 		domains, err := localAttributionDomains(strings.Join(*payload.AttributionDomains, "\n"))
 		if err != nil {
-			return nil, apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: Attribution domains is invalid"}
+			return nil, accountProfileValidationError{Field: "attribution_domains", Label: "Attribution domains", Code: "ERR_INVALID", Description: "is invalid"}
 		}
 		updates["attribution_domains"] = models.StringArray(domains)
 	}

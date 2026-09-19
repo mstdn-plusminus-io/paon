@@ -1021,7 +1021,15 @@ type OperationVacuumResult struct {
 	Feeds        int
 }
 
+type OperationVacuumOptions struct {
+	KeepInteracted bool
+}
+
 func (operations *Operations) Vacuum(ctx context.Context, family string, now time.Time) (OperationVacuumResult, error) {
+	return operations.VacuumWithOptions(ctx, family, now, OperationVacuumOptions{})
+}
+
+func (operations *Operations) VacuumWithOptions(ctx context.Context, family string, now time.Time, options OperationVacuumOptions) (OperationVacuumResult, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -1030,7 +1038,11 @@ func (operations *Operations) Vacuum(ctx context.Context, family string, now tim
 	case "statuses":
 		result.Statuses = operations.server.vacuumRemoteStatuses(ctx, now)
 	case "media":
-		result.Media = operations.server.vacuumMediaAttachments(ctx, now)
+		if options.KeepInteracted {
+			result.Media = operations.server.vacuumMediaAttachmentsKeepingInteractions(ctx, now)
+		} else {
+			result.Media = operations.server.vacuumMediaAttachments(ctx, now)
+		}
 	case "preview-cards":
 		result.PreviewCards = operations.server.vacuumCachedPreviewCardImages(ctx, now)
 	case "feeds":

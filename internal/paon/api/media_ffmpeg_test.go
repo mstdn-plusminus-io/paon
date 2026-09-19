@@ -73,6 +73,20 @@ func TestMediaInputProtocolWhitelistExcludesNetworkTransports(t *testing.T) {
 	}
 }
 
+func TestMastodon46VideoTranscodeUsesFPSMode(t *testing.T) {
+	args := railsVideoTranscodeFFmpegArgsForMetadata("input.mp4", mediaTranscodeMetadata{
+		valid:      true,
+		rFrameRate: "121/1",
+	})
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-fps_mode vfr -r 120") {
+		t.Fatalf("high-VFR transcode args = %q, want fps_mode vfr", joined)
+	}
+	if strings.Contains(joined, "-vsync") {
+		t.Fatalf("high-VFR transcode args retain deprecated vsync: %q", joined)
+	}
+}
+
 func TestFFprobeProtocolWhitelistBlocksNestedHTTPPlaylistInput(t *testing.T) {
 	binary, err := exec.LookPath(mediaFFprobeBinary())
 	if err != nil {

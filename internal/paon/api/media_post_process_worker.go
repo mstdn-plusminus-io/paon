@@ -409,7 +409,7 @@ func railsVideoTranscodeFFmpegArgsForMetadataAndLimit(source string, metadata me
 			args = append(args, "-b:v", bitrate, "-maxrate", railsVideoTranscodeMaxrateWithLimit(metadata, videoLimitBytes), "-bufsize", railsVideoTranscodeBufsizeWithLimit(metadata, videoLimitBytes))
 		}
 		if metadata.highVariableFrameRate() {
-			args = append(args, "-vsync", "vfr", "-r", "120")
+			args = append(args, "-fps_mode", "vfr", "-r", "120")
 		}
 	}
 	return args

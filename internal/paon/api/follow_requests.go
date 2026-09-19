@@ -86,7 +86,7 @@ func (s *Server) followRequests(c *echo.Context) error {
 	if len(rows) > 0 {
 		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, rows[0].ID, rows[len(rows)-1].ID, "since_id", len(rows) == limitValue))
 	}
-	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
+	return c.JSON(http.StatusOK, s.serializeAccounts(accounts, account))
 }
 
 func (s *Server) authorizePendingFollowRequestsForUnlockedAccount(ctx context.Context, account models.Account) error {

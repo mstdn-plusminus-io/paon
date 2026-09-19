@@ -6,7 +6,6 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
-	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
 )
 
 type oauthUserInfoResponse struct {
@@ -27,7 +26,7 @@ func (s *Server) oauthUserInfo(c *echo.Context) error {
 }
 
 func (s *Server) oauthUserInfoFromAccount(account models.Account) oauthUserInfoResponse {
-	restAccount := serializer.AccountFromModel(s.cfg, account)
+	restAccount := s.serializeAccount(account)
 	return oauthUserInfoResponse{
 		Issuer:            strings.TrimRight(s.cfg.BaseURL(), "/") + "/",
 		Subject:           activityPubAccountTagManagerURI(s, account),

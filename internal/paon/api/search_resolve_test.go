@@ -22,15 +22,15 @@ func TestSearchURLQueryRequiresHTTPURL(t *testing.T) {
 
 func TestResolveSearchURLSkipsOffsetURLLikeRails(t *testing.T) {
 	s := &Server{cfg: config.Config{Scheme: "https", LocalDomain: "example.com", WebDomain: "example.com"}}
-	accounts, statuses, handled, err := s.resolveSearchURL("https://remote.example/users/alice", "", 10)
+	accounts, statuses, collections, handled, err := s.resolveSearchURL("https://remote.example/users/alice", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !handled {
 		t.Fatal("expected URL query to be handled")
 	}
-	if len(accounts) != 0 || len(statuses) != 0 {
-		t.Fatalf("accounts = %#v statuses = %#v", accounts, statuses)
+	if len(accounts) != 0 || len(statuses) != 0 || len(collections) != 0 {
+		t.Fatalf("accounts = %#v statuses = %#v collections = %#v", accounts, statuses, collections)
 	}
 }
 

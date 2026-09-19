@@ -373,6 +373,8 @@ func TestMastodon43MaliciousJSONLDGraphCannotTriggerActorKeyRefresh(t *testing.T
 		switch destination := tx.Statement.Dest.(type) {
 		case *models.Account:
 			*destination = knownActor
+		case *models.Keypair:
+			tx.AddError(gorm.ErrRecordNotFound)
 		case *models.DomainBlock:
 			tx.AddError(gorm.ErrRecordNotFound)
 		}

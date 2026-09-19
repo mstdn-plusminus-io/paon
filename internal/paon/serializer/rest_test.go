@@ -55,6 +55,70 @@ func TestAccountFromModelLocalURLs(t *testing.T) {
 	}
 }
 
+func TestProfileFromModelUsesRawAndFormattedProfileFields(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	account := models.Account{
+		ID: 42, Username: "alice", DisplayName: "Alice", Note: "hello **world**",
+		AvatarDescription: "avatar alt", HeaderDescription: "header alt",
+		ShowMedia: true, ShowMediaReplies: true, ShowFeatured: true,
+		CreatedAt: time.Now().UTC(), Fields: []byte(`[{"name":"Site","value":"https://example.org"}]`),
+	}
+	profile := ProfileFromModel(cfg, account, nil)
+	if profile.ID != "42" || profile.Note != account.Note || profile.AvatarDescription != "avatar alt" || profile.HeaderDescription != "header alt" {
+		t.Fatalf("profile = %#v", profile)
+	}
+	if len(profile.Fields) != 1 || len(profile.FormattedFields) != 1 || profile.FeaturedTags == nil {
+		t.Fatalf("profile fields = %#v / %#v / %#v", profile.Fields, profile.FormattedFields, profile.FeaturedTags)
+	}
+	if profile.Avatar != nil || profile.Header != nil {
+		t.Fatalf("missing profile images must serialize as null: %#v", profile)
+	}
+}
+
+func TestMastodon46CollectionEntityShape(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	tag := models.Tag{ID: 3, Name: "golang", DisplayName: sql.NullString{String: "GoLang", Valid: true}}
+	collection := models.Collection{
+		ID: 7, AccountID: 9, Name: "People", Description: sql.NullString{String: "Great accounts", Valid: true},
+		Local: true, Sensitive: false, Discoverable: true, Language: sql.NullString{String: "en", Valid: true}, CreatedAt: now, UpdatedAt: now,
+	}
+	items := []models.CollectionItem{
+		{ID: 1, AccountID: sql.NullInt64{Int64: 10, Valid: true}, State: 0, CreatedAt: now},
+		{ID: 2, AccountID: sql.NullInt64{Int64: 11, Valid: true}, State: 2, CreatedAt: now},
+	}
+	out := CollectionFromModel(cfg, collection, &tag, items)
+	if out.ID != "7" || out.AccountID != "9" || out.URI != "https://example.test/ap/users/9/collections/7" || out.URL != "https://example.test/collections/7" {
+		t.Fatalf("collection identity = %#v", out)
+	}
+	if out.Tag == nil || out.Tag.Name != "GoLang" || len(out.Items) != 2 || out.ItemCount != 2 {
+		t.Fatalf("collection relations = %#v", out)
+	}
+	if out.Items[0].AccountID == nil || *out.Items[0].AccountID != "10" || out.Items[1].AccountID != nil {
+		t.Fatalf("collection item visibility = %#v", out.Items)
+	}
+}
+
+func TestMastodon46AccountEmailSubscriptionsUsesHydratedGlobalVisibility(t *testing.T) {
+	cfg := config.Config{Scheme: "https", WebDomain: "example.test", LocalDomain: "example.test", EmailSubscriptionsEnabled: true}
+	account := models.Account{ID: 1, Username: "alice", EmailSubscriptionsValue: true}
+	body, err := json.Marshal(AccountFromModel(cfg, account))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), `"email_subscriptions"`) {
+		t.Fatalf("field must be omitted before global-setting hydration: %s", body)
+	}
+	account.EmailSubscriptionsVisible = true
+	body, err = json.Marshal(AccountFromModel(cfg, account))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"email_subscriptions":true`) {
+		t.Fatalf("hydrated field missing: %s", body)
+	}
+}
+
 func TestNumericActivityPubAccountUsesNumericRESTURIs(t *testing.T) {
 	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
 	account := models.Account{
@@ -924,11 +988,35 @@ func TestScheduledStatusFromModelRestoresApplicationIDLikeMastodon44(t *testing.
 	}
 }
 
+func TestPaonStatusQuoteApprovalIsAlwaysPublicForQuoteablePosts(t *testing.T) {
+	viewer := &models.Account{ID: 99}
+	for _, visibility := range []int{0, 1} {
+		status := models.Status{Visibility: visibility, QuoteApprovalPolicy: 0, QuotePolicyCurrentUser: "denied"}
+		got := paonPublicQuoteApproval(status, viewer)
+		if len(got.Automatic) != 1 || got.Automatic[0] != "public" || len(got.Manual) != 0 || got.CurrentUser != "automatic" {
+			t.Fatalf("visibility %d approval = %#v", visibility, got)
+		}
+	}
+
+	anonymous := paonPublicQuoteApproval(models.Status{Visibility: 0}, nil)
+	if len(anonymous.Automatic) != 1 || anonymous.Automatic[0] != "public" || anonymous.CurrentUser != "denied" {
+		t.Fatalf("anonymous approval = %#v", anonymous)
+	}
+	private := paonPublicQuoteApproval(models.Status{Visibility: 2}, viewer)
+	if len(private.Automatic) != 0 || private.CurrentUser != "denied" {
+		t.Fatalf("private approval = %#v", private)
+	}
+	reblog := paonPublicQuoteApproval(models.Status{Visibility: 0, ReblogOfID: sql.NullInt64{Int64: 1, Valid: true}}, viewer)
+	if len(reblog.Automatic) != 0 || reblog.CurrentUser != "denied" {
+		t.Fatalf("reblog approval = %#v", reblog)
+	}
+}
+
 func TestScheduledStatusFromModelNormalizesMastodon45QuoteParams(t *testing.T) {
 	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
 	out := ScheduledStatusFromModel(cfg, models.ScheduledStatus{
 		ID:     7,
-		Params: models.JSONValue(`{"quoted_status_id":456,"quote_approval_policy":131072}`),
+		Params: models.JSONValue(`{"quoted_status_id":456,"quote_approval_policy":262144,"visibility":"unlisted"}`),
 	})
 
 	if out.Params["quoted_status_id"] != "456" {
@@ -939,8 +1027,12 @@ func TestScheduledStatusFromModelNormalizesMastodon45QuoteParams(t *testing.T) {
 	}
 
 	withoutQuote := ScheduledStatusFromModel(cfg, models.ScheduledStatus{ID: 8, Params: models.JSONValue(`{"status":"plain"}`)})
-	if withoutQuote.Params["quoted_status_id"] != nil || withoutQuote.Params["quote_approval_policy"] != "nobody" {
+	if withoutQuote.Params["quoted_status_id"] != nil || withoutQuote.Params["quote_approval_policy"] != "public" {
 		t.Fatalf("default quote params = %#v", withoutQuote.Params)
+	}
+	privateQuote := ScheduledStatusFromModel(cfg, models.ScheduledStatus{ID: 9, Params: models.JSONValue(`{"visibility":"private","quote_approval_policy":"public"}`)})
+	if privateQuote.Params["quote_approval_policy"] != "nobody" {
+		t.Fatalf("private quote params = %#v", privateQuote.Params)
 	}
 }
 
@@ -1069,10 +1161,10 @@ func TestInstanceFromConfigMarksTranslationDisabled(t *testing.T) {
 	}
 }
 
-func TestInstanceFromConfigAdvertisesMastodon45APIVersion(t *testing.T) {
+func TestInstanceFromConfigAdvertisesMastodon46APIVersion(t *testing.T) {
 	out := InstanceFromConfig(config.Config{}, nil)
-	if got := out.APIVersions["mastodon"]; got != 7 {
-		t.Fatalf("api_versions.mastodon = %d, want 7 for Mastodon 4.5", got)
+	if got := out.APIVersions["mastodon"]; got != 11 {
+		t.Fatalf("api_versions.mastodon = %d, want 11 for Mastodon 4.6", got)
 	}
 }
 
@@ -1129,7 +1221,7 @@ func TestInstanceFromConfigIncludesMastodonConfigurationLimits(t *testing.T) {
 		t.Fatalf("urls config = %#v", out.Configuration["urls"])
 	}
 	accounts, ok := out.Configuration["accounts"].(map[string]any)
-	if !ok || accounts["max_featured_tags"] != 10 {
+	if !ok || accounts["max_featured_tags"] != 10 || accounts["profile_field_name_limit"] != 255 || accounts["profile_field_value_limit"] != 255 {
 		t.Fatalf("accounts config = %#v", out.Configuration["accounts"])
 	}
 	statuses, ok := out.Configuration["statuses"].(map[string]any)
@@ -1166,8 +1258,8 @@ func TestInstanceFromConfigIncludesMastodonConfigurationLimits(t *testing.T) {
 	if !ok {
 		t.Fatalf("media config missing: %#v", out.Configuration)
 	}
-	if media["description_limit"] != 1_500 {
-		t.Fatalf("media description limit = %#v, want Mastodon local limit 1500", media["description_limit"])
+	if media["description_limit"] != 10_000 {
+		t.Fatalf("media description limit = %#v, want Mastodon 4.6 local limit 10000", media["description_limit"])
 	}
 	supported, ok := media["supported_mime_types"].([]string)
 	if !ok {

@@ -12,23 +12,22 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
-func TestQuoteApprovalPolicyNamesMatchMastodon45(t *testing.T) {
+func TestQuoteApprovalPolicyInputsNormalizeToPaonPublicPolicy(t *testing.T) {
 	tests := []struct {
 		name string
-		want int
 	}{
-		{name: "public", want: quotePolicyPublic << 16},
-		{name: "followers", want: quotePolicyFollowers << 16},
-		{name: "nobody", want: 0},
+		{name: "public"},
+		{name: "followers"},
+		{name: "nobody"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, ok := quoteApprovalPolicyFromName(test.name)
-			if !ok || got != test.want {
-				t.Fatalf("quote policy %q = %#x, %v; want %#x, true", test.name, got, ok, test.want)
+			if !ok || got != quotePolicyPublic<<16 {
+				t.Fatalf("quote policy %q = %#x, %v; want public, true", test.name, got, ok)
 			}
-			if gotName := quoteApprovalPolicyName(got); gotName != test.name {
-				t.Fatalf("quote policy %#x name = %q, want %q", got, gotName, test.name)
+			if gotName := quoteApprovalPolicyName(got); gotName != "public" {
+				t.Fatalf("quote policy %#x name = %q, want public", got, gotName)
 			}
 		})
 	}
@@ -66,7 +65,7 @@ func TestMastodon45QuoteAPIsRejectSuspendedResourceOwners(t *testing.T) {
 	}
 }
 
-func TestQuotePolicyDecisionMatchesMastodon45Relationships(t *testing.T) {
+func TestQuotePolicyDecisionIgnoresStoredPolicyAndRelationships(t *testing.T) {
 	author := models.Account{ID: 10}
 	viewer := &models.Account{ID: 20}
 	status := models.Status{ID: 1, AccountID: author.ID, Account: author, Visibility: 0}
@@ -76,16 +75,16 @@ func TestQuotePolicyDecisionMatchesMastodon45Relationships(t *testing.T) {
 		t.Fatalf("public automatic policy = %q", got)
 	}
 	status.QuoteApprovalPolicy = quotePolicyFollowers << 16
-	if got := quotePolicyDecisionWithRelations(status, viewer, true, false); got != quotePolicyAutomatic {
-		t.Fatalf("followers automatic policy = %q", got)
+	if got := quotePolicyDecisionWithRelations(status, viewer, false, false); got != quotePolicyAutomatic {
+		t.Fatalf("followers policy without relationship = %q", got)
 	}
 	status.QuoteApprovalPolicy = quotePolicyFollowing
-	if got := quotePolicyDecisionWithRelations(status, viewer, false, true); got != quotePolicyManual {
-		t.Fatalf("following manual policy = %q", got)
+	if got := quotePolicyDecisionWithRelations(status, viewer, false, false); got != quotePolicyAutomatic {
+		t.Fatalf("following policy without relationship = %q", got)
 	}
 	status.QuoteApprovalPolicy = quotePolicyUnknown
-	if got := quotePolicyDecisionWithRelations(status, viewer, false, false); got != quotePolicyUndecided {
-		t.Fatalf("unsupported policy = %q", got)
+	if got := quotePolicyDecisionWithRelations(status, viewer, false, false); got != quotePolicyAutomatic {
+		t.Fatalf("unsupported stored policy = %q", got)
 	}
 	status.AccountID = viewer.ID
 	status.Visibility = 2
@@ -96,9 +95,14 @@ func TestQuotePolicyDecisionMatchesMastodon45Relationships(t *testing.T) {
 	if got := quotePolicyDecisionWithRelations(status, viewer, false, false); got != quotePolicyDenied {
 		t.Fatalf("direct self-quote policy = %q", got)
 	}
+	status.Visibility = 0
+	status.AccountID = author.ID
+	if got := quotePolicyDecisionWithRelations(status, nil, false, false); got != quotePolicyDenied {
+		t.Fatalf("anonymous quote policy = %q", got)
+	}
 }
 
-func TestActivityPubQuoteInteractionPolicyUsesEachCollectionOnce(t *testing.T) {
+func TestActivityPubQuoteInteractionPolicyAlwaysAdvertisesPublic(t *testing.T) {
 	server := &Server{cfg: config.Config{Scheme: "https", WebDomain: "example.com", LocalDomain: "example.com"}}
 	status := models.Status{
 		QuoteApprovalPolicy: quotePolicyFollowers << 16,
@@ -114,8 +118,21 @@ func TestActivityPubQuoteInteractionPolicyUsesEachCollectionOnce(t *testing.T) {
 		t.Fatalf("canQuote = %#v", policy["canQuote"])
 	}
 	approved, ok := canQuote["automaticApproval"].([]string)
-	if !ok || !reflect.DeepEqual(approved, []string{"https://example.com/users/alice/followers"}) {
+	if !ok || !reflect.DeepEqual(approved, []string{activityPubPublicIRI}) {
 		t.Fatalf("automaticApproval = %#v", canQuote["automaticApproval"])
+	}
+}
+
+func TestPaonQuoteRevocationEndpointPreservesAcceptedAuthorization(t *testing.T) {
+	source, err := os.ReadFile("official_quotes_45.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, source, "revokeStatusQuote")
+	for _, forbidden := range []string{"transitionQuoteState", "deliverDeleteQuoteAuthorization", "quoteRejectedState"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("unconditional quote endpoint still invokes %s: %s", forbidden, body)
+		}
 	}
 }
 

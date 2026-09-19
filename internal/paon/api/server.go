@@ -1581,7 +1581,7 @@ func corsMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			c.Response().Header().Set("Access-Control-Allow-Origin", "*")
 			c.Response().Header().Set("Access-Control-Allow-Methods", "POST, PUT, DELETE, GET, PATCH, OPTIONS")
 			c.Response().Header().Set("Access-Control-Allow-Headers", corsAllowHeaders(req))
-			c.Response().Header().Set("Access-Control-Expose-Headers", "Link, X-RateLimit-Reset, X-RateLimit-Limit, X-RateLimit-Remaining, X-Request-Id")
+			c.Response().Header().Set("Access-Control-Expose-Headers", "Link, Mastodon-Async-Refresh, X-RateLimit-Reset, X-RateLimit-Limit, X-RateLimit-Remaining, X-Request-Id")
 			if req.Method == http.MethodOptions {
 				return c.NoContent(http.StatusNoContent)
 			}
@@ -1708,6 +1708,9 @@ func (s *Server) routes() {
 	e.GET("/tags/:name", s.publicTag)
 	e.GET("/emojis/:id.:format", s.publicEmoji)
 	e.GET("/emojis/:id", s.publicEmoji)
+	e.GET("/collections/:id.json", s.publicCollection)
+	e.GET("/collections/:id.:format", s.publicCollection)
+	e.GET("/collections/:id", s.publicCollection)
 	e.GET("/actor.json", s.activityPubInstanceActor)
 	e.GET("/actor.:format", s.activityPubInstanceActor)
 	e.GET("/actor", s.activityPubInstanceActor)
@@ -1766,6 +1769,15 @@ func (s *Server) routes() {
 	e.GET("/ap/users/:account_id/collections/:id.json", s.numericActivityPubAccountRoute(s.activityPubCollection))
 	e.GET("/ap/users/:account_id/collections/:id.:format", s.numericActivityPubAccountRoute(s.activityPubCollection))
 	e.GET("/ap/users/:account_id/collections/:id", s.numericActivityPubAccountRoute(s.activityPubCollection))
+	e.GET("/ap/users/:account_id/collection_items/:id.json", s.numericActivityPubAccountRoute(s.activityPubCollectionItem))
+	e.GET("/ap/users/:account_id/collection_items/:id.:format", s.numericActivityPubAccountRoute(s.activityPubCollectionItem))
+	e.GET("/ap/users/:account_id/collection_items/:id", s.numericActivityPubAccountRoute(s.activityPubCollectionItem))
+	e.GET("/ap/users/:account_id/feature_authorizations/:id.json", s.numericActivityPubAccountRoute(s.activityPubFeatureAuthorization))
+	e.GET("/ap/users/:account_id/feature_authorizations/:id.:format", s.numericActivityPubAccountRoute(s.activityPubFeatureAuthorization))
+	e.GET("/ap/users/:account_id/feature_authorizations/:id", s.numericActivityPubAccountRoute(s.activityPubFeatureAuthorization))
+	e.GET("/ap/users/:account_id/featured_collections.json", s.numericActivityPubAccountRoute(s.activityPubFeaturedCollections))
+	e.GET("/ap/users/:account_id/featured_collections.:format", s.numericActivityPubAccountRoute(s.activityPubFeaturedCollections))
+	e.GET("/ap/users/:account_id/featured_collections", s.numericActivityPubAccountRoute(s.activityPubFeaturedCollections))
 	e.GET("/ap/users/:account_id/statuses/:id/replies.json", s.numericActivityPubAccountRoute(s.activityPubReplies))
 	e.GET("/ap/users/:account_id/statuses/:id/replies.:format", s.numericActivityPubAccountRoute(s.activityPubReplies))
 	e.GET("/ap/users/:account_id/statuses/:id/replies", s.numericActivityPubAccountRoute(s.activityPubReplies))
@@ -1805,15 +1817,21 @@ func (s *Server) routes() {
 	e.GET("/invite/:invite_code", s.publicInvite)
 	e.GET("/redirect/accounts/:id", s.redirectRemoteAccount)
 	e.GET("/redirect/statuses/:id", s.redirectRemoteStatus)
+	e.GET("/redirect/collections/:id", s.redirectRemoteCollection)
 	e.GET("/severed_relationships", s.severedRelationshipsPage)
+	e.GET("/severed_relationships/:id/following", s.severedRelationshipsFollowing)
 	e.GET("/severed_relationships/:id/following.csv", s.severedRelationshipsFollowing)
+	e.GET("/severed_relationships/:id/followers", s.severedRelationshipsFollowers)
 	e.GET("/severed_relationships/:id/followers.csv", s.severedRelationshipsFollowers)
 	e.GET("/unsubscribe.:format", s.unsubscribePage)
 	e.GET("/unsubscribe", s.unsubscribePage)
 	e.POST("/unsubscribe.:format", s.createUnsubscribe)
 	e.POST("/unsubscribe", s.createUnsubscribe)
+	e.GET("/email_subscriptions/confirmation", s.confirmEmailSubscription)
 	e.GET("/auth/setup.:format", s.authSetupPage)
 	e.GET("/auth/setup", s.authSetupPage)
+	e.POST("/auth/acceptance.:format", s.createAuthAcceptance)
+	e.POST("/auth/acceptance", s.createAuthAcceptance)
 	e.POST("/auth/setup.:format", s.notFound)
 	e.POST("/auth/setup", s.notFound)
 	e.PUT("/auth/setup.:format", s.updateAuthSetup)
@@ -1941,6 +1959,7 @@ func (s *Server) routes() {
 	e.GET("/api/v1/instance/peers", s.instancePeers)
 	e.GET("/api/v1/instance/rules", s.instanceRules)
 	e.GET("/api/v1/instance/languages", s.instanceLanguages)
+	e.GET("/api/v1/donation_campaigns", s.donationCampaigns)
 	e.GET("/api/v1/instance/activity", s.instanceActivity)
 	e.GET("/api/v2/instance_stats/:domain", s.instanceStatsV2)
 	e.GET("/api/v1/peers/search", s.peerSearch)
@@ -2072,6 +2091,9 @@ func (s *Server) routes() {
 	e.POST("/api/v1/follow_requests/:id/reject", s.rejectFollowRequest)
 	e.DELETE("/api/v1/profile/avatar", s.deleteProfileAvatar)
 	e.DELETE("/api/v1/profile/header", s.deleteProfileHeader)
+	e.GET("/api/v1/profile", s.profile)
+	e.PUT("/api/v1/profile", s.updateProfile)
+	e.PATCH("/api/v1/profile", s.updateProfile)
 
 	e.POST("/api/v1/apps", s.createApp)
 	e.GET("/api/v1/apps/verify_credentials", s.verifyAppCredentials)
@@ -2089,6 +2111,8 @@ func (s *Server) routes() {
 	e.GET("/api/v1/accounts/:id/identity_proofs", deprecatedAPIHandler("@1648598400", s.identityProofs))
 	e.GET("/api/v1/accounts/:id/featured_tags", s.accountFeaturedTags)
 	e.GET("/api/v1/accounts/:id/endorsements", s.accountEndorsements)
+	e.GET("/api/v1/accounts/:id/collections", s.accountCollections)
+	e.GET("/api/v1/accounts/:id/in_collections", s.inCollections)
 	e.GET("/api/v1/accounts/:id", s.getAccount)
 	e.GET("/api/v1/accounts/:id/statuses", s.accountStatuses)
 	e.GET("/api/v1/accounts/:id/followers", s.accountFollowers)
@@ -2101,10 +2125,30 @@ func (s *Server) routes() {
 	e.POST("/api/v1/accounts/:id/mute", s.muteAccount)
 	e.POST("/api/v1/accounts/:id/unmute", s.unmuteAccount)
 	e.POST("/api/v1/accounts/:id/note", s.noteAccount)
+	e.POST("/api/v1/accounts/:id/email_subscriptions", s.createAccountEmailSubscription)
 	e.POST("/api/v1/accounts/:id/pin", s.pinAccount)
 	e.POST("/api/v1/accounts/:id/endorse", s.pinAccount)
 	e.POST("/api/v1/accounts/:id/unpin", s.unpinAccount)
 	e.POST("/api/v1/accounts/:id/unendorse", s.unpinAccount)
+	e.GET("/api/v1/collections/:id", s.showCollection)
+	e.POST("/api/v1/collections", s.createCollection)
+	e.PUT("/api/v1/collections/:id", s.updateCollection)
+	e.PATCH("/api/v1/collections/:id", s.updateCollection)
+	e.DELETE("/api/v1/collections/:id", s.deleteCollection)
+	e.POST("/api/v1/collections/:collection_id/items", s.createCollectionItem)
+	e.DELETE("/api/v1/collections/:collection_id/items/:id", s.deleteCollectionItem)
+	e.POST("/api/v1/collections/:collection_id/items/:id/revoke", s.revokeCollectionItem)
+
+	e.GET("/api/v1_alpha/accounts/:id/collections", deprecatedAPIHandler("@1781049600", s.accountCollections))
+	e.GET("/api/v1_alpha/accounts/:id/in_collections", deprecatedAPIHandler("@1781049600", s.inCollections))
+	e.GET("/api/v1_alpha/collections/:id", deprecatedAPIHandler("@1781049600", s.showCollection))
+	e.POST("/api/v1_alpha/collections", deprecatedAPIHandler("@1781049600", s.createCollection))
+	e.PUT("/api/v1_alpha/collections/:id", deprecatedAPIHandler("@1781049600", s.updateCollection))
+	e.PATCH("/api/v1_alpha/collections/:id", deprecatedAPIHandler("@1781049600", s.updateCollection))
+	e.DELETE("/api/v1_alpha/collections/:id", deprecatedAPIHandler("@1781049600", s.deleteCollection))
+	e.POST("/api/v1_alpha/collections/:collection_id/items", deprecatedAPIHandler("@1781049600", s.createCollectionItem))
+	e.DELETE("/api/v1_alpha/collections/:collection_id/items/:id", deprecatedAPIHandler("@1781049600", s.deleteCollectionItem))
+	e.POST("/api/v1_alpha/collections/:collection_id/items/:id/revoke", deprecatedAPIHandler("@1781049600", s.revokeCollectionItem))
 
 	e.GET("/api/v1/statuses", s.statusesByID)
 	e.GET("/api/v1/statuses/:id", s.getStatus)
@@ -2167,6 +2211,8 @@ func (s *Server) routes() {
 	e.GET("/api/v1/annual_reports", s.annualReports)
 	e.GET("/api/v1/annual_reports/:id", s.annualReport)
 	e.POST("/api/v1/annual_reports/:id/read", s.readAnnualReport)
+	e.GET("/api/v1/annual_reports/:id/state", s.annualReportState)
+	e.POST("/api/v1/annual_reports/:id/generate", s.generateAnnualReportAPI)
 	e.GET("/api/v1/filters", deprecatedAPIHandler("@1668384000", s.v1Filters))
 	e.POST("/api/v1/filters", deprecatedAPIHandler("@1668384000", s.createV1Filter))
 	e.GET("/api/v1/filters/:id", deprecatedAPIHandler("@1668384000", s.showV1Filter))
@@ -2574,6 +2620,12 @@ func (s *Server) routes() {
 	e.POST("/admin/accounts/:account_id/statuses/batch", s.batchAdminAccountStatusesWeb)
 	e.GET("/admin/accounts/:account_id/relationships.:format", s.adminAccountRelationshipsPage)
 	e.GET("/admin/accounts/:account_id/relationships", s.adminAccountRelationshipsPage)
+	e.GET("/admin/accounts/:account_id/collections.:format", s.adminAccountCollectionsPage)
+	e.GET("/admin/accounts/:account_id/collections", s.adminAccountCollectionsPage)
+	e.GET("/admin/accounts/:account_id/collections/:id.:format", optionalFormatPathParam("id", s.adminAccountCollectionPage))
+	e.GET("/admin/accounts/:account_id/collections/:id", s.adminAccountCollectionPage)
+	e.POST("/admin/accounts/:account_id/collections/batch.:format", s.batchAdminAccountCollections)
+	e.POST("/admin/accounts/:account_id/collections/batch", s.batchAdminAccountCollections)
 	e.GET("/admin/accounts/:account_id/change_email.:format", s.adminAccountChangeEmailPage)
 	e.GET("/admin/accounts/:account_id/change_email", s.adminAccountChangeEmailPage)
 	e.PUT("/admin/accounts/:account_id/change_email.:format", s.updateAdminAccountChangeEmail)
@@ -2631,6 +2683,30 @@ func (s *Server) routes() {
 	e.POST("/admin/email_domain_blocks", s.createAdminEmailDomainBlockWeb)
 	e.POST("/admin/email_domain_blocks/batch.:format", s.batchAdminEmailDomainBlocks)
 	e.POST("/admin/email_domain_blocks/batch", s.batchAdminEmailDomainBlocks)
+	e.GET("/admin/email_subscriptions.:format", s.adminEmailSubscriptionsPage)
+	e.GET("/admin/email_subscriptions", s.adminEmailSubscriptionsPage)
+	e.DELETE("/admin/email_subscriptions/:id.:format", optionalFormatPathParam("id", s.destroyAdminEmailSubscription))
+	e.DELETE("/admin/email_subscriptions/:id", s.destroyAdminEmailSubscription)
+	e.POST("/admin/email_subscriptions/disable.:format", s.disableAdminEmailSubscriptions)
+	e.POST("/admin/email_subscriptions/disable", s.disableAdminEmailSubscriptions)
+	e.POST("/admin/email_subscriptions/purge.:format", s.purgeAdminEmailSubscriptions)
+	e.POST("/admin/email_subscriptions/purge", s.purgeAdminEmailSubscriptions)
+	e.GET("/admin/email_subscriptions/accounts/:id.:format", optionalFormatPathParam("id", s.adminEmailSubscriptionAccountPage))
+	e.GET("/admin/email_subscriptions/accounts/:id", s.adminEmailSubscriptionAccountPage)
+	e.POST("/admin/email_subscriptions/accounts/:id/disable.:format", s.disableAdminAccountEmailSubscriptions)
+	e.POST("/admin/email_subscriptions/accounts/:id/disable", s.disableAdminAccountEmailSubscriptions)
+	e.POST("/admin/email_subscriptions/accounts/:id/enable.:format", s.enableAdminAccountEmailSubscriptions)
+	e.POST("/admin/email_subscriptions/accounts/:id/enable", s.enableAdminAccountEmailSubscriptions)
+	e.GET("/admin/email_subscriptions/additional_footer_text.:format", s.adminEmailSubscriptionFooterPage)
+	e.GET("/admin/email_subscriptions/additional_footer_text", s.adminEmailSubscriptionFooterPage)
+	e.PUT("/admin/email_subscriptions/additional_footer_text.:format", s.updateAdminEmailSubscriptionFooter)
+	e.PUT("/admin/email_subscriptions/additional_footer_text", s.updateAdminEmailSubscriptionFooter)
+	e.PATCH("/admin/email_subscriptions/additional_footer_text.:format", s.updateAdminEmailSubscriptionFooter)
+	e.PATCH("/admin/email_subscriptions/additional_footer_text", s.updateAdminEmailSubscriptionFooter)
+	e.GET("/admin/email_subscriptions/setup.:format", s.adminEmailSubscriptionSetupPage)
+	e.GET("/admin/email_subscriptions/setup", s.adminEmailSubscriptionSetupPage)
+	e.POST("/admin/email_subscriptions/setup.:format", s.createAdminEmailSubscriptionSetup)
+	e.POST("/admin/email_subscriptions/setup", s.createAdminEmailSubscriptionSetup)
 	e.GET("/admin/domain_allows/new.:format", s.newAdminDomainAllowPage)
 	e.GET("/admin/domain_allows/new", s.newAdminDomainAllowPage)
 	e.POST("/admin/domain_allows.:format", s.createAdminDomainAllowWeb)
@@ -2655,11 +2731,13 @@ func (s *Server) routes() {
 	e.POST("/admin/domain_blocks/:id", s.notFound)
 	e.GET("/admin/export_domain_allows/new.:format", s.newAdminExportDomainAllowsPage)
 	e.GET("/admin/export_domain_allows/new", s.newAdminExportDomainAllowsPage)
+	e.GET("/admin/export_domain_allows/export", s.exportAdminDomainAllowsCSV)
 	e.GET("/admin/export_domain_allows/export.csv", s.exportAdminDomainAllowsCSV)
 	e.POST("/admin/export_domain_allows/import.:format", s.importAdminDomainAllowsCSV)
 	e.POST("/admin/export_domain_allows/import", s.importAdminDomainAllowsCSV)
 	e.GET("/admin/export_domain_blocks/new.:format", s.newAdminExportDomainBlocksPage)
 	e.GET("/admin/export_domain_blocks/new", s.newAdminExportDomainBlocksPage)
+	e.GET("/admin/export_domain_blocks/export", s.exportAdminDomainBlocksCSV)
 	e.GET("/admin/export_domain_blocks/export.csv", s.exportAdminDomainBlocksCSV)
 	e.POST("/admin/export_domain_blocks/import.:format", s.importAdminDomainBlocksCSV)
 	e.POST("/admin/export_domain_blocks/import", s.importAdminDomainBlocksCSV)
@@ -2796,11 +2874,19 @@ func (s *Server) routes() {
 	e.POST("/settings/export.:format", s.createBackup)
 	e.POST("/settings/export", s.createBackup)
 	e.GET("/settings/exports/follows.csv", s.exportFollowsCSV)
+	e.GET("/settings/exports/follows", s.exportFollowsCSV)
 	e.GET("/settings/exports/blocks.csv", s.exportBlocksCSV)
+	e.GET("/settings/exports/blocks", s.exportBlocksCSV)
 	e.GET("/settings/exports/mutes.csv", s.exportMutesCSV)
+	e.GET("/settings/exports/mutes", s.exportMutesCSV)
 	e.GET("/settings/exports/lists.csv", s.exportListsCSV)
+	e.GET("/settings/exports/lists", s.exportListsCSV)
 	e.GET("/settings/exports/domain_blocks.csv", s.exportDomainBlocksCSV)
+	e.GET("/settings/exports/domain_blocks", s.exportDomainBlocksCSV)
 	e.GET("/settings/exports/bookmarks.csv", s.exportBookmarksCSV)
+	e.GET("/settings/exports/bookmarks", s.exportBookmarksCSV)
+	e.GET("/settings/exports/custom_filters.json", s.exportCustomFiltersJSON)
+	e.GET("/settings/exports/custom_filters", s.exportCustomFiltersJSON)
 	e.GET("/settings/imports.:format", s.settingsImportsPage)
 	e.GET("/settings/imports", s.settingsImportsPage)
 	e.POST("/settings/imports.:format", s.createSettingsImport)
@@ -2913,6 +2999,13 @@ func (s *Server) routes() {
 	s.registerWebAppRoutes(
 		"/explore",
 		"/explore/*",
+		"/overview",
+		"/overview/about",
+		"/overview/*",
+		"/collections",
+		"/collections/*",
+		"/profile",
+		"/profile/*",
 		"/search",
 		"/@:username/:id/reblogs",
 		"/@:username/:id/favourites",
@@ -2924,6 +3017,8 @@ func (s *Server) routes() {
 	e.GET("/@:username.:format", s.publicAccount)
 	e.GET("/@:username/featured", s.publicAccount)
 	e.GET("/@:username/featured.:format", s.publicAccount)
+	e.GET("/@:username/collections", s.publicAccount)
+	e.GET("/@:username/collections.:format", s.publicAccount)
 	e.GET("/@:username/with_replies", s.publicAccountWithReplies)
 	e.GET("/@:username/with_replies.json", s.publicAccountWithReplies)
 	e.GET("/@:username/with_replies.rss", s.publicAccountWithReplies)
@@ -2934,6 +3029,7 @@ func (s *Server) routes() {
 	e.GET("/@:username/media.:format", s.publicAccountMedia)
 	e.GET("/@:username/tagged/:tag", s.publicAccountTagged)
 	e.GET("/@:username/tagged/:tag.:format", s.publicAccountTagged)
+	e.GET("/@:username/wrapstodon/:year/:share_key", s.publicWrapstodon)
 	e.GET("/@:username/followers", s.publicAccountFollowers)
 	e.GET("/@:username/followers.json", s.publicAccountFollowersJSON)
 	e.GET("/@:username/followers.:format", s.publicAccountFollowers)
@@ -3478,9 +3574,10 @@ func (s *Server) userRoleByID(id int64) (*models.UserRole, error) {
 	err := s.db.Where("id = ?", id).First(&role).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) && id == -99 {
 		return &models.UserRole{
-			ID:          -99,
-			Permissions: 1 << 16,
-			Position:    -1,
+			ID:              -99,
+			Permissions:     1 << 16,
+			Position:        -1,
+			CollectionLimit: 10,
 		}, nil
 	}
 	if err != nil {
@@ -3552,6 +3649,14 @@ func (s *Server) settingsPage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
+	emailSubscriptionsEnabled := false
+	emailSubscriptionsCount := int64(0)
+	if c.Request().URL.Path == "/settings/privacy" {
+		emailSubscriptionsEnabled, emailSubscriptionsCount, err = s.settingsPrivacyEmailSubscriptionState(account.ID, permissions)
+		if err != nil {
+			return err
+		}
+	}
 	if c.Request().URL.Path == "/settings/two_factor_authentication_methods" && !user.OTPRequiredForLogin {
 		params := url.Values{}
 		for _, key := range []string{"notice", "error"} {
@@ -3569,6 +3674,8 @@ func (s *Server) settingsPage(c *echo.Context) error {
 		ErrorText:                  c.QueryParam("error"),
 		Permissions:                permissions,
 		SoftwareUpdateCheckEnabled: s.softwareUpdateCheckEnabled(),
+		EmailSubscriptionsEnabled:  emailSubscriptionsEnabled,
+		EmailSubscriptionsCount:    emailSubscriptionsCount,
 		Functional:                 webUserFunctional(*user, false),
 		FunctionalOrMoved:          webUserFunctional(*user, true),
 		LimitedFederationMode:      s.cfg.LimitedFederationMode,
@@ -3842,7 +3949,7 @@ func (s *Server) instanceV1(c *echo.Context) error {
 	}
 	var contactAccount any
 	if metadata.ContactAccount != nil {
-		contactAccount = serializer.AccountFromModel(s.cfg, *metadata.ContactAccount)
+		contactAccount = s.serializeAccount(*metadata.ContactAccount)
 	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"uri":               instance.Domain,
@@ -3872,13 +3979,22 @@ func instanceV1Configuration(configuration map[string]any) map[string]any {
 		}
 		if key == "accounts" {
 			accounts, _ := value.(map[string]any)
-			legacyAccounts := make(map[string]any, len(accounts))
-			for accountKey, accountValue := range accounts {
-				if accountKey != "max_pinned_statuses" {
-					legacyAccounts[accountKey] = accountValue
-				}
+			legacyAccounts := map[string]any{}
+			if value, ok := accounts["max_featured_tags"]; ok {
+				legacyAccounts["max_featured_tags"] = value
 			}
 			out[key] = legacyAccounts
+			continue
+		}
+		if key == "media_attachments" {
+			media, _ := value.(map[string]any)
+			legacyMedia := make(map[string]any, len(media))
+			for mediaKey, mediaValue := range media {
+				if mediaKey != "description_limit" {
+					legacyMedia[mediaKey] = mediaValue
+				}
+			}
+			out[key] = legacyMedia
 			continue
 		}
 		out[key] = value
@@ -3925,18 +4041,19 @@ func (s *Server) instanceMetadata() serializer.InstanceMetadata {
 		termsOfServiceURL = s.cfg.BaseURL() + "/terms-of-service"
 	}
 	return serializer.InstanceMetadata{
-		Title:             s.settingRawValue("site_title", s.cfg.Title),
-		TitleSet:          true,
-		ShortDescription:  s.settingRawValue("site_short_description", ""),
-		Description:       s.settingRawValue("site_description", ""),
-		ContactEmail:      s.settingRawValue("site_contact_email", ""),
-		ContactAccount:    contactAccount,
-		Thumbnail:         thumbnail,
-		AppIcon:           appIcon,
-		AppIconURLs:       s.instanceAppIconURLs(),
-		PreviewImageURL:   s.packAssetURL("media/images/preview.png"),
-		StatusPageURL:     s.settingRawValue("status_page_url", ""),
-		TermsOfServiceURL: termsOfServiceURL,
+		Title:                s.settingRawValue("site_title", s.cfg.Title),
+		TitleSet:             true,
+		ShortDescription:     s.settingRawValue("site_short_description", ""),
+		Description:          s.settingRawValue("site_description", ""),
+		ContactEmail:         s.settingRawValue("site_contact_email", ""),
+		ContactAccount:       contactAccount,
+		Thumbnail:            thumbnail,
+		ThumbnailDescription: s.settingRawValue("thumbnail_description", ""),
+		AppIcon:              appIcon,
+		AppIconURLs:          s.instanceAppIconURLs(),
+		PreviewImageURL:      s.packAssetURL("media/images/preview.png"),
+		StatusPageURL:        s.settingRawValue("status_page_url", ""),
+		TermsOfServiceURL:    termsOfServiceURL,
 		TimelinesAccess: map[string]any{
 			"live_feeds": map[string]string{
 				"local":  normalizeTimelineAccess(s.settingStringValue("local_live_feed_access", timelineAccessPublic)),
@@ -3951,7 +4068,15 @@ func (s *Server) instanceMetadata() serializer.InstanceMetadata {
 				"remote": normalizeTimelineAccess(s.settingStringValue("remote_topic_feed_access", timelineAccessPublic)),
 			},
 		},
+		Wrapstodon: s.wrapstodonCampaign(time.Now().UTC()),
 	}
+}
+
+func (s *Server) wrapstodonCampaign(now time.Time) any {
+	if !s.settingBoolValue("wrapstodon", false) || now.UTC().Month() != time.December || now.UTC().Day() < 10 {
+		return nil
+	}
+	return now.UTC().Year()
 }
 
 func (s *Server) instanceAppIconURLs() map[string]string {
@@ -4269,7 +4394,11 @@ func (s *Server) getAccount(c *echo.Context) error {
 	if accountHiddenFromAccountsShow(account) {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
-	return c.JSON(http.StatusOK, serializer.AccountFromModel(s.cfg, *account))
+	current, _, _ := s.currentAccount(c)
+	if err := s.hydrateAccountFeaturePolicies([]*models.Account{account}, current); err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, s.serializeAccountForCurrent(*account, current))
 }
 
 func accountHiddenFromAccountsShow(account *models.Account) bool {
@@ -4294,7 +4423,11 @@ func (s *Server) lookupAccount(c *echo.Context) error {
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
-	return c.JSON(http.StatusOK, serializer.AccountFromModel(s.cfg, *account))
+	current, _, _ := s.currentAccount(c)
+	if err := s.hydrateAccountFeaturePolicies([]*models.Account{account}, current); err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, s.serializeAccountForCurrent(*account, current))
 }
 
 func (s *Server) searchAccounts(c *echo.Context) error {
@@ -4342,9 +4475,16 @@ func (s *Server) searchAccounts(c *echo.Context) error {
 			accounts = append(accounts, searchResults...)
 		}
 	}
+	accountPtrs := make([]*models.Account, 0, len(accounts))
+	for i := range accounts {
+		accountPtrs = append(accountPtrs, &accounts[i])
+	}
+	if err := s.hydrateAccountFeaturePolicies(accountPtrs, account); err != nil {
+		return err
+	}
 	out := make([]serializer.Account, 0, len(accounts))
-	for _, account := range accounts {
-		out = append(out, serializer.AccountFromModel(s.cfg, account))
+	for _, item := range accounts {
+		out = append(out, s.serializeAccountForCurrent(item, account))
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -4526,6 +4666,9 @@ func (s *Server) accountStatuses(c *echo.Context) error {
 		}
 	}
 	query := s.visibleStatusQuery(current).Where("statuses.account_id = ?", target.ID)
+	if truthy(c.QueryParam("exclude_direct")) {
+		query = query.Where("statuses.visibility <> ?", 3)
+	}
 	if truthy(c.QueryParam("exclude_reblogs")) {
 		query = query.Where("statuses.reblog_of_id IS NULL")
 	}
@@ -4817,7 +4960,10 @@ func applyOnlyMediaFilterForAccount(c *echo.Context, query *gorm.DB, accountID i
 	if !truthy(c.QueryParam("only_media")) {
 		return query
 	}
-	return query.Where(`EXISTS (
+	return query.Where(`(
+		statuses.ordered_media_attachment_ids IS NULL
+		OR cardinality(statuses.ordered_media_attachment_ids) > 0
+	)`).Where(`EXISTS (
 		SELECT 1 FROM media_attachments timeline_media
 		WHERE timeline_media.status_id = statuses.id
 		  AND timeline_media.account_id = ?
@@ -5123,9 +5269,6 @@ func (s *Server) createStatus(c *echo.Context) error {
 	if err := validateStatusDisallowedHashtags(c.Request().Context(), s.db, text); err != nil {
 		return err
 	}
-	if hasPoll && submittedMediaIDsPresent(payload.MediaIDs) {
-		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Media attachments can't be attached to polls")
-	}
 	var scheduledAt time.Time
 	if strings.TrimSpace(payload.ScheduledAt) != "" {
 		scheduledAt, err = parseScheduledAt(payload.ScheduledAt)
@@ -5199,7 +5342,7 @@ func (s *Server) createStatus(c *echo.Context) error {
 	if unexpected := unexpectedMentionAccounts(preflightMentions, payload.AllowedMentions, payload.HasAllowedMentions); len(unexpected) > 0 {
 		return c.JSON(http.StatusUnprocessableEntity, map[string]any{
 			"error":               unexpectedMentionsError{accounts: unexpected}.Error(),
-			"unexpected_accounts": serializeAccounts(s.cfg, unexpected),
+			"unexpected_accounts": s.serializeAccounts(unexpected, account),
 		})
 	}
 	if quotedStatus != nil && visibility == 3 && quotedStatus.AccountID != account.ID && !s.statusTextExplicitlyMentionsAccount(text, &quotedStatus.Account) {
@@ -5340,7 +5483,7 @@ func (s *Server) createStatus(c *echo.Context) error {
 		if errors.As(err, &unexpected) {
 			return c.JSON(http.StatusUnprocessableEntity, map[string]any{
 				"error":               unexpected.Error(),
-				"unexpected_accounts": serializeAccounts(s.cfg, unexpected.accounts),
+				"unexpected_accounts": s.serializeAccounts(unexpected.accounts, account),
 			})
 		}
 		if errors.Is(err, errQuotedUserNotMentioned) {
@@ -5562,14 +5705,10 @@ func (s *Server) updateStatus(c *echo.Context) error {
 		}
 	}
 	if payload.HasMediaIDs {
-		rawMediaIDs := payload.MediaIDs
 		if submittedMediaIDsPresent(payload.MediaIDs) && submittedMediaIDsCount(payload.MediaIDs) > s.maxMediaAttachments() {
 			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Too many media attachments")
 		}
 		payload.MediaIDs = compactMediaIDs(payload.MediaIDs)
-		if payload.HasPoll && payload.Poll != nil && submittedMediaIDsPresent(rawMediaIDs) {
-			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Media attachments can't be attached to polls")
-		}
 	}
 	if payload.HasPoll && payload.Poll != nil {
 		if err := validatePollPayload(payload.Poll, time.Now().UTC()); err != nil {
@@ -6393,7 +6532,7 @@ func (s *Server) search(c *echo.Context) error {
 	}
 
 	if resolve {
-		resolvedAccounts, resolvedStatuses, handled, err := s.resolveSearchURL(q, searchType, offsetValue, account)
+		resolvedAccounts, resolvedStatuses, resolvedCollections, handled, err := s.resolveSearchURL(q, searchType, offsetValue, account)
 		if err != nil {
 			return err
 		}
@@ -6401,10 +6540,15 @@ func (s *Server) search(c *echo.Context) error {
 			if err := s.hydrateStatusRelationships(resolvedStatuses, account); err != nil {
 				return err
 			}
+			serializedCollections, err := s.serializeSearchCollections(resolvedCollections, account)
+			if err != nil {
+				return err
+			}
 			return c.JSON(http.StatusOK, serializer.Search{
-				Accounts: serializeAccounts(s.cfg, resolvedAccounts),
-				Statuses: serializeStatusesWithFilterContext(s.cfg, resolvedStatuses, account, s.accountFilters(account), statusListFilterContext(c)),
-				Hashtags: []serializer.TagDetail{},
+				Accounts:    s.serializeAccounts(resolvedAccounts, account),
+				Statuses:    serializeStatusesWithFilterContext(s.cfg, resolvedStatuses, account, s.accountFilters(account), statusListFilterContext(c)),
+				Hashtags:    []serializer.TagDetail{},
+				Collections: serializedCollections,
 			})
 		}
 	}
@@ -6503,9 +6647,10 @@ func (s *Server) search(c *echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusOK, serializer.Search{
-		Accounts: serializeAccounts(s.cfg, accounts),
-		Statuses: serializeStatusesWithFilterContext(s.cfg, statuses, account, s.accountFilters(account), statusListFilterContext(c)),
-		Hashtags: searchHashtagResults(s.cfg, tags, tagFollowing, tagFeaturing, account != nil),
+		Accounts:    s.serializeAccounts(accounts, account),
+		Statuses:    serializeStatusesWithFilterContext(s.cfg, statuses, account, s.accountFilters(account), statusListFilterContext(c)),
+		Hashtags:    searchHashtagResults(s.cfg, tags, tagFollowing, tagFeaturing, account != nil),
+		Collections: []serializer.Collection{},
 	})
 }
 
@@ -6573,10 +6718,23 @@ func normalizedSearchTagName(query string) string {
 
 func emptySearchResult() serializer.Search {
 	return serializer.Search{
-		Accounts: []serializer.Account{},
-		Statuses: []serializer.Status{},
-		Hashtags: []serializer.TagDetail{},
+		Accounts:    []serializer.Account{},
+		Statuses:    []serializer.Status{},
+		Hashtags:    []serializer.TagDetail{},
+		Collections: []serializer.Collection{},
 	}
+}
+
+func (s *Server) serializeSearchCollections(collections []models.Collection, current *models.Account) ([]serializer.Collection, error) {
+	resources, err := s.collectionResources(collections, current)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]serializer.Collection, 0, len(resources))
+	for _, resource := range resources {
+		out = append(out, serializer.CollectionFromModel(s.cfg, resource.Collection, resource.Tag, resource.Items))
+	}
+	return out, nil
 }
 
 func (s *Server) visibleSearchStatusQuery(account *models.Account) *gorm.DB {
@@ -7020,7 +7178,7 @@ func statusListPaginationParamKeys(c *echo.Context) []string {
 	case strings.Contains(path, "/api/v1/timelines/list/"):
 		return []string{"limit"}
 	case strings.Contains(path, "/api/v1/accounts/") && strings.HasSuffix(path, "/statuses"):
-		return []string{"limit", "pinned", "tagged", "only_media", "exclude_replies", "exclude_reblogs"}
+		return []string{"limit", "pinned", "tagged", "only_media", "exclude_replies", "exclude_reblogs", "exclude_direct"}
 	default:
 		return nil
 	}
@@ -7265,6 +7423,10 @@ func (s *Server) requireFunctionalAccountForWeb(c *echo.Context) (*models.Accoun
 		return nil, "", nil, errWebAuthResponseHandled
 	}
 	user.Account = account
+	if s.userMissingRequiredTwoFactor(user) && !roleTwoFactorSetupRequest(c.Request().URL.Path) {
+		_ = c.Redirect(http.StatusFound, requiredTwoFactorSetupPath)
+		return nil, "", nil, errWebAuthResponseHandled
+	}
 	if !webUserFunctional(*user, false) {
 		_ = c.Redirect(http.StatusFound, "/auth/edit")
 		return nil, "", nil, errWebAuthResponseHandled
@@ -7279,6 +7441,10 @@ func (s *Server) requireFunctionalOrMovedAccountForWeb(c *echo.Context) (*models
 		return nil, "", nil, errWebAuthResponseHandled
 	}
 	user.Account = account
+	if s.userMissingRequiredTwoFactor(user) && !roleTwoFactorSetupRequest(c.Request().URL.Path) {
+		_ = c.Redirect(http.StatusFound, requiredTwoFactorSetupPath)
+		return nil, "", nil, errWebAuthResponseHandled
+	}
 	if !webUserFunctional(*user, true) {
 		_ = c.Redirect(http.StatusFound, "/auth/edit")
 		return nil, "", nil, errWebAuthResponseHandled
@@ -7318,6 +7484,19 @@ func webUserFunctional(user models.User, allowMoved bool) bool {
 		return false
 	}
 	return true
+}
+
+func roleTwoFactorSetupRequest(path string) bool {
+	for _, prefix := range []string{
+		"/settings/two_factor_authentication_methods",
+		"/settings/otp_authentication",
+		"/settings/security_keys",
+	} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) currentUser(c *echo.Context) (*models.User, string, error) {
@@ -7466,6 +7645,9 @@ func (s *Server) requireFunctionalUser(c *echo.Context, user models.User) error 
 	if user.Disabled || s.userAccountUnavailable(user) {
 		return apiError(c, http.StatusForbidden, "Your login is currently disabled")
 	}
+	if s.userMissingRequiredTwoFactor(&user) {
+		return apiError(c, http.StatusForbidden, "Two-factor authentication setup is required for your role")
+	}
 	return nil
 }
 
@@ -7513,6 +7695,12 @@ func (s *Server) hydrateStatusRelationships(statuses []models.Status, current *m
 		return err
 	}
 	s.hydrateStatusesQuote(statuses)
+	if err := s.hydrateStatusesTaggedCollections(statuses, current); err != nil {
+		return err
+	}
+	if err := s.hydrateAccountFeaturePolicies(statusAuthorAccounts(statuses), current); err != nil {
+		return err
+	}
 	if err := s.hydrateQuoteVisibility(statuses, current); err != nil {
 		return err
 	}

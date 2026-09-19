@@ -18,6 +18,7 @@ type reportPayload struct {
 	AccountID        string   `json:"account_id" form:"account_id"`
 	StatusIDs        []string `json:"status_ids" form:"status_ids"`
 	RuleIDs          []string `json:"rule_ids" form:"rule_ids"`
+	CollectionIDs    []string `json:"collection_ids" form:"collection_ids"`
 	Comment          string   `json:"comment" form:"comment"`
 	Category         string   `json:"category" form:"category"`
 	Forward          bool     `json:"forward" form:"forward"`
@@ -52,6 +53,20 @@ func (s *Server) createReport(c *echo.Context) error {
 		}
 	}
 	ruleIDs := compactInt64Array(payload.RuleIDs)
+	if !reportCollectionIDParamsValid(payload.CollectionIDs) {
+		return apiError(c, http.StatusNotFound, "Record not found")
+	}
+	collectionIDs := compactInt64Array(payload.CollectionIDs)
+	if len(collectionIDs) > 0 {
+		var found []int64
+		if err := s.db.Model(&models.Collection{}).Where("account_id = ? AND id IN ?", target.ID, collectionIDs).Pluck("id", &found).Error; err != nil {
+			return err
+		}
+		if len(uniqueInt64s(found)) != len(uniqueInt64s(collectionIDs)) {
+			return apiError(c, http.StatusNotFound, "Record not found")
+		}
+		collectionIDs = uniqueInt64s(collectionIDs)
+	}
 	if len(ruleIDs) == 0 {
 		ruleIDs = nil
 	} else if err := s.validateReportRuleIDs(ruleIDs); err != nil {
@@ -79,6 +94,7 @@ func (s *Server) createReport(c *echo.Context) error {
 		Forwarded:       sql.NullBool{Bool: forwarded, Valid: true},
 		Category:        category,
 		RuleIDs:         ruleIDs,
+		CollectionIDs:   collectionIDs,
 	}
 	rateLimitRecorded, err := s.consumeRailsFamilyRateLimit(c, *account, railsRateLimitFamilyReports, now)
 	if err != nil {
@@ -87,6 +103,12 @@ func (s *Server) createReport(c *echo.Context) error {
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&report).Error; err != nil {
 			return err
+		}
+		for _, collectionID := range collectionIDs {
+			join := models.CollectionReport{CollectionID: collectionID, ReportID: report.ID, CreatedAt: now, UpdatedAt: now}
+			if err := tx.Create(&join).Error; err != nil {
+				return err
+			}
 		}
 		payloads, err := s.createStaffReportNotificationPayloads(tx, report, *account)
 		staffNotificationPayloads = payloads
@@ -100,6 +122,12 @@ func (s *Server) createReport(c *echo.Context) error {
 	if err := s.db.Preload("Account").Preload("TargetAccount.AccountStat").Preload("TargetAccount.User.Role").First(&report, report.ID).Error; err != nil {
 		return err
 	}
+	if err := s.hydrateReportCollectionIDs(&report); err != nil {
+		return err
+	}
+	if err := s.hydrateAccountFeaturePolicies([]*models.Account{&report.TargetAccount}, account); err != nil {
+		return err
+	}
 	s.triggerReportCreatedWebhook(report)
 	if payload.Forward && !target.Local() {
 		_ = s.forwardActivityPubReport(report, *target, forwardDomains)
@@ -110,7 +138,17 @@ func (s *Server) createReport(c *echo.Context) error {
 		}
 		_ = s.sendStaffNewReportMails(report)
 	}
-	return c.JSON(http.StatusOK, serializer.ReportFromModel(s.cfg, report))
+	return c.JSON(http.StatusOK, serializer.ReportFromModel(s.cfg, report, account))
+}
+
+func reportCollectionIDParamsValid(values []string) bool {
+	for _, value := range values {
+		id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil || id <= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func reportComment(comment string) string {
@@ -118,6 +156,13 @@ func reportComment(comment string) string {
 		return ""
 	}
 	return comment
+}
+
+func (s *Server) hydrateReportCollectionIDs(report *models.Report) error {
+	if report == nil || report.ID == 0 {
+		return nil
+	}
+	return s.db.Model(&models.CollectionReport{}).Where("report_id = ?", report.ID).Order("id ASC").Pluck("collection_id", &report.CollectionIDs).Error
 }
 
 func (s *Server) triggerReportCreatedWebhook(report models.Report) {
@@ -264,6 +309,7 @@ func parseReportPayload(c *echo.Context) (reportPayload, error) {
 		payload.AccountID = rawString(raw["account_id"])
 		payload.StatusIDs = rawStringSlice(raw["status_ids"])
 		payload.RuleIDs = rawStringSlice(raw["rule_ids"])
+		payload.CollectionIDs = rawStringSlice(raw["collection_ids"])
 		payload.Comment = rawString(raw["comment"])
 		payload.Category = rawString(raw["category"])
 		payload.Forward = railsBool(raw["forward"], false)
@@ -273,6 +319,7 @@ func parseReportPayload(c *echo.Context) (reportPayload, error) {
 	if values, err := c.FormValues(); err == nil {
 		payload.StatusIDs = append(payload.StatusIDs, values["status_ids[]"]...)
 		payload.RuleIDs = append(payload.RuleIDs, values["rule_ids[]"]...)
+		payload.CollectionIDs = append(payload.CollectionIDs, values["collection_ids[]"]...)
 		payload.ForwardToDomains = append(payload.ForwardToDomains, values["forward_to_domains[]"]...)
 		if payload.AccountID == "" {
 			payload.AccountID = values.Get("account_id")
@@ -354,7 +401,11 @@ func (s *Server) forwardActivityPubReport(report models.Report, target models.Ac
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(activityPubFlagReport(s, report, target, statuses, *local))
+	collections, err := s.reportForwardCollections(report.CollectionIDs)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(activityPubFlagReport(s, report, target, statuses, *local, collections))
 	if err != nil {
 		return err
 	}
@@ -369,6 +420,27 @@ func (s *Server) forwardActivityPubReport(report models.Report, target models.Ac
 		}
 	}
 	return lastErr
+}
+
+func (s *Server) reportForwardCollections(collectionIDs []int64) ([]models.Collection, error) {
+	if len(collectionIDs) == 0 {
+		return nil, nil
+	}
+	var collections []models.Collection
+	if err := s.db.Where("id IN ?", uniqueInt64s(collectionIDs)).Find(&collections).Error; err != nil {
+		return nil, err
+	}
+	byID := make(map[int64]models.Collection, len(collections))
+	for _, collection := range collections {
+		byID[collection.ID] = collection
+	}
+	out := make([]models.Collection, 0, len(collections))
+	for _, id := range uniqueInt64s(collectionIDs) {
+		if collection, ok := byID[id]; ok {
+			out = append(out, collection)
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) reportForwardStatuses(statusIDs models.Int64Array) ([]models.Status, error) {
@@ -420,10 +492,15 @@ func (s *Server) reportForwardInboxes(target models.Account, statusIDs models.In
 	return out, nil
 }
 
-func activityPubFlagReport(s *Server, report models.Report, target models.Account, statuses []models.Status, actor models.Account) map[string]any {
+func activityPubFlagReport(s *Server, report models.Report, target models.Account, statuses []models.Status, actor models.Account, collectionSets ...[]models.Collection) map[string]any {
 	objects := []string{activityPubAccountTagManagerURI(s, target)}
 	for _, status := range statuses {
 		objects = append(objects, activityPubStatusURI(s, status))
+	}
+	if len(collectionSets) > 0 {
+		for _, collection := range collectionSets[0] {
+			objects = append(objects, activityPubFeaturedCollectionURI(s, collection))
+		}
 	}
 	reportID := report.URI.String
 	if strings.TrimSpace(reportID) == "" {

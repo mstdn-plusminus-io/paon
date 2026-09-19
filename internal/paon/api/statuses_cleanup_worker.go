@@ -376,11 +376,14 @@ func (s *Server) statusesCleanupCandidateStatuses(ctx context.Context, policy mo
 
 func mastodonSnowflakeIDAt(timestamp time.Time, withRandom bool) int64 {
 	id := timestamp.UTC().Unix() * 1000
-	id = id << 16
 	if withRandom {
-		id += time.Now().UnixNano() & 0xffff
+		seed := time.Now().UnixNano()
+		id += (seed / int64(time.Millisecond)) % 1000
+		id <<= 16
+		id += seed & 0xffff
+		return id
 	}
-	return id
+	return id << 16
 }
 
 func statusesCleanupPolicyRedisKey(accountID int64) string {

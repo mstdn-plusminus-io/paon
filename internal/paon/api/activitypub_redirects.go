@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/labstack/echo/v5"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
 func (s *Server) activityPubActorOrWebRedirect(c *echo.Context) error {
@@ -17,7 +18,7 @@ func (s *Server) activityPubActorOrWebRedirect(c *echo.Context) error {
 		case "rss":
 			return s.publicAccount(c)
 		case "html":
-			return activityPubHTMLRedirect(c, "/@"+url.PathEscape(username))
+			return s.activityPubAccountHTMLRedirect(c, username)
 		default:
 			return noContentError(http.StatusNotAcceptable)
 		}
@@ -33,7 +34,7 @@ func (s *Server) activityPubActorOrWebRedirect(c *echo.Context) error {
 				return s.publicAccount(c)
 			})
 		case "html":
-			return activityPubHTMLRedirect(c, "/@"+url.PathEscape(username))
+			return s.activityPubAccountHTMLRedirect(c, username)
 		default:
 			return noContentError(http.StatusNotAcceptable)
 		}
@@ -46,7 +47,24 @@ func (s *Server) activityPubActorOrWebRedirect(c *echo.Context) error {
 	if publicRequestHasFormat(c, "rss") || acceptsRSS(c.Request().Header.Get("Accept")) {
 		return s.publicAccount(c)
 	}
-	return activityPubHTMLRedirect(c, "/@"+url.PathEscape(c.Param("username")))
+	return s.activityPubAccountHTMLRedirect(c, c.Param("username"))
+}
+
+func (s *Server) activityPubAccountHTMLRedirect(c *echo.Context, username string) error {
+	if s == nil || s.db == nil {
+		return activityPubHTMLRedirect(c, "/@"+url.PathEscape(username))
+	}
+	var account *models.Account
+	var err error
+	if accountID := strings.TrimSpace(activityPubFormatParam(c, "account_id")); accountID != "" {
+		account, err = s.findAccountByID(accountID)
+	} else {
+		account, err = s.findAccountByUsernameDomainTx(s.db, username, "")
+	}
+	if err == nil && account != nil && account.Local() {
+		c.Response().Header().Set("Link", publicAccountLinkHeader(s.cfg, *account))
+	}
+	return activityPubHTMLRedirect(c, "/@"+url.PathEscape(username))
 }
 
 func (s *Server) activityPubFollowersFormat(c *echo.Context) error {

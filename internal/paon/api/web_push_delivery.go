@@ -709,6 +709,10 @@ func notificationActivityTable(activityType string, kind string) string {
 		return "account_warnings"
 	case "GeneratedAnnualReport":
 		return "generated_annual_reports"
+	case "CollectionItem":
+		return "collection_items"
+	case "Collection":
+		return "collections"
 	}
 	switch kind {
 	case "mention":
@@ -723,6 +727,10 @@ func notificationActivityTable(activityType string, kind string) string {
 		return "favourites"
 	case "poll":
 		return "polls"
+	case "added_to_collection":
+		return "collection_items"
+	case "collection_update":
+		return "collections"
 	case "quote":
 		return "quotes"
 	case "admin.report":
@@ -955,6 +963,10 @@ func webPushNotificationTitle(notification models.Notification, locale string) s
 		return name + " quoted your post"
 	case "quoted_update":
 		return name + " edited a post you have quoted"
+	case "added_to_collection":
+		return name + " added you to a collection"
+	case "collection_update":
+		return name + " updated a collection you are in"
 	case "admin.sign_up":
 		return name + " signed up"
 	case "admin.report":

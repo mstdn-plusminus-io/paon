@@ -862,6 +862,13 @@ func parseActivityResourcePayloadObject(body []byte, raw map[string]any) (activi
 			return activityPayload{}, fmt.Errorf("activity object id is missing")
 		}
 		return activityPayload{Type: "Create", Actor: note.AttributedTo, ActorRaw: firstNonEmpty(note.AttributedToRaw, note.AttributedTo), Object: note, ObjectDocument: true}, nil
+	case "FeaturedCollection", "FeaturedItem", "FeatureAuthorization":
+		object := parseActivityObject(raw)
+		object = activityObjectWithOrderedLanguageMaps(body, object)
+		if object.ID == "" {
+			return activityPayload{}, fmt.Errorf("activity object id is missing")
+		}
+		return activityPayload{Type: object.TypeExact, Actor: object.AttributedTo, ActorRaw: firstNonEmpty(object.AttributedToRaw, object.AttributedTo), Object: object, ObjectDocument: true, RawBody: body}, nil
 	default:
 		return activityPayload{}, fmt.Errorf("unsupported activity type")
 	}
@@ -1175,10 +1182,11 @@ func (s *Server) activityActorForURIForRequest(actorURI string, requestID string
 	if err == nil {
 		if strings.TrimSpace(requestID) != "" && remoteActivityActorPossiblyStale(account, time.Now().UTC()) {
 			actor, fetchErr := s.fetchActivityActor(actorLookupURI)
-			if fetchErr != nil || actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+			if fetchErr != nil || actor.ID == "" || !activityRemoteActorHasPublicKey(actor) {
 				return nil, nil
 			}
-			if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
+			actor, err = verifyRemoteActivityActorWebFingerResolved(actor)
+			if err != nil {
 				return nil, nil
 			}
 			return s.upsertRemoteActivityActorForRequest(actor, requestID)
@@ -1189,28 +1197,64 @@ func (s *Server) activityActorForURIForRequest(actorURI string, requestID string
 		return nil, err
 	}
 	actor, err := s.fetchActivityActor(actorLookupURI)
-	if err != nil || actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+	if err != nil || actor.ID == "" || !activityRemoteActorHasPublicKey(actor) {
 		return nil, nil
 	}
-	if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
+	actor, err = verifyRemoteActivityActorWebFingerResolved(actor)
+	if err != nil {
 		return nil, nil
 	}
 	return s.upsertRemoteActivityActorForRequest(actor, requestID)
 }
 
 func verifyRemoteActivityActorWebFinger(actor remoteActivityActor) error {
+	_, err := verifyRemoteActivityActorWebFingerResolved(actor)
+	return err
+}
+
+func verifyRemoteActivityActorWebFingerResolved(actor remoteActivityActor) (remoteActivityActor, error) {
 	host := activityPubNormalizedURIHost(actor.ID)
 	if host == "" {
-		return fmt.Errorf("invalid remote actor")
+		return actor, fmt.Errorf("invalid remote actor")
 	}
-	actorURL, err := fetchRemoteActorServiceWebFingerURL(actor.PreferredUsername, host)
+	username, domain, ok := remoteActivityActorWebfingerIdentity(actor)
+	if !ok {
+		username, domain = actor.PreferredUsername, host
+	}
+	resolution, err := fetchRemoteActorServiceWebFingerResolutionDepth(username, domain, 0)
 	if err != nil {
-		return err
+		return actor, err
 	}
-	if actorURL != actor.ID {
-		return fmt.Errorf("webfinger response does not loop back to actor")
+	if resolution.ActorURL != actor.ID {
+		return actor, fmt.Errorf("webfinger response does not loop back to actor")
 	}
-	return nil
+	actor.VerifiedUsername = resolution.Username
+	actor.VerifiedDomain = resolution.Domain
+	return actor, nil
+}
+
+func remoteActivityActorHasUsableWebfinger(actor remoteActivityActor) bool {
+	_, _, ok := remoteActivityActorWebfingerIdentity(actor)
+	return ok
+}
+
+func remoteActivityActorWebfingerIdentity(actor remoteActivityActor) (string, string, bool) {
+	value := strings.TrimPrefix(actor.Webfinger, "acct:")
+	parts := strings.Split(value, "@")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" || len([]rune(parts[0])) > 2048 {
+		return "", "", false
+	}
+	domain := normalizeDeliveryStatsHost(parts[1])
+	if domain == "" {
+		return "", "", false
+	}
+	return parts[0], domain, true
+}
+
+type remoteActorWebfingerResolution struct {
+	ActorURL string
+	Username string
+	Domain   string
 }
 
 func fetchRemoteActorServiceWebFingerURL(username string, domain string) (string, error) {
@@ -1219,38 +1263,44 @@ func fetchRemoteActorServiceWebFingerURL(username string, domain string) (string
 }
 
 func fetchRemoteActorServiceWebFingerURLDepth(username string, domain string, depth int) (string, error) {
+	resolution, err := fetchRemoteActorServiceWebFingerResolutionDepth(username, domain, depth)
+	return resolution.ActorURL, err
+}
+
+func fetchRemoteActorServiceWebFingerResolutionDepth(username string, domain string, depth int) (remoteActorWebfingerResolution, error) {
 	if depth > 1 {
-		return "", fmt.Errorf("too many webfinger redirects")
+		return remoteActorWebfingerResolution{}, fmt.Errorf("too many webfinger redirects")
 	}
 	if username == "" || domain == "" {
-		return "", fmt.Errorf("public key not found")
+		return remoteActorWebfingerResolution{}, fmt.Errorf("public key not found")
 	}
 	if !activityFetchHostAllowed(domain) {
-		return "", fmt.Errorf("remote host is not allowed")
+		return remoteActorWebfingerResolution{}, fmt.Errorf("remote host is not allowed")
 	}
 	resource := "acct:" + username + "@" + domain
 	doc, err := fetchActivityWebFingerDocument(activityWebFingerURL(domain, resource))
 	if status, ok := activityFetchStatus(err); ok && status == http.StatusNotFound {
 		fallbackURL, fallbackErr := fetchActivityWebFingerHostMetaURL(domain, resource)
 		if fallbackErr != nil {
-			return "", fallbackErr
+			return remoteActorWebfingerResolution{}, fallbackErr
 		}
 		doc, err = fetchActivityWebFingerDocument(fallbackURL)
 	}
 	if err != nil {
-		return "", err
+		return remoteActorWebfingerResolution{}, err
 	}
 	subjectUsername, subjectDomain, ok := activityWebFingerSubjectUsernameAndDomainRaw(doc.Subject)
 	if !ok {
-		return "", fmt.Errorf("webfinger subject does not match")
+		return remoteActorWebfingerResolution{}, fmt.Errorf("webfinger subject does not match")
 	}
 	if strings.EqualFold(username, subjectUsername) && strings.EqualFold(domain, subjectDomain) {
-		return activityWebFingerSelfLinkHref(doc)
+		actorURL, err := activityWebFingerSelfLinkHref(doc)
+		return remoteActorWebfingerResolution{ActorURL: actorURL, Username: subjectUsername, Domain: normalizeDeliveryStatsHost(subjectDomain)}, err
 	}
 	if depth == 0 {
-		return fetchRemoteActorServiceWebFingerURLDepth(subjectUsername, subjectDomain, depth+1)
+		return fetchRemoteActorServiceWebFingerResolutionDepth(subjectUsername, subjectDomain, depth+1)
 	}
-	return "", fmt.Errorf("webfinger subject does not match")
+	return remoteActorWebfingerResolution{}, fmt.Errorf("webfinger subject does not match")
 }
 
 func activityWebFingerSubjectUsernameAndDomainRaw(subject string) (string, string, bool) {

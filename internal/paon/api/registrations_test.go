@@ -357,16 +357,19 @@ func TestIPMatchesBlockAcceptsHostAndCIDR(t *testing.T) {
 
 func TestAccountApprovedForRegistrationHonorsIPRequiresApproval(t *testing.T) {
 	invite := &models.Invite{ID: 1}
-	if !accountApprovedForRegistration("open", nil, false) {
+	if !accountApprovedForRegistration("open", nil, false, false) {
 		t.Fatal("open registrations should approve")
 	}
-	if !accountApprovedForRegistration("approved", invite, false) {
-		t.Fatal("valid invite should approve")
+	if accountApprovedForRegistration("approved", invite, false, false) {
+		t.Fatal("invite without bypass permission should not approve")
 	}
-	if accountApprovedForRegistration("open", nil, true) {
+	if !accountApprovedForRegistration("approved", invite, false, true) {
+		t.Fatal("invite with bypass permission should approve")
+	}
+	if accountApprovedForRegistration("open", nil, true, false) {
 		t.Fatal("IP requires approval should override open registrations")
 	}
-	if accountApprovedForRegistration("approved", invite, true) {
+	if accountApprovedForRegistration("approved", invite, true, true) {
 		t.Fatal("IP requires approval should override invite approval")
 	}
 }

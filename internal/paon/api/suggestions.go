@@ -69,8 +69,15 @@ func (s *Server) suggestionsV2(c *echo.Context) error {
 	}
 
 	out := make([]serializer.Suggestion, 0, len(accounts))
+	accountPtrs := make([]*models.Account, 0, len(accounts))
+	for i := range accounts {
+		accountPtrs = append(accountPtrs, &accounts[i].Account)
+	}
+	if err := s.hydrateAccountFeaturePolicies(accountPtrs, account); err != nil {
+		return err
+	}
 	for _, suggested := range accounts {
-		out = append(out, serializer.SuggestionFromModelWithSources(s.cfg, suggested.Account, suggestionSources(suggested)))
+		out = append(out, serializer.SuggestionFromModelWithSources(s.cfg, suggested.Account, suggestionSources(suggested), account))
 	}
 	return c.JSON(http.StatusOK, out)
 }
@@ -90,7 +97,7 @@ func (s *Server) suggestionsV1(c *echo.Context) error {
 	for _, suggested := range accounts {
 		out = append(out, suggested.Account)
 	}
-	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, out))
+	return c.JSON(http.StatusOK, s.serializeAccounts(out, account))
 }
 
 func (s *Server) deleteSuggestion(c *echo.Context) error {

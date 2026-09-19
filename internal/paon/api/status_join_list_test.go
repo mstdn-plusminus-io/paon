@@ -138,11 +138,11 @@ func TestStatusListPaginationLinkUsesRailsAllowedQueryParams(t *testing.T) {
 		}
 	}
 
-	req = httptest.NewRequest("GET", "/api/v1/accounts/1/statuses?limit=5&pinned=1&tagged=go&exclude_replies=true&extra=1", nil)
+	req = httptest.NewRequest("GET", "/api/v1/accounts/1/statuses?limit=5&pinned=1&tagged=go&exclude_replies=true&exclude_direct=true&extra=1", nil)
 	req.Host = "social.example"
 	c = echo.NewContext(req, httptest.NewRecorder(), e)
 	got = statusListPaginationLink(c, 110, 100, true)
-	for _, want := range []string{"limit=5", "pinned=1", "tagged=go", "exclude_replies=true"} {
+	for _, want := range []string{"limit=5", "pinned=1", "tagged=go", "exclude_replies=true", "exclude_direct=true"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("account status Link missing %q: %q", want, got)
 		}

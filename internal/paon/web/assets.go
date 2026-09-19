@@ -273,6 +273,10 @@ func requiredPackAssets(cfg config.Config) []string {
 		"modals/subscribed_languages_modal.js",
 		"modals/closed_registrations_modal.js",
 		"modals/annual_report_modal.js",
+		"features/collections.js",
+		"features/collection_detail.js",
+		"features/account_edit.js",
+		"features/overview.js",
 		"features/instance_stats.js",
 		"features/about.js",
 		"features/privacy_policy.js",
@@ -810,7 +814,7 @@ func supportedTheme(theme string) bool {
 }
 
 func supportedThemes() []string {
-	return []string{"default", "contrast", "mastodon-light", "single-column-chat-dark"}
+	return []string{"default", "contrast", "mastodon-light", "mastodon-light-contrast", "single-column-chat-dark"}
 }
 
 func CSRFTokenForSession(token string) string {

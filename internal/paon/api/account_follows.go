@@ -49,7 +49,7 @@ func (s *Server) accountFollowers(c *echo.Context) error {
 	if len(follows) > 0 {
 		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, follows[0].ID, follows[len(follows)-1].ID, "since_id", len(follows) == limitValue))
 	}
-	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
+	return c.JSON(http.StatusOK, s.serializeAccounts(accounts, current))
 }
 
 func (s *Server) accountFollowing(c *echo.Context) error {
@@ -93,7 +93,7 @@ func (s *Server) accountFollowing(c *echo.Context) error {
 	if len(follows) > 0 {
 		c.Response().Header().Set("Link", limitOnlyPaginationLink(c, follows[0].ID, follows[len(follows)-1].ID, "since_id", len(follows) == limitValue))
 	}
-	return c.JSON(http.StatusOK, serializeAccounts(s.cfg, accounts))
+	return c.JSON(http.StatusOK, s.serializeAccounts(accounts, current))
 }
 
 func (s *Server) hideFollowCollection(target *models.Account, current *models.Account) (bool, error) {

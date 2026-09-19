@@ -25,8 +25,14 @@ func (s *Server) unsubscribePage(c *echo.Context) error {
 	if err := requireHTMLOnlyOptionalFormat(c); err != nil {
 		return err
 	}
+	if strings.TrimSpace(c.QueryParam("token")) == "" {
+		return apiError(c, http.StatusNotFound, "Record not found")
+	}
+	if subscription, err := s.unsubscribeTokenEmailSubscription(c.QueryParam("token")); err == nil && subscription != nil {
+		return c.HTML(http.StatusOK, emailSubscriptionUnsubscribeHTML(c.QueryParam("token"), *subscription, false, s.webLocale(c, nil)))
+	}
 	settingKey, ok := unsubscribeEmailTypeFromParam(c.QueryParam("type"))
-	if !ok || strings.TrimSpace(c.QueryParam("token")) == "" {
+	if !ok {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	user, _, err := s.unsubscribeTokenUser(c.QueryParam("token"))
@@ -55,8 +61,17 @@ func (s *Server) createUnsubscribe(c *echo.Context) error {
 	if err := requireHTMLOnlyOptionalFormat(c); err != nil {
 		return err
 	}
+	if strings.TrimSpace(c.FormValue("token")) == "" {
+		return apiError(c, http.StatusNotFound, "Record not found")
+	}
+	if subscription, err := s.unsubscribeTokenEmailSubscription(c.FormValue("token")); err == nil && subscription != nil {
+		if err := s.db.Delete(subscription).Error; err != nil {
+			return err
+		}
+		return c.HTML(http.StatusOK, emailSubscriptionUnsubscribeHTML(c.FormValue("token"), *subscription, true, s.webLocale(c, nil)))
+	}
 	settingKey, ok := unsubscribeEmailTypeFromParam(c.FormValue("type"))
-	if !ok || strings.TrimSpace(c.FormValue("token")) == "" {
+	if !ok {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	user, _, err := s.unsubscribeTokenUser(c.FormValue("token"))
@@ -75,6 +90,61 @@ func (s *Server) createUnsubscribe(c *echo.Context) error {
 		return err
 	}
 	return c.HTML(http.StatusOK, unsubscribeHTML(c.FormValue("token"), c.FormValue("type"), settingKey, user.Email, "", true, s.cfg.LocalDomain, locale, theme))
+}
+
+func (s *Server) unsubscribeTokenEmailSubscription(token string) (*models.EmailSubscription, error) {
+	if strings.TrimSpace(s.cfg.SecretKeyBase) == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	gid, ok := railsSignedGlobalIDMessage(token, s.cfg.SecretKeyBase, railsSignedGlobalIDPurposeUnsubscribe, time.Now)
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+	id, ok := railsGlobalIDModelID(gid, "EmailSubscription")
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var subscription models.EmailSubscription
+	if err := s.db.Preload("Account").Where("id = ?", id).First(&subscription).Error; err != nil {
+		return nil, err
+	}
+	return &subscription, nil
+}
+
+func emailSubscriptionUnsubscribeHTML(token string, subscription models.EmailSubscription, complete bool, locale string) string {
+	locale = firstNonEmpty(strings.TrimSpace(subscription.Locale), locale, "en")
+	name := accountDisplayName(subscription.Account)
+	title := settingsT(locale, "email_subscriptions.unsubscribe.title", "Unsubscribe")
+	message := settingsTVars(locale, "email_subscriptions.unsubscribe.confirmation", "Confirm that you want to stop receiving email updates from %{name}.", map[string]string{"name": name})
+	action := settingsT(locale, "email_subscriptions.unsubscribe.action", "Yes, unsubscribe")
+	form := `<form method="post" action="/unsubscribe"><input type="hidden" name="token" value="` + html.EscapeString(token) + `"><button class="button" type="submit">` + html.EscapeString(action) + `</button></form>`
+	if complete {
+		title = settingsT(locale, "email_subscriptions.unsubscribe.complete", "Unsubscribed")
+		message = settingsTVars(locale, "email_subscriptions.unsubscribe.success", "You will no longer receive email updates from %{name}.", map[string]string{"name": name})
+		form = ""
+	}
+	body := `<div class="simple_form"><h1 class="title">` + html.EscapeString(title) + `</h1><p class="lead">` + html.EscapeString(message) + `</p>` + form + `</div>`
+	return authShellHTML(title, "", "", body, locale, "default")
+}
+
+func (s *Server) confirmEmailSubscription(c *echo.Context) error {
+	token := strings.TrimSpace(c.QueryParam("confirmation_token"))
+	var subscription models.EmailSubscription
+	if token == "" || s.db.Preload("Account").Where("confirmation_token = ?", token).First(&subscription).Error != nil {
+		return apiError(c, http.StatusNotFound, "Record not found")
+	}
+	if !subscription.ConfirmedAt.Valid {
+		now := time.Now().UTC()
+		if err := s.db.Model(&models.EmailSubscription{}).Where("id = ?", subscription.ID).Updates(map[string]any{"confirmed_at": now, "updated_at": now}).Error; err != nil {
+			return err
+		}
+	}
+	name := accountDisplayName(subscription.Account)
+	locale := firstNonEmpty(strings.TrimSpace(subscription.Locale), s.webLocale(c, nil), "en")
+	title := settingsT(locale, "email_subscriptions.confirmed.title", "Subscription confirmed")
+	message := settingsTVars(locale, "email_subscriptions.confirmed.body", "You will receive new public posts from %{name} by email.", map[string]string{"name": name})
+	body := `<div class="simple_form"><h1 class="title">` + html.EscapeString(title) + `</h1><p class="lead">` + html.EscapeString(message) + `</p></div>`
+	return c.HTML(http.StatusOK, authShellHTML(title, "", "", body, locale, "default"))
 }
 
 func (s *Server) unsubscribeTokenUser(token string) (*models.User, bool, error) {

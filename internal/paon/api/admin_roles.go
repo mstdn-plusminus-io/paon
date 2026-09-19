@@ -29,6 +29,8 @@ type adminRolePermission struct {
 
 var adminRolePermissions = []adminRolePermission{
 	{Key: "invite_users", Bit: rolePermissionInviteUsers, Area: "invites"},
+	{Key: "invite_bypass_approval", Bit: rolePermissionInviteBypassApproval, Area: "invites"},
+	{Key: "manage_email_subscriptions", Bit: rolePermissionManageEmailSubscriptions, Area: "email"},
 	{Key: "view_dashboard", Bit: rolePermissionViewDashboard, Area: "moderation"},
 	{Key: "view_audit_log", Bit: rolePermissionViewAuditLog, Area: "moderation"},
 	{Key: "manage_users", Bit: rolePermissionManageUsers, Area: "moderation"},
@@ -137,18 +139,22 @@ func (s *Server) updateAdminRole(c *echo.Context) error {
 	}
 	now := time.Now().UTC()
 	updates := map[string]any{
-		"name":        role.Name,
-		"color":       role.Color,
-		"position":    role.Position,
-		"permissions": role.Permissions,
-		"highlighted": role.Highlighted,
-		"updated_at":  now,
+		"name":             role.Name,
+		"color":            role.Color,
+		"position":         role.Position,
+		"permissions":      role.Permissions,
+		"highlighted":      role.Highlighted,
+		"require_2fa":      role.Require2FA,
+		"collection_limit": role.CollectionLimit,
+		"updated_at":       now,
 	}
 	if role.ID == -99 {
 		updates = map[string]any{
-			"permissions": role.Permissions,
-			"position":    -1,
-			"updated_at":  now,
+			"permissions":      role.Permissions,
+			"position":         -1,
+			"require_2fa":      role.Require2FA,
+			"collection_limit": role.CollectionLimit,
+			"updated_at":       now,
 		}
 	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
@@ -260,11 +266,22 @@ func (s *Server) adminRoleFromRequest(c *echo.Context, current models.UserRole, 
 		return current, "", errAdminRoleParamsMissing
 	}
 	role := current
+	if create {
+		role.CollectionLimit = 10
+	}
 	role.Name = lastFormValue(req.Form, "user_role[name]")
 	role.Color = lastFormValue(req.Form, "user_role[color]")
 	role.Highlighted = adminSettingsCheckbox(req.Form, "user_role[highlighted]")
+	role.Require2FA = adminSettingsCheckbox(req.Form, "user_role[require_2fa]")
 	if create {
 		role.Position = 0
+	}
+	if rawLimit := strings.TrimSpace(lastFormValue(req.Form, "user_role[collection_limit]")); rawLimit != "" {
+		collectionLimit, err := strconv.Atoi(rawLimit)
+		if err != nil || collectionLimit < 0 {
+			return role, "Collection limit is invalid", nil
+		}
+		role.CollectionLimit = collectionLimit
 	}
 	if rawPosition := strings.TrimSpace(lastFormValue(req.Form, "user_role[position]")); rawPosition != "" {
 		position, err := strconv.Atoi(rawPosition)
@@ -279,8 +296,8 @@ func (s *Server) adminRoleFromRequest(c *echo.Context, current models.UserRole, 
 		role.Color = ""
 		role.Position = -1
 		role.Highlighted = false
-		if role.Permissions&^rolePermissionInviteUsers != 0 {
-			return role, "Everyone role can only grant invite users", nil
+		if role.Permissions&^(rolePermissionInviteUsers|rolePermissionInviteBypassApproval) != 0 {
+			return role, "Everyone role can only grant safe invite permissions", nil
 		}
 		return role, "", nil
 	}
@@ -304,7 +321,7 @@ func (s *Server) adminRoleFromRequest(c *echo.Context, current models.UserRole, 
 			return role, "", err
 		}
 		currentUserRole = *loadedRole
-		if !create && user.RoleID.Int64 == role.ID && (current.Permissions != role.Permissions || current.Position != role.Position) {
+		if !create && user.RoleID.Int64 == role.ID && (current.Permissions != role.Permissions || current.Position != role.Position || current.Require2FA != role.Require2FA && currentPermissions&rolePermissionAdministrator == 0) {
 			return role, "You cannot change your own role permissions or position", nil
 		}
 	}
@@ -425,6 +442,9 @@ func adminRoleRowHTML(role models.UserRole, userCount int64, locale ...string) s
 		permissionCount := adminTVars(loc, "admin.roles.permissions_count.other", "%{count} permissions", map[string]string{"count": strconv.Itoa(len(keys))})
 		meta = `<a href="/admin/accounts?role_ids=` + id + `">` + html.EscapeString(assigned) + `</a> &middot; <abbr title="` + html.EscapeString(strings.Join(permissionLabels, ", ")) + `">` + html.EscapeString(permissionCount) + `</abbr>`
 	}
+	if role.Require2FA {
+		meta += ` &middot; ` + html.EscapeString(adminT(loc, "admin.roles.requires_2fa", "Requires 2FA"))
+	}
 	return `<div class="announcements-list__item"><a class="announcements-list__item__title" href="/admin/roles/` + id + `/edit"><span class="user-role user-role-` + id + `"><i class="fa fa-users fa-fw"></i> ` + html.EscapeString(label) + `</span></a><div class="announcements-list__item__action-bar"><div class="announcements-list__item__meta">` + meta + `</div><div><a class="table-action-link" href="/admin/roles/` + id + `/edit"><i class="fa fa-pencil fa-fw"></i> ` + html.EscapeString(adminT(loc, "admin.accounts.edit", "Edit")) + `</a></div></div></div>`
 }
 
@@ -450,6 +470,8 @@ func adminRoleFormHTML(role models.UserRole, create bool, errorText string, loca
 	} else {
 		body.WriteString(`<p class="lead">` + html.EscapeString(adminT(loc, "admin.roles.everyone_permissions_hint", "Everyone permissions apply to all users and are limited to invite access.")) + `</p>`)
 	}
+	body.WriteString(`<div class="fields-group"><div class="input boolean with_label"><label class="boolean"><input type="hidden" name="user_role[require_2fa]" value="0"><input type="checkbox" name="user_role[require_2fa]" value="1"` + adminRoleCheckedAttr(role.Require2FA) + `> ` + html.EscapeString(adminT(loc, "simple_form.labels.user_role.require_2fa", "Require two-factor authentication")) + `</label></div></div>`)
+	body.WriteString(simpleTextInput(adminT(loc, "simple_form.labels.user_role.collection_limit", "Collection limit"), "user_role[collection_limit]", strconv.Itoa(role.CollectionLimit), "number", `min="0" required`))
 	body.WriteString(adminRolePermissionCheckboxes(role, loc))
 	submitLabel := adminT(loc, "generic.save_changes", "Save changes")
 	if create {

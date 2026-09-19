@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"html"
 	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -415,6 +416,8 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 		return s.processActivityPubReject(payload, actor, options.DeliveredToAccountID)
 	case "QuoteRequest":
 		return s.processActivityPubQuoteRequest(ctx, payload, actor)
+	case "FeatureRequest":
+		return s.processActivityPubFeatureRequest(ctx, payload, actor)
 	case "Block":
 		return s.processActivityPubBlock(payload, actor)
 	case "Flag":
@@ -541,6 +544,9 @@ func activityPubActorRefreshStale(actor *models.Account, now time.Time) bool {
 }
 
 func (s *Server) processActivityPubAdd(payload activityPayload, actor *models.Account, options activityPubProcessingOptions) error {
+	if handled, err := s.processActivityPubFeaturedCollectionAdd(payload, actor); handled || err != nil {
+		return err
+	}
 	if actor == nil || actor.ID == 0 || !activityTargetIsFeaturedCollection(payload.Target, s, *actor) {
 		return activityPubEventNotAppliedf("Add target is not the verified actor's featured collection")
 	}
@@ -594,6 +600,9 @@ func activityPubStatusPinValidForRails(actor models.Account, status models.Statu
 }
 
 func (s *Server) processActivityPubRemove(payload activityPayload, actor *models.Account) error {
+	if handled, err := s.processActivityPubFeaturedCollectionRemove(payload, actor); handled || err != nil {
+		return err
+	}
 	if actor == nil || actor.ID == 0 || !activityTargetIsFeaturedCollection(payload.Target, s, *actor) {
 		return activityPubEventNotAppliedf("Remove target is not the verified actor's featured collection")
 	}
@@ -671,6 +680,10 @@ func (s *Server) processActivityPubFlag(payload activityPayload, actor *models.A
 	if err != nil {
 		return err
 	}
+	collectionsByAccount, err := s.activityPubFlagCollectionsByAccount(uris)
+	if err != nil {
+		return err
+	}
 	targetAccounts, err := s.activityPubFlagTargetAccounts(uris)
 	if err != nil {
 		return err
@@ -684,6 +697,7 @@ func (s *Server) processActivityPubFlag(payload activityPayload, actor *models.A
 			continue
 		}
 		statuses := statusesByAccount[target.ID]
+		collections := collectionsByAccount[target.ID]
 		repliedToLocal, err := s.activityPubFlagStatusesReplyToLocalAccounts(statuses)
 		if err != nil {
 			return err
@@ -691,11 +705,64 @@ func (s *Server) processActivityPubFlag(payload activityPayload, actor *models.A
 		if !target.Local() && !repliedToLocal {
 			continue
 		}
-		if err := s.createActivityPubFlagReport(*actor, target, activityPubFlagStatusIDs(statuses), comment, activityPubFlagReportURI(firstNonEmpty(payload.IDRaw, payload.ID), actor)); err != nil {
+		if err := s.createActivityPubFlagReport(*actor, target, activityPubFlagStatusIDs(statuses), activityPubFlagCollectionIDs(collections), comment, activityPubFlagReportURI(firstNonEmpty(payload.IDRaw, payload.ID), actor)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *Server) activityPubFlagCollectionsByAccount(uris []string) (map[int64][]models.Collection, error) {
+	out := map[int64][]models.Collection{}
+	for _, uri := range uris {
+		collection, err := s.collectionFromActivityURI(uri)
+		if err != nil {
+			return nil, err
+		}
+		if collection == nil {
+			continue
+		}
+		out[collection.AccountID] = append(out[collection.AccountID], *collection)
+	}
+	return out, nil
+}
+
+func (s *Server) collectionFromActivityURI(raw string) (*models.Collection, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var collection models.Collection
+	err := s.db.Where("uri = ? OR url = ?", raw, raw).First(&collection).Error
+	if err == nil {
+		return &collection, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !s.localActivityHost(parsed.Host) {
+		return nil, nil
+	}
+	parts := strings.Split(strings.Trim(path.Clean(parsed.Path), "/"), "/")
+	id := ""
+	switch {
+	case len(parts) == 2 && parts[0] == "collections":
+		id = parts[1]
+	case len(parts) == 5 && parts[0] == "ap" && parts[1] == "users" && parts[3] == "collections":
+		id = parts[4]
+	case len(parts) == 4 && parts[0] == "users" && parts[2] == "collections":
+		id = parts[3]
+	}
+	if id == "" {
+		return nil, nil
+	}
+	if err := s.db.Where("id = ?", id).First(&collection).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &collection, nil
 }
 
 func (s *Server) activityPubRejectsReportsFromDomain(actor models.Account) (bool, error) {
@@ -766,6 +833,14 @@ func activityPubFlagStatusIDs(statuses []models.Status) models.Int64Array {
 	return out
 }
 
+func activityPubFlagCollectionIDs(collections []models.Collection) []int64 {
+	out := make([]int64, 0, len(collections))
+	for _, collection := range collections {
+		out = append(out, collection.ID)
+	}
+	return uniqueInt64s(out)
+}
+
 func activityPubFlagComment(comment string) string {
 	runes := []rune(comment)
 	if len(runes) > 5000 {
@@ -821,7 +896,7 @@ func activityPubNormalizedURIHostRaw(raw string) string {
 	return normalizeDeliveryStatsHost(parsed.Hostname())
 }
 
-func (s *Server) createActivityPubFlagReport(source models.Account, target models.Account, statusIDs models.Int64Array, comment string, uri sql.NullString) error {
+func (s *Server) createActivityPubFlagReport(source models.Account, target models.Account, statusIDs models.Int64Array, collectionIDs []int64, comment string, uri sql.NullString) error {
 	now := time.Now().UTC()
 	filteredStatusIDs, err := s.activityPubFlagReportStatusIDs(source, target, statusIDs)
 	if err != nil {
@@ -837,6 +912,7 @@ func (s *Server) createActivityPubFlagReport(source models.Account, target model
 		URI:             uri,
 		Forwarded:       sql.NullBool{Bool: false, Valid: true},
 		Category:        reportCategoryValue("other"),
+		CollectionIDs:   uniqueInt64s(collectionIDs),
 	}
 	var staffNotificationPayloads []asynqLocalNotificationPayload
 	created := false
@@ -860,6 +936,12 @@ func (s *Server) createActivityPubFlagReport(source models.Account, target model
 		}
 		if err := tx.Create(&report).Error; err != nil {
 			return err
+		}
+		for _, collectionID := range report.CollectionIDs {
+			join := models.CollectionReport{CollectionID: collectionID, ReportID: report.ID, CreatedAt: now, UpdatedAt: now}
+			if err := tx.Create(&join).Error; err != nil {
+				return err
+			}
 		}
 		created = true
 		payloads, err := s.createStaffReportNotificationPayloads(tx, report, source)
@@ -937,6 +1019,9 @@ func (s *Server) processActivityPubAccept(payload activityPayload, actor *models
 	if actor == nil || actor.ID == 0 || actor.Local() {
 		return activityPubEventNotAppliedf("Accept actor must be a persisted remote account")
 	}
+	if handled, err := s.processActivityPubFeatureResponse(payload, actor, true); handled || err != nil {
+		return err
+	}
 	if handled, err := s.processActivityPubQuoteResponse(context.Background(), payload, actor, deliveredToAccountID, true); handled || err != nil {
 		return err
 	}
@@ -985,6 +1070,9 @@ func (s *Server) processActivityPubAccept(payload activityPayload, actor *models
 func (s *Server) processActivityPubReject(payload activityPayload, actor *models.Account, deliveredToAccountID int64) error {
 	if actor == nil || actor.ID == 0 || actor.Local() {
 		return activityPubEventNotAppliedf("Reject actor must be a persisted remote account")
+	}
+	if handled, err := s.processActivityPubFeatureResponse(payload, actor, false); handled || err != nil {
+		return err
 	}
 	if handled, err := s.processActivityPubQuoteResponse(context.Background(), payload, actor, deliveredToAccountID, false); handled || err != nil {
 		return err
@@ -1064,7 +1152,7 @@ func (s *Server) refreshActivityPubRemoteAccount(ctx context.Context, account *m
 		return err
 	}
 	actor, err := s.fetchActivityActor(account.URI)
-	if err != nil || actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+	if err != nil || actor.ID == "" || !activityRemoteActorHasPublicKey(actor) {
 		if status, ok := activityFetchStatus(err); ok && activityPubDeliveryResponseErrorUnsalvageable(status) {
 			return nil
 		}
@@ -1687,10 +1775,11 @@ func (s *Server) activityActorForMoveTargetURI(actorURI string) (*models.Account
 	if err != nil {
 		return nil, err
 	}
-	if actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+	if actor.ID == "" || !activityRemoteActorHasPublicKey(actor) {
 		return nil, activityPubEventNotAppliedf("Move target actor is missing id or public key")
 	}
-	if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
+	actor, err = verifyRemoteActivityActorWebFingerResolved(actor)
+	if err != nil {
 		return nil, err
 	}
 	return s.upsertRemoteActivityActorForRequest(actor, "")
@@ -2424,6 +2513,9 @@ func (s *Server) processActivityPubPollVote(note activityObject, actor *models.A
 
 func (s *Server) processActivityPubUpdate(payload activityPayload, actor *models.Account, deliveredTo *models.Account, relayedThrough *models.Account, options activityPubProcessingOptions) error {
 	object := payload.Object
+	if object.TypeExact == "FeaturedCollection" {
+		return s.processActivityPubFeaturedCollectionUpdate(payload, actor)
+	}
 	if payload.ObjectReference && object.ID != "" {
 		return s.processActivityPubDereferencedUpdate(payload, actor, deliveredTo, relayedThrough, options)
 	}
@@ -3112,6 +3204,9 @@ func (s *Server) processActivityPubDeleteWithContext(ctx context.Context, payloa
 	target := payload.Object.ID
 	if target == "" && !payload.Object.Reference {
 		return activityPubEventNotAppliedf("Delete target is missing")
+	}
+	if handled, err := s.processActivityPubFeatureAuthorizationDelete(ctx, payload, actor); handled || err != nil {
+		return err
 	}
 	now := time.Now().UTC()
 	if actor.URI != "" && target == actor.URI {
@@ -4040,6 +4135,23 @@ func activityPubRemoteMediaInitialProcessing() sql.NullInt64 {
 
 func (s *Server) saveActivityPubTags(tx *gorm.DB, statusID int64, tags []activityTag, now time.Time) error {
 	for _, item := range tags {
+		if activityTagPrimaryType(item) == "FeaturedCollection" && strings.TrimSpace(item.ID) != "" {
+			var collection models.Collection
+			err := tx.Where("uri = ?", item.ID).First(&collection).Error
+			if err == nil {
+				tagged := models.TaggedObject{
+					StatusID: statusID, ObjectType: sql.NullString{String: "Collection", Valid: true},
+					ObjectID: sql.NullInt64{Int64: collection.ID, Valid: true}, APType: "FeaturedCollection",
+					URI: sql.NullString{String: item.ID, Valid: true}, CreatedAt: now, UpdatedAt: now,
+				}
+				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&tagged).Error; err != nil {
+					return err
+				}
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			continue
+		}
 		if activityTagPrimaryType(item) != "Hashtag" {
 			continue
 		}
@@ -4674,6 +4786,8 @@ func updateReplyCountersAfterChange(tx *gorm.DB, oldReply sql.NullInt64, nextRep
 
 func (s *Server) updateActivityPubActor(actor *models.Account, object activityObject, requestID string) error {
 	previousActor := *actor
+	keyActor := remoteActivityActor{ID: object.ID, PublicKeySource: object.PublicKeySource}
+	keyActor = s.fetchActivityActorPublicKey(keyActor)
 	acquired, releaseAccountLock, err := s.acquireActivityPubRedisLock(context.Background(), "process_account:"+object.ID, activityPubRedisLockDefaultTTL)
 	if err != nil {
 		return err
@@ -4701,7 +4815,7 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 		updates["created_at"] = activityActorPublishedAt(object.Published, actor.CreatedAt)
 	}
 	if !activityActorLocallySuspended(*actor) {
-		updates["public_key"] = object.PublicKey
+		updates["public_key"] = ""
 	}
 	for key, value := range activityActorSuspensionUpdatesForTransition(suspensionTransition, now) {
 		updates[key] = value
@@ -4717,9 +4831,20 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 		updates["display_name"] = activityTruncateRunes(object.Name, 2048)
 		updates["note"] = activityTruncateUTF8Bytes(object.Summary, 20*1024)
 		updates["featured_collection_url"] = sql.NullString{String: object.Featured, Valid: object.Featured != ""}
+		updates["collections_url"] = sql.NullString{String: object.FeaturedCollections, Valid: object.FeaturedCollections != ""}
+		updates["feature_approval_policy"] = activityPubFeaturePolicyBitmap(object.InteractionPolicy, *actor)
 		updates["locked"] = object.Locked
 		updates["discoverable"] = sql.NullBool{Bool: object.Discoverable, Valid: true}
 		updates["indexable"] = object.Indexable
+		if object.ShowMediaSet {
+			updates["show_media"] = object.ShowMedia
+		}
+		if object.ShowMediaRepliesSet {
+			updates["show_media_replies"] = object.ShowMediaReplies
+		}
+		if object.ShowFeaturedSet {
+			updates["show_featured"] = object.ShowFeatured
+		}
 		updates["memorial"] = object.Memorial
 		updates["also_known_as"] = models.StringArray(activityLimitedValueOrIDList(object.AlsoKnownAs, 256))
 		updates["attribution_domains"] = models.StringArray(activityLimitedStringList(object.AttributionDomains, 256))
@@ -4748,7 +4873,9 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 		}
 		if !skipMedia {
 			updates["avatar_remote_url"] = sql.NullString{String: object.AvatarRemoteURL, Valid: true}
+			updates["avatar_description"] = activityTruncateRunes(object.AvatarDescription, activityPubMediaAttachmentMaxDescriptionLength)
 			updates["header_remote_url"] = object.HeaderRemoteURL
+			updates["header_description"] = activityTruncateRunes(object.HeaderDescription, activityPubMediaAttachmentMaxDescriptionLength)
 			if object.AvatarRemoteURL == "" || s.cfg.DisableRemoteMediaCache {
 				clearActivityPubActorAvatarMediaUpdates(updates)
 			}
@@ -4762,6 +4889,10 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 			customEmojiChanges = append(customEmojiChanges, changes...)
 		}
 		if err := tx.Model(&models.Account{}).Where("id = ?", actor.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		oldKeyMaterials, err := activityPubAccountKeyMaterials(tx, actor.ID, actor.PublicKey)
+		if err != nil {
 			return err
 		}
 		if !suspendedAfterUpdate {
@@ -4780,7 +4911,14 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 		if activityActorLocallySuspended(*actor) {
 			return nil
 		}
-		return clearActivityPubActorTombstonesOnKeyChange(tx, actor.ID, actor.PublicKey, object.PublicKey)
+		persistedKeys, err := syncRemoteActivityActorKeypairs(tx, actor.ID, keyActor.PublicKeys, now)
+		if err != nil {
+			return err
+		}
+		if activityPubAllPublicKeysChanged(oldKeyMaterials, persistedKeys, now) {
+			return tx.Where("account_id = ?", actor.ID).Delete(&models.Tombstone{}).Error
+		}
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -4815,6 +4953,7 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 			_ = s.syncRemoteStatusPinsFromActivityCollection(actor, *object.FeaturedCollection, "")
 		}
 		s.syncActivityPubFeaturedTagsBestEffort(actor, object.FeaturedTags)
+		s.syncRemoteFeaturedCollectionsBestEffort(actor, object.FeaturedCollections, "")
 	}
 	return nil
 }
@@ -5816,6 +5955,7 @@ type activityLinkedDataSignature struct {
 }
 
 type activityObject struct {
+	Raw                   map[string]any
 	ID                    string
 	IDPresent             bool
 	Reference             bool
@@ -5827,6 +5967,7 @@ type activityObject struct {
 	Featured              string
 	FeaturedCollection    *activityCollection
 	FeaturedTags          string
+	FeaturedCollections   string
 	Inbox                 string
 	Outbox                string
 	Following             string
@@ -5838,6 +5979,11 @@ type activityObject struct {
 	ObjectIDRaw           string
 	ObjectIDPresent       bool
 	Instrument            string
+	FeaturedObject        string
+	FeatureAuthorization  string
+	InteractingObject     string
+	InteractionTarget     string
+	Topic                 string
 	AttributedTo          string
 	AttributedToRaw       string
 	URL                   string
@@ -5865,6 +6011,12 @@ type activityObject struct {
 	Locked                bool
 	Discoverable          bool
 	Indexable             bool
+	ShowMedia             bool
+	ShowMediaSet          bool
+	ShowMediaReplies      bool
+	ShowMediaRepliesSet   bool
+	ShowFeatured          bool
+	ShowFeaturedSet       bool
 	Memorial              bool
 	Suspended             bool
 	Closed                any
@@ -5888,8 +6040,11 @@ type activityObject struct {
 	ProfileFields         []profileField
 	ProfileFieldsSet      bool
 	PublicKey             string
+	PublicKeySource       any
 	AvatarRemoteURL       string
 	HeaderRemoteURL       string
+	AvatarDescription     string
+	HeaderDescription     string
 	Quote                 string
 	QuoteURI              string
 	QuoteURL              string
@@ -6690,6 +6845,7 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 		toValue := activityJSONLDValue(object, "to")
 		ccValue := activityJSONLDValue(object, "cc")
 		out := activityObject{
+			Raw:                   object,
 			ID:                    id,
 			IDPresent:             activityJSONLDValue(object, "id") != nil || activityJSONLDValue(object, "@id") != nil,
 			Type:                  activityJSONLDType(object),
@@ -6699,6 +6855,7 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 			AtomURI:               activityJSONLDString(object, "atomUri"),
 			Featured:              activityCollectionURI(featuredValue),
 			FeaturedTags:          activityCollectionURI(activityJSONLDValue(object, "featuredTags")),
+			FeaturedCollections:   activityCollectionURI(activityJSONLDValue(object, "featuredCollections")),
 			Inbox:                 activityActorCollectionURI(activityJSONLDValue(object, "inbox")),
 			Outbox:                activityActorCollectionURI(activityJSONLDValue(object, "outbox")),
 			Following:             activityActorCollectionURI(activityJSONLDValue(object, "following")),
@@ -6710,6 +6867,11 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 			ObjectIDRaw:           activityJSONLDValueOrID(objectIDValue),
 			ObjectIDPresent:       objectIDValue != nil,
 			Instrument:            activityJSONLDObjectID(object, "instrument"),
+			FeaturedObject:        activityJSONLDObjectID(object, "featuredObject"),
+			FeatureAuthorization:  activityJSONLDObjectID(object, "featureAuthorization"),
+			InteractingObject:     activityJSONLDObjectID(object, "interactingObject"),
+			InteractionTarget:     activityJSONLDObjectID(object, "interactionTarget"),
+			Topic:                 activityJSONLDObjectID(object, "topic"),
 			AttributedTo:          activityJSONLDObjectIDFirst(object, "attributedTo"),
 			AttributedToRaw:       activityJSONLDValueOrID(activityJSONLDValue(object, "attributedTo")),
 			URL:                   activityActorOrStatusURL(activityJSONLDValue(object, "url"), id, activityJSONLDType(object), activityJSONLDTypes(object)),
@@ -6731,6 +6893,12 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 			Locked:                activityBoolValue(activityJSONLDValue(object, "manuallyApprovesFollowers")),
 			Discoverable:          activityBoolValue(activityJSONLDValue(object, "discoverable")),
 			Indexable:             activityBoolValue(activityJSONLDValue(object, "indexable")),
+			ShowMedia:             activityBoolValue(activityJSONLDValue(object, "showMedia")),
+			ShowMediaSet:          activityJSONLDValue(object, "showMedia") != nil,
+			ShowMediaReplies:      activityBoolValue(activityJSONLDValue(object, "showRepliesInMedia")),
+			ShowMediaRepliesSet:   activityJSONLDValue(object, "showRepliesInMedia") != nil,
+			ShowFeatured:          activityBoolValue(activityJSONLDValue(object, "showFeatured")),
+			ShowFeaturedSet:       activityJSONLDValue(object, "showFeatured") != nil,
 			Memorial:              activityBoolValue(activityJSONLDValue(object, "memorial")),
 			Suspended:             activityRailsSuspendedTruthy(activityJSONLDValue(object, "suspended")),
 			Closed:                activityJSONLDValue(object, "closed"),
@@ -6754,8 +6922,11 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 			ProfileFields:         activityProfileFields(activityJSONLDValue(object, "attachment")),
 			ProfileFieldsSet:      activityAttachmentPresent(activityJSONLDValue(object, "attachment")),
 			PublicKey:             activityPublicKeyPEM(activityJSONLDValue(object, "publicKey")),
+			PublicKeySource:       activityJSONLDValue(object, "publicKey"),
 			AvatarRemoteURL:       activityActorImageURL(activityJSONLDValue(object, "icon")),
 			HeaderRemoteURL:       activityActorImageURL(activityJSONLDValue(object, "image")),
+			AvatarDescription:     activityActorImageDescription(activityJSONLDValue(object, "icon")),
+			HeaderDescription:     activityActorImageDescription(activityJSONLDValue(object, "image")),
 			Quote:                 activityJSONLDObjectID(object, "quote"),
 			QuoteURI:              activityJSONLDObjectID(object, "quoteUri"),
 			QuoteURL:              activityJSONLDObjectID(object, "quoteUrl"),
@@ -8094,6 +8265,9 @@ func activityCompactType(value string) string {
 	if strings.HasPrefix(value, "https://w3id.org/fep/044f#") {
 		return strings.TrimPrefix(value, "https://w3id.org/fep/044f#")
 	}
+	if strings.HasPrefix(value, "https://w3id.org/fep/7aa9#") {
+		return strings.TrimPrefix(value, "https://w3id.org/fep/7aa9#")
+	}
 	for _, prefix := range []string{"as:", "toot:", "schema:", "misskey:", "gts:", "fep:", "sec:", "security:"} {
 		if strings.HasPrefix(value, prefix) {
 			return strings.TrimPrefix(value, prefix)
@@ -8104,7 +8278,7 @@ func activityCompactType(value string) string {
 
 func activityKnownType(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "Collection", "CollectionPage", "Create", "Delete", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Question", "QuoteAuthorization", "QuoteRequest", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video":
+	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "Collection", "CollectionPage", "Create", "Delete", "Event", "FeatureAuthorization", "FeaturedCollection", "FeaturedItem", "FeatureRequest", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Question", "QuoteAuthorization", "QuoteRequest", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video":
 		return true
 	default:
 		return false

@@ -141,6 +141,7 @@ ja:
         otp: '携帯電話のアプリで生成された二要素認証コードを入力するか、リカバリーコードを使用してください:'
         webauthn: USBキーの場合は、必ず挿入し、必要に応じてタップしてください。
       settings:
+        email_subscriptions: 無効にしても既存の購読者は保持されますが、メール配信は停止します。
         indexable: プロフィールがGoogleやBingなどの検索結果にヒットするようになります。
         show_application: 自分で自分の投稿の送信元アプリを確認することは、ここのチェック状態にかかわらず可能です。
       tag:
@@ -344,6 +345,7 @@ ja:
         jurisdiction: 裁判管轄
         min_age: 登録可能な最低年齢
       settings:
+        email_subscriptions: メール購読を有効にする
         indexable: 検索エンジンからアクセスできるようにする
         show_application: 投稿に使ったアプリを開示する
       tag:

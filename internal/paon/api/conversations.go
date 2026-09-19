@@ -196,6 +196,15 @@ func (s *Server) hydrateConversationParticipants(conversations []models.AccountC
 }
 
 func (s *Server) hydrateConversationStatusRelationships(conversations []models.AccountConversation, account *models.Account) error {
+	participants := []*models.Account{}
+	for i := range conversations {
+		for j := range conversations[i].ParticipantAccounts {
+			participants = append(participants, &conversations[i].ParticipantAccounts[j])
+		}
+	}
+	if err := s.hydrateAccountFeaturePolicies(participants, account); err != nil {
+		return err
+	}
 	statuses := make([]models.Status, 0, len(conversations))
 	indexes := make([]int, 0, len(conversations))
 	for i := range conversations {

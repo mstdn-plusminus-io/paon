@@ -58,6 +58,25 @@ func TestAuthShellHTMLMatchesRailsAuthLayout(t *testing.T) {
 	}
 }
 
+func TestMastodon46BuildAppHeadAppliesColorSchemeAndContrastThemeVariants(t *testing.T) {
+	appAssets.Store(appAssetPaths{})
+	for _, test := range []struct {
+		theme string
+		wants []string
+	}{
+		{"system", []string{"mastodon-light.css", "default.css", "mastodon-light-contrast.css", "contrast.css", "prefers-contrast: more"}},
+		{"system-high", []string{"mastodon-light-contrast.css", "contrast.css"}},
+		{"mastodon-light-contrast", []string{"mastodon-light-contrast.css", `content="#ffffff"`}},
+	} {
+		head := buildAppHead("Settings", test.theme)
+		for _, want := range test.wants {
+			if !strings.Contains(head, want) {
+				t.Fatalf("buildAppHead(%q) missing %q: %s", test.theme, want, head)
+			}
+		}
+	}
+}
+
 func TestSetAppAssetsUsesManifestResolvedPathsForServerRenderedHTML(t *testing.T) {
 	publicDir := t.TempDir()
 	packsDir := filepath.Join(publicDir, "packs")

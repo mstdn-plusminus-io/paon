@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -153,6 +154,8 @@ func (s *Server) webfingerLinks(profilePage string, actorURL string, account *mo
 		{"rel": "http://webfinger.net/rel/profile-page", "type": "text/html", "href": profilePage},
 		{"rel": "self", "type": "application/activity+json", "href": actorURL},
 		{"rel": "http://ostatus.org/schema/1.0/subscribe", "template": s.cfg.BaseURL() + "/authorize_interaction?uri={uri}"},
+		{"rel": "https://w3id.org/fep/3b86/Create", "template": s.cfg.BaseURL() + "/share?text={content}"},
+		{"rel": "https://w3id.org/fep/3b86/Object", "template": s.cfg.BaseURL() + "/authorize_interaction?uri={object}"},
 	}
 	if avatar := s.webfingerAvatarLink(account); avatar != nil {
 		links = append(links, avatar)
@@ -349,7 +352,7 @@ func (s *Server) activityPubInstanceOutbox(c *echo.Context) error {
 
 func (s *Server) activityPubActor(c *echo.Context) error {
 	if shouldRedirectActivityPubHTML(c) && strings.TrimSpace(c.Param("account_id")) == "" {
-		return activityPubHTMLRedirect(c, "/@"+url.PathEscape(c.Param("username")))
+		return s.activityPubAccountHTMLRedirect(c, c.Param("username"))
 	}
 	s.activityPubAccountVary(c)
 	signedAccount, err := s.activityPubSignatureAccountForPublicFetch(c)
@@ -467,6 +470,15 @@ func (s *Server) activityPubFollowing(c *echo.Context) error {
 }
 
 func (s *Server) activityPubCollection(c *echo.Context) error {
+	collectionID := activityPubFormatParam(c, "id")
+	if shouldRedirectActivityPubHTML(c) {
+		if _, err := strconv.ParseInt(collectionID, 10, 64); err == nil {
+			if strings.TrimSpace(c.Param("account_id")) != "" {
+				return c.Redirect(http.StatusFound, "/collections/"+url.PathEscape(collectionID))
+			}
+			return s.webApp(c)
+		}
+	}
 	if s.authorizedFetchMode() {
 		appendVaryHeader(c, "Signature")
 	}
@@ -478,7 +490,6 @@ func (s *Server) activityPubCollection(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	collectionID := activityPubFormatParam(c, "id")
 	base := activityPubActorURL(s, *account) + "/collections/" + url.PathEscape(collectionID)
 	hiddenForSignedAccount := func() (bool, error) {
 		return s.activityPubCollectionHiddenForSignedAccount(*account, signedAccount)
@@ -540,6 +551,9 @@ func (s *Server) activityPubCollection(c *echo.Context) error {
 		}
 		return activityJSONWithCachePrivacy(c, map[string]any{"@context": context, "id": base, "type": "Collection", "totalItems": len(items), "items": items}, 180, publicCache)
 	default:
+		if numericID, err := strconv.ParseInt(collectionID, 10, 64); err == nil && numericID > 0 {
+			return s.activityPubFeaturedCollectionForAccount(c, *account, numericID, signedAccount)
+		}
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 }
@@ -1160,31 +1174,42 @@ func activityContext() []any {
 	return []any{
 		"https://www.w3.org/ns/activitystreams",
 		map[string]any{
-			"ostatus":            "http://ostatus.org#",
-			"atomUri":            "ostatus:atomUri",
-			"inReplyToAtomUri":   "ostatus:inReplyToAtomUri",
-			"conversation":       "ostatus:conversation",
-			"sensitive":          "as:sensitive",
-			"Hashtag":            "as:Hashtag",
-			"toot":               "http://joinmastodon.org/ns#",
-			"Emoji":              "toot:Emoji",
-			"votersCount":        "toot:votersCount",
-			"blurhash":           "toot:blurhash",
-			"focalPoint":         map[string]any{"@container": "@list", "@id": "toot:focalPoint"},
-			"gts":                "https://gotosocial.org/ns#",
-			"interactionPolicy":  map[string]any{"@id": "gts:interactionPolicy", "@type": "@id"},
-			"canQuote":           map[string]any{"@id": "gts:canQuote", "@type": "@id"},
-			"automaticApproval":  map[string]any{"@id": "gts:automaticApproval", "@type": "@id"},
-			"manualApproval":     map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
-			"interactingObject":  map[string]any{"@id": "gts:interactingObject", "@type": "@id"},
-			"interactionTarget":  map[string]any{"@id": "gts:interactionTarget", "@type": "@id"},
-			"fep":                "https://w3id.org/fep/044f#",
-			"quote":              map[string]any{"@id": "fep:quote", "@type": "@id"},
-			"quoteAuthorization": map[string]any{"@id": "fep:quoteAuthorization", "@type": "@id"},
-			"QuoteAuthorization": "fep:QuoteAuthorization",
-			"QuoteRequest":       "fep:QuoteRequest",
-			"quoteUri":           "http://fedibird.com/ns#quoteUri",
-			"_misskey_quote":     "https://misskey-hub.net/ns#_misskey_quote",
+			"ostatus":              "http://ostatus.org#",
+			"atomUri":              "ostatus:atomUri",
+			"inReplyToAtomUri":     "ostatus:inReplyToAtomUri",
+			"conversation":         "ostatus:conversation",
+			"sensitive":            "as:sensitive",
+			"Hashtag":              "as:Hashtag",
+			"toot":                 "http://joinmastodon.org/ns#",
+			"Emoji":                "toot:Emoji",
+			"votersCount":          "toot:votersCount",
+			"blurhash":             "toot:blurhash",
+			"focalPoint":           map[string]any{"@container": "@list", "@id": "toot:focalPoint"},
+			"gts":                  "https://gotosocial.org/ns#",
+			"interactionPolicy":    map[string]any{"@id": "gts:interactionPolicy", "@type": "@id"},
+			"canQuote":             map[string]any{"@id": "gts:canQuote", "@type": "@id"},
+			"automaticApproval":    map[string]any{"@id": "gts:automaticApproval", "@type": "@id"},
+			"manualApproval":       map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
+			"interactingObject":    map[string]any{"@id": "gts:interactingObject", "@type": "@id"},
+			"interactionTarget":    map[string]any{"@id": "gts:interactionTarget", "@type": "@id"},
+			"fep":                  "https://w3id.org/fep/044f#",
+			"quote":                map[string]any{"@id": "fep:quote", "@type": "@id"},
+			"quoteAuthorization":   map[string]any{"@id": "fep:quoteAuthorization", "@type": "@id"},
+			"QuoteAuthorization":   "fep:QuoteAuthorization",
+			"QuoteRequest":         "fep:QuoteRequest",
+			"quoteUri":             "http://fedibird.com/ns#quoteUri",
+			"_misskey_quote":       "https://misskey-hub.net/ns#_misskey_quote",
+			"FeaturedCollection":   "https://w3id.org/fep/7aa9#FeaturedCollection",
+			"FeaturedItem":         "https://w3id.org/fep/7aa9#FeaturedItem",
+			"FeatureRequest":       "https://w3id.org/fep/7aa9#FeatureRequest",
+			"FeatureAuthorization": "https://w3id.org/fep/7aa9#FeatureAuthorization",
+			"topic":                map[string]any{"@id": "https://w3id.org/fep/7aa9#topic", "@type": "@id"},
+			"featuredObject":       map[string]any{"@id": "https://w3id.org/fep/7aa9#featuredObject", "@type": "@id"},
+			"featureAuthorization": map[string]any{"@id": "https://w3id.org/fep/7aa9#featureAuthorization", "@type": "@id"},
+			"canFeature":           map[string]any{"@id": "https://w3id.org/fep/7aa9#canFeature", "@type": "@id"},
+			"showFeatured":         "toot:showFeatured",
+			"showMedia":            "toot:showMedia",
+			"showRepliesInMedia":   "toot:showRepliesInMedia",
 		},
 	}
 }
@@ -1262,10 +1287,20 @@ func activityPubActorContext() []any {
 		"memorial":                  "toot:memorial",
 		"suspended":                 "toot:suspended",
 		"attributionDomains":        map[string]any{"@id": "toot:attributionDomains", "@container": "@set"},
+		"showFeatured":              "toot:showFeatured",
+		"showMedia":                 "toot:showMedia",
+		"showRepliesInMedia":        "toot:showRepliesInMedia",
+		"gts":                       "https://gotosocial.org/ns#",
+		"interactionPolicy":         map[string]any{"@id": "gts:interactionPolicy", "@type": "@id"},
+		"canFeature":                map[string]any{"@id": "https://w3id.org/fep/7aa9#canFeature", "@type": "@id"},
+		"canQuote":                  map[string]any{"@id": "gts:canQuote", "@type": "@id"},
+		"automaticApproval":         map[string]any{"@id": "gts:automaticApproval", "@type": "@id"},
+		"manualApproval":            map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
 	}
 	return []any{
 		activityPubActivityStreamsContext(),
 		"https://w3id.org/security/v1",
+		"https://purl.archive.org/socialweb/webfinger",
 		extension,
 	}
 }
@@ -1416,7 +1451,7 @@ func activityPubActorObject(s *Server, account models.Account) map[string]any {
 	if suspended {
 		name = account.Username
 	}
-	restAccount := serializer.AccountFromModel(s.cfg, account)
+	restAccount := s.serializeAccount(account)
 	summary := restAccount.Note
 	attachments := activityPubActorAttachments(s, account)
 	if suspended {
@@ -1440,6 +1475,7 @@ func activityPubActorObject(s *Server, account models.Account) map[string]any {
 		"id":                        actorID,
 		"type":                      actorType,
 		"preferredUsername":         account.Username,
+		"webfinger":                 account.Username + "@" + s.cfg.LocalDomain,
 		"name":                      name,
 		"summary":                   summary,
 		"url":                       profileURL,
@@ -1447,16 +1483,23 @@ func activityPubActorObject(s *Server, account models.Account) map[string]any {
 		"outbox":                    outboxURL,
 		"featured":                  activityPubActorURL(s, account) + "/collections/featured",
 		"featuredTags":              activityPubActorURL(s, account) + "/collections/tags",
+		"featuredCollections":       s.cfg.BaseURL() + "/ap/users/" + strconv.FormatInt(account.ID, 10) + "/featured_collections",
 		"followers":                 activityPubActorURL(s, account) + "/followers",
 		"following":                 activityPubActorURL(s, account) + "/following",
 		"manuallyApprovesFollowers": !suspended && account.Locked,
 		"discoverable":              !suspended && account.Discoverable.Valid && account.Discoverable.Bool,
 		"indexable":                 !suspended && account.Indexable,
 		"memorial":                  account.Memorial,
-		"tag":                       tags,
-		"attachment":                attachments,
-		"endpoints":                 map[string]any{"sharedInbox": s.cfg.BaseURL() + "/inbox"},
-		"publicKey":                 map[string]any{"id": actorID + "#main-key", "owner": actorID, "publicKeyPem": account.PublicKey},
+		"showFeatured":              account.ShowFeatured,
+		"showMedia":                 account.ShowMedia,
+		"showRepliesInMedia":        account.ShowMediaReplies,
+		"interactionPolicy": map[string]any{
+			"canFeature": map[string]any{"automaticApproval": []string{activityPubAccountFeatureAutomaticApproval(s, account)}},
+		},
+		"tag":        tags,
+		"attachment": attachments,
+		"endpoints":  map[string]any{"sharedInbox": s.cfg.BaseURL() + "/inbox"},
+		"publicKey":  map[string]any{"id": actorID + "#main-key", "owner": actorID, "publicKeyPem": account.PublicKey},
 	}
 	if icon != nil {
 		object["icon"] = icon
@@ -1591,14 +1634,14 @@ func activityPubAccountIcon(s *Server, account models.Account) map[string]any {
 	if account.SuspendedAt.Valid || !account.AvatarFileName.Valid || strings.TrimSpace(account.AvatarFileName.String) == "" {
 		return nil
 	}
-	return activityPubAccountImageObject(account.AvatarContentType.String, activityPubAccountAvatarURL(s, account))
+	return activityPubAccountImageObject(account.AvatarContentType.String, activityPubAccountAvatarURL(s, account), account.AvatarDescription)
 }
 
 func activityPubAccountImage(s *Server, account models.Account) map[string]any {
 	if account.SuspendedAt.Valid || !account.HeaderFileName.Valid || strings.TrimSpace(account.HeaderFileName.String) == "" {
 		return nil
 	}
-	return activityPubAccountImageObject(account.HeaderContentType.String, activityPubAccountHeaderURL(s, account))
+	return activityPubAccountImageObject(account.HeaderContentType.String, activityPubAccountHeaderURL(s, account), account.HeaderDescription)
 }
 
 func activityPubAccountAvatarURL(s *Server, account models.Account) string {
@@ -1609,15 +1652,19 @@ func activityPubAccountHeaderURL(s *Server, account models.Account) string {
 	return s.cfg.SystemAssetURL(accountImageAssetPath(account, "header", "original", account.HeaderFileName.String))
 }
 
-func activityPubAccountImageObject(contentType string, value string) map[string]any {
+func activityPubAccountImageObject(contentType string, value string, descriptions ...string) map[string]any {
 	if value == "" {
 		return nil
 	}
-	return map[string]any{
+	out := map[string]any{
 		"type":      "Image",
 		"mediaType": emptyNil(contentType),
 		"url":       value,
 	}
+	if len(descriptions) > 0 && strings.TrimSpace(descriptions[0]) != "" {
+		out["summary"] = descriptions[0]
+	}
+	return out
 }
 
 func (s *Server) hydrateActivityPubActorTags(account *models.Account) error {
@@ -2427,7 +2474,7 @@ func compactActivityPubAudience(values []string) []string {
 }
 
 func activityPubTags(s *Server, status models.Status) []any {
-	tags := make([]any, 0, len(status.Mentions)+len(status.Tags)+len(status.CustomEmojis))
+	tags := make([]any, 0, len(status.Mentions)+len(status.Tags)+len(status.CustomEmojis)+len(status.TaggedCollections))
 	mentions := append([]models.Mention(nil), status.Mentions...)
 	sort.SliceStable(mentions, func(i, j int) bool {
 		return mentions[i].ID < mentions[j].ID
@@ -2456,6 +2503,16 @@ func activityPubTags(s *Server, status models.Status) []any {
 		}
 		tags = append(tags, item)
 	}
+	for _, collection := range status.TaggedCollections {
+		resource, err := s.collectionResource(collection, nil)
+		if err != nil {
+			continue
+		}
+		object, err := s.activityPubFeaturedCollectionObject(resource)
+		if err == nil {
+			tags = append(tags, object)
+		}
+	}
 	return tags
 }
 
@@ -2481,6 +2538,11 @@ func activityPubMediaAttachments(s *Server, status models.Status) []any {
 		if height, ok := nestedPresentValue(meta, "original", "height"); ok {
 			item["height"] = height
 		}
+		if duration, ok := nestedPresentValue(meta, "original", "duration"); ok {
+			if isoDuration := activityPubMediaDuration(duration); isoDuration != "" {
+				item["duration"] = isoDuration
+			}
+		}
 		if focus, ok := nestedMap(meta, "focus"); ok {
 			item["focalPoint"] = []any{focus["x"], focus["y"]}
 		}
@@ -2494,6 +2556,28 @@ func activityPubMediaAttachments(s *Server, status models.Status) []any {
 		items = append(items, item)
 	}
 	return items
+}
+
+func activityPubMediaDuration(value any) string {
+	var seconds float64
+	switch typed := value.(type) {
+	case float64:
+		seconds = typed
+	case float32:
+		seconds = float64(typed)
+	case int:
+		seconds = float64(typed)
+	case int64:
+		seconds = float64(typed)
+	case json.Number:
+		seconds, _ = typed.Float64()
+	case string:
+		seconds, _ = strconv.ParseFloat(strings.TrimSpace(typed), 64)
+	}
+	if seconds <= 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return ""
+	}
+	return "PT" + strconv.FormatFloat(seconds, 'f', -1, 64) + "S"
 }
 
 func activityPubOrderedMediaAttachments(status models.Status) []models.MediaAttachment {

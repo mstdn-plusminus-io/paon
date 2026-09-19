@@ -14,7 +14,51 @@ const (
 	userCleanupBatchSize        = 1000
 	unconfirmedUserTTL          = 7 * 24 * time.Hour
 	discardedStatusRetentionTTL = 30 * 24 * time.Hour
+	collectionItemRetentionTTL  = 24 * time.Hour
 )
+
+func (s *Server) runCollectionItemCleanupWorker(ctx context.Context) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			s.runSchedulerWithRedisLock(ctx, "collection_item_cleanup_scheduler", time.Hour, func() {
+				s.cleanupRejectedAndRevokedCollectionItems(ctx, now.UTC().Add(-collectionItemRetentionTTL))
+			})
+		}
+	}
+}
+
+func (s *Server) cleanupRejectedAndRevokedCollectionItems(ctx context.Context, cutoff time.Time) int {
+	if s == nil || s.db == nil {
+		return 0
+	}
+	cleaned := 0
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var collectionIDs []int64
+		if err := tx.Model(&models.CollectionItem{}).Where("state IN ? AND updated_at < ?", []int{2, 3}, cutoff).Distinct().Pluck("collection_id", &collectionIDs).Error; err != nil {
+			return err
+		}
+		result := tx.Where("state IN ? AND updated_at < ?", []int{2, 3}, cutoff).Delete(&models.CollectionItem{})
+		if result.Error != nil {
+			return result.Error
+		}
+		cleaned = int(result.RowsAffected)
+		for _, collectionID := range collectionIDs {
+			if err := refreshCollectionItemCount(tx, collectionID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0
+	}
+	return cleaned
+}
 
 func (s *Server) runUserCleanupWorker(ctx context.Context) {
 	ticker := time.NewTicker(userCleanupWorkerInterval)
@@ -37,6 +81,7 @@ func (s *Server) cleanupUsersAndDiscardedStatuses(ctx context.Context, now time.
 	}
 	cleaned := s.cleanupUnconfirmedUsers(ctx, now.Add(-unconfirmedUserTTL))
 	cleaned += s.cleanupDiscardedStatuses(ctx, now.Add(-discardedStatusRetentionTTL))
+	cleaned += s.cleanupUnconfirmedEmailSubscriptions(ctx, now.Add(-emailSubscriptionUnconfirmedTTL))
 	return cleaned
 }
 
