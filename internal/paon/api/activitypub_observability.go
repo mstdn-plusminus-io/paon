@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -112,6 +113,10 @@ func logActivityPubProcessingIssue(event string, reason string, body []byte, act
 func activityPubErrorLogValue(err error) string {
 	if err == nil {
 		return ""
+	}
+	var diagnostic *activityPubSignatureVerificationError
+	if errors.As(err, &diagnostic) {
+		return activityPubSafeLogValue(err.Error(), activityPubSignatureDiagnosticLogLimit)
 	}
 	return activityPubSafeLogValue(err.Error(), 4*1024)
 }
