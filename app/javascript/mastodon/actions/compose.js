@@ -91,14 +91,12 @@ export const COMPOSE_FOCUS = 'COMPOSE_FOCUS';
 
 const messages = defineMessages({
   uploadErrorLimit: { id: 'upload_error.limit', defaultMessage: 'File upload limit exceeded.' },
-  uploadErrorPoll:  { id: 'upload_error.poll', defaultMessage: 'File upload not allowed with polls.' },
   uploadErrorQuote: { id: 'upload_error.quote', defaultMessage: 'File upload not allowed with quotes.' },
   blankPostError: { id: 'compose.error.blank_post', defaultMessage: 'Post can\'t be blank.' },
   quoteErrorEdit: { id: 'quote_error.edit', defaultMessage: 'Quotes cannot be added when editing a post.' },
   quoteErrorUpload: { id: 'quote_error.upload', defaultMessage: 'Quoting is not allowed with media attachments.' },
   quoteErrorPoll: { id: 'quote_error.poll', defaultMessage: 'Quoting is not allowed with polls.' },
   quoteErrorQuote: { id: 'quote_error.quote', defaultMessage: 'Only one quote at a time is allowed.' },
-  quoteErrorUnauthorized: { id: 'quote_error.unauthorized', defaultMessage: 'You are not authorized to quote this post.' },
   quoteErrorPrivateMention: { id: 'quote_error.private_mentions', defaultMessage: 'Quoting is not allowed with private mentions.' },
   open: { id: 'compose.published.open', defaultMessage: 'Open' },
   published: { id: 'compose.published.body', defaultMessage: 'Post published.' },
@@ -236,9 +234,11 @@ export function submitCompose(routerHistory, successCallback) {
       poll,
       language: getState().getIn(['compose', 'language']),
       quoted_status_id: quotedStatusId,
-      quote_approval_policy: ['private', 'direct'].includes(getState().getIn(['compose', 'privacy']))
-        ? 'nobody'
-        : getState().getIn(['compose', 'quote_policy'], 'public'),
+      // Keep Mastodon's request field for client compatibility while Paon's
+      // permission-policy exception makes every otherwise-quotable post
+      // public. Privacy still wins for private mentions and followers-only
+      // posts.
+      quote_approval_policy: ['private', 'direct'].includes(getState().getIn(['compose', 'privacy'])) ? 'nobody' : 'public',
     };
 
     api().request({
@@ -332,11 +332,6 @@ export function uploadCompose(files) {
 
     if (files.length + media.size + pending > uploadLimit) {
       dispatch(showAlert({ message: messages.uploadErrorLimit }));
-      return;
-    }
-
-    if (getState().getIn(['compose', 'poll'])) {
-      dispatch(showAlert({ message: messages.uploadErrorPoll }));
       return;
     }
 
@@ -821,17 +816,16 @@ export const changeComposeQuotePolicy = value => ({
 
 /**
  * Prepare an official Mastodon quote post while preserving the current draft.
- * Quote policy is evaluated from the REST Status `quote_approval` entity and
- * therefore fails closed when a server omits the 4.5 contract.
+ * Paon deliberately ignores the optional quote permission policy. Visibility
+ * and block checks remain server-authoritative; the web UI does not turn a
+ * visible post into an unquotable one based only on `quote_approval`.
  * @param {import('immutable').Map} status Status selected as the quote target.
  * @param {object} routerHistory Router history used to reveal the composer.
  * @param {boolean} skipQuietHint Whether the quiet-post warning was accepted.
- * @param {boolean} quotePolicyFetched Whether a complete REST Status was already fetched.
  */
-export const quoteCompose = (status, routerHistory, skipQuietHint = false, quotePolicyFetched = false) => (dispatch, getState) => {
+export const quoteCompose = (status, routerHistory, skipQuietHint = false) => (dispatch, getState) => {
   const compose = getState().get('compose');
   const media = compose.get('media_attachments');
-  const approval = status.getIn(['quote_approval', 'current_user']);
 
   let message;
   if (compose.get('id')) message = messages.quoteErrorEdit;
@@ -839,21 +833,6 @@ export const quoteCompose = (status, routerHistory, skipQuietHint = false, quote
   else if (compose.get('poll')) message = messages.quoteErrorPoll;
   else if (compose.get('is_uploading') || media.size > 0) message = messages.quoteErrorUpload;
   else if (compose.get('quoted_status_id')) message = messages.quoteErrorQuote;
-  else if (approval == null && !quotePolicyFetched) {
-    api().get(`/api/v1/statuses/${status.get('id')}`).then(response => {
-      dispatch(importFetchedStatus(response.data));
-
-      const fetchedStatus = getState().getIn(['statuses', response.data.id]);
-      if (fetchedStatus) {
-        dispatch(quoteCompose(fetchedStatus, routerHistory, skipQuietHint, true));
-      } else {
-        dispatch(showAlert({ message: messages.quoteErrorUnauthorized }));
-      }
-    }).catch(error => {
-      dispatch(showAlertForError(error));
-    });
-    return;
-  } else if (!['automatic', 'manual'].includes(approval)) message = messages.quoteErrorUnauthorized;
 
   if (message) {
     dispatch(showAlert({ message }));
@@ -902,7 +881,7 @@ export const pasteLinkCompose = url => (dispatch, getState) => {
 
     if (response.data.statuses?.length === 1) {
       const fetched = getState().getIn(['statuses', response.data.statuses[0].id]);
-      if (fetched && ['automatic', 'manual'].includes(fetched.getIn(['quote_approval', 'current_user']))) {
+      if (fetched) {
         dispatch(quoteCompose(fetched));
       }
     }

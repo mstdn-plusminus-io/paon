@@ -31,7 +31,6 @@ import {
   unbookmark,
   pin,
   unpin,
-  revokeQuote,
 } from '../actions/interactions';
 import { openModal } from '../actions/modal';
 import { initMuteModal } from '../actions/mutes';
@@ -47,7 +46,6 @@ import {
   editStatus,
   translateStatus,
   undoStatusTranslation,
-  setStatusQuotePolicy,
 } from '../actions/statuses';
 import Status from '../components/status';
 import { boostModal, deleteModal } from '../initial_state';
@@ -59,8 +57,6 @@ const messages = defineMessages({
   deleteMessage: { id: 'confirmations.delete.message', defaultMessage: 'Are you sure you want to delete this status?' },
   redraftConfirm: { id: 'confirmations.redraft.confirm', defaultMessage: 'Delete & redraft' },
   redraftMessage: { id: 'confirmations.redraft.message', defaultMessage: 'Are you sure you want to delete this status and re-draft it? Favorites and boosts will be lost, and replies to the original post will be orphaned.' },
-  revokeQuoteConfirm: { id: 'confirmations.revoke_quote.confirm', defaultMessage: 'Remove post' },
-  revokeQuoteMessage: { id: 'confirmations.revoke_quote.message', defaultMessage: 'This action cannot be undone.' },
 });
 
 const makeMapStateToProps = () => {
@@ -113,21 +109,6 @@ const mapDispatchToProps = (dispatch, { intl, contextType }) => ({
 
   onQuote (status, router) {
     dispatch(quoteCompose(status, router));
-  },
-
-  onRevokeQuote (status) {
-    dispatch(openModal({
-      modalType: 'CONFIRM',
-      modalProps: {
-        message: intl.formatMessage(messages.revokeQuoteMessage),
-        confirm: intl.formatMessage(messages.revokeQuoteConfirm),
-        onConfirm: () => dispatch(revokeQuote(status)),
-      },
-    }));
-  },
-
-  onQuotePolicy (status, policy) {
-    dispatch(setStatusQuotePolicy(status, policy));
   },
 
   onFavourite (status) {

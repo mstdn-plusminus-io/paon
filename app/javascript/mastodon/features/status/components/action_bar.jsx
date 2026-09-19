@@ -58,17 +58,10 @@ const messages = defineMessages({
   unblock: { id: 'account.unblock', defaultMessage: 'Unblock @{name}' },
   openOriginalPage: { id: 'account.open_original_page', defaultMessage: 'Open original page' },
   quote: { id: 'status.quote', defaultMessage: 'Quote' },
-  requestQuote: { id: 'status.request_quote', defaultMessage: 'Request to quote' },
-  cannotQuote: { id: 'status.cannot_quote', defaultMessage: 'You are not allowed to quote this post' },
-  revokeQuote: { id: 'status.revoke_quote', defaultMessage: 'Remove my post from @{name}’s post' },
-  quotePolicyAnyone: { id: 'status.quote_policy.anyone', defaultMessage: 'Allow quotes from anyone' },
-  quotePolicyFollowers: { id: 'status.quote_policy.followers', defaultMessage: 'Allow quotes from followers' },
-  quotePolicyNobody: { id: 'status.quote_policy.nobody', defaultMessage: 'Do not allow quotes' },
 });
 
 const mapStateToProps = (state, { status }) => ({
   relationship: state.getIn(['relationships', status.getIn(['account', 'id'])]),
-  quotedStatusAccountId: state.getIn(['statuses', status.getIn(['quote', 'quoted_status']), 'account']),
 });
 
 class ActionBar extends PureComponent {
@@ -84,9 +77,6 @@ class ActionBar extends PureComponent {
     onReply: PropTypes.func.isRequired,
     onReblog: PropTypes.func.isRequired,
     onQuote: PropTypes.func.isRequired,
-    onRevokeQuote: PropTypes.func.isRequired,
-    onQuotePolicy: PropTypes.func.isRequired,
-    quotedStatusAccountId: PropTypes.string,
     onFavourite: PropTypes.func.isRequired,
     onBookmark: PropTypes.func.isRequired,
     onDelete: PropTypes.func.isRequired,
@@ -116,10 +106,6 @@ class ActionBar extends PureComponent {
 
   handleQuoteClick = () => {
     this.props.onQuote(this.props.status, this.context.router.history);
-  };
-
-  handleRevokeQuote = () => {
-    this.props.onRevokeQuote(this.props.status);
   };
 
   handleFavouriteClick = () => {
@@ -250,23 +236,11 @@ class ActionBar extends PureComponent {
         }
 
         menu.push({ text: intl.formatMessage(mutingConversation ? messages.unmuteConversation : messages.muteConversation), action: this.handleConversationMuteClick });
-        if (!['private', 'direct'].includes(status.get('visibility'))) {
-          const policy = status.getIn(['quote_approval', 'automatic', 0], 'nobody');
-          menu.push(null);
-          menu.push({ text: intl.formatMessage(messages.quotePolicyAnyone), action: () => this.props.onQuotePolicy(status, 'public'), active: policy === 'public' });
-          menu.push({ text: intl.formatMessage(messages.quotePolicyFollowers), action: () => this.props.onQuotePolicy(status, 'followers'), active: policy === 'followers' });
-          menu.push({ text: intl.formatMessage(messages.quotePolicyNobody), action: () => this.props.onQuotePolicy(status, 'nobody'), active: policy === 'nobody' });
-        }
         menu.push(null);
         menu.push({ text: intl.formatMessage(messages.edit), action: this.handleEditClick });
         menu.push({ text: intl.formatMessage(messages.delete), action: this.handleDeleteClick, dangerous: true });
         menu.push({ text: intl.formatMessage(messages.redraft), action: this.handleRedraftClick, dangerous: true });
       } else {
-        if (this.props.quotedStatusAccountId === me && status.getIn(['quote', 'state']) === 'accepted') {
-          menu.push({ text: intl.formatMessage(messages.revokeQuote, { name: status.getIn(['account', 'username']) }), action: this.handleRevokeQuote, dangerous: true });
-          menu.push(null);
-        }
-
         menu.push({ text: intl.formatMessage(messages.mention, { name: status.getIn(['account', 'username']) }), action: this.handleMentionClick });
         menu.push(null);
 
@@ -335,23 +309,14 @@ class ActionBar extends PureComponent {
 
     const bookmarkTitle = bookmarkActionTitle(intl, status.get('bookmarked'));
     const favouriteTitle = favouriteActionTitle(intl, status.get('favourited'));
-    const quoteApproval = status.getIn(['quote_approval', 'current_user']);
-    const quotePolicyUnknown = quoteApproval == null;
     const quoteableStatus = publicStatus || (writtenByMe && status.get('visibility') === 'private');
-    const canQuote = quoteableStatus && ['automatic', 'manual'].includes(quoteApproval);
-    const quoteTitle = !signedIn || quotePolicyUnknown
-      ? intl.formatMessage(messages.quote)
-      : quoteApproval === 'manual'
-      ? intl.formatMessage(messages.requestQuote)
-      : canQuote
-        ? intl.formatMessage(messages.quote)
-        : intl.formatMessage(messages.cannotQuote);
+    const quoteTitle = intl.formatMessage(messages.quote);
 
     return (
       <div className='detailed-status__action-bar'>
         <div className='detailed-status__button'><IconButton title={intl.formatMessage(messages.reply)} icon={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? 'reply' : replyIcon} iconComponent={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? ReplyIcon : replyIconComponent} onClick={this.handleReplyClick} /></div>
         <div className='detailed-status__button'><IconButton className={classNames({ reblogPrivate })} disabled={!publicStatus && !reblogPrivate} active={status.get('reblogged')} title={reblogTitle} icon='retweet' iconComponent={RepeatIcon} onClick={this.handleReblogClick} /></div>
-        <div className='detailed-status__button'><IconButton className='quote-icon' disabled={!quoteableStatus || (signedIn && !canQuote && !quotePolicyUnknown)} title={quoteTitle} icon='quote-right' iconComponent={FormatQuoteIcon} onClick={this.handleQuoteClick} /></div>
+        <div className='detailed-status__button'><IconButton className='quote-icon' disabled={!quoteableStatus} title={quoteTitle} icon='quote-right' iconComponent={FormatQuoteIcon} onClick={this.handleQuoteClick} /></div>
         <div className='detailed-status__button'><IconButton className='star-icon' animate active={status.get('favourited')} title={favouriteTitle} icon='star' iconComponent={status.get('favourited') ? StarIcon : StarBorderIcon} onClick={this.handleFavouriteClick} /></div>
         <div className='detailed-status__button'><IconButton className='bookmark-icon' disabled={!signedIn} active={status.get('bookmarked')} title={bookmarkTitle} icon='bookmark' iconComponent={status.get('bookmarked') ? BookmarkIcon : BookmarkBorderIcon} onClick={this.handleBookmarkClick} /></div>
 

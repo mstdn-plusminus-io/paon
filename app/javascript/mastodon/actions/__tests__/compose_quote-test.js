@@ -8,6 +8,7 @@ import {
   quoteCompose,
   selectComposeSuggestion,
   submitCompose,
+  uploadCompose,
 } from '../compose';
 
 jest.mock('../../api', () => ({
@@ -33,7 +34,7 @@ const state = overrides => fromJS({
   },
 });
 
-describe('submitCompose on Mastodon 4.5', () => {
+describe('submitCompose on Mastodon 4.6', () => {
   const request = jest.fn(() => new Promise(() => undefined));
   const get = jest.fn();
   const response = {
@@ -55,7 +56,7 @@ describe('submitCompose on Mastodon 4.5', () => {
     api.mockReturnValue({ get, request });
   });
 
-  it('submits the official quote target and approval policy', () => {
+  it('keeps the quote field but normalizes the effective policy to public', () => {
     const getState = () => state({ text: 'quoted post', quoted_status_id: '42' });
 
     submitCompose()(jest.fn(), getState);
@@ -63,7 +64,7 @@ describe('submitCompose on Mastodon 4.5', () => {
     expect(request).toHaveBeenCalledTimes(1);
     expect(request.mock.calls[0][0].data).toMatchObject({
       quoted_status_id: '42',
-      quote_approval_policy: 'followers',
+      quote_approval_policy: 'public',
     });
   });
 
@@ -120,19 +121,31 @@ describe('submitCompose on Mastodon 4.5', () => {
   });
 });
 
-describe('quoteCompose on Mastodon 4.5', () => {
+describe('quoteCompose with Paon unconditional quote policy', () => {
   const get = jest.fn();
-  const flushPromises = () => new Promise(resolve => setTimeout(resolve, 0));
-
   beforeEach(() => {
     get.mockReset();
     api.mockReturnValue({ get });
   });
 
-  it('uses a known automatic quote approval without another request', () => {
+  it('uses a visible status without consulting quote approval', () => {
     const status = fromJS({
       id: '42',
       quote_approval: { current_user: 'automatic' },
+      visibility: 'public',
+    });
+    const dispatch = jest.fn();
+
+    quoteCompose(status)(dispatch, () => state({ mounted: true }));
+
+    expect(get).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledWith({ type: COMPOSE_QUOTE, status });
+  });
+
+  it('ignores a denied permission policy for an otherwise-visible status', () => {
+    const status = fromJS({
+      id: '42',
+      quote_approval: { current_user: 'denied' },
       visibility: 'public',
     });
     const dispatch = jest.fn();
@@ -173,17 +186,31 @@ describe('quoteCompose on Mastodon 4.5', () => {
     expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: COMPOSE_QUOTE }));
   });
 
-  it('fetches the regular REST Status when a public stream omits quote approval', async () => {
-    get.mockResolvedValueOnce({ data: { id: '42' } });
+  it('does not fetch policy when a public stream omits quote approval', () => {
     const status = fromJS({ id: '42', visibility: 'public' });
     const dispatch = jest.fn();
 
     quoteCompose(status)(dispatch, () => state({ mounted: true }));
-    await flushPromises();
 
-    expect(get).toHaveBeenCalledWith('/api/v1/statuses/42');
-    expect(dispatch).toHaveBeenCalledWith(expect.any(Function));
-    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: COMPOSE_QUOTE }));
+    expect(get).not.toHaveBeenCalled();
+    expect(dispatch).toHaveBeenCalledWith({ type: COMPOSE_QUOTE, status });
+  });
+});
+
+describe('Mastodon 4.6 poll and media composition', () => {
+  it('uploads media while a poll is present', () => {
+    const post = jest.fn(() => new Promise(() => undefined));
+    api.mockReturnValue({ post });
+    const file = new File(['image'], 'image.png', { type: 'image/png' });
+
+    uploadCompose([file])(jest.fn(), () => state({
+      max_media_attachments: 4,
+      pending_media_attachments: 0,
+      poll: { options: ['yes', 'no'] },
+    }));
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0][0]).toBe('/api/v2/media');
   });
 });
 

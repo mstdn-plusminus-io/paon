@@ -44,7 +44,6 @@ import {
   unreblog,
   pin,
   unpin,
-  revokeQuote,
 } from '../../actions/interactions';
 import { openModal } from '../../actions/modal';
 import { initMuteModal } from '../../actions/mutes';
@@ -59,7 +58,6 @@ import {
   revealStatus,
   translateStatus,
   undoStatusTranslation,
-  setStatusQuotePolicy,
 } from '../../actions/statuses';
 import ColumnHeader from '../../components/column_header';
 import { textForScreenReader, defaultMediaVisibility } from '../../components/status';
@@ -79,8 +77,6 @@ const messages = defineMessages({
   deleteMessage: { id: 'confirmations.delete.message', defaultMessage: 'Are you sure you want to delete this status?' },
   redraftConfirm: { id: 'confirmations.redraft.confirm', defaultMessage: 'Delete & redraft' },
   redraftMessage: { id: 'confirmations.redraft.message', defaultMessage: 'Are you sure you want to delete this status and re-draft it? Favorites and boosts will be lost, and replies to the original post will be orphaned.' },
-  revokeQuoteConfirm: { id: 'confirmations.revoke_quote.confirm', defaultMessage: 'Remove post' },
-  revokeQuoteMessage: { id: 'confirmations.revoke_quote.message', defaultMessage: 'This action cannot be undone.' },
   revealAll: { id: 'status.show_more_all', defaultMessage: 'Show more for all' },
   hideAll: { id: 'status.show_less_all', defaultMessage: 'Show less for all' },
   statusTitleWithAttachments: { id: 'status.title.with_attachments', defaultMessage: '{user} posted {attachmentCount, plural, one {an attachment} other {# attachments}}' },
@@ -349,22 +345,6 @@ class Status extends ImmutablePureComponent {
         },
       }));
     }
-  };
-
-  handleRevokeQuote = status => {
-    const { dispatch, intl } = this.props;
-    dispatch(openModal({
-      modalType: 'CONFIRM',
-      modalProps: {
-        message: intl.formatMessage(messages.revokeQuoteMessage),
-        confirm: intl.formatMessage(messages.revokeQuoteConfirm),
-        onConfirm: () => dispatch(revokeQuote(status)),
-      },
-    }));
-  };
-
-  handleQuotePolicy = (status, policy) => {
-    this.props.dispatch(setStatusQuotePolicy(status, policy));
   };
 
   handleBookmarkClick = (status) => {
@@ -770,8 +750,6 @@ class Status extends ImmutablePureComponent {
                   onFavourite={this.handleFavouriteClick}
                   onReblog={this.handleReblogClick}
                   onQuote={this.handleQuoteClick}
-                  onRevokeQuote={this.handleRevokeQuote}
-                  onQuotePolicy={this.handleQuotePolicy}
                   onBookmark={this.handleBookmarkClick}
                   onDelete={this.handleDeleteClick}
                   onEdit={this.handleEditClick}

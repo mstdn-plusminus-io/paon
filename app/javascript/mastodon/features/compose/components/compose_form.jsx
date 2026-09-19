@@ -38,7 +38,6 @@ import { shouldFocusSpoilerOnToggle } from '../util/focus';
 import { handlePostKeyDown, handleSpoilerKeyDown } from '../util/keyboard';
 
 import CharacterCounter from './character_counter';
-import QuotePolicySelector from './quote_policy_selector';
 import QuotedPost from './quoted_post';
 
 const allowedAroundShortCode = '><\u0085\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u202f\u205f\u3000\u2028\u2029\u0009\u000a\u000b\u000c\u000d';
@@ -78,6 +77,7 @@ export class ComposeForm extends ImmutablePureComponent {
     onSuggestionSelected: PropTypes.func.isRequired,
     onChangeSpoilerText: PropTypes.func.isRequired,
     onPaste: PropTypes.func.isRequired,
+    onDrop: PropTypes.func.isRequired,
     onPickEmoji: PropTypes.func.isRequired,
     autoFocus: PropTypes.bool,
     anyMedia: PropTypes.bool,
@@ -322,7 +322,7 @@ export class ComposeForm extends ImmutablePureComponent {
   }
 
   render () {
-    const { intl, onPaste, autoFocus } = this.props;
+    const { intl, onDrop, onPaste, autoFocus } = this.props;
     const { highlighted } = this.state;
     const disabled = this.props.isSubmitting;
     const isSingleColumn = document.body.classList.contains('layout-single-column');
@@ -386,6 +386,7 @@ export class ComposeForm extends ImmutablePureComponent {
             onSuggestionsClearRequested={this.onSuggestionsClearRequested}
             onSuggestionSelected={this.onSuggestionSelected}
             onPaste={onPaste}
+            onDrop={onDrop}
             autoFocus={autoFocus}
             lang={this.props.lang}
           >
@@ -402,7 +403,6 @@ export class ComposeForm extends ImmutablePureComponent {
               <UploadButtonContainer />
               <PollButtonContainer />
               <PrivacyDropdownContainer disabled={this.props.isEditing} />
-              <QuotePolicySelector />
               <SpoilerButtonContainer />
               {localStorage.plusminus_config_custom_spoiler_button === 'visible' && (
                 <>
