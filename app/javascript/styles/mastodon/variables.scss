@@ -81,6 +81,9 @@ $light-text-color: $ui-primary-color !default;
 // Language codes that uses CJK fonts
 $cjk-langs: ja, ko, zh-CN, zh-HK, zh-TW;
 
+// Language codes written vertically.
+$vertical-lr-langs: mn-Mong;
+
 // Variables for components
 $media-modal-media-max-width: 100%;
 

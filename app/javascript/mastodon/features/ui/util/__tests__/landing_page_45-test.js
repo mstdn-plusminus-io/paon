@@ -1,6 +1,9 @@
 import { publicLandingPath } from '../landing_page';
 
-describe('Mastodon 4.5 public landing page', () => {
+describe('Mastodon 4.6 public landing page', () => {
+  it('uses the combined overview when configured', () => {
+    expect(publicLandingPath({ landingPage: 'overview' })).toBe('/overview');
+  });
   it('uses trends only when trends are available', () => {
     expect(publicLandingPath({ trendsEnabled: true, landingPage: 'trends' })).toBe('/explore');
     expect(publicLandingPath({ trendsEnabled: false, landingPage: 'trends' })).toBe('/about');

@@ -1,4 +1,5 @@
 default: styles/application.scss
 contrast: styles/contrast.scss
 mastodon-light: styles/mastodon-light.scss
+mastodon-light-contrast: styles/mastodon-light-contrast.scss
 single-column-chat-dark: styles/single-column-chat-dark.scss

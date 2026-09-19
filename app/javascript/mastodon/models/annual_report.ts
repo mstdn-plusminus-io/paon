@@ -6,7 +6,7 @@ export interface AnnualReportNameAndCount {
 export interface AnnualReportTimeSeriesMonth {
   month: number;
   statuses: number;
-  following: number;
+  following?: number;
   followers: number;
 }
 
@@ -39,6 +39,8 @@ export interface AnnualReport {
   year: number;
   schema_version: number;
   data: AnnualReportV1Data;
+  share_url?: string | null;
+  account_id?: string;
 }
 
 export interface AnnualReportSummary {

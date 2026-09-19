@@ -19,12 +19,14 @@ import { Icon }  from 'mastodon/components/icon';
 import PictureInPicturePlaceholder from 'mastodon/components/picture_in_picture_placeholder';
 
 import QuoteContainer from '../containers/quote_container';
+import { CollectionPreviewCard } from '../features/collections/components/collection_preview_card';
 import Card from '../features/status/components/card';
 // We use the component (and not the container) since we do not want
 // to use the progress bar to show download progress
 import Bundle from '../features/ui/components/bundle';
 import { MediaGallery, Video, Audio } from '../features/ui/util/async-components';
 import { displayMedia } from '../initial_state';
+import { compareUrls } from '../utils/compare_urls';
 import { statusClickDisposition } from '../utils/status_navigation';
 
 import { AbsoluteTimestamp } from './absolute_timestamp';
@@ -524,14 +526,25 @@ class Status extends ImmutablePureComponent {
         );
       }
     } else if (status.get('card') && !status.get('quote') && !this.props.muted) {
-      media = (
-        <Card
-          onOpenMedia={this.handleOpenMedia}
-          card={status.get('card')}
-          compact
-          sensitive={status.get('sensitive')}
-        />
-      );
+      const taggedCollection = status.get('tagged_collections')?.find((item) => compareUrls(item.get('url'), status.getIn(['card', 'url'])));
+
+      if (taggedCollection) {
+        media = <CollectionPreviewCard collection={taggedCollection.toJS()} headingLevel='h2' />;
+      } else {
+        media = (
+          <Card
+            onOpenMedia={this.handleOpenMedia}
+            card={status.get('card')}
+            compact
+            sensitive={status.get('sensitive')}
+          />
+        );
+      }
+    } else if (status.get('tagged_collections')?.size) {
+      const firstLinkedCollection = status.get('tagged_collections').first();
+      if (firstLinkedCollection) {
+        media = <CollectionPreviewCard collection={firstLinkedCollection.toJS()} headingLevel='h2' />;
+      }
     }
 
     if (account === undefined || account === null) {

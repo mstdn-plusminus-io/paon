@@ -28,6 +28,8 @@ interface AnnualReportResponse {
   statuses: ApiStatusJSON[];
 }
 
+type AnnualReportState = 'available' | 'generating' | 'eligible' | 'ineligible';
+
 const ArchetypeLabel: React.FC<{ archetype?: AnnualReportArchetype }> = ({
   archetype,
 }) => {
@@ -107,6 +109,9 @@ export const AnnualReport: React.FC<{ year: string }> = ({ year }) => {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [reload, setReload] = useState(0);
+  const [generationState, setGenerationState] = useState<AnnualReportState>();
+  const [generating, setGenerating] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -116,11 +121,20 @@ export const AnnualReport: React.FC<{ year: string }> = ({ year }) => {
 
     const loadReport = async () => {
       try {
+        const stateResponse = await apiRequestGet<{ state: AnnualReportState }>(
+          `v1/annual_reports/${year}/state`,
+        );
+        if (!active) return;
+        setGenerationState(stateResponse.state);
+        if (stateResponse.state !== 'available') {
+          setResponse(undefined);
+          setLoading(false);
+          return;
+        }
+
         const data = await apiRequestGet<AnnualReportResponse>(
           `v1/annual_reports/${year}`,
         );
-        if (!active) return;
-
         if (data.accounts.length > 0) {
           dispatch(importFetchedAccounts(data.accounts));
         }
@@ -161,6 +175,54 @@ export const AnnualReport: React.FC<{ year: string }> = ({ year }) => {
   const handleRetry = useCallback(() => {
     setReload((value) => value + 1);
   }, []);
+  const handleGenerate = useCallback(async () => {
+    if (generating) return;
+    setGenerating(true);
+    setFailed(false);
+    try {
+      await apiRequestPost(`v1/annual_reports/${year}/generate`);
+      setGenerationState('generating');
+    } catch {
+      setFailed(true);
+    } finally {
+      setGenerating(false);
+    }
+  }, [generating, year]);
+  const shareText = useMemo(() => {
+    if (!report || !summary) return '';
+    return [
+      intl.formatMessage(
+        {
+          id: 'annual_report.summary.share_message',
+          defaultMessage: 'I got the {archetype} archetype!',
+        },
+        { archetype: summary.archetype ?? 'lurker' },
+      ),
+      report.share_url,
+      `#Wrapstodon${report.year}`,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+  }, [intl, report, summary]);
+  const handleShareOnMastodon = useCallback(() => {
+    if (shareText) {
+      window.location.href = `/share?text=${encodeURIComponent(shareText)}`;
+    }
+  }, [shareText]);
+  const handleShareElsewhere = useCallback(() => {
+    if (!report?.share_url) return;
+    if (typeof navigator.share === 'function') {
+      void navigator.share({ url: report.share_url }).catch(() => undefined);
+    } else {
+      void navigator.clipboard
+        .writeText(report.share_url)
+        .then(() => {
+          setShareCopied(true);
+          return undefined;
+        })
+        .catch(() => undefined);
+    }
+  }, [report]);
 
   if (loading) {
     return (
@@ -183,6 +245,47 @@ export const AnnualReport: React.FC<{ year: string }> = ({ year }) => {
           text={intl.formatMessage({
             id: 'annual_report.retry',
             defaultMessage: 'Try again',
+          })}
+          onClick={handleRetry}
+        />
+      </div>
+    );
+  }
+
+  if (generationState === 'eligible') {
+    return (
+      <div className='annual-report__empty'>
+        <p>
+          <FormattedMessage
+            id='annual_report.eligible'
+            defaultMessage='Your annual report is ready to be generated.'
+          />
+        </p>
+        <Button
+          disabled={generating}
+          text={intl.formatMessage({
+            id: 'annual_report.generate',
+            defaultMessage: 'Generate report',
+          })}
+          onClick={handleGenerate}
+        />
+      </div>
+    );
+  }
+
+  if (generationState === 'generating') {
+    return (
+      <div className='annual-report__empty' role='status'>
+        <p>
+          <FormattedMessage
+            id='annual_report.generating'
+            defaultMessage='Your annual report is being generated.'
+          />
+        </p>
+        <Button
+          text={intl.formatMessage({
+            id: 'annual_report.check_again',
+            defaultMessage: 'Check again',
           })}
           onClick={handleRetry}
         />
@@ -272,30 +375,34 @@ export const AnnualReport: React.FC<{ year: string }> = ({ year }) => {
             )}
           </dd>
         </div>
-        <div className='annual-report__stat'>
-          <dt>
-            <FormattedMessage
-              id='annual_report.summary.most_used_app.most_used_app'
-              defaultMessage='Most used app'
-            />
-          </dt>
-          <dd>{summary.mostUsedApp?.name ?? '—'}</dd>
-        </div>
-        <div className='annual-report__stat annual-report__stat--wide'>
-          <dt>
-            <FormattedMessage
-              id='annual_report.summary.percentile.label'
-              defaultMessage='Posting percentile on this server'
-            />
-          </dt>
-          <dd>
-            <FormattedNumber
-              value={summary.statusPercentile / 100}
-              style='percent'
-              maximumFractionDigits={summary.statusPercentile < 1 ? 1 : 0}
-            />
-          </dd>
-        </div>
+        {report.schema_version === 1 && (
+          <>
+            <div className='annual-report__stat'>
+              <dt>
+                <FormattedMessage
+                  id='annual_report.summary.most_used_app.most_used_app'
+                  defaultMessage='Most used app'
+                />
+              </dt>
+              <dd>{summary.mostUsedApp?.name ?? '—'}</dd>
+            </div>
+            <div className='annual-report__stat annual-report__stat--wide'>
+              <dt>
+                <FormattedMessage
+                  id='annual_report.summary.percentile.label'
+                  defaultMessage='Posting percentile on this server'
+                />
+              </dt>
+              <dd>
+                <FormattedNumber
+                  value={summary.statusPercentile / 100}
+                  style='percent'
+                  maximumFractionDigits={summary.statusPercentile < 1 ? 1 : 0}
+                />
+              </dd>
+            </div>
+          </>
+        )}
       </dl>
 
       {summary.highlightedStatusId && (
@@ -309,6 +416,39 @@ export const AnnualReport: React.FC<{ year: string }> = ({ year }) => {
             muted
           />
         </section>
+      )}
+      {report.schema_version === 2 && report.share_url && (
+        <div className='annual-report__share'>
+          <Button
+            text={intl.formatMessage({
+              id: 'annual_report.summary.share_on_mastodon',
+              defaultMessage: 'Share on Mastodon',
+            })}
+            onClick={handleShareOnMastodon}
+          />
+          <Button
+            text={intl.formatMessage(
+              typeof navigator.share === 'function'
+                ? {
+                    id: 'annual_report.summary.share_elsewhere',
+                    defaultMessage: 'Share elsewhere',
+                  }
+                : {
+                    id: 'annual_report.summary.copy_link',
+                    defaultMessage: 'Copy link',
+                  },
+            )}
+            onClick={handleShareElsewhere}
+          />
+          {shareCopied && (
+            <span role='status'>
+              <FormattedMessage
+                id='copy_icon_button.copied'
+                defaultMessage='Copied to clipboard'
+              />
+            </span>
+          )}
+        </div>
       )}
     </div>
   );

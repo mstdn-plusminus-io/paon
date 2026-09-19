@@ -18,6 +18,8 @@ import { getHashtagBarForStatus } from 'mastodon/components/hashtag_bar';
 import { Icon }  from 'mastodon/components/icon';
 import PictureInPicturePlaceholder from 'mastodon/components/picture_in_picture_placeholder';
 import { VisibilityIcon } from 'mastodon/components/visibility_icon';
+import { CollectionPreviewCard } from 'mastodon/features/collections/components/collection_preview_card';
+import { compareUrls } from 'mastodon/utils/compare_urls';
 
 import { Avatar } from '../../../components/avatar';
 import { DisplayName } from '../../../components/display_name';
@@ -209,7 +211,17 @@ class DetailedStatus extends ImmutablePureComponent {
         );
       }
     } else if (status.get('card') && !status.get('quote')) {
-      media = <Card sensitive={status.get('sensitive')} onOpenMedia={this.props.onOpenMedia} card={status.get('card', null)} />;
+      const taggedCollection = status.get('tagged_collections')?.find((item) => compareUrls(item.get('url'), status.getIn(['card', 'url'])));
+      if (taggedCollection) {
+        media = <CollectionPreviewCard collection={taggedCollection.toJS()} headingLevel='h2' />;
+      } else {
+        media = <Card sensitive={status.get('sensitive')} onOpenMedia={this.props.onOpenMedia} card={status.get('card', null)} />;
+      }
+    } else if (status.get('tagged_collections')?.size) {
+      const firstLinkedCollection = status.get('tagged_collections').first();
+      if (firstLinkedCollection) {
+        media = <CollectionPreviewCard collection={firstLinkedCollection.toJS()} headingLevel='h2' />;
+      }
     }
 
     if (status.get('application')) {

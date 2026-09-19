@@ -374,12 +374,12 @@ class FocalPointModal extends ImmutablePureComponent {
               >
                 <FormattedMessage id='upload_modal.detect_text' defaultMessage='Detect text from picture' />
               </button>
-              <CharacterCounter max={1500} text={detecting ? '' : description} />
+              <CharacterCounter max={10000} text={detecting ? '' : description} />
             </div>
 
             <Button
               type='submit'
-              disabled={!dirty || detecting || isUploadingThumbnail || length(description) > 1500 || is_changing_upload}
+              disabled={!dirty || detecting || isUploadingThumbnail || length(description) > 10000 || is_changing_upload}
               text={intl.formatMessage(is_changing_upload ? messages.applying : messages.apply)}
             />
           </form>

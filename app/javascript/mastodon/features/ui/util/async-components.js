@@ -210,6 +210,22 @@ export function AnnualReportModal () {
   return import(/* webpackChunkName: "modals/annual_report_modal" */'../components/annual_report_modal');
 }
 
+export function Collections () {
+  return import(/* webpackChunkName: "features/collections" */'../../collections');
+}
+
+export function CollectionDetail () {
+  return import(/* webpackChunkName: "features/collection_detail" */'../../collections/detail');
+}
+
+export function AccountEdit () {
+  return import(/* webpackChunkName: "features/account_edit" */'../../account_edit');
+}
+
+export function Overview () {
+  return import(/* webpackChunkName: "features/overview" */'../../overview');
+}
+
 export function InstanceStats () {
   return import(/*webpackChunkName: "features/instance_stats" */'../../instance_stats');
 }

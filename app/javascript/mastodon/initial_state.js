@@ -82,7 +82,7 @@
  * @property {boolean} terms_of_service_enabled
  * @property {string} title
  * @property {boolean} show_trends
- * @property {'about' | 'trends' | 'local_feed'} landing_page
+ * @property {'about' | 'trends' | 'local_feed' | 'overview'} landing_page
  * @property {boolean} disable_hover_cards
  * @property {boolean} use_blurhash
  * @property {boolean=} use_pending_items

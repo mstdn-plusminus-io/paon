@@ -26,6 +26,7 @@ import { accountRelationshipTagKeys, PROFILE_AVATAR_SIZE, shouldShowFamiliarFoll
 import AccountNoteContainer from '../containers/account_note_container';
 import FollowRequestNoteContainer from '../containers/follow_request_note_container';
 
+import { EmailSubscriptionForm } from './email_subscription_form';
 import FamiliarFollowers from './familiar_followers';
 
 const messages = defineMessages({
@@ -68,6 +69,7 @@ const messages = defineMessages({
   endorse: { id: 'account.endorse', defaultMessage: 'Feature on profile' },
   unendorse: { id: 'account.unendorse', defaultMessage: 'Don\'t feature on profile' },
   add_or_remove_from_list: { id: 'account.add_or_remove_from_list', defaultMessage: 'Add or Remove from lists' },
+  addToCollection: { id: 'account.add_to_collection', defaultMessage: 'Add to collection' },
   admin_account: { id: 'status.admin_account', defaultMessage: 'Open moderation interface for @{name}' },
   admin_domain: { id: 'status.admin_domain', defaultMessage: 'Open moderation interface for {domain}' },
   languages: { id: 'account.languages', defaultMessage: 'Change subscribed languages' },
@@ -134,7 +136,16 @@ class Header extends ImmutablePureComponent {
   };
 
   openEditProfile = () => {
-    window.open('/settings/profile', '_blank');
+    this.context.router.history.push('/profile/edit');
+  };
+
+  openCollections = () => {
+    const { account } = this.props;
+    const query = new URLSearchParams({
+      account_id: account.get('id'),
+      acct: account.get('acct'),
+    });
+    this.context.router.history.push(`/collections?${query.toString()}`);
   };
 
   isStatusesPageActive = (match, location) => {
@@ -384,6 +395,8 @@ class Header extends ImmutablePureComponent {
       menu.push({ text: intl.formatMessage(messages.blocks), to: '/blocks' });
       menu.push({ text: intl.formatMessage(messages.domain_blocks), to: '/domain_blocks' });
     } else if (signedIn) {
+      menu.push({ text: intl.formatMessage(messages.addToCollection), action: this.openCollections });
+
       if (account.getIn(['relationship', 'following'])) {
         if (!account.getIn(['relationship', 'muting'])) {
           if (account.getIn(['relationship', 'showing_reblogs'])) {
@@ -519,6 +532,8 @@ class Header extends ImmutablePureComponent {
                 {(account.get('id') !== me && signedIn) && <AccountNoteContainer account={account} />}
 
                 {account.get('note').length > 0 && account.get('note') !== '<p></p>' && <div className='account__header__content translate' dangerouslySetInnerHTML={content} />}
+
+                {!signedIn && account.get('email_subscriptions') && <EmailSubscriptionForm accountId={account.get('id')} />}
 
                 <div className='account__header__fields'>
                   <dl>

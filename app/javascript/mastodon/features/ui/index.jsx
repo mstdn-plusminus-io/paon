@@ -74,6 +74,10 @@ import {
   PrivacyPolicy,
   TermsOfService,
   Quotes,
+  Collections,
+  CollectionDetail,
+  AccountEdit,
+  Overview,
 } from './util/async-components';
 import { navigateBack } from './util/back_navigation';
 import { publicLandingPath } from './util/landing_page';
@@ -201,6 +205,7 @@ class SwitchingColumnsArea extends PureComponent {
           <WrappedRoute path='/getting-started' component={GettingStarted} content={children} />
           <WrappedRoute path='/keyboard-shortcuts' component={KeyboardShortcuts} content={children} />
           <WrappedRoute path='/about' component={About} content={children} />
+          <WrappedRoute path='/overview' exact component={Overview} content={children} />
           <WrappedRoute path='/privacy-policy' component={PrivacyPolicy} content={children} />
           <WrappedRoute path='/terms-of-service/:date?' component={TermsOfService} content={children} />
           <WrappedRoute path='/instance-stats/:domain' component={InstanceStats} content={children} />
@@ -214,6 +219,8 @@ class SwitchingColumnsArea extends PureComponent {
           <WrappedRoute path={['/conversations', '/timelines/direct']} component={DirectTimeline} content={children} />
           <WrappedRoute path='/tags/:id' component={HashtagTimeline} content={children} />
           <WrappedRoute path='/lists/:id' component={ListTimeline} content={children} />
+          <WrappedRoute path='/collections' exact component={Collections} content={children} />
+          <WrappedRoute path='/collections/:id' exact component={CollectionDetail} content={children} />
           <WrappedRoute path='/notifications' exact component={Notifications} content={children} />
           <WrappedRoute path='/notifications/requests' exact component={NotificationRequests} content={children} />
           <WrappedRoute path='/notifications/requests/:id' exact component={NotificationRequest} content={children} />
@@ -228,6 +235,7 @@ class SwitchingColumnsArea extends PureComponent {
           <WrappedRoute path={['/explore', '/search']} component={Explore} content={children} />
           <WrappedRoute path='/links/:url' component={LinkTimeline} content={children} />
           <WrappedRoute path={['/publish', '/statuses/new']} component={Compose} content={children} />
+          <WrappedRoute path='/profile/edit' exact component={AccountEdit} content={children} />
 
           <WrappedRoute path={['/@:acct', '/accounts/:id']} exact component={AccountTimeline} content={children} />
           <WrappedRoute path={['/@:acct/featured', '/accounts/:id/featured']} exact component={AccountFeatured} content={children} />

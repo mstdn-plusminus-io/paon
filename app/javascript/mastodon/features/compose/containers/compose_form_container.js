@@ -43,6 +43,24 @@ const mapStateToProps = state => ({
 
 let cachedKeywordVisibilities = null;
 
+const processPasteOrDrop = (transfer, event, dispatch) => {
+  if (transfer?.files.length === 1) {
+    dispatch(uploadCompose(transfer.files));
+    event.preventDefault();
+    return;
+  }
+
+  if (!transfer || transfer.files.length !== 0) return;
+  const text = transfer.getData('text/plain')?.trim();
+  if (!/^https?:\/\/[^\s]+\/[^\s]+$/i.test(text || '')) return;
+
+  try {
+    dispatch(pasteLinkCompose(new URL(text).toString()));
+  } catch {
+    // Keep malformed links as ordinary compose text.
+  }
+};
+
 const mapDispatchToProps = (dispatch, props) => ({
   onInitialize(instance) {
     dispatch(setComposeInstanceLimits(instance.configuration));
@@ -106,20 +124,11 @@ const mapDispatchToProps = (dispatch, props) => ({
   },
 
   onPaste (event) {
-    if (event.clipboardData?.files.length === 1) {
-      dispatch(uploadCompose(event.clipboardData.files));
-      event.preventDefault();
-      return;
-    }
+    processPasteOrDrop(event.clipboardData, event, dispatch);
+  },
 
-    const text = event.clipboardData?.getData('text/plain')?.trim();
-    if (!/^https?:\/\/[^\s]+\/[^\s]+$/i.test(text || '')) return;
-
-    try {
-      dispatch(pasteLinkCompose(new URL(text).toString()));
-    } catch {
-      // Keep malformed links as ordinary compose text.
-    }
+  onDrop (event) {
+    processPasteOrDrop(event.dataTransfer, event, dispatch);
   },
 
   onPickEmoji (position, data, needsSpace) {

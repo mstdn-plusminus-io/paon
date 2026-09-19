@@ -80,7 +80,8 @@ const addInputToOptions = (value, options) => {
 class LoginForm extends React.PureComponent {
 
   static propTypes = {
-    resourceUrl: PropTypes.string,
+    resourceUrl: PropTypes.string.isRequired,
+    intent: PropTypes.string.isRequired,
     intl: PropTypes.object.isRequired,
   };
 
@@ -148,7 +149,8 @@ class LoginForm extends React.PureComponent {
     } else if (event.data?.type === 'fetchInteractionURL-success') {
       if (/^https?:\/\//.test(event.data.template)) {
         try {
-          const url = new URL(event.data.template.replace('{uri}', encodeURIComponent(resourceUrl)));
+          const param = event.data.param || 'uri';
+          const url = new URL(event.data.template.replace(`{${param}}`, encodeURIComponent(resourceUrl)));
 
           if (localStorage) {
             localStorage.setItem(PERSISTENCE_KEY, event.data.uri_or_domain);
@@ -175,12 +177,14 @@ class LoginForm extends React.PureComponent {
 
   handleSubmit = () => {
     const { value } = this.state;
+    const { intent } = this.props;
 
     this.setState({ isSubmitting: true });
 
     this.iframeRef.contentWindow.postMessage({
       type: 'fetchInteractionURL',
       uri_or_domain: value.trim(),
+      intent,
     }, window.origin);
   };
 
@@ -335,7 +339,7 @@ class InteractionModal extends React.PureComponent {
   static propTypes = {
     displayNameHtml: PropTypes.string,
     url: PropTypes.string,
-    type: PropTypes.oneOf(['reply', 'reblog', 'quote', 'favourite', 'follow', 'vote']),
+    type: PropTypes.oneOf(['reply', 'reblog', 'quote', 'favourite', 'follow', 'vote']).isRequired,
     onSignupClick: PropTypes.func.isRequired,
     signupUrl: PropTypes.string.isRequired,
   };
@@ -345,7 +349,7 @@ class InteractionModal extends React.PureComponent {
   };
 
   render () {
-    const { url, displayNameHtml, signupUrl } = this.props;
+    const { url, displayNameHtml, signupUrl, type } = this.props;
 
     const name = <bdi dangerouslySetInnerHTML={{ __html: displayNameHtml }} />;
 
@@ -381,7 +385,7 @@ class InteractionModal extends React.PureComponent {
           <p>{actionDescription}</p>
         </div>
 
-        <IntlLoginForm resourceUrl={url} />
+        <IntlLoginForm resourceUrl={url} intent={type} />
 
         <p className='hint'><FormattedMessage id='interaction_modal.sign_in_hint' defaultMessage="Tip: That's the website where you signed up. If you don't remember, look for the welcome e-mail in your inbox. You can also enter your full username! (e.g. @Mastodon@mastodon.social)" /></p>
         <p><FormattedMessage id='interaction_modal.no_account_yet' defaultMessage='Not on Mastodon?' /> {signupButton}</p>

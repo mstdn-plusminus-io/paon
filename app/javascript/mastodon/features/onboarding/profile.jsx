@@ -97,7 +97,7 @@ export const Profile = ({ onSaved }) => {
           <label className='onboarding__profile-field'>
             <strong><FormattedMessage id='onboarding.profile.display_name' defaultMessage='Display name' /></strong>
             <span><FormattedMessage id='onboarding.profile.display_name_hint' defaultMessage='Your full name or your fun name…' /></span>
-            <input type='text' value={displayName} onChange={handleDisplayNameChange} maxLength={30} />
+            <input type='text' value={displayName} onChange={handleDisplayNameChange} maxLength={40} />
           </label>
           <label className='onboarding__profile-field'>
             <strong><FormattedMessage id='onboarding.profile.note' defaultMessage='Bio' /></strong>

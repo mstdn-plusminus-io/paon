@@ -54,6 +54,7 @@ export default class AutosuggestTextarea extends ImmutablePureComponent {
     onKeyUp: PropTypes.func,
     onKeyDown: PropTypes.func,
     onPaste: PropTypes.func.isRequired,
+    onDrop: PropTypes.func,
     autoFocus: PropTypes.bool,
     lang: PropTypes.string,
   };
@@ -187,6 +188,10 @@ export default class AutosuggestTextarea extends ImmutablePureComponent {
     }
   };
 
+  onDrop = (e) => {
+    this.props.onDrop?.(e);
+  };
+
   renderSuggestion = (suggestion, i) => {
     const { selectedSuggestion } = this.state;
     let inner, key;
@@ -232,6 +237,7 @@ export default class AutosuggestTextarea extends ImmutablePureComponent {
               onFocus={this.onFocus}
               onBlur={this.onBlur}
               onPaste={this.onPaste}
+              onDrop={this.onDrop}
               dir='auto'
               aria-autocomplete='list'
               lang={lang}

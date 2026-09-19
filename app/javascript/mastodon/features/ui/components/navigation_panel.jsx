@@ -29,6 +29,8 @@ const messages = defineMessages({
   favourites: { id: 'navigation_bar.favourites', defaultMessage: 'Favorites' },
   bookmarks: { id: 'navigation_bar.bookmarks', defaultMessage: 'Bookmarks' },
   lists: { id: 'navigation_bar.lists', defaultMessage: 'Lists' },
+  collections: { id: 'navigation_bar.collections', defaultMessage: 'Collections' },
+  editProfile: { id: 'account.edit_profile', defaultMessage: 'Edit profile' },
   preferences: { id: 'navigation_bar.preferences', defaultMessage: 'Preferences' },
   followsAndFollowers: { id: 'navigation_bar.follows_and_followers', defaultMessage: 'Follows and followers' },
   about: { id: 'navigation_bar.about', defaultMessage: 'About' },
@@ -131,11 +133,13 @@ class NavigationPanel extends Component {
             <ColumnLink transparent to='/bookmarks' icon='bookmark' text={intl.formatMessage(messages.bookmarks)} />
             <ColumnLink transparent to='/favourites' icon='star' text={intl.formatMessage(messages.favourites)} />
             <ColumnLink transparent to='/lists' icon='list-ul' text={intl.formatMessage(messages.lists)} />
+            <ColumnLink transparent to='/collections' icon='address-card' text={intl.formatMessage(messages.collections)} />
 
             <ListPanel />
 
             <hr />
 
+            <ColumnLink transparent to='/profile/edit' icon='user' text={intl.formatMessage(messages.editProfile)} />
             <ColumnLink transparent href='/settings/preferences' icon='cog' text={intl.formatMessage(messages.preferences)} />
             <ColumnLink transparent to='#' icon='puzzle-piece' text={'Paon設定'} onClick={this.openPaonSettings} />
           </>
