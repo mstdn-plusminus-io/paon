@@ -55,7 +55,7 @@ func reconcileTimestampIDFunction(tx *gorm.DB) (bool, error) {
 	if len(bodyParts) != 3 {
 		return false, fmt.Errorf("embedded timestamp_id definition has an unexpected dollar-quote layout")
 	}
-	if currentBody == bodyParts[1] {
+	if supportedTimestampIDBody(currentBody, bodyParts[1], salt) {
 		return false, nil
 	}
 	if err := tx.Exec(statement).Error; err != nil {
@@ -146,4 +146,15 @@ func reconcileMastodon4323ForeignKeyNames(tx *gorm.DB) (bool, error) {
 
 func quotePostgresIdentifier(value string) string {
 	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+// Mastodon's migration-installed function and schema-loaded function use two
+// distinct layouts of the same md5 expression. Both are authoritative: later
+// Rails migrations leave the inherited function text and salt untouched.
+// Recognize exactly those two layouts instead of rewriting a restored instance
+// to the fresh-install snapshot. Other legacy Paon bodies still need repair.
+func supportedTimestampIDBody(current, fresh, salt string) bool {
+	inline := "md5(table_name || '" + salt + "' || time_part::text)"
+	installed := "md5(table_name ||\n          '" + salt + "' ||\n          time_part::text\n        )"
+	return strings.Replace(current, installed, inline, 1) == strings.Replace(fresh, installed, inline, 1)
 }

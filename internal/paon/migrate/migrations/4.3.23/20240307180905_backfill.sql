@@ -1,0 +1,2 @@
+-- Mastodon 4.3.23, upstream migration 20240307180905, phase backfill.
+-- Go handler: applyOTPSecretBackfill; called by applyMastodon43Backfill.

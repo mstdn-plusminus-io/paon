@@ -19,10 +19,25 @@ import (
 func main() {
 	check := flag.Bool("check", false, "validate the current schema without applying a fresh schema")
 	phase := flag.String("phase", "", "upgrade a Mastodon 4.2 schema through expand, backfill, validate, or contract (default: expand)")
+	all := flag.Bool("all", false, "apply every migration phase through Mastodon 4.3.23; requires --acknowledge-contract")
+	targetVersion := flag.String("target-version", "", "target Mastodon release (this branch: 4.3.23)")
 	acknowledgeContract := flag.Bool("acknowledge-contract", false, "confirm all Mastodon 4.2 processes are stopped and apply irreversible 4.3 contract migrations")
 	flag.Parse()
 	if err := config.LoadDotenv(); err != nil {
 		log.Fatalf("load dotenv: %v", err)
+	}
+	options := migrate.OptionsFromEnv()
+	if *phase != "" {
+		options.Phase = migrate.UpgradePhase(*phase)
+	}
+	if *targetVersion != "" {
+		options.TargetVersion = *targetVersion
+	}
+	options.All = options.All || *all
+	options.AcknowledgeContract = options.AcknowledgeContract || *acknowledgeContract
+	options.Logf = log.Printf
+	if *check && options.TargetVersion != "" && options.TargetVersion != migrate.LatestTargetVersion {
+		log.Fatalf("--check validates only the current application schema, Mastodon %s", migrate.LatestTargetVersion)
 	}
 	cfg := config.FromEnv()
 	if err := cfg.ValidateOpenTelemetry(); err != nil {
@@ -52,12 +67,7 @@ func main() {
 		fmt.Println("schema ok")
 		return
 	}
-	options := migrate.OptionsFromEnv()
-	if *phase != "" {
-		options.Phase = migrate.UpgradePhase(*phase)
-	}
-	options.AcknowledgeContract = options.AcknowledgeContract || *acknowledgeContract
-	options.Logf = log.Printf
+
 	applied, err := migrate.RunWithOptions(ctx, database, options)
 	if err != nil {
 		log.Fatal(err)
