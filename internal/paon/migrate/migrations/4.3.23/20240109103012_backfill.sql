@@ -1,0 +1,2 @@
+-- Mastodon 4.3.23, upstream migration 20240109103012, phase backfill.
+-- Go handler: applyLocaleBackfill; called by applyMastodon43Backfill.

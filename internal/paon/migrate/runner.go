@@ -21,6 +21,8 @@ const (
 	LegacySchemaVersion  = paonschema.Mastodon4219Version
 	CurrentSchemaVersion = paonschema.Mastodon4422Version
 )
+const LatestTargetVersion = "4.4.22"
+
 const migrationAdvisoryLockID int64 = 0x50616f6e4d696772
 const statementSeparator = "-- paon:statement"
 
@@ -28,6 +30,10 @@ const statementSeparator = "-- paon:statement"
 var schemaFiles embed.FS
 
 type Options struct {
+	// This release branch migrates through its native Mastodon version only.
+	TargetVersion string
+	// All applies expand, backfill, validate, and acknowledged contract phases.
+	All                    bool
 	Phase                  UpgradePhase
 	AcknowledgeContract    bool
 	IgnoreInvalidOTPSecret bool
@@ -55,6 +61,8 @@ type Options struct {
 
 func OptionsFromEnv() Options {
 	return Options{
+		TargetVersion:                  os.Getenv("PAON_MIGRATION_TARGET_VERSION"),
+		All:                            os.Getenv("PAON_MIGRATION_ALL") == "true",
 		Phase:                          UpgradePhase(os.Getenv("PAON_MIGRATION_PHASE")),
 		AcknowledgeContract:            os.Getenv("PAON_MIGRATION_ACKNOWLEDGE_CONTRACT") == "true",
 		IgnoreInvalidOTPSecret:         os.Getenv("MIGRATION_IGNORE_INVALID_OTP_SECRET") == "true",
@@ -75,6 +83,15 @@ func Run(ctx context.Context, database *gorm.DB) (bool, error) {
 func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bool, error) {
 	if database == nil {
 		return false, errors.New("migration database is not configured")
+	}
+	if target := strings.TrimSpace(options.TargetVersion); target != "" && target != LatestTargetVersion {
+		return false, fmt.Errorf("unsupported migration target %q; this branch supports %s", target, LatestTargetVersion)
+	}
+	if options.All {
+		if options.Phase != "" {
+			return false, errors.New("--all cannot be combined with --phase or PAON_MIGRATION_PHASE")
+		}
+		options.Phase = UpgradePhaseContract
 	}
 	targetPhase, err := requestedUpgradePhase(options)
 	if err != nil {

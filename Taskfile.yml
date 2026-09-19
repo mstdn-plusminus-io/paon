@@ -83,6 +83,7 @@ tasks:
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./cmd/paon-migrate
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/db
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/migrate
+      - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/dbparity
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/cutover
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/api
 
@@ -202,7 +203,7 @@ tasks:
     desc: Apply or validate the Go-owned Rails-compatible database schema
     cmds:
       - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
-      - go run -mod=mod ./cmd/paon-migrate
+      - go run -mod=mod ./cmd/paon-migrate {{.CLI_ARGS}}
 
   meili-deploy:
     desc: Rebuild Rails-compatible Meilisearch indexes from source
@@ -252,3 +253,10 @@ tasks:
     desc: Validate Meilisearch deploy prerequisites inside Compose
     cmds:
       - docker compose run --rm web paon-meili-deploy --check-config
+
+  test:migration-parity:
+    desc: Restore the private staging dump and compare this release with pinned Mastodon
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
+      - python3 -B testdata/migration-parity/test_runner.py
+      - python3 bin/test-migration-parity {{.CLI_ARGS}}

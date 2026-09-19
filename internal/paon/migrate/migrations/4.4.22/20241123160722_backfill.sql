@@ -1,0 +1,2 @@
+-- Mastodon 4.4.22, upstream migration 20241123160722, phase backfill.
+-- Go handler: applyMastodon44Backfill uses Options.Mastodon44TagTrendBackfill for Redis data.

@@ -1,0 +1,2 @@
+-- Mastodon 4.3.23, upstream migration 20240808124339, phase backfill.
+-- Go handler: applyNotificationPolicyV2Backfill; called by applyMastodon43Backfill.

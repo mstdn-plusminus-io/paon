@@ -68,7 +68,11 @@ func TestMastodon44FinalMarkerIsWithheldUntilContract(t *testing.T) {
 		t.Fatal("final marker must not defer additive catalog creation until contract")
 	}
 	additiveSource := sourceOfFunctionForMastodon44Test(t, "upgrade_4_4.go", "func ensureMastodon44FinalAdditiveCatalog", "func applyMastodon44Backfill")
-	if !strings.Contains(additiveSource, "CREATE TABLE IF NOT EXISTS fasp_follow_recommendations") {
+	const additivePath = "migrations/4.4.22/20250627132728_prepare.sql"
+	if !strings.Contains(additiveSource, `embeddedMigrationStatements("`+additivePath+`")`) {
+		t.Fatal("expand helper must execute the embedded additive catalog migration")
+	}
+	if !strings.Contains(strings.Join(embeddedMigrationStatements(additivePath), "\n"), "CREATE TABLE IF NOT EXISTS fasp_follow_recommendations") {
 		t.Fatal("expand must create the additive catalog from the final upstream migration")
 	}
 	runSource := sourceOfFunctionForMastodon44Test(t, "upgrade_4_4.go", "func runMastodon44Phase", "func applyMastodon44Steps")

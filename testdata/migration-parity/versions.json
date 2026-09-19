@@ -1,0 +1,24 @@
+{
+  "dump_sha256": "4dd84ea5c29a677aeb5d27d8d74b32884eec562d36b3ada3059c934aa86f4c46",
+  "versions": {
+    "4.3.23": {
+      "commit": "efb25b6aa2014201b04f25c390ad1f516a3ff52d",
+      "image": "ghcr.io/mastodon/mastodon@sha256:4ef816f471e598b03640f0d5b4cd3cea38381c5dff59a5635081eb2c2a91f6d1"
+    },
+    "4.4.22": {
+      "commit": "e5e4425d13bfee9572d8d384a19553caad7503d1",
+      "image": "ghcr.io/mastodon/mastodon@sha256:91c5a9fa6e6f970f7e96c7b6583d0eba56b570d08c8c8557c98536685feee0c1"
+    },
+    "4.5.15": {
+      "commit": "bf046ffab90464faff67f98a0fbd9fca3058e588",
+      "image": "ghcr.io/mastodon/mastodon@sha256:4f637c597574118396a96736b6fca7d706371c93123abb68beda835044110064"
+    },
+    "4.6.6": {
+      "commit": "d74bbd9a3c64740433e016dfc936e83d710858f6",
+      "image": "ghcr.io/mastodon/mastodon@sha256:3579200b208d4ebbc1affd1218828f3b02dc19953d83d0217eb095dacb84dc00"
+    }
+  },
+  "default_versions": [
+    "4.4.22"
+  ]
+}

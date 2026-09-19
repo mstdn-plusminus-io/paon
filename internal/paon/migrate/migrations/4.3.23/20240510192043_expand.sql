@@ -1,0 +1,3 @@
+-- Mastodon 4.3.23, upstream migration 20240510192043, phase expand.
+-- The ON DELETE CASCADE correction is already included in 20240222203722.
+-- Record the upstream marker without recreating the identical foreign key.

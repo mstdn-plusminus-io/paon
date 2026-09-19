@@ -1,0 +1,2 @@
+-- Mastodon 4.3.23, upstream migration 20240603195202, phase backfill.
+-- Go handler: applyProfileScopeBackfill; called by applyMastodon43Backfill.

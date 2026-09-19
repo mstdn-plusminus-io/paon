@@ -72,3 +72,6 @@ bin/paon-admin
 bin/paon-cutover
 bin/paon-meili-deploy
 bin/paon-migrate
+
+# Private staging backup for the migration parity gate.
+/testdata/db-dump/*.dump
