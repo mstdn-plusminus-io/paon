@@ -97,7 +97,11 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 			verifiedActor, err = s.activityPubLinkedDataSignatureActor(verificationBody, payload)
 		}
 		if err != nil {
-			return activityPubEventNotAppliedf("activity actor does not match verified HTTP signature actor: %v", err)
+			enrichActivityPubSignatureDiagnostics(s, err, body, actor)
+			// Attach evidence before fmt.Errorf snapshots the diagnostic string.
+			receipt, _ := ctx.Value(activityPubInboxReceiptContextKey{}).(*activityPubInboxReceipt)
+			attachActivityPubSignatureReceipt(err, receipt)
+			return fmt.Errorf("%w: activity actor does not match verified HTTP signature actor: %w", errActivityPubEventNotApplied, err)
 		}
 		if activityPayloadDifferentActor(payload, verifiedActor) {
 			return activityPubEventNotAppliedf("linked-data signature actor does not match activity actor")

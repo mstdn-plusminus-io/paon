@@ -69,6 +69,12 @@ func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activi
 		}
 	}
 	if err := verifyActivityPubLinkedDataSignatureWithError(body, publicKey); err != nil {
+		var diagnostic *activityPubSignatureVerificationError
+		if errors.As(err, &diagnostic) {
+			diagnostic.Diagnostics.SignatureActorID = actor.ID
+			diagnostic.Diagnostics.SignatureActorURI = activityPubSafeLogValue(actor.URI, 512)
+			diagnostic.Diagnostics.ActorUpdatedAt = actor.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		}
 		return nil, err
 	}
 	return actor, nil
@@ -123,7 +129,7 @@ func verifyActivityPubLinkedDataSignatureWithError(body []byte, publicKey *rsa.P
 	}
 	digest := sha256.Sum256([]byte(toVerify))
 	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
-		return fmt.Errorf("verify linked-data RSA signature: %w", err)
+		return newActivityPubSignatureVerificationError(fmt.Errorf("verify linked-data RSA signature: %w", err), body, document, publicKey, signature, toVerify)
 	}
 	return nil
 }
@@ -276,6 +282,10 @@ func cloneActivityPubJSONLDDocument(document map[string]any) map[string]any {
 }
 
 func activityPubLinkedDataSignatureVerificationString(document map[string]any) (string, string, error) {
+	return activityPubLinkedDataSignatureVerificationStringWithHash(document, activityPubJSONLDHash)
+}
+
+func activityPubLinkedDataSignatureVerificationStringWithHash(document map[string]any, hash func(any) (string, error)) (string, string, error) {
 	signature, ok := activityPubLinkedDataSignatureMap(document)
 	if !ok {
 		return "", "", fmt.Errorf("missing compact signature")
@@ -307,11 +317,11 @@ func activityPubLinkedDataSignatureVerificationString(document map[string]any) (
 			unsigned[key] = value
 		}
 	}
-	optionsHash, err := activityPubJSONLDHash(options)
+	optionsHash, err := hash(options)
 	if err != nil {
 		return "", "", fmt.Errorf("normalize linked-data signature options: %w", err)
 	}
-	documentHash, err := activityPubJSONLDHash(unsigned)
+	documentHash, err := hash(unsigned)
 	if err != nil {
 		return "", "", fmt.Errorf("normalize linked-data signature document: %w", err)
 	}
@@ -344,7 +354,11 @@ func activityPubJSONLDHash(value any) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func activityPubJSONLDNormalize(value any) (normalizedString string, err error) {
+func activityPubJSONLDNormalize(value any) (string, error) {
+	return activityPubJSONLDNormalizeWithLoader(value, activityPubJSONLDDocumentLoader())
+}
+
+func activityPubJSONLDNormalizeWithLoader(value any, loader ld.DocumentLoader) (normalizedString string, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			normalizedString = ""
@@ -358,7 +372,7 @@ func activityPubJSONLDNormalize(value any) (normalizedString string, err error) 
 	options := ld.NewJsonLdOptions("")
 	options.Algorithm = ld.AlgorithmURDNA2015
 	options.Format = "application/n-quads"
-	options.DocumentLoader = activityPubJSONLDDocumentLoader()
+	options.DocumentLoader = loader
 	normalized, err := ld.NewJsonLdProcessor().Normalize(value, options)
 	if err != nil {
 		return "", err
@@ -471,7 +485,11 @@ func decodeActivityPubLinkedDataSignatureValue(value string) ([]byte, error) {
 }
 
 func activityPubJSONLDDocumentLoader() ld.DocumentLoader {
-	loader := ld.NewCachingDocumentLoader(mastodonJSONLDDocumentLoader{client: activityPubJSONLDHTTPClient(), cache: true})
+	return newActivityPubJSONLDDocumentLoader(false)
+}
+
+func newActivityPubJSONLDDocumentLoader(offline bool) ld.DocumentLoader {
+	loader := ld.NewCachingDocumentLoader(mastodonJSONLDDocumentLoader{client: activityPubJSONLDHTTPClient(), cache: true, offline: offline})
 	activityStreams := map[string]any{"@context": activityPubActivityStreamsJSONLDContext()}
 	security := map[string]any{"@context": activityPubSecurityJSONLDContext()}
 	identity := map[string]any{"@context": activityPubIdentityJSONLDContext()}
@@ -512,8 +530,9 @@ func activityPubJSONLDDocumentLoader() ld.DocumentLoader {
 }
 
 type mastodonJSONLDDocumentLoader struct {
-	client *http.Client
-	cache  bool
+	client  *http.Client
+	cache   bool
+	offline bool
 }
 
 func (loader mastodonJSONLDDocumentLoader) LoadDocument(uri string) (*ld.RemoteDocument, error) {
@@ -528,6 +547,9 @@ func (loader mastodonJSONLDDocumentLoader) LoadDocument(uri string) (*ld.RemoteD
 		if doc, ok, err := activityPubJSONLDContextCacheGet(uri); ok || err != nil {
 			return doc, err
 		}
+	}
+	if loader.offline {
+		return nil, fmt.Errorf("JSON-LD context is not cached: %q", uri)
 	}
 	client := loader.client
 	if client == nil {
