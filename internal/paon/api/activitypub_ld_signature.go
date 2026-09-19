@@ -72,10 +72,18 @@ func (s *Server) activityPubLinkedDataSignatureCreatorActor(creator string) (*mo
 	}
 	var account models.Account
 	err := s.db.Preload("AccountStat").Where("uri = ?", actorURI).First(&account).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		if err != nil {
+			return nil, err
+		}
+		return &account, nil
 	}
-	return &account, err
+	// Mastodon's LinkedDataSignature resolves an unknown creator through
+	// FetchRemoteKeyService before verifying the document. Reuse the guarded
+	// HTTP-signature key resolver so relays can forward actors not yet known
+	// to this server without weakening domain, WebFinger, key-owner, or SSRF
+	// checks.
+	return s.activityPubActorFromKeyID(creator)
 }
 
 func verifyActivityPubLinkedDataSignature(body []byte, publicKey *rsa.PublicKey) bool {

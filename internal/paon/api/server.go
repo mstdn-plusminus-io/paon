@@ -1183,10 +1183,7 @@ func rackAttackFormValue(req *http.Request, key string) string {
 	if req == nil || key == "" {
 		return ""
 	}
-	if req.Form == nil {
-		_ = req.ParseForm()
-	}
-	return strings.TrimSpace(req.Form.Get(key))
+	return strings.TrimSpace(req.FormValue(key))
 }
 
 func rackAttackTokenIdentities(accessToken *models.OAuthAccessToken) (string, string) {
