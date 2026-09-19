@@ -1,0 +1,2 @@
+-- Mastodon 4.4.22, upstream migration 20250627132728, phase contract.
+-- Catalog SQL is in 20250627132728_prepare.sql and runs during expand; this final marker is recorded only in contract.

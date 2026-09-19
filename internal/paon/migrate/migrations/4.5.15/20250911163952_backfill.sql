@@ -1,0 +1,2 @@
+-- Mastodon 4.5.15, upstream migration 20250911163952, phase backfill.
+-- Go handler: fillMastodon45DefaultQuotePolicy (JSON user settings).

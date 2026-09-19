@@ -1,0 +1,2 @@
+-- Mastodon 4.5.15, upstream migration 20251023210145, phase contract.
+-- Go handler: migrateMastodon45LandingPageSetting runs during backfill; this final marker is recorded only in contract.
