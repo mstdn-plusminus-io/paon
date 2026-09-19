@@ -5,6 +5,7 @@ const (
 	Mastodon4323Version = "20241007071624"
 	Mastodon4422Version = "20250627132728"
 	Mastodon4515Version = "20251023210145"
+	Mastodon466Version  = "20260611150940"
 )
 
 // mastodon43UpgradeVersions is the reviewed set of upstream migration markers
@@ -78,4 +79,26 @@ func Mastodon45UpgradeVersionKnown(version string) bool {
 
 func Mastodon45UpgradeVersionCount() int {
 	return len(mastodon45UpgradeVersions)
+}
+
+// mastodon46UpgradeVersions is the exact upstream migration inventory between
+// Mastodon v4.5.15 and v4.6.6. Rails 8.1 rewrites fresh-schema column order,
+// while these markers describe the deliberately different staged catalog.
+var mastodon46UpgradeVersions = map[string]struct{}{
+	"20251117023614": {}, "20251118115657": {}, "20251119093332": {},
+	"20251201154910": {}, "20251201155054": {}, "20251202140424": {}, "20251209093813": {}, "20251217091936": {},
+	"20260115153219": {}, "20260119153538": {}, "20260127141459": {}, "20260127141820": {},
+	"20260209142402": {}, "20260209143308": {}, "20260211132603": {}, "20260212113020": {}, "20260212131934": {}, "20260217154542": {},
+	"20260303144409": {}, "20260310095021": {}, "20260311152331": {}, "20260311212130": {}, "20260318144837": {}, "20260319142348": {}, "20260323105645": {}, "20260325151755": {}, "20260326112324": {},
+	"20260410083500": {}, "20260415133505": {}, "20260420124030": {}, "20260423141611": {}, "20260425144553": {},
+	"20260505155103": {}, "20260611150940": {},
+}
+
+func Mastodon46UpgradeVersionKnown(version string) bool {
+	_, ok := mastodon46UpgradeVersions[version]
+	return ok
+}
+
+func Mastodon46UpgradeVersionCount() int {
+	return len(mastodon46UpgradeVersions)
 }

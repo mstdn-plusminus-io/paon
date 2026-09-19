@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	paondb "github.com/mstdn-plusminus-io/paon/internal/paon/db"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 )
@@ -84,11 +83,10 @@ func runMastodon45Phase(ctx context.Context, database *gorm.DB, phase UpgradePha
 				return err
 			}
 			if _, err := reconcileCurrentMastodonCatalog(tx); err != nil {
-				return fmt.Errorf("reconcile canonical Mastodon 4.5 catalog before commit: %w", err)
+				return fmt.Errorf("reconcile canonical Mastodon 4.5 catalog before continuing: %w", err)
 			}
-			if err := paondb.SchemaAvailable(tx); err != nil {
-				return fmt.Errorf("validate contracted Mastodon 4.5 schema before commit: %w", err)
-			}
+			// The outer runner continues directly into the 4.6 phases. The full
+			// current-schema guard is intentionally deferred until 4.6 contract.
 		default:
 			return fmt.Errorf("unsupported Mastodon 4.5 migration phase %q", phase)
 		}

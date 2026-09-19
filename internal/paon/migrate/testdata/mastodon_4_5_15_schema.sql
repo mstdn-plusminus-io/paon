@@ -39,7 +39,7 @@ CREATE FUNCTION public.timestamp_id(table_name text) RETURNS bigint
       -- Take the first two bytes (four hex characters)
       substr(
         -- Of the MD5 hash of the data we documented
-        md5(table_name || '__PAON_TIMESTAMP_ID_SALT__' || time_part::text),
+        md5(table_name || '803dd38946fdc0e172f0b2a6d6bd6086' || time_part::text),
         1, 4
       )
     -- And turn it into a bigint
@@ -72,9 +72,9 @@ CREATE TABLE public.account_aliases (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
     acct character varying DEFAULT ''::character varying NOT NULL,
+    uri character varying DEFAULT ''::character varying NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    updated_at timestamp without time zone NOT NULL,
-    uri character varying DEFAULT ''::character varying NOT NULL
+    updated_at timestamp without time zone NOT NULL
 );
 
 
@@ -105,10 +105,10 @@ CREATE TABLE public.account_conversations (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
     conversation_id bigint NOT NULL,
-    last_status_id bigint,
-    lock_version integer DEFAULT 0 NOT NULL,
     participant_account_ids bigint[] DEFAULT '{}'::bigint[] NOT NULL,
     status_ids bigint[] DEFAULT '{}'::bigint[] NOT NULL,
+    last_status_id bigint,
+    lock_version integer DEFAULT 0 NOT NULL,
     unread boolean DEFAULT false NOT NULL
 );
 
@@ -169,10 +169,10 @@ ALTER SEQUENCE public.account_deletion_requests_id_seq OWNED BY public.account_d
 
 CREATE TABLE public.account_domain_blocks (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     domain character varying NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    account_id bigint NOT NULL
 );
 
 
@@ -203,9 +203,9 @@ CREATE TABLE public.account_migrations (
     id bigint NOT NULL,
     account_id bigint,
     acct character varying DEFAULT ''::character varying NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     followers_count bigint DEFAULT 0 NOT NULL,
     target_account_id bigint,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -235,10 +235,10 @@ ALTER SEQUENCE public.account_migrations_id_seq OWNED BY public.account_migratio
 
 CREATE TABLE public.account_moderation_notes (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
     content text NOT NULL,
-    created_at timestamp without time zone NOT NULL,
+    account_id bigint NOT NULL,
     target_account_id bigint NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -269,9 +269,9 @@ ALTER SEQUENCE public.account_moderation_notes_id_seq OWNED BY public.account_mo
 CREATE TABLE public.account_notes (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
+    target_account_id bigint NOT NULL,
     comment text NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    target_account_id bigint NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -302,8 +302,8 @@ ALTER SEQUENCE public.account_notes_id_seq OWNED BY public.account_notes.id;
 CREATE TABLE public.account_pins (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     target_account_id bigint NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -334,11 +334,11 @@ ALTER SEQUENCE public.account_pins_id_seq OWNED BY public.account_pins.id;
 CREATE TABLE public.account_relationship_severance_events (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    followers_count integer DEFAULT 0 NOT NULL,
-    following_count integer DEFAULT 0 NOT NULL,
     relationship_severance_event_id bigint NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    followers_count integer DEFAULT 0 NOT NULL,
+    following_count integer DEFAULT 0 NOT NULL
 );
 
 
@@ -368,12 +368,12 @@ ALTER SEQUENCE public.account_relationship_severance_events_id_seq OWNED BY publ
 CREATE TABLE public.account_stats (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    followers_count bigint DEFAULT 0 NOT NULL,
-    following_count bigint DEFAULT 0 NOT NULL,
-    last_status_at timestamp without time zone,
     statuses_count bigint DEFAULT 0 NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    following_count bigint DEFAULT 0 NOT NULL,
+    followers_count bigint DEFAULT 0 NOT NULL,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    last_status_at timestamp without time zone
 );
 
 
@@ -403,17 +403,17 @@ ALTER SEQUENCE public.account_stats_id_seq OWNED BY public.account_stats.id;
 CREATE TABLE public.account_statuses_cleanup_policies (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
     enabled boolean DEFAULT true NOT NULL,
+    min_status_age integer DEFAULT 1209600 NOT NULL,
     keep_direct boolean DEFAULT true NOT NULL,
-    keep_media boolean DEFAULT false NOT NULL,
     keep_pinned boolean DEFAULT true NOT NULL,
     keep_polls boolean DEFAULT false NOT NULL,
-    keep_self_bookmark boolean DEFAULT true NOT NULL,
+    keep_media boolean DEFAULT false NOT NULL,
     keep_self_fav boolean DEFAULT true NOT NULL,
+    keep_self_bookmark boolean DEFAULT true NOT NULL,
     min_favs integer,
     min_reblogs integer,
-    min_status_age integer DEFAULT 1209600 NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -443,61 +443,54 @@ ALTER SEQUENCE public.account_statuses_cleanup_policies_id_seq OWNED BY public.a
 
 CREATE TABLE public.accounts (
     id bigint DEFAULT public.timestamp_id('accounts'::text) NOT NULL,
-    actor_type character varying,
-    also_known_as character varying[],
-    attribution_domains character varying[] DEFAULT '{}'::character varying[],
-    avatar_content_type character varying,
-    avatar_description character varying DEFAULT ''::character varying NOT NULL,
-    avatar_file_name character varying,
-    avatar_file_size integer,
-    avatar_remote_url character varying,
-    avatar_storage_schema_version integer,
-    avatar_updated_at timestamp without time zone,
-    collections_url character varying,
-    created_at timestamp without time zone NOT NULL,
-    discoverable boolean,
-    display_name character varying DEFAULT ''::character varying NOT NULL,
+    username character varying DEFAULT ''::character varying NOT NULL,
     domain character varying,
-    feature_approval_policy integer DEFAULT 0 NOT NULL,
-    featured_collection_url character varying,
-    fields jsonb,
-    followers_url character varying DEFAULT ''::character varying NOT NULL,
-    following_url character varying DEFAULT ''::character varying NOT NULL,
-    header_content_type character varying,
-    header_description character varying DEFAULT ''::character varying NOT NULL,
-    header_file_name character varying,
-    header_file_size integer,
-    header_remote_url character varying DEFAULT ''::character varying NOT NULL,
-    header_storage_schema_version integer,
-    header_updated_at timestamp without time zone,
-    hide_collections boolean,
-    id_scheme integer DEFAULT 1,
-    inbox_url character varying DEFAULT ''::character varying NOT NULL,
-    indexable boolean DEFAULT false NOT NULL,
-    last_webfingered_at timestamp without time zone,
-    locked boolean DEFAULT false NOT NULL,
-    memorial boolean DEFAULT false NOT NULL,
-    moved_to_account_id bigint,
-    note text DEFAULT ''::text NOT NULL,
-    outbox_url character varying DEFAULT ''::character varying NOT NULL,
     private_key text,
-    protocol integer DEFAULT 0 NOT NULL,
     public_key text DEFAULT ''::text NOT NULL,
-    requested_review_at timestamp without time zone,
-    reviewed_at timestamp without time zone,
-    sensitized_at timestamp without time zone,
-    shared_inbox_url character varying DEFAULT ''::character varying NOT NULL,
-    show_featured boolean DEFAULT true NOT NULL,
-    show_media boolean DEFAULT true NOT NULL,
-    show_media_replies boolean DEFAULT true NOT NULL,
-    silenced_at timestamp without time zone,
-    suspended_at timestamp without time zone,
-    suspension_origin integer,
-    trendable boolean,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
+    note text DEFAULT ''::text NOT NULL,
+    display_name character varying DEFAULT ''::character varying NOT NULL,
     uri character varying DEFAULT ''::character varying NOT NULL,
     url character varying,
-    username character varying DEFAULT ''::character varying NOT NULL
+    avatar_file_name character varying,
+    avatar_content_type character varying,
+    avatar_file_size integer,
+    avatar_updated_at timestamp without time zone,
+    header_file_name character varying,
+    header_content_type character varying,
+    header_file_size integer,
+    header_updated_at timestamp without time zone,
+    avatar_remote_url character varying,
+    locked boolean DEFAULT false NOT NULL,
+    header_remote_url character varying DEFAULT ''::character varying NOT NULL,
+    last_webfingered_at timestamp without time zone,
+    inbox_url character varying DEFAULT ''::character varying NOT NULL,
+    outbox_url character varying DEFAULT ''::character varying NOT NULL,
+    shared_inbox_url character varying DEFAULT ''::character varying NOT NULL,
+    followers_url character varying DEFAULT ''::character varying NOT NULL,
+    protocol integer DEFAULT 0 NOT NULL,
+    memorial boolean DEFAULT false NOT NULL,
+    moved_to_account_id bigint,
+    featured_collection_url character varying,
+    fields jsonb,
+    actor_type character varying,
+    discoverable boolean,
+    also_known_as character varying[],
+    silenced_at timestamp without time zone,
+    suspended_at timestamp without time zone,
+    hide_collections boolean,
+    avatar_storage_schema_version integer,
+    header_storage_schema_version integer,
+    sensitized_at timestamp without time zone,
+    suspension_origin integer,
+    trendable boolean,
+    reviewed_at timestamp without time zone,
+    requested_review_at timestamp without time zone,
+    indexable boolean DEFAULT false NOT NULL,
+    attribution_domains character varying[] DEFAULT '{}'::character varying[],
+    following_url character varying DEFAULT ''::character varying NOT NULL,
+    id_scheme integer DEFAULT 1
 );
 
 
@@ -507,30 +500,30 @@ CREATE TABLE public.accounts (
 
 CREATE TABLE public.statuses (
     id bigint DEFAULT public.timestamp_id('statuses'::text) NOT NULL,
+    uri character varying,
+    text text DEFAULT ''::text NOT NULL,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    in_reply_to_id bigint,
+    reblog_of_id bigint,
+    url character varying,
+    sensitive boolean DEFAULT false NOT NULL,
+    visibility integer DEFAULT 0 NOT NULL,
+    spoiler_text text DEFAULT ''::text NOT NULL,
+    reply boolean DEFAULT false NOT NULL,
+    language character varying,
+    conversation_id bigint,
+    local boolean,
     account_id bigint NOT NULL,
     application_id bigint,
-    conversation_id bigint,
-    created_at timestamp without time zone NOT NULL,
+    in_reply_to_account_id bigint,
+    poll_id bigint,
     deleted_at timestamp without time zone,
     edited_at timestamp without time zone,
-    fetched_replies_at timestamp(6) without time zone,
-    in_reply_to_account_id bigint,
-    in_reply_to_id bigint,
-    language character varying,
-    local boolean,
-    ordered_media_attachment_ids bigint[],
-    poll_id bigint,
-    quote_approval_policy integer DEFAULT 0 NOT NULL,
-    reblog_of_id bigint,
-    reply boolean DEFAULT false NOT NULL,
-    sensitive boolean DEFAULT false NOT NULL,
-    spoiler_text text DEFAULT ''::text NOT NULL,
-    text text DEFAULT ''::text NOT NULL,
     trendable boolean,
-    updated_at timestamp without time zone NOT NULL,
-    uri character varying,
-    url character varying,
-    visibility integer DEFAULT 0 NOT NULL
+    ordered_media_attachment_ids bigint[],
+    fetched_replies_at timestamp(6) without time zone,
+    quote_approval_policy integer DEFAULT 0 NOT NULL
 );
 
 
@@ -561,10 +554,10 @@ CREATE MATERIALIZED VIEW public.account_summaries AS
 
 CREATE TABLE public.account_warning_presets (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     text text DEFAULT ''::text NOT NULL,
-    title character varying DEFAULT ''::character varying NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    title character varying DEFAULT ''::character varying NOT NULL
 );
 
 
@@ -594,14 +587,14 @@ ALTER SEQUENCE public.account_warning_presets_id_seq OWNED BY public.account_war
 CREATE TABLE public.account_warnings (
     id bigint NOT NULL,
     account_id bigint,
+    target_account_id bigint,
     action integer DEFAULT 0 NOT NULL,
+    text text DEFAULT ''::text NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    overruled_at timestamp without time zone,
+    updated_at timestamp without time zone NOT NULL,
     report_id bigint,
     status_ids character varying[],
-    target_account_id bigint,
-    text text DEFAULT ''::text NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    overruled_at timestamp without time zone
 );
 
 
@@ -654,13 +647,13 @@ CREATE TABLE public.admin_action_logs (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
     action character varying DEFAULT ''::character varying NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    human_identifier character varying,
-    permalink character varying,
-    route_param character varying,
-    target_id bigint,
     target_type character varying,
-    updated_at timestamp without time zone NOT NULL
+    target_id bigint,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    human_identifier character varying,
+    route_param character varying,
+    permalink character varying
 );
 
 
@@ -723,9 +716,9 @@ CREATE TABLE public.announcement_reactions (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
     announcement_id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    custom_emoji_id bigint,
     name character varying DEFAULT ''::character varying NOT NULL,
+    custom_emoji_id bigint,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -755,17 +748,17 @@ ALTER SEQUENCE public.announcement_reactions_id_seq OWNED BY public.announcement
 
 CREATE TABLE public.announcements (
     id bigint NOT NULL,
-    all_day boolean DEFAULT false NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    ends_at timestamp without time zone,
-    notification_sent_at timestamp(6) without time zone,
+    text text DEFAULT ''::text NOT NULL,
     published boolean DEFAULT false NOT NULL,
-    published_at timestamp without time zone,
+    all_day boolean DEFAULT false NOT NULL,
     scheduled_at timestamp without time zone,
     starts_at timestamp without time zone,
+    ends_at timestamp without time zone,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    published_at timestamp without time zone,
     status_ids bigint[],
-    text text DEFAULT ''::text NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    notification_sent_at timestamp(6) without time zone
 );
 
 
@@ -794,9 +787,9 @@ ALTER SEQUENCE public.announcements_id_seq OWNED BY public.announcements.id;
 
 CREATE TABLE public.annual_report_statuses_per_account_counts (
     id bigint NOT NULL,
+    year integer NOT NULL,
     account_id bigint NOT NULL,
-    statuses_count bigint NOT NULL,
-    year integer NOT NULL
+    statuses_count bigint NOT NULL
 );
 
 
@@ -827,12 +820,12 @@ CREATE TABLE public.appeals (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
     account_warning_id bigint NOT NULL,
+    text text DEFAULT ''::text NOT NULL,
     approved_at timestamp without time zone,
     approved_by_account_id bigint,
-    created_at timestamp(6) without time zone NOT NULL,
     rejected_at timestamp without time zone,
     rejected_by_account_id bigint,
-    text text DEFAULT ''::text NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -874,14 +867,14 @@ CREATE TABLE public.ar_internal_metadata (
 
 CREATE TABLE public.backups (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    dump_content_type character varying,
+    user_id bigint,
     dump_file_name character varying,
-    dump_file_size bigint,
+    dump_content_type character varying,
     dump_updated_at timestamp without time zone,
     processed boolean DEFAULT false NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    user_id bigint
+    dump_file_size bigint
 );
 
 
@@ -910,10 +903,10 @@ ALTER SEQUENCE public.backups_id_seq OWNED BY public.backups.id;
 
 CREATE TABLE public.blocks (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    target_account_id bigint NOT NULL,
     updated_at timestamp without time zone NOT NULL,
+    account_id bigint NOT NULL,
+    target_account_id bigint NOT NULL,
     uri character varying
 );
 
@@ -944,8 +937,8 @@ ALTER SEQUENCE public.blocks_id_seq OWNED BY public.blocks.id;
 CREATE TABLE public.bookmarks (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     status_id bigint NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -976,8 +969,8 @@ ALTER SEQUENCE public.bookmarks_id_seq OWNED BY public.bookmarks.id;
 CREATE TABLE public.bulk_import_rows (
     id bigint NOT NULL,
     bulk_import_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
     data jsonb,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -1007,18 +1000,17 @@ ALTER SEQUENCE public.bulk_import_rows_id_seq OWNED BY public.bulk_import_rows.i
 
 CREATE TABLE public.bulk_imports (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    finished_at timestamp without time zone,
-    imported_items integer DEFAULT 0 NOT NULL,
-    likely_mismatched boolean DEFAULT false NOT NULL,
-    missing_status boolean DEFAULT false NOT NULL,
-    original_filename character varying DEFAULT ''::character varying NOT NULL,
-    overwrite boolean DEFAULT false NOT NULL,
-    processed_items integer DEFAULT 0 NOT NULL,
+    type integer NOT NULL,
     state integer NOT NULL,
     total_items integer DEFAULT 0 NOT NULL,
-    type integer NOT NULL,
+    imported_items integer DEFAULT 0 NOT NULL,
+    processed_items integer DEFAULT 0 NOT NULL,
+    finished_at timestamp without time zone,
+    overwrite boolean DEFAULT false NOT NULL,
+    likely_mismatched boolean DEFAULT false NOT NULL,
+    original_filename character varying DEFAULT ''::character varying NOT NULL,
+    account_id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -1049,8 +1041,8 @@ ALTER SEQUENCE public.bulk_imports_id_seq OWNED BY public.bulk_imports.id;
 CREATE TABLE public.canonical_email_blocks (
     id bigint NOT NULL,
     canonical_email_hash character varying DEFAULT ''::character varying NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
     reference_account_id bigint,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -1075,113 +1067,13 @@ ALTER SEQUENCE public.canonical_email_blocks_id_seq OWNED BY public.canonical_em
 
 
 --
--- Name: collection_items; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.collection_items (
-    id bigint DEFAULT public.timestamp_id('collection_items'::text) NOT NULL,
-    account_id bigint,
-    activity_uri character varying,
-    approval_last_verified_at timestamp(6) without time zone,
-    approval_uri character varying,
-    collection_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    object_uri character varying,
-    "position" integer DEFAULT 1 NOT NULL,
-    state integer DEFAULT 0 NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL,
-    uri character varying
-);
-
-
---
--- Name: collection_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.collection_items_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: collection_reports; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.collection_reports (
-    id bigint NOT NULL,
-    collection_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    report_id bigint NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
-);
-
-
---
--- Name: collection_reports_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.collection_reports_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: collection_reports_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.collection_reports_id_seq OWNED BY public.collection_reports.id;
-
-
---
--- Name: collections; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.collections (
-    id bigint DEFAULT public.timestamp_id('collections'::text) NOT NULL,
-    account_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    description text,
-    description_html text,
-    discoverable boolean NOT NULL,
-    item_count integer DEFAULT 0 NOT NULL,
-    language character varying,
-    local boolean NOT NULL,
-    name character varying NOT NULL,
-    original_number_of_items integer,
-    sensitive boolean NOT NULL,
-    tag_id bigint,
-    updated_at timestamp(6) without time zone NOT NULL,
-    uri character varying,
-    url character varying
-);
-
-
---
--- Name: collections_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.collections_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
 -- Name: conversation_mutes; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.conversation_mutes (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
-    conversation_id bigint NOT NULL
+    conversation_id bigint NOT NULL,
+    account_id bigint NOT NULL
 );
 
 
@@ -1210,11 +1102,11 @@ ALTER SEQUENCE public.conversation_mutes_id_seq OWNED BY public.conversation_mut
 
 CREATE TABLE public.conversations (
     id bigint NOT NULL,
+    uri character varying,
     created_at timestamp without time zone NOT NULL,
-    parent_account_id bigint,
-    parent_status_id bigint,
     updated_at timestamp without time zone NOT NULL,
-    uri character varying
+    parent_status_id bigint,
+    parent_account_id bigint
 );
 
 
@@ -1243,9 +1135,8 @@ ALTER SEQUENCE public.conversations_id_seq OWNED BY public.conversations.id;
 
 CREATE TABLE public.custom_emoji_categories (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    featured_emoji_id bigint,
     name character varying,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -1275,20 +1166,20 @@ ALTER SEQUENCE public.custom_emoji_categories_id_seq OWNED BY public.custom_emoj
 
 CREATE TABLE public.custom_emojis (
     id bigint NOT NULL,
-    category_id bigint,
-    created_at timestamp without time zone NOT NULL,
-    disabled boolean DEFAULT false NOT NULL,
-    domain character varying,
-    image_content_type character varying,
-    image_file_name character varying,
-    image_file_size integer,
-    image_remote_url character varying,
-    image_storage_schema_version integer,
-    image_updated_at timestamp without time zone,
     shortcode character varying DEFAULT ''::character varying NOT NULL,
+    domain character varying,
+    image_file_name character varying,
+    image_content_type character varying,
+    image_file_size integer,
+    image_updated_at timestamp without time zone,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
+    disabled boolean DEFAULT false NOT NULL,
     uri character varying,
-    visible_in_picker boolean DEFAULT true NOT NULL
+    image_remote_url character varying,
+    visible_in_picker boolean DEFAULT true NOT NULL,
+    category_id bigint,
+    image_storage_schema_version integer
 );
 
 
@@ -1317,11 +1208,11 @@ ALTER SEQUENCE public.custom_emojis_id_seq OWNED BY public.custom_emojis.id;
 
 CREATE TABLE public.custom_filter_keywords (
     id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
     custom_filter_id bigint NOT NULL,
     keyword text DEFAULT ''::text NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL,
-    whole_word boolean DEFAULT true NOT NULL
+    whole_word boolean DEFAULT true NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL
 );
 
 
@@ -1350,9 +1241,9 @@ ALTER SEQUENCE public.custom_filter_keywords_id_seq OWNED BY public.custom_filte
 
 CREATE TABLE public.custom_filter_statuses (
     id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
     custom_filter_id bigint NOT NULL,
     status_id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -1383,12 +1274,12 @@ ALTER SEQUENCE public.custom_filter_statuses_id_seq OWNED BY public.custom_filte
 CREATE TABLE public.custom_filters (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    action integer DEFAULT 0 NOT NULL,
-    context character varying[] DEFAULT '{}'::character varying[] NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     expires_at timestamp without time zone,
     phrase text DEFAULT ''::text NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    context character varying[] DEFAULT '{}'::character varying[] NOT NULL,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    action integer DEFAULT 0 NOT NULL
 );
 
 
@@ -1417,8 +1308,8 @@ ALTER SEQUENCE public.custom_filters_id_seq OWNED BY public.custom_filters.id;
 
 CREATE TABLE public.domain_allows (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     domain character varying DEFAULT ''::character varying NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -1448,15 +1339,15 @@ ALTER SEQUENCE public.domain_allows_id_seq OWNED BY public.domain_allows.id;
 
 CREATE TABLE public.domain_blocks (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     domain character varying DEFAULT ''::character varying NOT NULL,
-    obfuscate boolean DEFAULT false NOT NULL,
-    private_comment text,
-    public_comment text,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    severity integer DEFAULT 0,
     reject_media boolean DEFAULT false NOT NULL,
     reject_reports boolean DEFAULT false NOT NULL,
-    severity integer DEFAULT 0,
-    updated_at timestamp without time zone NOT NULL
+    private_comment text,
+    public_comment text,
+    obfuscate boolean DEFAULT false NOT NULL
 );
 
 
@@ -1485,11 +1376,11 @@ ALTER SEQUENCE public.domain_blocks_id_seq OWNED BY public.domain_blocks.id;
 
 CREATE TABLE public.email_domain_blocks (
     id bigint NOT NULL,
-    allow_with_approval boolean DEFAULT false NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     domain character varying DEFAULT ''::character varying NOT NULL,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
     parent_id bigint,
-    updated_at timestamp without time zone NOT NULL
+    allow_with_approval boolean DEFAULT false NOT NULL
 );
 
 
@@ -1513,52 +1404,17 @@ ALTER SEQUENCE public.email_domain_blocks_id_seq OWNED BY public.email_domain_bl
 
 
 --
--- Name: email_subscriptions; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.email_subscriptions (
-    id bigint NOT NULL,
-    account_id bigint NOT NULL,
-    confirmation_token character varying,
-    confirmed_at timestamp(6) without time zone,
-    created_at timestamp(6) without time zone NOT NULL,
-    email character varying NOT NULL,
-    locale character varying NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
-);
-
-
---
--- Name: email_subscriptions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.email_subscriptions_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: email_subscriptions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.email_subscriptions_id_seq OWNED BY public.email_subscriptions.id;
-
-
---
 -- Name: fasp_backfill_requests; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.fasp_backfill_requests (
     id bigint NOT NULL,
     category character varying NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    cursor character varying,
-    fasp_provider_id bigint NOT NULL,
-    fulfilled boolean DEFAULT false NOT NULL,
     max_count integer DEFAULT 100 NOT NULL,
+    cursor character varying,
+    fulfilled boolean DEFAULT false NOT NULL,
+    fasp_provider_id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -1588,10 +1444,10 @@ ALTER SEQUENCE public.fasp_backfill_requests_id_seq OWNED BY public.fasp_backfil
 
 CREATE TABLE public.fasp_debug_callbacks (
     id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
     fasp_provider_id bigint NOT NULL,
     ip character varying NOT NULL,
     request_body text NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -1621,9 +1477,9 @@ ALTER SEQUENCE public.fasp_debug_callbacks_id_seq OWNED BY public.fasp_debug_cal
 
 CREATE TABLE public.fasp_follow_recommendations (
     id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    recommended_account_id bigint NOT NULL,
     requesting_account_id bigint NOT NULL,
+    recommended_account_id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -1653,20 +1509,20 @@ ALTER SEQUENCE public.fasp_follow_recommendations_id_seq OWNED BY public.fasp_fo
 
 CREATE TABLE public.fasp_providers (
     id bigint NOT NULL,
-    base_url character varying NOT NULL,
-    capabilities jsonb DEFAULT '[]'::jsonb NOT NULL,
     confirmed boolean DEFAULT false NOT NULL,
-    contact_email character varying,
-    created_at timestamp(6) without time zone NOT NULL,
-    delivery_last_failed_at timestamp(6) without time zone,
-    fediverse_account character varying,
     name character varying NOT NULL,
-    privacy_policy jsonb,
-    provider_public_key_pem character varying NOT NULL,
-    remote_identifier character varying NOT NULL,
-    server_private_key_pem character varying NOT NULL,
+    base_url character varying NOT NULL,
     sign_in_url character varying,
-    updated_at timestamp(6) without time zone NOT NULL
+    remote_identifier character varying NOT NULL,
+    provider_public_key_pem character varying NOT NULL,
+    server_private_key_pem character varying NOT NULL,
+    capabilities jsonb DEFAULT '[]'::jsonb NOT NULL,
+    privacy_policy jsonb,
+    contact_email character varying,
+    fediverse_account character varying,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    delivery_last_failed_at timestamp(6) without time zone
 );
 
 
@@ -1696,14 +1552,14 @@ ALTER SEQUENCE public.fasp_providers_id_seq OWNED BY public.fasp_providers.id;
 CREATE TABLE public.fasp_subscriptions (
     id bigint NOT NULL,
     category character varying NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    fasp_provider_id bigint NOT NULL,
-    max_batch_size integer NOT NULL,
     subscription_type character varying NOT NULL,
+    max_batch_size integer NOT NULL,
+    threshold_timeframe integer,
+    threshold_shares integer,
     threshold_likes integer,
     threshold_replies integer,
-    threshold_shares integer,
-    threshold_timeframe integer,
+    fasp_provider_id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -1733,10 +1589,10 @@ ALTER SEQUENCE public.fasp_subscriptions_id_seq OWNED BY public.fasp_subscriptio
 
 CREATE TABLE public.favourites (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    status_id bigint NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    updated_at timestamp without time zone NOT NULL,
+    account_id bigint NOT NULL,
+    status_id bigint NOT NULL
 );
 
 
@@ -1766,12 +1622,12 @@ ALTER SEQUENCE public.favourites_id_seq OWNED BY public.favourites.id;
 CREATE TABLE public.featured_tags (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    last_status_at timestamp without time zone,
-    name character varying,
-    statuses_count bigint DEFAULT 0 NOT NULL,
     tag_id bigint NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    statuses_count bigint DEFAULT 0 NOT NULL,
+    last_status_at timestamp without time zone,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    name character varying
 );
 
 
@@ -1801,8 +1657,8 @@ ALTER SEQUENCE public.featured_tags_id_seq OWNED BY public.featured_tags.id;
 CREATE TABLE public.follow_recommendation_mutes (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
     target_account_id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -1863,14 +1719,14 @@ ALTER SEQUENCE public.follow_recommendation_suppressions_id_seq OWNED BY public.
 
 CREATE TABLE public.follow_requests (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    languages character varying[],
-    notify boolean DEFAULT false NOT NULL,
-    show_reblogs boolean DEFAULT true NOT NULL,
-    target_account_id bigint NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    uri character varying
+    account_id bigint NOT NULL,
+    target_account_id bigint NOT NULL,
+    show_reblogs boolean DEFAULT true NOT NULL,
+    uri character varying,
+    notify boolean DEFAULT false NOT NULL,
+    languages character varying[]
 );
 
 
@@ -1899,14 +1755,14 @@ ALTER SEQUENCE public.follow_requests_id_seq OWNED BY public.follow_requests.id;
 
 CREATE TABLE public.follows (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    languages character varying[],
-    notify boolean DEFAULT false NOT NULL,
-    show_reblogs boolean DEFAULT true NOT NULL,
-    target_account_id bigint NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    uri character varying
+    account_id bigint NOT NULL,
+    target_account_id bigint NOT NULL,
+    show_reblogs boolean DEFAULT true NOT NULL,
+    uri character varying,
+    notify boolean DEFAULT false NOT NULL,
+    languages character varying[]
 );
 
 
@@ -1936,13 +1792,12 @@ ALTER SEQUENCE public.follows_id_seq OWNED BY public.follows.id;
 CREATE TABLE public.generated_annual_reports (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
+    year integer NOT NULL,
     data jsonb NOT NULL,
     schema_version integer NOT NULL,
-    share_key character varying,
-    updated_at timestamp(6) without time zone NOT NULL,
     viewed_at timestamp(6) without time zone,
-    year integer NOT NULL
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL
 );
 
 
@@ -1971,15 +1826,15 @@ ALTER SEQUENCE public.generated_annual_reports_id_seq OWNED BY public.generated_
 
 CREATE TABLE public.status_stats (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    favourites_count bigint DEFAULT 0 NOT NULL,
-    quotes_count bigint DEFAULT 0 NOT NULL,
-    reblogs_count bigint DEFAULT 0 NOT NULL,
-    replies_count bigint DEFAULT 0 NOT NULL,
     status_id bigint NOT NULL,
+    replies_count bigint DEFAULT 0 NOT NULL,
+    reblogs_count bigint DEFAULT 0 NOT NULL,
+    favourites_count bigint DEFAULT 0 NOT NULL,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
     untrusted_favourites_count bigint,
     untrusted_reblogs_count bigint,
-    updated_at timestamp without time zone NOT NULL
+    quotes_count bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -1989,41 +1844,41 @@ CREATE TABLE public.status_stats (
 
 CREATE TABLE public.users (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
-    age_verified_at timestamp(6) without time zone,
-    approved boolean DEFAULT true NOT NULL,
-    chosen_languages character varying[],
-    confirmation_sent_at timestamp without time zone,
+    email character varying DEFAULT ''::character varying NOT NULL,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    encrypted_password character varying DEFAULT ''::character varying NOT NULL,
+    reset_password_token character varying,
+    reset_password_sent_at timestamp without time zone,
+    sign_in_count integer DEFAULT 0 NOT NULL,
+    current_sign_in_at timestamp without time zone,
+    last_sign_in_at timestamp without time zone,
     confirmation_token character varying,
     confirmed_at timestamp without time zone,
-    consumed_timestep integer,
-    created_at timestamp without time zone NOT NULL,
-    created_by_application_id bigint,
-    current_sign_in_at timestamp without time zone,
-    disabled boolean DEFAULT false NOT NULL,
-    email character varying DEFAULT ''::character varying NOT NULL,
-    encrypted_password character varying DEFAULT ''::character varying NOT NULL,
-    invite_id bigint,
-    last_emailed_at timestamp without time zone,
-    last_sign_in_at timestamp without time zone,
+    confirmation_sent_at timestamp without time zone,
+    unconfirmed_email character varying,
     locale character varying,
-    otp_backup_codes character varying[],
+    consumed_timestep integer,
     otp_required_for_login boolean DEFAULT false NOT NULL,
-    otp_secret character varying,
-    require_tos_interstitial boolean DEFAULT false NOT NULL,
-    reset_password_sent_at timestamp without time zone,
-    reset_password_token character varying,
-    role_id bigint,
-    settings text,
-    sign_in_count integer DEFAULT 0 NOT NULL,
+    last_emailed_at timestamp without time zone,
+    otp_backup_codes character varying[],
+    account_id bigint NOT NULL,
+    disabled boolean DEFAULT false NOT NULL,
+    invite_id bigint,
+    chosen_languages character varying[],
+    created_by_application_id bigint,
+    approved boolean DEFAULT true NOT NULL,
     sign_in_token character varying,
     sign_in_token_sent_at timestamp without time zone,
+    webauthn_id character varying,
     sign_up_ip inet,
     skip_sign_in_token boolean,
+    role_id bigint,
+    settings text,
     time_zone character varying,
-    unconfirmed_email character varying,
-    updated_at timestamp without time zone NOT NULL,
-    webauthn_id character varying
+    otp_secret character varying,
+    age_verified_at timestamp(6) without time zone,
+    require_tos_interstitial boolean DEFAULT false NOT NULL
 );
 
 
@@ -2069,9 +1924,9 @@ CREATE MATERIALIZED VIEW public.global_follow_recommendations AS
 
 CREATE TABLE public.identities (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     provider character varying DEFAULT ''::character varying NOT NULL,
     uid character varying DEFAULT ''::character varying NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
     user_id bigint
 );
@@ -2102,10 +1957,10 @@ ALTER SEQUENCE public.identities_id_seq OWNED BY public.identities.id;
 
 CREATE TABLE public.instance_moderation_notes (
     id bigint NOT NULL,
+    domain character varying NOT NULL,
     account_id bigint NOT NULL,
     content text,
     created_at timestamp(6) without time zone NOT NULL,
-    domain character varying NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -2163,15 +2018,15 @@ UNION
 
 CREATE TABLE public.invites (
     id bigint NOT NULL,
-    autofollow boolean DEFAULT false NOT NULL,
+    user_id bigint NOT NULL,
     code character varying DEFAULT ''::character varying NOT NULL,
-    comment text,
-    created_at timestamp without time zone NOT NULL,
     expires_at timestamp without time zone,
     max_uses integer,
+    uses integer DEFAULT 0 NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    user_id bigint NOT NULL,
-    uses integer DEFAULT 0 NOT NULL
+    autofollow boolean DEFAULT false NOT NULL,
+    comment text
 );
 
 
@@ -2200,11 +2055,11 @@ ALTER SEQUENCE public.invites_id_seq OWNED BY public.invites.id;
 
 CREATE TABLE public.ip_blocks (
     id bigint NOT NULL,
-    comment text DEFAULT ''::text NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    expires_at timestamp without time zone,
     ip inet DEFAULT '0.0.0.0'::inet NOT NULL,
     severity integer DEFAULT 0 NOT NULL,
+    expires_at timestamp without time zone,
+    comment text DEFAULT ''::text NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -2229,52 +2084,15 @@ ALTER SEQUENCE public.ip_blocks_id_seq OWNED BY public.ip_blocks.id;
 
 
 --
--- Name: keypairs; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.keypairs (
-    id bigint NOT NULL,
-    account_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    expires_at timestamp(6) without time zone,
-    private_key character varying,
-    public_key character varying NOT NULL,
-    revoked boolean DEFAULT false NOT NULL,
-    type integer NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL,
-    uri character varying NOT NULL
-);
-
-
---
--- Name: keypairs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.keypairs_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: keypairs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.keypairs_id_seq OWNED BY public.keypairs.id;
-
-
---
 -- Name: list_accounts; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.list_accounts (
     id bigint NOT NULL,
+    list_id bigint NOT NULL,
     account_id bigint NOT NULL,
     follow_id bigint,
-    follow_request_id bigint,
-    list_id bigint NOT NULL
+    follow_request_id bigint
 );
 
 
@@ -2304,11 +2122,11 @@ ALTER SEQUENCE public.list_accounts_id_seq OWNED BY public.list_accounts.id;
 CREATE TABLE public.lists (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    exclusive boolean DEFAULT false NOT NULL,
-    replies_policy integer DEFAULT 0 NOT NULL,
     title character varying DEFAULT ''::character varying NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    replies_policy integer DEFAULT 0 NOT NULL,
+    exclusive boolean DEFAULT false NOT NULL
 );
 
 
@@ -2337,14 +2155,14 @@ ALTER SEQUENCE public.lists_id_seq OWNED BY public.lists.id;
 
 CREATE TABLE public.login_activities (
     id bigint NOT NULL,
+    user_id bigint NOT NULL,
     authentication_method character varying,
-    created_at timestamp without time zone,
-    failure_reason character varying,
-    ip inet,
     provider character varying,
     success boolean,
+    failure_reason character varying,
+    ip inet,
     user_agent character varying,
-    user_id bigint NOT NULL
+    created_at timestamp without time zone
 );
 
 
@@ -2373,12 +2191,12 @@ ALTER SEQUENCE public.login_activities_id_seq OWNED BY public.login_activities.i
 
 CREATE TABLE public.markers (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
+    user_id bigint NOT NULL,
+    timeline character varying DEFAULT ''::character varying NOT NULL,
     last_read_id bigint DEFAULT 0 NOT NULL,
     lock_version integer DEFAULT 0 NOT NULL,
-    timeline character varying DEFAULT ''::character varying NOT NULL,
-    updated_at timestamp without time zone NOT NULL,
-    user_id bigint NOT NULL
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
 );
 
 
@@ -2407,29 +2225,28 @@ ALTER SEQUENCE public.markers_id_seq OWNED BY public.markers.id;
 
 CREATE TABLE public.media_attachments (
     id bigint DEFAULT public.timestamp_id('media_attachments'::text) NOT NULL,
-    account_id bigint,
-    blurhash character varying,
-    created_at timestamp without time zone NOT NULL,
-    description text,
-    file_content_type character varying,
-    file_file_name character varying,
-    file_file_size integer,
-    file_meta json,
-    file_storage_schema_version integer,
-    file_updated_at timestamp without time zone,
-    processing integer,
-    remote_url character varying DEFAULT ''::character varying NOT NULL,
-    scheduled_status_id bigint,
-    shortcode character varying,
     status_id bigint,
-    thumbnail_content_type character varying,
-    thumbnail_file_name character varying,
-    thumbnail_file_size integer,
-    thumbnail_remote_url character varying,
-    thumbnail_storage_schema_version integer,
-    thumbnail_updated_at timestamp without time zone,
+    file_file_name character varying,
+    file_content_type character varying,
+    file_file_size integer,
+    file_updated_at timestamp without time zone,
+    remote_url character varying DEFAULT ''::character varying NOT NULL,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    shortcode character varying,
     type integer DEFAULT 0 NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    file_meta json,
+    account_id bigint,
+    description text,
+    scheduled_status_id bigint,
+    blurhash character varying,
+    processing integer,
+    file_storage_schema_version integer,
+    thumbnail_file_name character varying,
+    thumbnail_content_type character varying,
+    thumbnail_file_size integer,
+    thumbnail_updated_at timestamp without time zone,
+    thumbnail_remote_url character varying
 );
 
 
@@ -2451,11 +2268,11 @@ CREATE SEQUENCE public.media_attachments_id_seq
 
 CREATE TABLE public.mentions (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    silent boolean DEFAULT false NOT NULL,
     status_id bigint NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    account_id bigint NOT NULL,
+    silent boolean DEFAULT false NOT NULL
 );
 
 
@@ -2484,12 +2301,12 @@ ALTER SEQUENCE public.mentions_id_seq OWNED BY public.mentions.id;
 
 CREATE TABLE public.mutes (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    expires_at timestamp without time zone,
+    updated_at timestamp without time zone NOT NULL,
     hide_notifications boolean DEFAULT true NOT NULL,
+    account_id bigint NOT NULL,
     target_account_id bigint NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    expires_at timestamp without time zone
 );
 
 
@@ -2519,8 +2336,8 @@ ALTER SEQUENCE public.mutes_id_seq OWNED BY public.mutes.id;
 CREATE TABLE public.notification_permissions (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
     from_account_id bigint NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -2552,13 +2369,12 @@ CREATE TABLE public.notification_policies (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
-    for_bots integer DEFAULT 0 NOT NULL,
-    for_limited_accounts integer DEFAULT 1 NOT NULL,
-    for_new_accounts integer DEFAULT 0 NOT NULL,
-    for_not_followers integer DEFAULT 0 NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
     for_not_following integer DEFAULT 0 NOT NULL,
+    for_not_followers integer DEFAULT 0 NOT NULL,
+    for_new_accounts integer DEFAULT 0 NOT NULL,
     for_private_mentions integer DEFAULT 1 NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
+    for_limited_accounts integer DEFAULT 1 NOT NULL
 );
 
 
@@ -2588,10 +2404,10 @@ ALTER SEQUENCE public.notification_policies_id_seq OWNED BY public.notification_
 CREATE TABLE public.notification_requests (
     id bigint DEFAULT public.timestamp_id('notification_requests'::text) NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
     from_account_id bigint NOT NULL,
     last_status_id bigint,
     notifications_count bigint DEFAULT 0 NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -2614,15 +2430,15 @@ CREATE SEQUENCE public.notification_requests_id_seq
 
 CREATE TABLE public.notifications (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
     activity_id bigint NOT NULL,
     activity_type character varying NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    filtered boolean DEFAULT false NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    account_id bigint NOT NULL,
     from_account_id bigint NOT NULL,
-    group_key character varying,
     type character varying,
-    updated_at timestamp without time zone NOT NULL
+    filtered boolean DEFAULT false NOT NULL,
+    group_key character varying
 );
 
 
@@ -2651,16 +2467,16 @@ ALTER SEQUENCE public.notifications_id_seq OWNED BY public.notifications.id;
 
 CREATE TABLE public.oauth_access_grants (
     id bigint NOT NULL,
-    application_id bigint NOT NULL,
-    code_challenge character varying,
-    code_challenge_method character varying,
-    created_at timestamp without time zone NOT NULL,
+    token character varying NOT NULL,
     expires_in integer NOT NULL,
     redirect_uri text NOT NULL,
-    resource_owner_id bigint NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     revoked_at timestamp without time zone,
     scopes character varying,
-    token character varying NOT NULL
+    application_id bigint NOT NULL,
+    resource_owner_id bigint NOT NULL,
+    code_challenge character varying,
+    code_challenge_method character varying
 );
 
 
@@ -2689,16 +2505,16 @@ ALTER SEQUENCE public.oauth_access_grants_id_seq OWNED BY public.oauth_access_gr
 
 CREATE TABLE public.oauth_access_tokens (
     id bigint NOT NULL,
-    application_id bigint,
-    created_at timestamp without time zone NOT NULL,
-    expires_in integer,
-    last_used_at timestamp without time zone,
-    last_used_ip inet,
+    token character varying NOT NULL,
     refresh_token character varying,
-    resource_owner_id bigint,
+    expires_in integer,
     revoked_at timestamp without time zone,
+    created_at timestamp without time zone NOT NULL,
     scopes character varying,
-    token character varying NOT NULL
+    application_id bigint,
+    resource_owner_id bigint,
+    last_used_at timestamp without time zone,
+    last_used_ip inet
 );
 
 
@@ -2727,18 +2543,18 @@ ALTER SEQUENCE public.oauth_access_tokens_id_seq OWNED BY public.oauth_access_to
 
 CREATE TABLE public.oauth_applications (
     id bigint NOT NULL,
-    confidential boolean DEFAULT true NOT NULL,
-    created_at timestamp without time zone,
     name character varying NOT NULL,
-    owner_id bigint,
-    owner_type character varying,
+    uid character varying NOT NULL,
+    secret character varying NOT NULL,
     redirect_uri text NOT NULL,
     scopes character varying DEFAULT ''::character varying NOT NULL,
-    secret character varying NOT NULL,
-    superapp boolean DEFAULT false NOT NULL,
-    uid character varying NOT NULL,
+    created_at timestamp without time zone,
     updated_at timestamp without time zone,
-    website character varying
+    superapp boolean DEFAULT false NOT NULL,
+    website character varying,
+    owner_type character varying,
+    owner_id bigint,
+    confidential boolean DEFAULT true NOT NULL
 );
 
 
@@ -2767,11 +2583,11 @@ ALTER SEQUENCE public.oauth_applications_id_seq OWNED BY public.oauth_applicatio
 
 CREATE TABLE public.pghero_space_stats (
     id bigint NOT NULL,
-    captured_at timestamp without time zone,
     database text,
-    relation text,
     schema text,
-    size bigint
+    relation text,
+    size bigint,
+    captured_at timestamp without time zone
 );
 
 
@@ -2801,9 +2617,9 @@ ALTER SEQUENCE public.pghero_space_stats_id_seq OWNED BY public.pghero_space_sta
 CREATE TABLE public.poll_votes (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
+    poll_id bigint NOT NULL,
     choice integer DEFAULT 0 NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    poll_id bigint NOT NULL,
     updated_at timestamp without time zone NOT NULL,
     uri character varying
 );
@@ -2835,18 +2651,18 @@ ALTER SEQUENCE public.poll_votes_id_seq OWNED BY public.poll_votes.id;
 CREATE TABLE public.polls (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    cached_tallies bigint[] DEFAULT '{}'::bigint[] NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    expires_at timestamp without time zone,
-    hide_totals boolean DEFAULT false NOT NULL,
-    last_fetched_at timestamp without time zone,
-    lock_version integer DEFAULT 0 NOT NULL,
-    multiple boolean DEFAULT false NOT NULL,
-    options character varying[] DEFAULT '{}'::character varying[] NOT NULL,
     status_id bigint NOT NULL,
+    expires_at timestamp without time zone,
+    options character varying[] DEFAULT '{}'::character varying[] NOT NULL,
+    cached_tallies bigint[] DEFAULT '{}'::bigint[] NOT NULL,
+    multiple boolean DEFAULT false NOT NULL,
+    hide_totals boolean DEFAULT false NOT NULL,
+    votes_count bigint DEFAULT 0 NOT NULL,
+    last_fetched_at timestamp without time zone,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    voters_count bigint,
-    votes_count bigint DEFAULT 0 NOT NULL
+    lock_version integer DEFAULT 0 NOT NULL,
+    voters_count bigint
 );
 
 
@@ -2875,15 +2691,15 @@ ALTER SEQUENCE public.polls_id_seq OWNED BY public.polls.id;
 
 CREATE TABLE public.preview_card_providers (
     id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
     domain character varying DEFAULT ''::character varying NOT NULL,
-    icon_content_type character varying,
     icon_file_name character varying,
+    icon_content_type character varying,
     icon_file_size bigint,
     icon_updated_at timestamp without time zone,
-    requested_review_at timestamp without time zone,
-    reviewed_at timestamp without time zone,
     trendable boolean,
+    reviewed_at timestamp without time zone,
+    requested_review_at timestamp without time zone,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -2913,11 +2729,11 @@ ALTER SEQUENCE public.preview_card_providers_id_seq OWNED BY public.preview_card
 
 CREATE TABLE public.preview_card_trends (
     id bigint NOT NULL,
-    allowed boolean DEFAULT false NOT NULL,
-    language character varying,
     preview_card_id bigint NOT NULL,
+    score double precision DEFAULT 0.0 NOT NULL,
     rank integer DEFAULT 0 NOT NULL,
-    score double precision DEFAULT 0.0 NOT NULL
+    allowed boolean DEFAULT false NOT NULL,
+    language character varying
 );
 
 
@@ -2946,35 +2762,34 @@ ALTER SEQUENCE public.preview_card_trends_id_seq OWNED BY public.preview_card_tr
 
 CREATE TABLE public.preview_cards (
     id bigint NOT NULL,
-    author_account_id bigint,
+    url character varying DEFAULT ''::character varying NOT NULL,
+    title character varying DEFAULT ''::character varying NOT NULL,
+    description character varying DEFAULT ''::character varying NOT NULL,
+    image_file_name character varying,
+    image_content_type character varying,
+    image_file_size integer,
+    image_updated_at timestamp without time zone,
+    type integer DEFAULT 0 NOT NULL,
+    html text DEFAULT ''::text NOT NULL,
     author_name character varying DEFAULT ''::character varying NOT NULL,
     author_url character varying DEFAULT ''::character varying NOT NULL,
-    blurhash character varying,
-    created_at timestamp without time zone NOT NULL,
-    description character varying DEFAULT ''::character varying NOT NULL,
-    embed_url character varying DEFAULT ''::character varying NOT NULL,
-    height integer DEFAULT 0 NOT NULL,
-    html text DEFAULT ''::text NOT NULL,
-    image_content_type character varying,
-    image_description character varying DEFAULT ''::character varying NOT NULL,
-    image_file_name character varying,
-    image_file_size integer,
-    image_storage_schema_version integer,
-    image_updated_at timestamp without time zone,
-    language character varying,
-    link_type integer,
-    max_score double precision,
-    max_score_at timestamp without time zone,
     provider_name character varying DEFAULT ''::character varying NOT NULL,
     provider_url character varying DEFAULT ''::character varying NOT NULL,
-    published_at timestamp(6) without time zone,
-    title character varying DEFAULT ''::character varying NOT NULL,
-    trendable boolean,
-    type integer DEFAULT 0 NOT NULL,
-    unverified_author_account_id bigint,
+    width integer DEFAULT 0 NOT NULL,
+    height integer DEFAULT 0 NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    url character varying DEFAULT ''::character varying NOT NULL,
-    width integer DEFAULT 0 NOT NULL
+    embed_url character varying DEFAULT ''::character varying NOT NULL,
+    image_storage_schema_version integer,
+    blurhash character varying,
+    language character varying,
+    max_score double precision,
+    max_score_at timestamp without time zone,
+    trendable boolean,
+    link_type integer,
+    published_at timestamp(6) without time zone,
+    image_description character varying DEFAULT ''::character varying NOT NULL,
+    author_account_id bigint
 );
 
 
@@ -3015,15 +2830,15 @@ CREATE TABLE public.preview_cards_statuses (
 CREATE TABLE public.quotes (
     id bigint DEFAULT public.timestamp_id('quotes'::text) NOT NULL,
     account_id bigint NOT NULL,
-    activity_uri character varying,
-    approval_uri character varying,
-    created_at timestamp(6) without time zone NOT NULL,
-    legacy boolean DEFAULT false NOT NULL,
-    quoted_account_id bigint,
-    quoted_status_id bigint,
-    state integer DEFAULT 0 NOT NULL,
     status_id bigint NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
+    quoted_status_id bigint,
+    quoted_account_id bigint,
+    state integer DEFAULT 0 NOT NULL,
+    approval_uri character varying,
+    activity_uri character varying,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    legacy boolean DEFAULT false NOT NULL
 );
 
 
@@ -3045,10 +2860,10 @@ CREATE SEQUENCE public.quotes_id_seq
 
 CREATE TABLE public.relationship_severance_events (
     id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    purged boolean DEFAULT false NOT NULL,
-    target_name character varying NOT NULL,
     type integer NOT NULL,
+    target_name character varying NOT NULL,
+    purged boolean DEFAULT false NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -3078,11 +2893,11 @@ ALTER SEQUENCE public.relationship_severance_events_id_seq OWNED BY public.relat
 
 CREATE TABLE public.relays (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    follow_activity_id character varying,
     inbox_url character varying DEFAULT ''::character varying NOT NULL,
-    state integer DEFAULT 0 NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    follow_activity_id character varying,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    state integer DEFAULT 0 NOT NULL
 );
 
 
@@ -3111,10 +2926,10 @@ ALTER SEQUENCE public.relays_id_seq OWNED BY public.relays.id;
 
 CREATE TABLE public.report_notes (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
     content text NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     report_id bigint NOT NULL,
+    account_id bigint NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -3144,20 +2959,20 @@ ALTER SEQUENCE public.report_notes_id_seq OWNED BY public.report_notes.id;
 
 CREATE TABLE public.reports (
     id bigint NOT NULL,
-    account_id bigint NOT NULL,
-    action_taken_at timestamp without time zone,
-    action_taken_by_account_id bigint,
-    application_id bigint,
-    assigned_account_id bigint,
-    category integer DEFAULT 0 NOT NULL,
+    status_ids bigint[] DEFAULT '{}'::bigint[] NOT NULL,
     comment text DEFAULT ''::text NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    forwarded boolean,
-    rule_ids bigint[],
-    status_ids bigint[] DEFAULT '{}'::bigint[] NOT NULL,
-    target_account_id bigint NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    uri character varying
+    account_id bigint NOT NULL,
+    action_taken_by_account_id bigint,
+    target_account_id bigint NOT NULL,
+    assigned_account_id bigint,
+    uri character varying,
+    forwarded boolean,
+    category integer DEFAULT 0 NOT NULL,
+    action_taken_at timestamp without time zone,
+    rule_ids bigint[],
+    application_id bigint
 );
 
 
@@ -3186,11 +3001,11 @@ ALTER SEQUENCE public.reports_id_seq OWNED BY public.reports.id;
 
 CREATE TABLE public.rule_translations (
     id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
+    text text DEFAULT ''::text NOT NULL,
     hint text DEFAULT ''::text NOT NULL,
     language character varying NOT NULL,
     rule_id bigint NOT NULL,
-    text text DEFAULT ''::text NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -3220,12 +3035,12 @@ ALTER SEQUENCE public.rule_translations_id_seq OWNED BY public.rule_translations
 
 CREATE TABLE public.rules (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    deleted_at timestamp without time zone,
-    hint text DEFAULT ''::text NOT NULL,
     priority integer DEFAULT 0 NOT NULL,
+    deleted_at timestamp without time zone,
     text text DEFAULT ''::text NOT NULL,
-    updated_at timestamp without time zone NOT NULL
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL,
+    hint text DEFAULT ''::text NOT NULL
 );
 
 
@@ -3255,8 +3070,8 @@ ALTER SEQUENCE public.rules_id_seq OWNED BY public.rules.id;
 CREATE TABLE public.scheduled_statuses (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    params jsonb,
-    scheduled_at timestamp without time zone
+    scheduled_at timestamp without time zone,
+    params jsonb
 );
 
 
@@ -3294,12 +3109,12 @@ CREATE TABLE public.schema_migrations (
 
 CREATE TABLE public.session_activations (
     id bigint NOT NULL,
-    access_token_id bigint,
-    created_at timestamp without time zone NOT NULL,
-    ip inet,
     session_id character varying NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
     user_agent character varying DEFAULT ''::character varying NOT NULL,
+    ip inet,
+    access_token_id bigint,
     user_id bigint NOT NULL,
     web_push_subscription_id bigint
 );
@@ -3330,10 +3145,10 @@ ALTER SEQUENCE public.session_activations_id_seq OWNED BY public.session_activat
 
 CREATE TABLE public.settings (
     id bigint NOT NULL,
-    created_at timestamp without time zone,
-    updated_at timestamp without time zone,
+    var character varying NOT NULL,
     value text,
-    var character varying NOT NULL
+    created_at timestamp without time zone,
+    updated_at timestamp without time zone
 );
 
 
@@ -3362,14 +3177,14 @@ ALTER SEQUENCE public.settings_id_seq OWNED BY public.settings.id;
 
 CREATE TABLE public.severed_relationships (
     id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    direction integer NOT NULL,
-    languages character varying[],
-    local_account_id bigint NOT NULL,
-    notify boolean,
     relationship_severance_event_id bigint NOT NULL,
+    local_account_id bigint NOT NULL,
     remote_account_id bigint NOT NULL,
+    direction integer NOT NULL,
     show_reblogs boolean,
+    notify boolean,
+    languages character varying[],
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -3399,15 +3214,15 @@ ALTER SEQUENCE public.severed_relationships_id_seq OWNED BY public.severed_relat
 
 CREATE TABLE public.site_uploads (
     id bigint NOT NULL,
-    blurhash character varying,
-    created_at timestamp without time zone NOT NULL,
-    file_content_type character varying,
+    var character varying DEFAULT ''::character varying NOT NULL,
     file_file_name character varying,
+    file_content_type character varying,
     file_file_size integer,
     file_updated_at timestamp without time zone,
     meta json,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    var character varying DEFAULT ''::character varying NOT NULL
+    blurhash character varying
 );
 
 
@@ -3436,12 +3251,12 @@ ALTER SEQUENCE public.site_uploads_id_seq OWNED BY public.site_uploads.id;
 
 CREATE TABLE public.software_updates (
     id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    release_notes character varying DEFAULT ''::character varying NOT NULL,
-    type integer DEFAULT 0 NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL,
+    version character varying NOT NULL,
     urgent boolean DEFAULT false NOT NULL,
-    version character varying NOT NULL
+    type integer DEFAULT 0 NOT NULL,
+    release_notes character varying DEFAULT ''::character varying NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL
 );
 
 
@@ -3470,17 +3285,17 @@ ALTER SEQUENCE public.software_updates_id_seq OWNED BY public.software_updates.i
 
 CREATE TABLE public.status_edits (
     id bigint NOT NULL,
-    account_id bigint,
-    created_at timestamp(6) without time zone NOT NULL,
-    media_descriptions text[],
-    ordered_media_attachment_ids bigint[],
-    poll_options character varying[],
-    quote_id bigint,
-    sensitive boolean,
-    spoiler_text text DEFAULT ''::text NOT NULL,
     status_id bigint NOT NULL,
+    account_id bigint,
     text text DEFAULT ''::text NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
+    spoiler_text text DEFAULT ''::text NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    ordered_media_attachment_ids bigint[],
+    media_descriptions text[],
+    poll_options character varying[],
+    sensitive boolean,
+    quote_id bigint
 );
 
 
@@ -3510,8 +3325,8 @@ ALTER SEQUENCE public.status_edits_id_seq OWNED BY public.status_edits.id;
 CREATE TABLE public.status_pins (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     status_id bigint NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -3560,12 +3375,12 @@ ALTER SEQUENCE public.status_stats_id_seq OWNED BY public.status_stats.id;
 
 CREATE TABLE public.status_trends (
     id bigint NOT NULL,
+    status_id bigint NOT NULL,
     account_id bigint NOT NULL,
-    allowed boolean DEFAULT false NOT NULL,
-    language character varying,
-    rank integer DEFAULT 0 NOT NULL,
     score double precision DEFAULT 0.0 NOT NULL,
-    status_id bigint NOT NULL
+    rank integer DEFAULT 0 NOT NULL,
+    allowed boolean DEFAULT false NOT NULL,
+    language character varying
 );
 
 
@@ -3616,9 +3431,9 @@ CREATE TABLE public.statuses_tags (
 
 CREATE TABLE public.tag_follows (
     id bigint NOT NULL,
+    tag_id bigint NOT NULL,
     account_id bigint NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
-    tag_id bigint NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -3648,11 +3463,11 @@ ALTER SEQUENCE public.tag_follows_id_seq OWNED BY public.tag_follows.id;
 
 CREATE TABLE public.tag_trends (
     id bigint NOT NULL,
-    allowed boolean DEFAULT false NOT NULL,
-    language character varying DEFAULT ''::character varying NOT NULL,
-    rank integer DEFAULT 0 NOT NULL,
+    tag_id bigint NOT NULL,
     score double precision DEFAULT 0.0 NOT NULL,
-    tag_id bigint NOT NULL
+    rank integer DEFAULT 0 NOT NULL,
+    allowed boolean DEFAULT false NOT NULL,
+    language character varying DEFAULT ''::character varying NOT NULL
 );
 
 
@@ -3676,58 +3491,23 @@ ALTER SEQUENCE public.tag_trends_id_seq OWNED BY public.tag_trends.id;
 
 
 --
--- Name: tagged_objects; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.tagged_objects (
-    id bigint NOT NULL,
-    ap_type character varying NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    object_id bigint,
-    object_type character varying,
-    status_id bigint NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL,
-    uri character varying
-);
-
-
---
--- Name: tagged_objects_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.tagged_objects_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: tagged_objects_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.tagged_objects_id_seq OWNED BY public.tagged_objects.id;
-
-
---
 -- Name: tags; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.tags (
     id bigint NOT NULL,
+    name character varying DEFAULT ''::character varying NOT NULL,
     created_at timestamp without time zone NOT NULL,
-    display_name character varying,
-    last_status_at timestamp without time zone,
+    updated_at timestamp without time zone NOT NULL,
+    usable boolean,
+    trendable boolean,
     listable boolean,
+    reviewed_at timestamp without time zone,
+    requested_review_at timestamp without time zone,
+    last_status_at timestamp without time zone,
     max_score double precision,
     max_score_at timestamp without time zone,
-    name character varying DEFAULT ''::character varying NOT NULL,
-    requested_review_at timestamp without time zone,
-    reviewed_at timestamp without time zone,
-    trendable boolean,
-    updated_at timestamp without time zone NOT NULL,
-    usable boolean
+    display_name character varying
 );
 
 
@@ -3756,13 +3536,13 @@ ALTER SEQUENCE public.tags_id_seq OWNED BY public.tags.id;
 
 CREATE TABLE public.terms_of_services (
     id bigint NOT NULL,
-    changelog text DEFAULT ''::text NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    effective_date date,
-    notification_sent_at timestamp(6) without time zone,
-    published_at timestamp(6) without time zone,
     text text DEFAULT ''::text NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL
+    changelog text DEFAULT ''::text NOT NULL,
+    published_at timestamp(6) without time zone,
+    notification_sent_at timestamp(6) without time zone,
+    created_at timestamp(6) without time zone NOT NULL,
+    updated_at timestamp(6) without time zone NOT NULL,
+    effective_date date
 );
 
 
@@ -3792,10 +3572,10 @@ ALTER SEQUENCE public.terms_of_services_id_seq OWNED BY public.terms_of_services
 CREATE TABLE public.tombstones (
     id bigint NOT NULL,
     account_id bigint NOT NULL,
-    by_moderator boolean,
+    uri character varying NOT NULL,
     created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    uri character varying NOT NULL
+    by_moderator boolean
 );
 
 
@@ -3824,8 +3604,8 @@ ALTER SEQUENCE public.tombstones_id_seq OWNED BY public.tombstones.id;
 
 CREATE TABLE public.unavailable_domains (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     domain character varying DEFAULT ''::character varying NOT NULL,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
@@ -3855,10 +3635,10 @@ ALTER SEQUENCE public.unavailable_domains_id_seq OWNED BY public.unavailable_dom
 
 CREATE TABLE public.user_invite_requests (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
+    user_id bigint NOT NULL,
     text text,
-    updated_at timestamp without time zone NOT NULL,
-    user_id bigint NOT NULL
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
 );
 
 
@@ -3914,14 +3694,12 @@ CREATE VIEW public.user_ips AS
 
 CREATE TABLE public.user_roles (
     id bigint NOT NULL,
-    collection_limit integer DEFAULT 10 NOT NULL,
-    color character varying DEFAULT ''::character varying NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    highlighted boolean DEFAULT false NOT NULL,
     name character varying DEFAULT ''::character varying NOT NULL,
-    permissions bigint DEFAULT 0 NOT NULL,
+    color character varying DEFAULT ''::character varying NOT NULL,
     "position" integer DEFAULT 0 NOT NULL,
-    require_2fa boolean DEFAULT false NOT NULL,
+    permissions bigint DEFAULT 0 NOT NULL,
+    highlighted boolean DEFAULT false NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL
 );
 
@@ -3951,12 +3729,12 @@ ALTER SEQUENCE public.user_roles_id_seq OWNED BY public.user_roles.id;
 
 CREATE TABLE public.username_blocks (
     id bigint NOT NULL,
+    username character varying NOT NULL,
+    normalized_username character varying NOT NULL,
+    exact boolean DEFAULT false NOT NULL,
     allow_with_approval boolean DEFAULT false NOT NULL,
     created_at timestamp(6) without time zone NOT NULL,
-    exact boolean DEFAULT false NOT NULL,
-    normalized_username character varying NOT NULL,
-    updated_at timestamp(6) without time zone NOT NULL,
-    username character varying NOT NULL
+    updated_at timestamp(6) without time zone NOT NULL
 );
 
 
@@ -4004,15 +3782,15 @@ ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
 
 CREATE TABLE public.web_push_subscriptions (
     id bigint NOT NULL,
-    access_token_id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
-    data json,
     endpoint character varying NOT NULL,
-    key_auth character varying NOT NULL,
     key_p256dh character varying NOT NULL,
-    standard boolean DEFAULT false NOT NULL,
+    key_auth character varying NOT NULL,
+    data json,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
-    user_id bigint NOT NULL
+    access_token_id bigint NOT NULL,
+    user_id bigint NOT NULL,
+    standard boolean DEFAULT false NOT NULL
 );
 
 
@@ -4041,8 +3819,8 @@ ALTER SEQUENCE public.web_push_subscriptions_id_seq OWNED BY public.web_push_sub
 
 CREATE TABLE public.web_settings (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     data json,
+    created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL,
     user_id bigint NOT NULL
 );
@@ -4073,13 +3851,13 @@ ALTER SEQUENCE public.web_settings_id_seq OWNED BY public.web_settings.id;
 
 CREATE TABLE public.webauthn_credentials (
     id bigint NOT NULL,
-    created_at timestamp without time zone NOT NULL,
     external_id character varying NOT NULL,
-    nickname character varying NOT NULL,
     public_key character varying NOT NULL,
+    nickname character varying NOT NULL,
     sign_count bigint DEFAULT 0 NOT NULL,
-    updated_at timestamp without time zone NOT NULL,
-    user_id bigint
+    user_id bigint,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
 );
 
 
@@ -4108,13 +3886,13 @@ ALTER SEQUENCE public.webauthn_credentials_id_seq OWNED BY public.webauthn_crede
 
 CREATE TABLE public.webhooks (
     id bigint NOT NULL,
-    created_at timestamp(6) without time zone NOT NULL,
-    enabled boolean DEFAULT true NOT NULL,
+    url character varying NOT NULL,
     events character varying[] DEFAULT '{}'::character varying[] NOT NULL,
     secret character varying DEFAULT ''::character varying NOT NULL,
-    template text,
+    enabled boolean DEFAULT true NOT NULL,
+    created_at timestamp(6) without time zone NOT NULL,
     updated_at timestamp(6) without time zone NOT NULL,
-    url character varying NOT NULL
+    template text
 );
 
 
@@ -4313,13 +4091,6 @@ ALTER TABLE ONLY public.canonical_email_blocks ALTER COLUMN id SET DEFAULT nextv
 
 
 --
--- Name: collection_reports id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.collection_reports ALTER COLUMN id SET DEFAULT nextval('public.collection_reports_id_seq'::regclass);
-
-
---
 -- Name: conversation_mutes id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -4387,13 +4158,6 @@ ALTER TABLE ONLY public.domain_blocks ALTER COLUMN id SET DEFAULT nextval('publi
 --
 
 ALTER TABLE ONLY public.email_domain_blocks ALTER COLUMN id SET DEFAULT nextval('public.email_domain_blocks_id_seq'::regclass);
-
-
---
--- Name: email_subscriptions id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.email_subscriptions ALTER COLUMN id SET DEFAULT nextval('public.email_subscriptions_id_seq'::regclass);
 
 
 --
@@ -4506,13 +4270,6 @@ ALTER TABLE ONLY public.invites ALTER COLUMN id SET DEFAULT nextval('public.invi
 --
 
 ALTER TABLE ONLY public.ip_blocks ALTER COLUMN id SET DEFAULT nextval('public.ip_blocks_id_seq'::regclass);
-
-
---
--- Name: keypairs id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.keypairs ALTER COLUMN id SET DEFAULT nextval('public.keypairs_id_seq'::regclass);
 
 
 --
@@ -4768,13 +4525,6 @@ ALTER TABLE ONLY public.tag_trends ALTER COLUMN id SET DEFAULT nextval('public.t
 
 
 --
--- Name: tagged_objects id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.tagged_objects ALTER COLUMN id SET DEFAULT nextval('public.tagged_objects_id_seq'::regclass);
-
-
---
 -- Name: tags id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -4988,8 +4738,8 @@ ALTER TABLE ONLY public.webhooks ALTER COLUMN id SET DEFAULT nextval('public.web
 -- Data for Name: ar_internal_metadata; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.ar_internal_metadata VALUES ('environment', 'production', '2026-08-30 22:38:41.160187', '2026-08-30 22:38:41.16019');
-INSERT INTO public.ar_internal_metadata VALUES ('schema_sha1', 'c7b4869d1d9d5614d86e2723464402c4976f6075', '2026-08-30 22:38:41.166981', '2026-08-30 22:38:41.166983');
+INSERT INTO public.ar_internal_metadata VALUES ('environment', 'production', '2026-08-30 06:01:22.871134', '2026-08-30 06:01:22.871136');
+INSERT INTO public.ar_internal_metadata VALUES ('schema_sha1', '801766beefdd9b1d55fe6f8bf3bed91392aebab1', '2026-08-30 06:01:22.8755', '2026-08-30 06:01:22.875502');
 
 
 --
@@ -5024,24 +4774,6 @@ INSERT INTO public.ar_internal_metadata VALUES ('schema_sha1', 'c7b4869d1d9d5614
 
 --
 -- Data for Name: canonical_email_blocks; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: collection_items; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: collection_reports; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: collections; Type: TABLE DATA; Schema: public; Owner: -
 --
 
 
@@ -5102,12 +4834,6 @@ INSERT INTO public.ar_internal_metadata VALUES ('schema_sha1', 'c7b4869d1d9d5614
 
 --
 -- Data for Name: email_domain_blocks; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: email_subscriptions; Type: TABLE DATA; Schema: public; Owner: -
 --
 
 
@@ -5204,12 +4930,6 @@ INSERT INTO public.ar_internal_metadata VALUES ('schema_sha1', 'c7b4869d1d9d5614
 
 --
 -- Data for Name: ip_blocks; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
--- Data for Name: keypairs; Type: TABLE DATA; Schema: public; Owner: -
 --
 
 
@@ -5392,40 +5112,6 @@ INSERT INTO public.ar_internal_metadata VALUES ('schema_sha1', 'c7b4869d1d9d5614
 -- Data for Name: schema_migrations; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.schema_migrations VALUES ('20260611150940');
-INSERT INTO public.schema_migrations VALUES ('20260505155103');
-INSERT INTO public.schema_migrations VALUES ('20260425144553');
-INSERT INTO public.schema_migrations VALUES ('20260423141611');
-INSERT INTO public.schema_migrations VALUES ('20260420124030');
-INSERT INTO public.schema_migrations VALUES ('20260415133505');
-INSERT INTO public.schema_migrations VALUES ('20260410083500');
-INSERT INTO public.schema_migrations VALUES ('20260326112324');
-INSERT INTO public.schema_migrations VALUES ('20260325151755');
-INSERT INTO public.schema_migrations VALUES ('20260323105645');
-INSERT INTO public.schema_migrations VALUES ('20260319142348');
-INSERT INTO public.schema_migrations VALUES ('20260318144837');
-INSERT INTO public.schema_migrations VALUES ('20260311212130');
-INSERT INTO public.schema_migrations VALUES ('20260311152331');
-INSERT INTO public.schema_migrations VALUES ('20260310095021');
-INSERT INTO public.schema_migrations VALUES ('20260303144409');
-INSERT INTO public.schema_migrations VALUES ('20260217154542');
-INSERT INTO public.schema_migrations VALUES ('20260212131934');
-INSERT INTO public.schema_migrations VALUES ('20260212113020');
-INSERT INTO public.schema_migrations VALUES ('20260211132603');
-INSERT INTO public.schema_migrations VALUES ('20260209143308');
-INSERT INTO public.schema_migrations VALUES ('20260209142402');
-INSERT INTO public.schema_migrations VALUES ('20260127141820');
-INSERT INTO public.schema_migrations VALUES ('20260127141459');
-INSERT INTO public.schema_migrations VALUES ('20260119153538');
-INSERT INTO public.schema_migrations VALUES ('20260115153219');
-INSERT INTO public.schema_migrations VALUES ('20251217091936');
-INSERT INTO public.schema_migrations VALUES ('20251209093813');
-INSERT INTO public.schema_migrations VALUES ('20251202140424');
-INSERT INTO public.schema_migrations VALUES ('20251201155054');
-INSERT INTO public.schema_migrations VALUES ('20251201154910');
-INSERT INTO public.schema_migrations VALUES ('20251119093332');
-INSERT INTO public.schema_migrations VALUES ('20251118115657');
-INSERT INTO public.schema_migrations VALUES ('20251117023614');
 INSERT INTO public.schema_migrations VALUES ('20251023210145');
 INSERT INTO public.schema_migrations VALUES ('20251007142305');
 INSERT INTO public.schema_migrations VALUES ('20251007100813');
@@ -6061,12 +5747,6 @@ INSERT INTO public.schema_migrations VALUES ('20160220174730');
 
 
 --
--- Data for Name: tagged_objects; Type: TABLE DATA; Schema: public; Owner: -
---
-
-
-
---
 -- Data for Name: tags; Type: TABLE DATA; Schema: public; Owner: -
 --
 
@@ -6321,27 +6001,6 @@ SELECT pg_catalog.setval('public.canonical_email_blocks_id_seq', 1, false);
 
 
 --
--- Name: collection_items_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.collection_items_id_seq', 1, false);
-
-
---
--- Name: collection_reports_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.collection_reports_id_seq', 1, false);
-
-
---
--- Name: collections_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.collections_id_seq', 1, false);
-
-
---
 -- Name: conversation_mutes_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
@@ -6409,13 +6068,6 @@ SELECT pg_catalog.setval('public.domain_blocks_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.email_domain_blocks_id_seq', 1, false);
-
-
---
--- Name: email_subscriptions_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.email_subscriptions_id_seq', 1, false);
 
 
 --
@@ -6528,13 +6180,6 @@ SELECT pg_catalog.setval('public.invites_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.ip_blocks_id_seq', 1, false);
-
-
---
--- Name: keypairs_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.keypairs_id_seq', 1, false);
 
 
 --
@@ -6815,13 +6460,6 @@ SELECT pg_catalog.setval('public.tag_follows_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.tag_trends_id_seq', 1, false);
-
-
---
--- Name: tagged_objects_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
---
-
-SELECT pg_catalog.setval('public.tagged_objects_id_seq', 1, false);
 
 
 --
@@ -7133,30 +6771,6 @@ ALTER TABLE ONLY public.canonical_email_blocks
 
 
 --
--- Name: collection_items collection_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.collection_items
-    ADD CONSTRAINT collection_items_pkey PRIMARY KEY (id);
-
-
---
--- Name: collection_reports collection_reports_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.collection_reports
-    ADD CONSTRAINT collection_reports_pkey PRIMARY KEY (id);
-
-
---
--- Name: collections collections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.collections
-    ADD CONSTRAINT collections_pkey PRIMARY KEY (id);
-
-
---
 -- Name: conversation_mutes conversation_mutes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7234,14 +6848,6 @@ ALTER TABLE ONLY public.domain_blocks
 
 ALTER TABLE ONLY public.email_domain_blocks
     ADD CONSTRAINT email_domain_blocks_pkey PRIMARY KEY (id);
-
-
---
--- Name: email_subscriptions email_subscriptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.email_subscriptions
-    ADD CONSTRAINT email_subscriptions_pkey PRIMARY KEY (id);
 
 
 --
@@ -7370,14 +6976,6 @@ ALTER TABLE ONLY public.invites
 
 ALTER TABLE ONLY public.ip_blocks
     ADD CONSTRAINT ip_blocks_pkey PRIMARY KEY (id);
-
-
---
--- Name: keypairs keypairs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.keypairs
-    ADD CONSTRAINT keypairs_pkey PRIMARY KEY (id);
 
 
 --
@@ -7725,14 +7323,6 @@ ALTER TABLE ONLY public.tag_trends
 
 
 --
--- Name: tagged_objects tagged_objects_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.tagged_objects
-    ADD CONSTRAINT tagged_objects_pkey PRIMARY KEY (id);
-
-
---
 -- Name: tags tags_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7854,13 +7444,6 @@ CREATE UNIQUE INDEX idx_on_account_id_target_account_id_a8c8ddf44e ON public.fol
 --
 
 CREATE INDEX idx_on_relationship_severance_event_id_403f53e707 ON public.account_relationship_severance_events USING btree (relationship_severance_event_id);
-
-
---
--- Name: idx_on_status_id_object_type_object_id_d6ebe374bd; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX idx_on_status_id_object_type_object_id_d6ebe374bd ON public.tagged_objects USING btree (status_id, object_type, object_id) WHERE ((object_type IS NOT NULL) AND (object_id IS NOT NULL));
 
 
 --
@@ -8186,76 +7769,6 @@ CREATE INDEX index_canonical_email_blocks_on_reference_account_id ON public.cano
 
 
 --
--- Name: index_collection_items_on_account_id_and_collection_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_collection_items_on_account_id_and_collection_id ON public.collection_items USING btree (account_id, collection_id);
-
-
---
--- Name: index_collection_items_on_approval_uri; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_collection_items_on_approval_uri ON public.collection_items USING btree (approval_uri) WHERE (approval_uri IS NOT NULL);
-
-
---
--- Name: index_collection_items_on_collection_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_collection_items_on_collection_id ON public.collection_items USING btree (collection_id);
-
-
---
--- Name: index_collection_items_on_state; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_collection_items_on_state ON public.collection_items USING btree (state) WHERE (state = ANY (ARRAY[2, 3]));
-
-
---
--- Name: index_collection_items_on_uri; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_collection_items_on_uri ON public.collection_items USING btree (uri) WHERE (uri IS NOT NULL);
-
-
---
--- Name: index_collection_reports_on_collection_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_collection_reports_on_collection_id ON public.collection_reports USING btree (collection_id);
-
-
---
--- Name: index_collection_reports_on_report_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_collection_reports_on_report_id ON public.collection_reports USING btree (report_id);
-
-
---
--- Name: index_collections_on_account_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_collections_on_account_id ON public.collections USING btree (account_id);
-
-
---
--- Name: index_collections_on_tag_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_collections_on_tag_id ON public.collections USING btree (tag_id);
-
-
---
--- Name: index_collections_on_uri; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_collections_on_uri ON public.collections USING btree (uri) WHERE (uri IS NOT NULL);
-
-
---
 -- Name: index_conversation_mutes_on_account_id_and_conversation_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -8337,20 +7850,6 @@ CREATE UNIQUE INDEX index_domain_blocks_on_domain ON public.domain_blocks USING 
 --
 
 CREATE UNIQUE INDEX index_email_domain_blocks_on_domain ON public.email_domain_blocks USING btree (domain);
-
-
---
--- Name: index_email_subscriptions_on_account_id_and_email; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_email_subscriptions_on_account_id_and_email ON public.email_subscriptions USING btree (account_id, email);
-
-
---
--- Name: index_email_subscriptions_on_confirmation_token; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_email_subscriptions_on_confirmation_token ON public.email_subscriptions USING btree (confirmation_token) WHERE (confirmation_token IS NOT NULL);
 
 
 --
@@ -8533,20 +8032,6 @@ CREATE INDEX index_invites_on_user_id ON public.invites USING btree (user_id);
 --
 
 CREATE UNIQUE INDEX index_ip_blocks_on_ip ON public.ip_blocks USING btree (ip);
-
-
---
--- Name: index_keypairs_on_account_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_keypairs_on_account_id ON public.keypairs USING btree (account_id);
-
-
---
--- Name: index_keypairs_on_uri; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_keypairs_on_uri ON public.keypairs USING btree (uri);
 
 
 --
@@ -8841,13 +8326,6 @@ CREATE UNIQUE INDEX index_preview_card_trends_on_preview_card_id ON public.previ
 --
 
 CREATE INDEX index_preview_cards_on_author_account_id ON public.preview_cards USING btree (author_account_id) WHERE (author_account_id IS NOT NULL);
-
-
---
--- Name: index_preview_cards_on_unverified_author_account_id_and_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_preview_cards_on_unverified_author_account_id_and_id ON public.preview_cards USING btree (unverified_author_account_id, id) WHERE (unverified_author_account_id IS NOT NULL);
 
 
 --
@@ -9177,20 +8655,6 @@ CREATE INDEX index_tag_follows_on_tag_id ON public.tag_follows USING btree (tag_
 --
 
 CREATE UNIQUE INDEX index_tag_trends_on_tag_id_and_language ON public.tag_trends USING btree (tag_id, language);
-
-
---
--- Name: index_tagged_objects_on_object; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX index_tagged_objects_on_object ON public.tagged_objects USING btree (object_type, object_id);
-
-
---
--- Name: index_tagged_objects_on_status_id_and_uri; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX index_tagged_objects_on_status_id_and_uri ON public.tagged_objects USING btree (status_id, uri) WHERE (uri IS NOT NULL);
 
 
 --
@@ -9627,22 +9091,6 @@ ALTER TABLE ONLY public.account_relationship_severance_events
 
 
 --
--- Name: collection_reports fk_rails_0720c1a3d6; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.collection_reports
-    ADD CONSTRAINT fk_rails_0720c1a3d6 FOREIGN KEY (collection_id) REFERENCES public.collections(id) ON DELETE CASCADE;
-
-
---
--- Name: tagged_objects fk_rails_087c1d32f7; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.tagged_objects
-    ADD CONSTRAINT fk_rails_087c1d32f7 FOREIGN KEY (status_id) REFERENCES public.statuses(id) ON DELETE CASCADE;
-
-
---
 -- Name: tag_follows fk_rails_091e831473; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -9760,22 +9208,6 @@ ALTER TABLE ONLY public.statuses
 
 ALTER TABLE ONLY public.account_notes
     ADD CONSTRAINT fk_rails_2801b48f1a FOREIGN KEY (target_account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
-
-
---
--- Name: email_subscriptions fk_rails_282940e759; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.email_subscriptions
-    ADD CONSTRAINT fk_rails_282940e759 FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
-
-
---
--- Name: collection_items fk_rails_2eb992658d; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.collection_items
-    ADD CONSTRAINT fk_rails_2eb992658d FOREIGN KEY (account_id) REFERENCES public.accounts(id);
 
 
 --
@@ -9907,14 +9339,6 @@ ALTER TABLE ONLY public.status_stats
 
 
 --
--- Name: collection_reports fk_rails_4a504bd5e6; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.collection_reports
-    ADD CONSTRAINT fk_rails_4a504bd5e6 FOREIGN KEY (report_id) REFERENCES public.reports(id) ON DELETE CASCADE;
-
-
---
 -- Name: fasp_subscriptions fk_rails_4c021f5938; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -9968,14 +9392,6 @@ ALTER TABLE ONLY public.severed_relationships
 
 ALTER TABLE ONLY public.notification_policies
     ADD CONSTRAINT fk_rails_506d62f0da FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
-
-
---
--- Name: collections fk_rails_544f142936; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.collections
-    ADD CONSTRAINT fk_rails_544f142936 FOREIGN KEY (account_id) REFERENCES public.accounts(id);
 
 
 --
@@ -10072,22 +9488,6 @@ ALTER TABLE ONLY public.status_trends
 
 ALTER TABLE ONLY public.account_conversations
     ADD CONSTRAINT fk_rails_6f5278b6e9 FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
-
-
---
--- Name: preview_cards fk_rails_6fb2119894; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.preview_cards
-    ADD CONSTRAINT fk_rails_6fb2119894 FOREIGN KEY (unverified_author_account_id) REFERENCES public.accounts(id) ON DELETE SET NULL;
-
-
---
--- Name: collections fk_rails_70f13aad15; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.collections
-    ADD CONSTRAINT fk_rails_70f13aad15 FOREIGN KEY (tag_id) REFERENCES public.tags(id);
 
 
 --
@@ -10323,27 +9723,11 @@ ALTER TABLE ONLY public.follow_recommendation_mutes
 
 
 --
--- Name: custom_emoji_categories fk_rails_ad7840c8cf; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.custom_emoji_categories
-    ADD CONSTRAINT fk_rails_ad7840c8cf FOREIGN KEY (featured_emoji_id) REFERENCES public.custom_emojis(id) ON DELETE SET NULL;
-
-
---
 -- Name: web_push_subscriptions fk_rails_b006f28dac; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.web_push_subscriptions
     ADD CONSTRAINT fk_rails_b006f28dac FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
-
-
---
--- Name: collection_items fk_rails_b1a778644b; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.collection_items
-    ADD CONSTRAINT fk_rails_b1a778644b FOREIGN KEY (collection_id) REFERENCES public.collections(id) ON DELETE CASCADE;
 
 
 --
@@ -10547,14 +9931,6 @@ ALTER TABLE ONLY public.list_accounts
 
 
 --
--- Name: keypairs fk_rails_f5ea7ac36a; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.keypairs
-    ADD CONSTRAINT fk_rails_f5ea7ac36a FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
-
-
---
 -- Name: severed_relationships fk_rails_f7afd97ba4; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -10610,3 +9986,5 @@ REFRESH MATERIALIZED VIEW public.instances;
 --
 -- PostgreSQL database dump complete
 --
+
+

@@ -209,12 +209,14 @@ type Account struct {
 	AvatarFileSize             sql.NullInt64  `gorm:"column:avatar_file_size"`
 	AvatarUpdatedAt            sql.NullTime   `gorm:"column:avatar_updated_at"`
 	AvatarRemoteURL            sql.NullString `gorm:"column:avatar_remote_url"`
+	AvatarDescription          string         `gorm:"column:avatar_description"`
 	AvatarStorageSchemaVersion sql.NullInt64  `gorm:"column:avatar_storage_schema_version"`
 	HeaderFileName             sql.NullString `gorm:"column:header_file_name"`
 	HeaderContentType          sql.NullString `gorm:"column:header_content_type"`
 	HeaderFileSize             sql.NullInt64  `gorm:"column:header_file_size"`
 	HeaderUpdatedAt            sql.NullTime   `gorm:"column:header_updated_at"`
 	HeaderRemoteURL            string         `gorm:"column:header_remote_url"`
+	HeaderDescription          string         `gorm:"column:header_description"`
 	HeaderStorageSchemaVersion sql.NullInt64  `gorm:"column:header_storage_schema_version"`
 	LastWebfingeredAt          sql.NullTime   `gorm:"column:last_webfingered_at"`
 	InboxURL                   string         `gorm:"column:inbox_url"`
@@ -222,6 +224,7 @@ type Account struct {
 	SharedInboxURL             string         `gorm:"column:shared_inbox_url"`
 	FollowersURL               string         `gorm:"column:followers_url"`
 	FollowingURL               string         `gorm:"column:following_url"`
+	CollectionsURL             sql.NullString `gorm:"column:collections_url"`
 	Protocol                   int            `gorm:"column:protocol"`
 	IDScheme                   sql.NullInt64  `gorm:"column:id_scheme"`
 	Locked                     bool           `gorm:"column:locked"`
@@ -233,6 +236,13 @@ type Account struct {
 	AttributionDomains         StringArray    `gorm:"column:attribution_domains"`
 	ActorType                  sql.NullString `gorm:"column:actor_type"`
 	Discoverable               sql.NullBool   `gorm:"column:discoverable"`
+	FeatureApprovalPolicy      int            `gorm:"column:feature_approval_policy"`
+	ShowMedia                  bool           `gorm:"column:show_media"`
+	ShowMediaReplies           bool           `gorm:"column:show_media_replies"`
+	ShowFeatured               bool           `gorm:"column:show_featured"`
+	FeaturePolicyCurrentUser   string         `gorm:"-"`
+	EmailSubscriptionsVisible  bool           `gorm:"-"`
+	EmailSubscriptionsValue    bool           `gorm:"-"`
 	HideCollections            sql.NullBool   `gorm:"column:hide_collections"`
 	Indexable                  bool           `gorm:"column:indexable"`
 	SilencedAt                 sql.NullTime   `gorm:"column:silenced_at"`
@@ -476,10 +486,11 @@ func AnnouncementReactionAnnouncementID(value int64) sql.NullInt64 {
 }
 
 type CustomEmojiCategory struct {
-	ID        int64          `gorm:"primaryKey;column:id"`
-	Name      sql.NullString `gorm:"column:name"`
-	CreatedAt time.Time      `gorm:"column:created_at"`
-	UpdatedAt time.Time      `gorm:"column:updated_at"`
+	ID              int64          `gorm:"primaryKey;column:id"`
+	Name            sql.NullString `gorm:"column:name"`
+	FeaturedEmojiID sql.NullInt64  `gorm:"column:featured_emoji_id"`
+	CreatedAt       time.Time      `gorm:"column:created_at"`
+	UpdatedAt       time.Time      `gorm:"column:updated_at"`
 }
 
 func (CustomEmojiCategory) TableName() string { return "custom_emoji_categories" }
@@ -1055,14 +1066,16 @@ func UserInviteRequestUserID(value int64) sql.NullInt64 {
 }
 
 type UserRole struct {
-	ID          int64     `gorm:"primaryKey;column:id"`
-	Name        string    `gorm:"column:name"`
-	Color       string    `gorm:"column:color"`
-	Position    int       `gorm:"column:position"`
-	Permissions int64     `gorm:"column:permissions"`
-	Highlighted bool      `gorm:"column:highlighted"`
-	CreatedAt   time.Time `gorm:"column:created_at"`
-	UpdatedAt   time.Time `gorm:"column:updated_at"`
+	ID              int64     `gorm:"primaryKey;column:id"`
+	Name            string    `gorm:"column:name"`
+	Color           string    `gorm:"column:color"`
+	Position        int       `gorm:"column:position"`
+	Permissions     int64     `gorm:"column:permissions"`
+	Highlighted     bool      `gorm:"column:highlighted"`
+	Require2FA      bool      `gorm:"column:require_2fa"`
+	CollectionLimit int       `gorm:"column:collection_limit"`
+	CreatedAt       time.Time `gorm:"column:created_at"`
+	UpdatedAt       time.Time `gorm:"column:updated_at"`
 }
 
 func (UserRole) TableName() string { return "user_roles" }
@@ -1121,6 +1134,7 @@ type BulkImport struct {
 	Overwrite        bool            `gorm:"column:overwrite"`
 	LikelyMismatched bool            `gorm:"column:likely_mismatched"`
 	OriginalFilename string          `gorm:"column:original_filename"`
+	MissingStatus    bool            `gorm:"column:missing_status"`
 	AccountID        int64           `gorm:"column:account_id"`
 	CreatedAt        time.Time       `gorm:"column:created_at"`
 	UpdatedAt        time.Time       `gorm:"column:updated_at"`
@@ -1138,6 +1152,104 @@ type BulkImportRow struct {
 }
 
 func (BulkImportRow) TableName() string { return "bulk_import_rows" }
+
+type Collection struct {
+	ID                    int64            `gorm:"primaryKey;column:id"`
+	AccountID             int64            `gorm:"column:account_id"`
+	Name                  string           `gorm:"column:name"`
+	Description           sql.NullString   `gorm:"column:description"`
+	DescriptionHTML       sql.NullString   `gorm:"column:description_html"`
+	URI                   sql.NullString   `gorm:"column:uri"`
+	URL                   sql.NullString   `gorm:"column:url"`
+	Local                 bool             `gorm:"column:local"`
+	Sensitive             bool             `gorm:"column:sensitive"`
+	Discoverable          bool             `gorm:"column:discoverable"`
+	TagID                 sql.NullInt64    `gorm:"column:tag_id"`
+	OriginalNumberOfItems sql.NullInt64    `gorm:"column:original_number_of_items"`
+	ItemCount             int              `gorm:"column:item_count"`
+	Language              sql.NullString   `gorm:"column:language"`
+	CreatedAt             time.Time        `gorm:"column:created_at"`
+	UpdatedAt             time.Time        `gorm:"column:updated_at"`
+	Account               Account          `gorm:"foreignKey:AccountID"`
+	RESTTag               *Tag             `gorm:"-"`
+	RESTItems             []CollectionItem `gorm:"-"`
+}
+
+func (Collection) TableName() string { return "collections" }
+
+type CollectionItem struct {
+	ID                     int64          `gorm:"primaryKey;column:id"`
+	CollectionID           int64          `gorm:"column:collection_id"`
+	AccountID              sql.NullInt64  `gorm:"column:account_id"`
+	Position               int            `gorm:"column:position"`
+	ObjectURI              sql.NullString `gorm:"column:object_uri"`
+	ApprovalURI            sql.NullString `gorm:"column:approval_uri"`
+	ActivityURI            sql.NullString `gorm:"column:activity_uri"`
+	ApprovalLastVerifiedAt sql.NullTime   `gorm:"column:approval_last_verified_at"`
+	State                  int            `gorm:"column:state"`
+	URI                    sql.NullString `gorm:"column:uri"`
+	CreatedAt              time.Time      `gorm:"column:created_at"`
+	UpdatedAt              time.Time      `gorm:"column:updated_at"`
+	Collection             Collection     `gorm:"foreignKey:CollectionID"`
+}
+
+func (CollectionItem) TableName() string { return "collection_items" }
+
+type CollectionReport struct {
+	ID           int64      `gorm:"primaryKey;column:id"`
+	CollectionID int64      `gorm:"column:collection_id"`
+	ReportID     int64      `gorm:"column:report_id"`
+	CreatedAt    time.Time  `gorm:"column:created_at"`
+	UpdatedAt    time.Time  `gorm:"column:updated_at"`
+	Collection   Collection `gorm:"foreignKey:CollectionID"`
+	Report       Report     `gorm:"foreignKey:ReportID"`
+}
+
+func (CollectionReport) TableName() string { return "collection_reports" }
+
+type EmailSubscription struct {
+	ID                int64          `gorm:"primaryKey;column:id"`
+	AccountID         int64          `gorm:"column:account_id"`
+	Email             string         `gorm:"column:email"`
+	Locale            string         `gorm:"column:locale"`
+	ConfirmationToken sql.NullString `gorm:"column:confirmation_token"`
+	ConfirmedAt       sql.NullTime   `gorm:"column:confirmed_at"`
+	CreatedAt         time.Time      `gorm:"column:created_at"`
+	UpdatedAt         time.Time      `gorm:"column:updated_at"`
+	Account           Account        `gorm:"foreignKey:AccountID"`
+}
+
+func (EmailSubscription) TableName() string { return "email_subscriptions" }
+
+type TaggedObject struct {
+	ID         int64          `gorm:"primaryKey;column:id"`
+	StatusID   int64          `gorm:"column:status_id"`
+	ObjectType sql.NullString `gorm:"column:object_type"`
+	ObjectID   sql.NullInt64  `gorm:"column:object_id"`
+	APType     string         `gorm:"column:ap_type"`
+	URI        sql.NullString `gorm:"column:uri"`
+	CreatedAt  time.Time      `gorm:"column:created_at"`
+	UpdatedAt  time.Time      `gorm:"column:updated_at"`
+	Status     Status         `gorm:"foreignKey:StatusID"`
+}
+
+func (TaggedObject) TableName() string { return "tagged_objects" }
+
+type Keypair struct {
+	ID         int64          `gorm:"primaryKey;column:id"`
+	AccountID  int64          `gorm:"column:account_id"`
+	URI        string         `gorm:"column:uri"`
+	Type       int            `gorm:"column:type"`
+	PublicKey  string         `gorm:"column:public_key"`
+	PrivateKey sql.NullString `gorm:"column:private_key"`
+	ExpiresAt  sql.NullTime   `gorm:"column:expires_at"`
+	Revoked    bool           `gorm:"column:revoked"`
+	CreatedAt  time.Time      `gorm:"column:created_at"`
+	UpdatedAt  time.Time      `gorm:"column:updated_at"`
+	Account    Account        `gorm:"foreignKey:AccountID"`
+}
+
+func (Keypair) TableName() string { return "keypairs" }
 
 type LoginActivity struct {
 	ID                   int64          `gorm:"primaryKey;column:id"`
@@ -1302,6 +1414,7 @@ type Status struct {
 	PinnedByCurrent           bool                `gorm:"-"`
 	QuotePolicyCurrentUser    string              `gorm:"-"`
 	CustomEmojis              []CustomEmoji       `gorm:"-"`
+	TaggedCollections         []Collection        `gorm:"-"`
 }
 
 func (Status) TableName() string { return "statuses" }
@@ -1453,30 +1566,31 @@ type TagTrend struct {
 func (TagTrend) TableName() string { return "tag_trends" }
 
 type MediaAttachment struct {
-	ID                       int64          `gorm:"primaryKey;column:id"`
-	StatusID                 sql.NullInt64  `gorm:"column:status_id"`
-	ScheduledStatusID        sql.NullInt64  `gorm:"column:scheduled_status_id"`
-	Shortcode                sql.NullString `gorm:"column:shortcode"`
-	FileFileName             sql.NullString `gorm:"column:file_file_name"`
-	FileContentType          sql.NullString `gorm:"column:file_content_type"`
-	FileFileSize             sql.NullInt64  `gorm:"column:file_file_size"`
-	FileUpdatedAt            sql.NullTime   `gorm:"column:file_updated_at"`
-	CreatedAt                time.Time      `gorm:"column:created_at"`
-	UpdatedAt                time.Time      `gorm:"column:updated_at"`
-	RemoteURL                string         `gorm:"column:remote_url"`
-	Type                     int            `gorm:"column:type"`
-	FileMeta                 []byte         `gorm:"column:file_meta"`
-	AccountID                sql.NullInt64  `gorm:"column:account_id"`
-	Description              sql.NullString `gorm:"column:description"`
-	Blurhash                 sql.NullString `gorm:"column:blurhash"`
-	Processing               sql.NullInt64  `gorm:"column:processing"`
-	FileStorageSchemaVersion sql.NullInt64  `gorm:"column:file_storage_schema_version"`
-	ThumbnailFileName        sql.NullString `gorm:"column:thumbnail_file_name"`
-	ThumbnailContentType     sql.NullString `gorm:"column:thumbnail_content_type"`
-	ThumbnailFileSize        sql.NullInt64  `gorm:"column:thumbnail_file_size"`
-	ThumbnailUpdatedAt       sql.NullTime   `gorm:"column:thumbnail_updated_at"`
-	ThumbnailRemoteURL       sql.NullString `gorm:"column:thumbnail_remote_url"`
-	Status                   Status         `gorm:"foreignKey:StatusID"`
+	ID                            int64          `gorm:"primaryKey;column:id"`
+	StatusID                      sql.NullInt64  `gorm:"column:status_id"`
+	ScheduledStatusID             sql.NullInt64  `gorm:"column:scheduled_status_id"`
+	Shortcode                     sql.NullString `gorm:"column:shortcode"`
+	FileFileName                  sql.NullString `gorm:"column:file_file_name"`
+	FileContentType               sql.NullString `gorm:"column:file_content_type"`
+	FileFileSize                  sql.NullInt64  `gorm:"column:file_file_size"`
+	FileUpdatedAt                 sql.NullTime   `gorm:"column:file_updated_at"`
+	CreatedAt                     time.Time      `gorm:"column:created_at"`
+	UpdatedAt                     time.Time      `gorm:"column:updated_at"`
+	RemoteURL                     string         `gorm:"column:remote_url"`
+	Type                          int            `gorm:"column:type"`
+	FileMeta                      []byte         `gorm:"column:file_meta"`
+	AccountID                     sql.NullInt64  `gorm:"column:account_id"`
+	Description                   sql.NullString `gorm:"column:description"`
+	Blurhash                      sql.NullString `gorm:"column:blurhash"`
+	Processing                    sql.NullInt64  `gorm:"column:processing"`
+	FileStorageSchemaVersion      sql.NullInt64  `gorm:"column:file_storage_schema_version"`
+	ThumbnailFileName             sql.NullString `gorm:"column:thumbnail_file_name"`
+	ThumbnailContentType          sql.NullString `gorm:"column:thumbnail_content_type"`
+	ThumbnailFileSize             sql.NullInt64  `gorm:"column:thumbnail_file_size"`
+	ThumbnailUpdatedAt            sql.NullTime   `gorm:"column:thumbnail_updated_at"`
+	ThumbnailRemoteURL            sql.NullString `gorm:"column:thumbnail_remote_url"`
+	ThumbnailStorageSchemaVersion sql.NullInt64  `gorm:"column:thumbnail_storage_schema_version"`
+	Status                        Status         `gorm:"foreignKey:StatusID"`
 	// Discarded is populated when the status association has been loaded and is
 	// soft-deleted (or no longer exists). It mirrors MediaAttachment#discarded?
 	// without making an unloaded association look like a deleted status.
@@ -1515,6 +1629,7 @@ type PreviewCard struct {
 	PublishedAt               sql.NullTime    `gorm:"column:published_at"`
 	ImageDescription          string          `gorm:"column:image_description"`
 	AuthorAccountID           sql.NullInt64   `gorm:"column:author_account_id"`
+	UnverifiedAuthorAccountID sql.NullInt64   `gorm:"column:unverified_author_account_id"`
 	AuthorAccount             *Account        `gorm:"foreignKey:AuthorAccountID"`
 }
 
@@ -1684,15 +1799,16 @@ type FollowRecommendationMute struct {
 func (FollowRecommendationMute) TableName() string { return "follow_recommendation_mutes" }
 
 type GeneratedAnnualReport struct {
-	ID            int64        `gorm:"primaryKey;column:id"`
-	AccountID     int64        `gorm:"column:account_id"`
-	Year          int          `gorm:"column:year"`
-	Data          JSONValue    `gorm:"column:data"`
-	SchemaVersion int          `gorm:"column:schema_version"`
-	ViewedAt      sql.NullTime `gorm:"column:viewed_at"`
-	CreatedAt     time.Time    `gorm:"column:created_at"`
-	UpdatedAt     time.Time    `gorm:"column:updated_at"`
-	Account       Account      `gorm:"foreignKey:AccountID"`
+	ID            int64          `gorm:"primaryKey;column:id"`
+	AccountID     int64          `gorm:"column:account_id"`
+	Year          int            `gorm:"column:year"`
+	Data          JSONValue      `gorm:"column:data"`
+	SchemaVersion int            `gorm:"column:schema_version"`
+	ViewedAt      sql.NullTime   `gorm:"column:viewed_at"`
+	CreatedAt     time.Time      `gorm:"column:created_at"`
+	UpdatedAt     time.Time      `gorm:"column:updated_at"`
+	ShareKey      sql.NullString `gorm:"column:share_key"`
+	Account       Account        `gorm:"foreignKey:AccountID"`
 }
 
 func (GeneratedAnnualReport) TableName() string { return "generated_annual_reports" }
@@ -1776,22 +1892,23 @@ type Bookmark struct {
 func (Bookmark) TableName() string { return "bookmarks" }
 
 type Notification struct {
-	ID             int64                              `gorm:"primaryKey;column:id"`
-	ActivityID     int64                              `gorm:"column:activity_id"`
-	ActivityType   string                             `gorm:"column:activity_type"`
-	CreatedAt      time.Time                          `gorm:"column:created_at"`
-	UpdatedAt      time.Time                          `gorm:"column:updated_at"`
-	AccountID      int64                              `gorm:"column:account_id"`
-	FromAccountID  int64                              `gorm:"column:from_account_id"`
-	Type           NullSafeString                     `gorm:"column:type"`
-	Filtered       bool                               `gorm:"column:filtered"`
-	GroupKey       sql.NullString                     `gorm:"column:group_key"`
-	FromAccount    Account                            `gorm:"foreignKey:FromAccountID"`
-	TargetStatus   *Status                            `gorm:"-"`
-	Report         *Report                            `gorm:"-"`
-	AccountWarning *AccountWarning                    `gorm:"-"`
-	SeveranceEvent *AccountRelationshipSeveranceEvent `gorm:"-"`
-	AnnualReport   *GeneratedAnnualReport             `gorm:"-"`
+	ID               int64                              `gorm:"primaryKey;column:id"`
+	ActivityID       int64                              `gorm:"column:activity_id"`
+	ActivityType     string                             `gorm:"column:activity_type"`
+	CreatedAt        time.Time                          `gorm:"column:created_at"`
+	UpdatedAt        time.Time                          `gorm:"column:updated_at"`
+	AccountID        int64                              `gorm:"column:account_id"`
+	FromAccountID    int64                              `gorm:"column:from_account_id"`
+	Type             NullSafeString                     `gorm:"column:type"`
+	Filtered         bool                               `gorm:"column:filtered"`
+	GroupKey         sql.NullString                     `gorm:"column:group_key"`
+	FromAccount      Account                            `gorm:"foreignKey:FromAccountID"`
+	TargetStatus     *Status                            `gorm:"-"`
+	Report           *Report                            `gorm:"-"`
+	AccountWarning   *AccountWarning                    `gorm:"-"`
+	SeveranceEvent   *AccountRelationshipSeveranceEvent `gorm:"-"`
+	AnnualReport     *GeneratedAnnualReport             `gorm:"-"`
+	TargetCollection *Collection                        `gorm:"-"`
 }
 
 func (Notification) TableName() string { return "notifications" }
@@ -1806,6 +1923,7 @@ type NotificationPolicy struct {
 	ForNewAccounts     int       `gorm:"column:for_new_accounts"`
 	ForPrivateMentions int       `gorm:"column:for_private_mentions"`
 	ForLimitedAccounts int       `gorm:"column:for_limited_accounts"`
+	ForBots            int       `gorm:"column:for_bots"`
 	Account            Account   `gorm:"foreignKey:AccountID"`
 }
 
@@ -1882,6 +2000,7 @@ type Report struct {
 	TargetAccount          Account        `gorm:"foreignKey:TargetAccountID"`
 	AssignedAccount        Account        `gorm:"foreignKey:AssignedAccountID"`
 	ActionTakenByAccount   Account        `gorm:"foreignKey:ActionTakenByAccountID"`
+	CollectionIDs          []int64        `gorm:"-"`
 }
 
 func (Report) TableName() string { return "reports" }

@@ -41,10 +41,20 @@ func reconcileTimestampIDFunction(tx *gorm.DB) (bool, error) {
 		return false, fmt.Errorf("read embedded schema for timestamp_id reconciliation: %w", err)
 	}
 	var statement string
-	for _, candidate := range strings.Split(strings.ReplaceAll(string(snapshot), "__PAON_TIMESTAMP_ID_SALT__", salt), statementSeparator) {
+	for _, candidate := range splitSQLStatements(strings.ReplaceAll(string(snapshot), "__PAON_TIMESTAMP_ID_SALT__", salt)) {
 		candidate = strings.TrimSpace(candidate)
-		if strings.HasPrefix(candidate, "CREATE OR REPLACE FUNCTION timestamp_id") {
-			statement = strings.TrimSuffix(candidate, ";")
+		for _, prefix := range []string{"CREATE OR REPLACE FUNCTION timestamp_id", "CREATE OR REPLACE FUNCTION public.timestamp_id", "CREATE FUNCTION public.timestamp_id"} {
+			position := strings.Index(candidate, prefix)
+			if position < 0 {
+				continue
+			}
+			statement = candidate[position:]
+			if prefix == "CREATE FUNCTION public.timestamp_id" {
+				statement = strings.Replace(statement, prefix, "CREATE OR REPLACE FUNCTION public.timestamp_id", 1)
+			}
+			break
+		}
+		if statement != "" {
 			break
 		}
 	}
@@ -69,6 +79,25 @@ func reconcileMastodonForeignKeyNames(tx *gorm.DB) (bool, error) {
 	for _, foreignKey := range paondb.RequiredMastodonForeignKeys() {
 		if foreignKey.Name == "" {
 			return false, fmt.Errorf("canonical foreign key name is missing for %s", foreignKey.String())
+		}
+		var catalogAvailable bool
+		if err := tx.Raw(
+			`SELECT to_regclass(?) IS NOT NULL
+			     AND to_regclass(?) IS NOT NULL
+			     AND EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass(?) AND attname = ? AND attnum > 0 AND NOT attisdropped)
+			     AND EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass(?) AND attname = 'id' AND attnum > 0 AND NOT attisdropped)`,
+			foreignKey.Table,
+			foreignKey.ForeignTable,
+			foreignKey.Table,
+			foreignKey.Column,
+			foreignKey.ForeignTable,
+		).Scan(&catalogAvailable).Error; err != nil {
+			return false, fmt.Errorf("inspect prerequisite catalog for %s: %w", foreignKey.String(), err)
+		}
+		if !catalogAvailable {
+			// A later-version relation or column is legitimately absent while an
+			// older boundary is being reconciled before the runner continues.
+			continue
 		}
 		var names []string
 		if err := tx.Raw(

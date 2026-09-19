@@ -40,8 +40,8 @@ func TestMastodon45MigrationInventoryIsExactAndPhaseDisjoint(t *testing.T) {
 	if len(got) != 15 || len(got) != paonschema.Mastodon45UpgradeVersionCount() {
 		t.Fatalf("Mastodon 4.5 marker count = %d, schema inventory = %d, want 15", len(got), paonschema.Mastodon45UpgradeVersionCount())
 	}
-	if seen[CurrentSchemaVersion] != UpgradePhaseContract {
-		t.Fatalf("final marker %s phase = %s, want contract", CurrentSchemaVersion, seen[CurrentSchemaVersion])
+	if seen[Mastodon4515SchemaVersion] != UpgradePhaseContract {
+		t.Fatalf("final marker %s phase = %s, want contract", Mastodon4515SchemaVersion, seen[Mastodon4515SchemaVersion])
 	}
 	if len(mastodon45ValidateSteps()) != 0 {
 		t.Fatal("Mastodon 4.5 must not invent a schema_migrations marker for Paon's validation phase")
@@ -71,25 +71,24 @@ func TestMastodon45FreshSchemaContainsExactCatalogDelta(t *testing.T) {
 	}
 	schema := string(raw)
 	for _, token := range []string{
-		`"following_url" character varying DEFAULT '' NOT NULL`,
-		`"id_scheme" integer DEFAULT 1`,
-		`"parent_status_id" bigint`,
-		`"parent_account_id" bigint`,
-		`"delivery_last_failed_at" timestamp(6) without time zone`,
-		`"quotes_count" bigint DEFAULT 0 NOT NULL`,
-		`CREATE TABLE "username_blocks"`,
+		`following_url character varying DEFAULT ''::character varying NOT NULL`,
+		`id_scheme integer DEFAULT 1`,
+		`parent_status_id bigint`,
+		`parent_account_id bigint`,
+		`delivery_last_failed_at timestamp(6) without time zone`,
+		`quotes_count bigint DEFAULT 0 NOT NULL`,
+		`CREATE TABLE public.username_blocks`,
 		`index_quotes_on_account_id_and_quoted_account_id_and_id`,
 		`index_quotes_on_quoted_status_id_and_id`,
 		`index_follows_on_target_account_id_and_account_id`,
 		`index_statuses_on_conversation_id`,
 		`('20251023210145')`,
-		`801766beefdd9b1d55fe6f8bf3bed91392aebab1`,
 	} {
 		if !strings.Contains(schema, token) {
 			t.Errorf("fresh schema is missing %q", token)
 		}
 	}
-	usernameBlocksStart := strings.Index(schema, `CREATE TABLE "username_blocks" (`)
+	usernameBlocksStart := strings.Index(schema, `CREATE TABLE public.username_blocks (`)
 	if usernameBlocksStart < 0 {
 		t.Fatal("fresh schema is missing table username_blocks")
 	}
@@ -99,17 +98,17 @@ func TestMastodon45FreshSchemaContainsExactCatalogDelta(t *testing.T) {
 	}
 	usernameBlocks := schema[usernameBlocksStart : usernameBlocksStart+usernameBlocksEnd]
 	for _, token := range []string{
-		`"created_at" timestamp(6) without time zone NOT NULL`,
-		`"updated_at" timestamp(6) without time zone NOT NULL`,
+		`created_at timestamp(6) without time zone NOT NULL`,
+		`updated_at timestamp(6) without time zone NOT NULL`,
 	} {
 		if !strings.Contains(usernameBlocks, token) {
 			t.Errorf("fresh schema username_blocks is missing %q", token)
 		}
 	}
 	for _, obsolete := range []string{
-		`CREATE INDEX "index_follows_on_target_account_id"`,
-		`CREATE INDEX "index_quotes_on_account_id_and_quoted_account_id"`,
-		`CREATE INDEX "index_quotes_on_quoted_status_id"`,
+		`CREATE INDEX index_follows_on_target_account_id ON`,
+		`CREATE INDEX index_quotes_on_account_id_and_quoted_account_id ON`,
+		`CREATE INDEX index_quotes_on_quoted_status_id ON`,
 	} {
 		if strings.Contains(schema, obsolete) {
 			t.Errorf("fresh schema retains obsolete v4.4 index %q", obsolete)
@@ -117,20 +116,20 @@ func TestMastodon45FreshSchemaContainsExactCatalogDelta(t *testing.T) {
 	}
 }
 
-func TestMastodon45FreshSchemaAppendsColumnsInUpstreamMigrationOrder(t *testing.T) {
+func TestMastodon45ColumnsRemainInRails81FreshSchema(t *testing.T) {
 	raw, err := os.ReadFile("schema.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	schema := string(raw)
 	checks := map[string][]string{
-		"accounts":       {`"attribution_domains"`, `"following_url"`, `"id_scheme"`},
-		"conversations":  {`"updated_at"`, `"parent_status_id"`, `"parent_account_id"`},
-		"fasp_providers": {`"updated_at"`, `"delivery_last_failed_at"`},
-		"status_stats":   {`"untrusted_reblogs_count"`, `"quotes_count"`},
+		"accounts":       {`attribution_domains`, `following_url`, `id_scheme`},
+		"conversations":  {`parent_account_id`, `parent_status_id`, `updated_at`},
+		"fasp_providers": {`delivery_last_failed_at`, `updated_at`},
+		"status_stats":   {`quotes_count`, `untrusted_reblogs_count`},
 	}
 	for table, columns := range checks {
-		start := strings.Index(schema, `CREATE TABLE "`+table+`" (`)
+		start := strings.Index(schema, `CREATE TABLE public.`+table+` (`)
 		if start < 0 {
 			t.Fatalf("fresh schema is missing table %s", table)
 		}
@@ -146,7 +145,7 @@ func TestMastodon45FreshSchemaAppendsColumnsInUpstreamMigrationOrder(t *testing.
 				t.Fatalf("fresh schema table %s is missing %s", table, column)
 			}
 			if position <= previous {
-				t.Fatalf("fresh schema table %s column %s is not appended in upstream order %#v", table, column, columns)
+				t.Fatalf("fresh schema table %s column %s is not in Rails 8.1 order %#v", table, column, columns)
 			}
 			previous = position
 		}
@@ -166,7 +165,7 @@ func TestMastodon45InventoryMatchesUpstreamMigrationFiles(t *testing.T) {
 			continue
 		}
 		version := name[:len("20250717003848")]
-		if version > Mastodon4422SchemaVersion && version <= CurrentSchemaVersion {
+		if version > Mastodon4422SchemaVersion && version <= Mastodon4515SchemaVersion {
 			got = append(got, version)
 		}
 	}

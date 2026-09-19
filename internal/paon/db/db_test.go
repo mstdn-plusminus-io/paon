@@ -1095,6 +1095,9 @@ func TestRequiredMastodon44CatalogContract(t *testing.T) {
 
 func TestRequiredMastodonForeignKeysCoverDropInCascadeCore(t *testing.T) {
 	foreignKeys := RequiredMastodonForeignKeys()
+	if got := len(foreignKeys); got != 154 {
+		t.Fatalf("RequiredMastodonForeignKeys count = %d, want 154", got)
+	}
 	required := map[string]bool{}
 	for _, foreignKey := range foreignKeys {
 		required[foreignKey.String()] = true
@@ -1122,6 +1125,17 @@ func TestRequiredMastodonForeignKeysCoverDropInCascadeCore(t *testing.T) {
 		{Table: "bulk_import_rows", Column: "bulk_import_id", ForeignTable: "bulk_imports", OnDelete: "c"},
 		{Table: "bulk_imports", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "canonical_email_blocks", Column: "reference_account_id", ForeignTable: "accounts", OnDelete: "c"},
+		{Table: "collections", Column: "account_id", ForeignTable: "accounts", OnDelete: "a"},
+		{Table: "collections", Column: "tag_id", ForeignTable: "tags", OnDelete: "a"},
+		{Table: "collection_items", Column: "account_id", ForeignTable: "accounts", OnDelete: "a"},
+		{Table: "collection_items", Column: "collection_id", ForeignTable: "collections", OnDelete: "c"},
+		{Table: "collection_reports", Column: "collection_id", ForeignTable: "collections", OnDelete: "c"},
+		{Table: "collection_reports", Column: "report_id", ForeignTable: "reports", OnDelete: "c"},
+		{Table: "custom_emoji_categories", Column: "featured_emoji_id", ForeignTable: "custom_emojis", OnDelete: "n"},
+		{Table: "email_subscriptions", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
+		{Table: "keypairs", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
+		{Table: "preview_cards", Column: "unverified_author_account_id", ForeignTable: "accounts", OnDelete: "n"},
+		{Table: "tagged_objects", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
 		{Table: "custom_filter_statuses", Column: "status_id", ForeignTable: "statuses", OnDelete: "c"},
 		{Table: "custom_filters", Column: "account_id", ForeignTable: "accounts", OnDelete: "c"},
 		{Table: "email_domain_blocks", Column: "parent_id", ForeignTable: "email_domain_blocks", OnDelete: "c"},
@@ -1288,14 +1302,17 @@ func TestForbiddenMastodonColumnsCoversEvery43ContractDrop(t *testing.T) {
 	}
 }
 
-func TestMastodon45FinalSchemaAdmissionContract(t *testing.T) {
-	if got, want := RequiredMastodonSchemaVersion(), "20251023210145"; got != want {
+func TestMastodon46FinalSchemaAdmissionContract(t *testing.T) {
+	if got, want := RequiredMastodonSchemaVersion(), "20260611150940"; got != want {
 		t.Fatalf("RequiredMastodonSchemaVersion() = %q, want %q", got, want)
 	}
 	for _, index := range []string{
 		"index_follows_on_target_account_id",
 		"index_quotes_on_account_id_and_quoted_account_id",
 		"index_quotes_on_quoted_status_id",
+		"index_collection_items_on_object_uri",
+		"index_collection_items_on_account_id",
+		"index_email_subscriptions_on_account_id",
 	} {
 		if !slices.Contains(ForbiddenMastodonIndexes(), index) {
 			t.Fatalf("ForbiddenMastodonIndexes() is missing v4.5 contract drop %q", index)
