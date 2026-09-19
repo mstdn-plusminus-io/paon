@@ -101,7 +101,22 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 			// Attach evidence before fmt.Errorf snapshots the diagnostic string.
 			receipt, _ := ctx.Value(activityPubInboxReceiptContextKey{}).(*activityPubInboxReceipt)
 			attachActivityPubSignatureReceipt(err, receipt)
-			return fmt.Errorf("%w: activity actor does not match verified HTTP signature actor: %w", errActivityPubEventNotApplied, err)
+			if s.cfg.AllowUnverifiedActivityRefetch && activityPubMutationRefetchSupported(payload.Type) {
+				refetched, refetchErr := s.refetchUnverifiedActivityPubMutation(ctx, payload, actor)
+				if refetchErr != nil {
+					err = fmt.Errorf("origin refetch failed: %w; original signature error: %w", refetchErr, err)
+				} else {
+					logActivityPubMutationRefetched(ctx, payload, actor, refetched, err)
+					if refetched.Skipped {
+						return nil
+					}
+					originalBody, verificationBody, verifiedActor = refetched.Body, refetched.Body, refetched.Actor
+					payload, err = parseActivityPayload(refetched.Body)
+				}
+			}
+			if err != nil {
+				return fmt.Errorf("%w: activity actor does not match verified HTTP signature actor: %w", errActivityPubEventNotApplied, err)
+			}
 		}
 		if activityPayloadDifferentActor(payload, verifiedActor) {
 			return activityPubEventNotAppliedf("linked-data signature actor does not match activity actor")
