@@ -38,6 +38,32 @@ func TestActivityPubPeerTubeNotificationsAreAcceptedWithoutApplyingState(t *test
 			objectType: "CacheFile",
 		},
 		{
+			name: "Undo Create CacheFile",
+			body: `{
+				"@context":["https://www.w3.org/ns/activitystreams","https://w3id.org/security/v1",{"RsaSignature2017":"https://w3id.org/security#RsaSignature2017"},{"pt":"https://joinpeertube.org/ns#","sc":"http://schema.org/","expires":"sc:expires","CacheFile":"pt:CacheFile","size":{"@type":"sc:Number","@id":"pt:size"},"fps":{"@type":"sc:Number","@id":"pt:fps"}}],
+				"to":["https://video.blender.org/accounts/blender"],"cc":[],
+				"type":"Undo",
+				"id":"https://video.chasmcity.net/redundancy/streaming-playlists/hls/1e245cf5-84f1-4ed5-aae1-3c1fb7d19020/undo",
+				"actor":"https://video.chasmcity.net/accounts/peertube",
+				"object":{
+					"to":["https://www.w3.org/ns/activitystreams#Public"],"cc":["https://video.chasmcity.net/accounts/peertube/followers"],
+					"type":"Create",
+					"id":"https://video.chasmcity.net/redundancy/streaming-playlists/hls/1e245cf5-84f1-4ed5-aae1-3c1fb7d19020/activity",
+					"actor":"https://video.chasmcity.net/accounts/peertube",
+					"object":{
+						"to":["https://www.w3.org/ns/activitystreams#Public"],"cc":["https://video.chasmcity.net/accounts/peertube/followers"],
+						"id":"https://video.chasmcity.net/redundancy/streaming-playlists/hls/1e245cf5-84f1-4ed5-aae1-3c1fb7d19020",
+						"type":"CacheFile",
+						"object":"https://video.blender.org/videos/watch/1e245cf5-84f1-4ed5-aae1-3c1fb7d19020",
+						"expires":"2026-09-18T15:33:34.899Z",
+						"url":{"type":"Link","mediaType":"application/x-mpegURL","href":"https://video.chasmcity.net/static/redundancy/hls/1e245cf5-84f1-4ed5-aae1-3c1fb7d19020"}
+					}
+				},
+				"signature":{"type":"RsaSignature2017","creator":"https://video.chasmcity.net/accounts/peertube","created":"2026-09-17T18:33:21.313Z","signatureValue":"test-signature"}
+			}`,
+			objectType: "Create",
+		},
+		{
 			name: "Download",
 			body: `{
 				"@context":["https://www.w3.org/ns/activitystreams","https://w3id.org/security/v1",{"RsaSignature2017":"https://w3id.org/security#RsaSignature2017"},{"pt":"https://joinpeertube.org/ns#","sc":"http://schema.org/","DownloadAction":"sc:DownloadAction","InteractionCounter":"sc:InteractionCounter","interactionType":"sc:interactionType","userInteractionCount":"sc:userInteractionCount"}],
@@ -150,5 +176,95 @@ func TestActivityPubPeerTubeUnknownTypesRemainUnsupported(t *testing.T) {
 				t.Fatalf("unsupported type processing error = %v", err)
 			}
 		})
+	}
+}
+
+func TestActivityPubPeerTubeAdditionalNotifications(t *testing.T) {
+	const actorURI = "https://remote.example/accounts/peertube"
+	actor := &models.Account{ID: 42, URI: actorURI, Domain: sql.NullString{String: "remote.example", Valid: true}}
+	server := &Server{db: &gorm.DB{}}
+	for _, test := range []struct {
+		activityType string
+		objectType   string
+		nestedType   string
+	}{
+		{activityType: "Update", objectType: "CacheFile"},
+		{activityType: "Undo", objectType: "Create", nestedType: "CacheFile"},
+		{activityType: "Dislike"},
+		{activityType: "Undo", objectType: "Dislike"},
+		{activityType: "Create", objectType: "Playlist"},
+		{activityType: "Update", objectType: "Playlist"},
+		{activityType: "Create", objectType: "WatchAction"},
+	} {
+		t.Run(test.activityType+"/"+test.objectType, func(t *testing.T) {
+			for _, signed := range []bool{false, true} {
+				raw := map[string]any{
+					"@context": []any{"https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1", map[string]any{
+						"RsaSignature2017": "https://w3id.org/security#RsaSignature2017",
+						"pt":               "https://joinpeertube.org/ns#", "sc": "http://schema.org/",
+						"CacheFile": "pt:CacheFile", "Playlist": "pt:Playlist", "WatchAction": "sc:WatchAction",
+					}},
+					"id": actorURI + "/activities/1", "actor": actorURI, "type": test.activityType,
+					"object": actorURI + "/videos/1",
+				}
+				if test.objectType != "" {
+					object := map[string]any{"id": actorURI + "/objects/1", "type": test.objectType, "actor": actorURI}
+					if test.nestedType != "" {
+						object["object"] = map[string]any{"id": actorURI + "/cache/1", "type": test.nestedType}
+					} else {
+						object["object"] = actorURI + "/videos/1"
+					}
+					raw["object"] = object
+				}
+				if signed {
+					raw["signature"] = map[string]any{"type": "RsaSignature2017", "creator": actorURI, "created": "2026-09-19T00:00:00Z", "signatureValue": "test-signature"}
+				}
+				body, err := json.Marshal(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, actor, nil, 0); err != nil {
+					t.Errorf("signature=%t: notification processing: %v", signed, err)
+				}
+				if test.activityType == "Undo" {
+					raw["object"].(map[string]any)["actor"] = "https://other.example/accounts/peertube"
+					body, err = json.Marshal(raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, actor, nil, 0); !errors.Is(err, errActivityPubEventNotApplied) {
+						t.Errorf("signature=%t: mismatched embedded actor error = %v", signed, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestActivityPubPeerTubeUndoCreateOnlyIgnoresCacheFile(t *testing.T) {
+	const actorURI = "https://remote.example/accounts/peertube"
+	actor := &models.Account{ID: 42, URI: actorURI, Domain: sql.NullString{String: "remote.example", Valid: true}}
+	server := &Server{db: &gorm.DB{}}
+	for _, object := range []any{
+		nil,
+		actorURI + "/cache/1",
+		map[string]any{"id": actorURI + "/cache/1"},
+		map[string]any{"id": actorURI + "/cache/1", "type": "Note"},
+		map[string]any{"id": actorURI + "/cache/1", "type": "Video"},
+		map[string]any{"id": actorURI + "/cache/1", "type": "UnknownObject"},
+		map[string]any{"id": actorURI + "/cache/1", "type": "https://unrelated.example/ns#CacheFile"},
+		map[string]any{"id": actorURI + "/cache/1", "type": []any{"CacheFile", "Note"}},
+	} {
+		body, err := json.Marshal(map[string]any{
+			"@context": "https://www.w3.org/ns/activitystreams",
+			"id":       actorURI + "/undo/1", "actor": actorURI, "type": "Undo",
+			"object": map[string]any{"id": actorURI + "/create/1", "actor": actorURI, "type": "Create", "object": object},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, actor, nil, 0); !errors.Is(err, errActivityPubEventNotApplied) {
+			t.Errorf("nested object=%v: processing error = %v", object, err)
+		}
 	}
 }
