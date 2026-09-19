@@ -1,0 +1,2 @@
+-- Mastodon 4.6.6, upstream migration 20260209142402, phase backfill.
+-- Go handler: migrateMastodon46DefaultTheme (YAML settings).

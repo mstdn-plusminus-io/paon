@@ -128,96 +128,19 @@ func applyMastodon46Steps(tx *gorm.DB, steps []upgradeStep) error {
 }
 
 func mastodon46ExpandSteps() []upgradeStep {
-	return []upgradeStep{
-		{version: "20251117023614", phase: "expand", statements: []string{`ALTER TABLE media_attachments ADD COLUMN thumbnail_storage_schema_version integer`}},
-		{version: "20251118115657", phase: "expand", statements: []string{
-			`CREATE TABLE collections (id bigserial PRIMARY KEY, account_id bigint NOT NULL, name character varying NOT NULL, description text NOT NULL, uri character varying, local boolean NOT NULL, sensitive boolean NOT NULL, discoverable boolean NOT NULL, tag_id bigint, original_number_of_items integer, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_544f142936 FOREIGN KEY (account_id) REFERENCES accounts(id), CONSTRAINT fk_rails_70f13aad15 FOREIGN KEY (tag_id) REFERENCES tags(id))`,
-			`CREATE INDEX index_collections_on_account_id ON collections (account_id)`,
-			`CREATE INDEX index_collections_on_tag_id ON collections (tag_id)`,
-		}},
-		{version: "20251119093332", phase: "expand", statements: []string{
-			`CREATE TABLE collection_items (id bigserial PRIMARY KEY, collection_id bigint NOT NULL, account_id bigint, position integer DEFAULT 1 NOT NULL, object_uri character varying, approval_uri character varying, activity_uri character varying, approval_last_verified_at timestamp(6) without time zone, state integer DEFAULT 0 NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_b1a778644b FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE, CONSTRAINT fk_rails_2eb992658d FOREIGN KEY (account_id) REFERENCES accounts(id))`,
-			`CREATE INDEX index_collection_items_on_collection_id ON collection_items (collection_id)`,
-			`CREATE INDEX index_collection_items_on_account_id ON collection_items (account_id)`,
-			`CREATE UNIQUE INDEX index_collection_items_on_object_uri ON collection_items (object_uri) WHERE activity_uri IS NOT NULL`,
-			`CREATE UNIQUE INDEX index_collection_items_on_approval_uri ON collection_items (approval_uri) WHERE approval_uri IS NOT NULL`,
-		}},
-		{version: "20251201154910", phase: "expand", statements: []string{
-			`ALTER TABLE custom_emoji_categories ADD COLUMN featured_emoji_id bigint`,
-			`ALTER TABLE custom_emoji_categories ADD CONSTRAINT fk_rails_ad7840c8cf FOREIGN KEY (featured_emoji_id) REFERENCES custom_emojis(id) ON DELETE SET NULL NOT VALID`,
-		}},
-		{version: "20251202140424", phase: "expand", statements: []string{`ALTER TABLE generated_annual_reports ADD COLUMN share_key character varying`}},
-		{version: "20251209093813", phase: "expand", statements: []string{`ALTER TABLE collections ADD COLUMN item_count integer DEFAULT 0 NOT NULL`}},
-		{version: "20251217091936", phase: "expand", statements: []string{`ALTER TABLE accounts ADD COLUMN feature_approval_policy integer DEFAULT 0 NOT NULL`}},
-		{version: "20260115153219", phase: "expand", statements: []string{
-			`ALTER TABLE collections ALTER COLUMN id SET DEFAULT timestamp_id('collections')`,
-			`ALTER TABLE collection_items ALTER COLUMN id SET DEFAULT timestamp_id('collection_items')`,
-		}},
-		{version: "20260119153538", phase: "expand", statements: []string{`ALTER TABLE collections ADD COLUMN language character varying`}},
-		{version: "20260127141459", phase: "expand", statements: []string{`ALTER TABLE accounts ADD COLUMN avatar_description character varying DEFAULT '' NOT NULL`}},
-		{version: "20260127141820", phase: "expand", statements: []string{`ALTER TABLE accounts ADD COLUMN header_description character varying DEFAULT '' NOT NULL`}},
-		{version: "20260211132603", phase: "expand", statements: []string{`ALTER TABLE user_roles ADD COLUMN require_2fa boolean DEFAULT false NOT NULL`}},
-		{version: "20260212113020", phase: "expand", statements: []string{`ALTER TABLE collection_items ADD COLUMN uri character varying`}},
-		{version: "20260212131934", phase: "expand", statements: []string{
-			`CREATE TABLE collection_reports (id bigserial PRIMARY KEY, collection_id bigint NOT NULL, report_id bigint NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_0720c1a3d6 FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE, CONSTRAINT fk_rails_4a504bd5e6 FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE)`,
-			`CREATE INDEX index_collection_reports_on_collection_id ON collection_reports (collection_id)`,
-			`CREATE INDEX index_collection_reports_on_report_id ON collection_reports (report_id)`,
-		}},
-		{version: "20260217154542", phase: "expand", statements: []string{`ALTER TABLE accounts ADD COLUMN show_media boolean DEFAULT true NOT NULL, ADD COLUMN show_media_replies boolean DEFAULT true NOT NULL, ADD COLUMN show_featured boolean DEFAULT true NOT NULL`}},
-		{version: "20260303144409", phase: "expand", statements: []string{
-			`ALTER TABLE preview_cards ADD COLUMN unverified_author_account_id bigint`,
-			`ALTER TABLE preview_cards ADD CONSTRAINT fk_rails_6fb2119894 FOREIGN KEY (unverified_author_account_id) REFERENCES accounts(id) ON DELETE SET NULL`,
-			`CREATE INDEX index_preview_cards_on_unverified_author_account_id_and_id ON preview_cards (unverified_author_account_id, id) WHERE unverified_author_account_id IS NOT NULL`,
-		}},
-		{version: "20260310095021", phase: "expand", statements: []string{`ALTER TABLE collections ADD COLUMN description_html text`, `ALTER TABLE collections ALTER COLUMN description DROP NOT NULL`}},
-		{version: "20260311152331", phase: "expand", statements: []string{`ALTER TABLE accounts ADD COLUMN collections_url character varying`}},
-		{version: "20260311212130", phase: "expand", statements: []string{
-			`CREATE TABLE email_subscriptions (id bigserial PRIMARY KEY, account_id bigint NOT NULL, email character varying NOT NULL, locale character varying NOT NULL, confirmation_token character varying, confirmed_at timestamp(6) without time zone, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_282940e759 FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
-			`CREATE INDEX index_email_subscriptions_on_account_id ON email_subscriptions (account_id)`,
-			`CREATE UNIQUE INDEX index_email_subscriptions_on_confirmation_token ON email_subscriptions (confirmation_token) WHERE confirmation_token IS NOT NULL`,
-			`CREATE UNIQUE INDEX index_email_subscriptions_on_account_id_and_email ON email_subscriptions (account_id, email)`,
-		}},
-		{version: "20260319142348", phase: "expand", statements: []string{
-			`CREATE TABLE tagged_objects (id bigserial PRIMARY KEY, status_id bigint NOT NULL, object_type character varying, object_id bigint, ap_type character varying NOT NULL, uri character varying, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_087c1d32f7 FOREIGN KEY (status_id) REFERENCES statuses(id) ON DELETE CASCADE)`,
-			`CREATE INDEX index_tagged_objects_on_object ON tagged_objects (object_type, object_id)`,
-			`CREATE UNIQUE INDEX idx_on_status_id_object_type_object_id_d6ebe374bd ON tagged_objects (status_id, object_type, object_id) WHERE object_type IS NOT NULL AND object_id IS NOT NULL`,
-			`CREATE UNIQUE INDEX index_tagged_objects_on_status_id_and_uri ON tagged_objects (status_id, uri) WHERE uri IS NOT NULL`,
-		}},
-		{version: "20260323105645", phase: "expand", statements: []string{
-			`CREATE TABLE keypairs (id bigserial PRIMARY KEY, account_id bigint NOT NULL, uri character varying NOT NULL, type integer NOT NULL, public_key character varying NOT NULL, private_key character varying, expires_at timestamp(6) without time zone, revoked boolean DEFAULT false NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL, CONSTRAINT fk_rails_f5ea7ac36a FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
-			`CREATE INDEX index_keypairs_on_account_id ON keypairs (account_id)`,
-			`CREATE UNIQUE INDEX index_keypairs_on_uri ON keypairs (uri)`,
-		}},
-		{version: "20260325151755", phase: "expand", statements: []string{
-			`CREATE UNIQUE INDEX index_collections_on_uri ON collections (uri) WHERE uri IS NOT NULL`,
-			`CREATE UNIQUE INDEX index_collection_items_on_uri ON collection_items (uri) WHERE uri IS NOT NULL`,
-		}},
-		{version: "20260415133505", phase: "expand", statements: []string{`ALTER TABLE collections ADD COLUMN url character varying`}},
-		{version: "20260420124030", phase: "expand", statements: []string{`ALTER TABLE user_roles ADD COLUMN collection_limit integer DEFAULT 10 NOT NULL`}},
-		{version: "20260423141611", phase: "expand", statements: []string{`CREATE INDEX index_collection_items_on_state ON collection_items (state) WHERE state IN (2, 3)`}},
-		{version: "20260425144553", phase: "expand", statements: []string{`ALTER TABLE notification_policies ADD COLUMN for_bots integer DEFAULT 0 NOT NULL`}},
-	}
+	return embeddedMigrationSteps("4.6.6", UpgradePhaseExpand)
 }
 
 func mastodon46BackfillSteps() []upgradeStep {
-	return []upgradeStep{
-		{version: "20260209142402", phase: "backfill"},
-		{version: "20260209143308", phase: "backfill"},
-		{version: "20260318144837", phase: "backfill"},
-	}
+	return embeddedMigrationSteps("4.6.6", UpgradePhaseBackfill)
 }
 
 func mastodon46ValidateSteps() []upgradeStep {
-	return []upgradeStep{{version: "20251201155054", phase: "validate", statements: []string{`ALTER TABLE custom_emoji_categories VALIDATE CONSTRAINT fk_rails_ad7840c8cf`}}}
+	return embeddedMigrationSteps("4.6.6", UpgradePhaseValidate)
 }
 
 func mastodon46ContractSteps() []upgradeStep {
-	return []upgradeStep{
-		{version: "20260326112324", phase: "contract", statements: []string{`DROP INDEX IF EXISTS index_collection_items_on_object_uri`}},
-		{version: "20260410083500", phase: "contract", statements: []string{`DROP INDEX IF EXISTS index_collection_items_on_account_id`}},
-		{version: "20260505155103", phase: "contract", statements: []string{`DROP INDEX IF EXISTS index_email_subscriptions_on_account_id`}},
-		{version: "20260611150940", phase: "contract"},
-	}
+	return embeddedMigrationSteps("4.6.6", UpgradePhaseContract)
 }
 
 func mastodon46PhaseVersions(phase UpgradePhase) []string {
@@ -257,8 +180,10 @@ func requireMastodon46Phase(tx *gorm.DB, phase UpgradePhase) error {
 }
 
 func ensureMastodon46FinalAdditiveCatalog(tx *gorm.DB) error {
-	if err := tx.Exec(`ALTER TABLE bulk_imports ADD COLUMN IF NOT EXISTS missing_status boolean DEFAULT false NOT NULL`).Error; err != nil {
-		return fmt.Errorf("Mastodon 4.6 expand final additive catalog: %w", err)
+	for _, statement := range embeddedMigrationStatements("migrations/4.6.6/20260611150940_prepare.sql") {
+		if err := tx.Exec(statement).Error; err != nil {
+			return fmt.Errorf("Mastodon 4.6 expand final additive catalog: %w", err)
+		}
 	}
 	return nil
 }
@@ -342,19 +267,17 @@ func migrateMastodon46UserThemes(tx *gorm.DB) error {
 		if !ok || strings.TrimSpace(theme) == "" || (theme != "system" && theme != "default" && theme != "mastodon-light" && theme != "contrast") {
 			continue
 		}
+		var updates []mastodonSettingUpdate
 		switch theme {
 		case "default":
-			settings["web.color_scheme"] = "dark"
-			settings["web.contrast"] = "auto"
+			updates = append(updates, mastodonSettingUpdate{"web.color_scheme", "dark"}, mastodonSettingUpdate{"web.contrast", "auto"})
 		case "contrast":
-			settings["web.color_scheme"] = "dark"
-			settings["web.contrast"] = "high"
+			updates = append(updates, mastodonSettingUpdate{"web.color_scheme", "dark"}, mastodonSettingUpdate{"web.contrast", "high"})
 		case "mastodon-light":
-			settings["web.color_scheme"] = "light"
-			settings["web.contrast"] = "auto"
+			updates = append(updates, mastodonSettingUpdate{"web.color_scheme", "light"}, mastodonSettingUpdate{"web.contrast", "auto"})
 		}
-		settings["theme"] = "default"
-		encoded, err := json.Marshal(settings)
+		updates = append(updates, mastodonSettingUpdate{"theme", "default"})
+		encoded, err := rewriteMastodonSettings(row.Settings.String, updates)
 		if err != nil {
 			return fmt.Errorf("Mastodon 4.6 encode settings for user id=%d: %w", row.ID, err)
 		}
@@ -378,8 +301,10 @@ func ensureMastodon46CollectionItemCompositeIndex(tx *gorm.DB) error {
 			return fmt.Errorf("Mastodon 4.6 deduplicate collection items: %w", err)
 		}
 	}
-	if err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS index_collection_items_on_account_id_and_collection_id ON collection_items (account_id, collection_id)`).Error; err != nil {
-		return fmt.Errorf("Mastodon 4.6 create collection item account/collection index: %w", err)
+	for _, statement := range embeddedMigrationStatements("migrations/4.6.6/20260410083500_index.sql") {
+		if err := tx.Exec(statement).Error; err != nil {
+			return fmt.Errorf("Mastodon 4.6 create collection item account/collection index: %w", err)
+		}
 	}
 	return nil
 }

@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Rehearse private staging-dump migrations against pinned upstream releases.
+
+No existing database is accepted: every run creates and removes its own Docker
+PostgreSQL/Redis containers and their volumes. Snapshots contain only catalog
+metadata, row digests and counts; private error logs may contain staging values.
+"""
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def run(args, *, env=None, cwd=None, log=None, input=None):
+    result = subprocess.run(
+        list(map(str, args)), env=env, cwd=cwd, input=input,
+        stdout=log or subprocess.PIPE, stderr=log or subprocess.PIPE,
+    )
+    if result.returncode:
+        # SQL errors and Rails exception output may contain staging values.
+        # Keep them in the private log, never echo them to CI automatically.
+        if log is None and result.stderr:
+            raise RuntimeError(f"{args[0]} failed (exit {result.returncode})")
+        raise RuntimeError(f"{args[0]} failed (exit {result.returncode}); see private logs")
+    return (result.stdout or b"").decode().strip()
+
+
+def digest(path):
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+
+def write_report(path, report):
+    # Never leave a truncated report, or let an earlier successful invocation
+    # appear to describe this run while preflight/migrations are still pending.
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=".result-", delete=False) as output:
+        temporary_path = Path(output.name)
+        try:
+            json.dump(report, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+
+def cleanup_containers(names):
+    failures = []
+    for name in reversed(names):
+        try:
+            inspected = subprocess.run(["docker", "container", "inspect", name], capture_output=True, text=True)
+            if inspected.returncode:
+                if "No such container:" in inspected.stderr or "No such object:" in inspected.stderr:
+                    continue
+                failures.append(f"could not inspect disposable container {name}")
+                continue
+            removed = subprocess.run(["docker", "rm", "-fv", name], capture_output=True, text=True)
+            if removed.returncode:
+                failures.append(f"could not remove disposable container {name} and its volumes")
+        except OSError:
+            failures.append(f"could not clean up disposable container {name}")
+    if failures:
+        raise RuntimeError("cleanup failed: " + "; ".join(failures))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dump", type=Path, default=ROOT / "testdata/db-dump/mastodon_stg.dump")
+    parser.add_argument("--mastodon", type=Path, default=Path(os.environ.get("MASTODON_REPOSITORY", ROOT.parent.parent / "mastodon/mastodon")))
+    parser.add_argument("--versions", help="comma-separated pinned releases (default: this branch target set)")
+    parser.add_argument("--worktree", action="append", default=[], metavar="VERSION=PATH", help="use this feature branch's migration binary for the given release")
+    parser.add_argument("--output", type=Path, default=ROOT / "tmp/migration-parity")
+    parser.add_argument("--go", default="go", help="Go executable")
+    args = parser.parse_args()
+    args.output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(args.output, 0o700)
+    report = {
+        "status": "running", "passed": False, "run_id": uuid.uuid4().hex,
+        "started_at": now(), "versions": {},
+    }
+    report_path = args.output / "result.json"
+    write_report(report_path, report)
+    try:
+        manifest = json.loads((ROOT / "testdata/migration-parity/versions.json").read_text())
+        report["dump_sha256"] = manifest["dump_sha256"]
+        if args.versions is None:
+            args.versions = ",".join(manifest.get("default_versions", manifest["versions"]))
+        run_gate(args, manifest, report)
+    except BaseException as error:
+        report.update(status="failed", passed=False, finished_at=now(), failure_type=type(error).__name__)
+        write_report(report_path, report)
+        raise
+    report.update(status="passed", passed=True, finished_at=now())
+    write_report(report_path, report)
+    print(f"All {len(report['versions'])} release gates passed. Evidence: {report_path}")
+
+
+def run_gate(args, manifest, report):
+    versions = args.versions.split(",")
+    if not versions or len(set(versions)) != len(versions) or any(v not in manifest["versions"] for v in versions):
+        raise RuntimeError("--versions must name distinct pinned supported releases")
+    if not args.dump.is_file():
+        raise RuntimeError(f"required private staging dump is missing: {args.dump}")
+    if digest(args.dump) != manifest["dump_sha256"]:
+        raise RuntimeError("staging dump SHA-256 differs from the reviewed fixture")
+    worktrees = {}
+    for specification in args.worktree:
+        version, separator, path = specification.partition("=")
+        if not separator or version not in versions or version in worktrees:
+            raise RuntimeError(f"invalid --worktree mapping: {specification}")
+        worktrees[version] = Path(path).resolve()
+    for program in ("docker", "pg_restore", "psql", "git", args.go):
+        if not shutil.which(program):
+            raise RuntimeError(f"required program unavailable: {program}")
+    for version in versions:
+        source = manifest["versions"][version]
+        actual = run(["git", "-C", args.mastodon, "rev-parse", f"v{version}^{{commit}}"])
+        if actual != source["commit"]:
+            raise RuntimeError(f"Mastodon v{version} does not match the pinned commit")
+        # Verify executable migration sources against the user's local tag,
+        # independently of the container tag or image labels.
+        files = run(["git", "-C", args.mastodon, "ls-tree", "-r", "--name-only", f"v{version}", "db/migrate", "db/post_migrate", "db/schema.rb", "lib/mastodon/snowflake.rb"]).splitlines()
+        actual_hashes = run(["docker", "run", "--rm", "--entrypoint", "sha256sum", source["image"], *files])
+        for line, file in zip(actual_hashes.splitlines(), files, strict=True):
+            expected = hashlib.sha256(subprocess.check_output(["git", "-C", str(args.mastodon), "show", f"v{version}:{file}"])).hexdigest()
+            if line.split()[0] != expected:
+                raise RuntimeError(f"image migration source differs from local v{version}: {file}")
+    identifier = "paon-parity-" + uuid.uuid4().hex[:12]
+    postgres_name, redis_name = identifier + "-pg", identifier + "-redis"
+    password = uuid.uuid4().hex
+    created = []
+    environment = os.environ.copy()
+    environment["PGPASSWORD"] = password
+    with tempfile.TemporaryDirectory(prefix="paon-migration-parity-") as temporary:
+        temporary = Path(temporary)
+        try:
+            # docker run may create a container/volume before reporting a
+            # startup failure. Register our exact random name before launching.
+            created.append(postgres_name)
+            run(["docker", "run", "-d", "--name", postgres_name, "-p", "127.0.0.1::5432", "-e", f"POSTGRES_PASSWORD={password}", "postgres:14-alpine", "-c", "shared_preload_libraries=pg_stat_statements"])
+            created.append(redis_name)
+            run(["docker", "run", "-d", "--name", redis_name, "--network", f"container:{postgres_name}", "redis:7-alpine"])
+            for _ in range(60):
+                ready = subprocess.run(["docker", "exec", postgres_name, "pg_isready", "-U", "postgres"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if ready.returncode == 0:
+                    break
+                time.sleep(1)
+            else:
+                raise RuntimeError("isolated PostgreSQL did not become ready")
+            port = run(["docker", "port", postgres_name, "5432/tcp"]).rsplit(":", 1)[1]
+            def url(database):
+                return f"postgres://postgres:{password}@127.0.0.1:{port}/{database}?sslmode=disable"
+
+            def sql(statement, database="postgres", log=None):
+                return run(["psql", "-X", "-h", "127.0.0.1", "-p", port, "-U", "postgres", "-d", database, "-v", "ON_ERROR_STOP=1", "-At", "-c", statement], env=environment, log=log)
+
+            sql("CREATE DATABASE baseline")
+            restore_path = temporary / "restore.sql"
+            with restore_path.open("wb") as restore:
+                run(["pg_restore", "--no-owner", "--no-privileges", "--file=-", args.dump], log=restore)
+            # pg_dump 18 emits this setting, which PostgreSQL 14 does not have.
+            # No schema/data SQL is removed or rewritten.
+            with restore_path.open("rb") as source, (temporary / "restore-pg14.sql").open("wb") as target:
+                for line in source:
+                    if line != b"SET transaction_timeout = 0;\n":
+                        target.write(line)
+            with (args.output / "restore.log").open("wb") as log:
+                run(["psql", "-X", "-h", "127.0.0.1", "-p", port, "-U", "postgres", "-d", "baseline", "-v", "ON_ERROR_STOP=1", "-f", temporary / "restore-pg14.sql"], env=environment, log=log)
+            # A PostgreSQL-only dump cannot prove migration of external Redis
+            # trend data or OTP secrets requiring unavailable staging keys.
+            if sql("SELECT count(*) FROM users WHERE otp_required_for_login OR encrypted_otp_secret IS NOT NULL", "baseline") != "0":
+                raise RuntimeError("fixture now requires real OTP migration credentials; this fixture gate cannot skip encrypted users")
+            compare = temporary / "paon-db-parity"
+            run([args.go, "build", "-buildvcs=false", "-o", compare, "./cmd/paon-db-parity"], cwd=ROOT)
+            for version in versions:
+                print(f"{version}: restoring independent upstream/Paon copies", flush=True)
+                upstream, candidate = "upstream_" + version.replace(".", "_"), "paon_" + version.replace(".", "_")
+                for name in (upstream, candidate):
+                    sql(f"CREATE DATABASE {name} TEMPLATE baseline")
+                binary = temporary / ("paon-migrate-" + version)
+                checkout = worktrees.get(version, ROOT)
+                run([args.go, "build", "-buildvcs=false", "-o", binary, "./cmd/paon-migrate"], cwd=checkout)
+                migration_env = environment | {
+                    "DATABASE_URL": url(candidate), "MIGRATION_SKIP_TAG_TREND_BACKFILL": "true",
+                    "REDIS_URL": "", "MIGRATION_IGNORE_INVALID_OTP_SECRET": "false",
+                    "OTEL_EXPORTER_OTLP_ENDPOINT": "", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "", "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "",
+                }
+                log_path = args.output / (version + ".log")
+                source = manifest["versions"][version]
+                def rails(database, log):
+                    rails_env = {
+                        "RAILS_ENV": "production", "DB_HOST": "127.0.0.1", "DB_PORT": "5432",
+                        "DB_USER": "postgres", "DB_PASS": password, "DB_NAME": database,
+                        "REDIS_HOST": "127.0.0.1", "LOCAL_DOMAIN": "parity.invalid",
+                        "SECRET_KEY_BASE": "disposable-parity-secret-key-base", "OTP_SECRET": "disposable-parity-otp-secret",
+                        "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY": "disposable-parity-primary-key",
+                        "ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY": "disposable-parity-deterministic-key",
+                        "ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT": "disposable-parity-derivation-salt",
+                    }
+                    command = ["docker", "run", "--rm", "--network", f"container:{postgres_name}"]
+                    for key, value in rails_env.items():
+                        command += ["-e", f"{key}={value}"]
+                    run(command + [source["image"], "bundle", "exec", "rails", "db:migrate", "db:abort_if_pending_migrations"], log=log)
+
+                migrate_command = [binary, "--all", "--acknowledge-contract"]
+                if version not in worktrees:
+                    migrate_command += ["--target-version", version]
+                with log_path.open("wb") as log:
+                    upstream_started = now()
+                    rails(upstream, log)
+                    upstream_finished = now()
+                    candidate_started = now()
+                    run(migrate_command, env=migration_env, cwd=temporary, log=log)
+                    candidate_finished = now()
+                reference = args.output / (version + "-upstream.json")
+                candidate_snapshot = args.output / (version + "-paon.json")
+                run([compare, "--database-url", url(upstream), "--output", reference, "--migration-started-at", upstream_started, "--migration-finished-at", upstream_finished])
+                result = subprocess.run([str(compare), "--database-url", url(candidate), "--output", str(candidate_snapshot), "--reference", str(reference), "--migration-started-at", candidate_started, "--migration-finished-at", candidate_finished], capture_output=True, text=True)
+                if result.returncode:
+                    # Comparator emits schema metadata, counts and digests only.
+                    print(result.stderr, file=sys.stderr)
+                    raise RuntimeError(f"v{version}: upstream / Paon parity mismatch")
+                # Every no-op proof compares raw audit timestamps as well. The
+                # narrow migration-clock normalization is only for independent
+                # initial runs, never for retries or switching implementations.
+                raw_candidate = args.output / (version + "-paon-raw.json")
+                raw_upstream = args.output / (version + "-upstream-raw.json")
+                run([compare, "--database-url", url(candidate), "--output", raw_candidate])
+                run([compare, "--database-url", url(upstream), "--output", raw_upstream])
+                with log_path.open("ab") as log:
+                    run(migrate_command, env=migration_env, cwd=temporary, log=log)
+                run([compare, "--database-url", url(candidate), "--reference", raw_candidate])
+                with log_path.open("ab") as log:
+                    rails(candidate, log)
+                run([compare, "--database-url", url(candidate), "--reference", raw_candidate])
+                with log_path.open("ab") as log:
+                    run(migrate_command, env=migration_env | {"DATABASE_URL": url(upstream)}, cwd=temporary, log=log)
+                run([compare, "--database-url", url(upstream), "--reference", raw_upstream])
+                report["versions"][version] = source | {
+                    "passed": True, "upstream_snapshot_sha256": digest(reference), "paon_snapshot_sha256": digest(candidate_snapshot),
+                    "binary_sha256": digest(binary), "paon_checkout_commit": run(["git", "-C", checkout, "rev-parse", "HEAD"]),
+                    "upstream_window": [upstream_started, upstream_finished], "paon_window": [candidate_started, candidate_finished],
+                }
+                print(f"{version}: catalog/data/sequences, rerun, Mastodon→Paon and Paon→Mastodon passed", flush=True)
+        finally:
+            cleanup_containers(created)
+
+
+if __name__ == "__main__":
+    os.umask(0o077)
+    try:
+        main()
+    except (RuntimeError, OSError, ValueError) as error:
+        print(f"migration parity: {error}", file=sys.stderr)
+        sys.exit(1)

@@ -24,10 +24,16 @@ const (
 const migrationAdvisoryLockID int64 = 0x50616f6e4d696772
 const statementSeparator = "-- paon:statement"
 
-//go:embed schema.sql
+//go:embed schema.sql schemas/*.sql
 var schemaFiles embed.FS
 
 type Options struct {
+	// TargetVersion selects the final Mastodon release boundary. Empty means
+	// the release supported by this Paon build. Downgrades are never applied.
+	TargetVersion string
+	// All applies every phase through the target, including contract. Operators
+	// must still explicitly acknowledge that older writers have stopped.
+	All                    bool
 	Phase                  UpgradePhase
 	AcknowledgeContract    bool
 	IgnoreInvalidOTPSecret bool
@@ -55,6 +61,8 @@ type Options struct {
 
 func OptionsFromEnv() Options {
 	return Options{
+		TargetVersion:                  os.Getenv("PAON_MIGRATION_TARGET_VERSION"),
+		All:                            os.Getenv("PAON_MIGRATION_ALL") == "true",
 		Phase:                          UpgradePhase(os.Getenv("PAON_MIGRATION_PHASE")),
 		AcknowledgeContract:            os.Getenv("PAON_MIGRATION_ACKNOWLEDGE_CONTRACT") == "true",
 		IgnoreInvalidOTPSecret:         os.Getenv("MIGRATION_IGNORE_INVALID_OTP_SECRET") == "true",
@@ -76,6 +84,16 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 	if database == nil {
 		return false, errors.New("migration database is not configured")
 	}
+	target, err := requestedMigrationTarget(options.TargetVersion)
+	if err != nil {
+		return false, err
+	}
+	if options.All {
+		if options.Phase != "" {
+			return false, errors.New("--all cannot be combined with --phase or PAON_MIGRATION_PHASE")
+		}
+		options.Phase = UpgradePhaseContract
+	}
 	targetPhase, err := requestedUpgradePhase(options)
 	if err != nil {
 		return false, err
@@ -95,6 +113,11 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 		empty, current, legacy, err := databaseSchemaState(tx)
 		if err != nil {
 			return err
+		}
+		if !empty {
+			if err := rejectMigrationsAfterTarget(tx, target); err != nil {
+				return err
+			}
 		}
 		if current {
 			reconciled, err := reconcileCurrentMastodonCatalog(tx)
@@ -141,7 +164,7 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 			}
 			return fmt.Errorf("unsupported existing database schema; expected version %s, %s, %s, %s, or %s", LegacySchemaVersion, Mastodon4323SchemaVersion, Mastodon4422SchemaVersion, Mastodon4515SchemaVersion, CurrentSchemaVersion)
 		}
-		snapshot, err := schemaFiles.ReadFile("schema.sql")
+		snapshot, err := schemaFiles.ReadFile(target.snapshot)
 		if err != nil {
 			return fmt.Errorf("read embedded schema: %w", err)
 		}
@@ -158,11 +181,11 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 				return fmt.Errorf("apply schema statement %d: %w", index, err)
 			}
 		}
-		if err := seedFreshDatabase(tx); err != nil {
+		if err := seedFreshDatabaseForTarget(tx, target); err != nil {
 			return err
 		}
-		if err := paondb.SchemaAvailable(tx); err != nil {
-			return fmt.Errorf("validate fresh Mastodon 4.6 schema before commit: %w", err)
+		if err := validateMigrationTarget(tx, target); err != nil {
+			return fmt.Errorf("validate fresh Mastodon %s schema before commit: %w", target.release, err)
 		}
 		applied = true
 		return nil
@@ -189,7 +212,7 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 		}
 		mastodon43Schema = previous
 	}
-	if mastodon43Schema {
+	if mastodon43Schema && target.release >= "4.4.22" {
 		for _, phase := range upgradePhasesThrough(targetPhase) {
 			phaseApplied, err := runMastodon44Phase(ctx, database, phase, options)
 			applied = applied || phaseApplied
@@ -203,7 +226,7 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 		}
 		mastodon44Schema = previous
 	}
-	if mastodon44Schema {
+	if mastodon44Schema && target.release >= "4.5.15" {
 		for _, phase := range upgradePhasesThrough(targetPhase) {
 			phaseApplied, err := runMastodon45Phase(ctx, database, phase, options)
 			applied = applied || phaseApplied
@@ -217,13 +240,29 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 		}
 		mastodon45Schema = previous
 	}
-	if mastodon45Schema {
+	if mastodon45Schema && target.release >= "4.6.6" {
 		for _, phase := range upgradePhasesThrough(targetPhase) {
 			phaseApplied, err := runMastodon46Phase(ctx, database, phase, options)
 			applied = applied || phaseApplied
 			if err != nil {
 				return applied, err
 			}
+		}
+	}
+
+	if targetPhase == UpgradePhaseContract || target.release != LatestTargetVersion {
+		complete, err := migrationTargetReached(database.WithContext(ctx), target)
+		if err != nil {
+			return applied, err
+		}
+		if complete {
+			if err := validateMigrationTarget(database.WithContext(ctx), target); err != nil {
+				return applied, fmt.Errorf("validate migrated Mastodon %s schema: %w", target.release, err)
+			}
+			return applied, nil
+		}
+		if targetPhase == UpgradePhaseContract {
+			return applied, fmt.Errorf("migration did not reach requested Mastodon %s boundary", target.release)
 		}
 	}
 
@@ -242,98 +281,6 @@ func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bo
 		return applied, fmt.Errorf("validate migrated schema: %w", err)
 	}
 	return applied, nil
-}
-
-// splitSQLStatements handles the standard PostgreSQL dump syntax used by the
-// embedded fresh-schema snapshot. In particular, semicolons inside the
-// timestamp_id dollar-quoted function body and quoted values are not split.
-func splitSQLStatements(source string) []string {
-	statements := make([]string, 0, strings.Count(source, ";"))
-	start := 0
-	lineComment := false
-	blockDepth := 0
-	var quote byte
-	dollarTag := ""
-	for index := 0; index < len(source); index++ {
-		current := source[index]
-		if lineComment {
-			if current == '\n' {
-				lineComment = false
-			}
-			continue
-		}
-		if blockDepth > 0 {
-			if current == '/' && index+1 < len(source) && source[index+1] == '*' {
-				blockDepth++
-				index++
-			} else if current == '*' && index+1 < len(source) && source[index+1] == '/' {
-				blockDepth--
-				index++
-			}
-			continue
-		}
-		if dollarTag != "" {
-			if strings.HasPrefix(source[index:], dollarTag) {
-				index += len(dollarTag) - 1
-				dollarTag = ""
-			}
-			continue
-		}
-		if quote != 0 {
-			if current != quote {
-				continue
-			}
-			if index+1 < len(source) && source[index+1] == quote {
-				index++
-				continue
-			}
-			quote = 0
-			continue
-		}
-		if current == '-' && index+1 < len(source) && source[index+1] == '-' {
-			lineComment = true
-			index++
-			continue
-		}
-		if current == '/' && index+1 < len(source) && source[index+1] == '*' {
-			blockDepth = 1
-			index++
-			continue
-		}
-		if current == '\'' || current == '"' {
-			quote = current
-			continue
-		}
-		if current == '$' {
-			if end := strings.IndexByte(source[index+1:], '$'); end >= 0 {
-				end += index + 1
-				tag := source[index : end+1]
-				valid := true
-				for position := 1; position < len(tag)-1; position++ {
-					character := tag[position]
-					if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '_') {
-						valid = false
-						break
-					}
-				}
-				if valid {
-					dollarTag = tag
-					index = end
-					continue
-				}
-			}
-		}
-		if current == ';' {
-			if statement := strings.TrimSpace(source[start : index+1]); statement != "" {
-				statements = append(statements, statement)
-			}
-			start = index + 1
-		}
-	}
-	if statement := strings.TrimSpace(source[start:]); statement != "" {
-		statements = append(statements, statement)
-	}
-	return statements
 }
 
 func databaseSchemaState(tx *gorm.DB) (empty bool, current bool, legacy bool, err error) {
@@ -531,7 +478,7 @@ func mastodon46UpgradeVersionSet() map[string]struct{} {
 	return versions
 }
 
-func seedFreshDatabase(tx *gorm.DB) error {
+func seedFreshDatabaseForTarget(tx *gorm.DB, target migrationTarget) error {
 	now := time.Now().UTC()
 	roles := []struct {
 		id          int64
@@ -545,6 +492,12 @@ func seedFreshDatabase(tx *gorm.DB) error {
 		{id: 3, name: "Owner", position: 1000, permissions: 1},
 	}
 	for _, role := range roles {
+		if target.release < "4.5.15" {
+			role.permissions &^= 1 << 20
+		}
+		if target.release < "4.6.6" {
+			role.permissions &^= 1 << 21
+		}
 		if err := tx.Exec(`INSERT INTO user_roles (id, name, color, position, permissions, highlighted, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?, ?)`, role.id, role.name, role.position, role.permissions, role.id != -99, now, now).Error; err != nil {
 			return fmt.Errorf("seed role %s: %w", role.name, err)
 		}
@@ -566,8 +519,10 @@ func seedFreshDatabase(tx *gorm.DB) error {
 	if err := tx.Exec(`INSERT INTO oauth_applications (name, uid, secret, redirect_uri, scopes, superapp, confidential, created_at, updated_at) VALUES ('Web', ?, ?, 'urn:ietf:wg:oauth:2.0:oob', 'read write follow push', true, true, ?, ?)`, uid, secret, now, now).Error; err != nil {
 		return fmt.Errorf("seed web OAuth application: %w", err)
 	}
-	if err := seedMastodon45UsernameBlocks(tx, now); err != nil {
-		return err
+	if target.release >= "4.5.15" {
+		if err := seedMastodon45UsernameBlocks(tx, now); err != nil {
+			return err
+		}
 	}
 	return nil
 }

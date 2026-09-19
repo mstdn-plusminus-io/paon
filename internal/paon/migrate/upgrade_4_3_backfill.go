@@ -63,17 +63,34 @@ func applyNotificationPolicyBackfill(tx *gorm.DB, version string, preserveExisti
 	if err != nil || applied {
 		return err
 	}
-	lastID := int64(0)
+	// Rails in_batches selects a batch boundary in primary-key order, then
+	// enumerates the yielded relation without ORDER BY. That relation order
+	// determines which account receives each newly allocated policy ID.
+	const notificationBatchSize = 1000
+	var lastID int64
+	firstBatch := true
 	for {
-		var rows []notificationSettingsRow
-		if err := tx.Raw(`SELECT id, account_id, settings FROM users WHERE id > ? ORDER BY id ASC LIMIT ?`, lastID, migrationBatchSize).Scan(&rows).Error; err != nil {
-			return fmt.Errorf("Mastodon 4.3 notification policy backfill %s: %w", version, err)
+		var ids []int64
+		query := tx.Raw(`SELECT id FROM users ORDER BY id ASC LIMIT ?`, notificationBatchSize)
+		if !firstBatch {
+			query = tx.Raw(`SELECT id FROM users WHERE id > ? ORDER BY id ASC LIMIT ?`, lastID, notificationBatchSize)
 		}
-		if len(rows) == 0 {
+		if err := query.Scan(&ids).Error; err != nil {
+			return fmt.Errorf("Mastodon 4.3 notification policy batch %s: %w", version, err)
+		}
+		if len(ids) == 0 {
 			break
 		}
+		upperID := ids[len(ids)-1]
+		query = tx.Raw(`SELECT * FROM users WHERE id <= ?`, upperID)
+		if !firstBatch {
+			query = tx.Raw(`SELECT * FROM users WHERE id > ? AND id <= ?`, lastID, upperID)
+		}
+		var rows []notificationSettingsRow
+		if err := query.Scan(&rows).Error; err != nil {
+			return fmt.Errorf("Mastodon 4.3 notification policy backfill %s: %w", version, err)
+		}
 		for _, row := range rows {
-			lastID = row.ID
 			policy, required, err := notificationPolicyFromSettings(row.Settings)
 			if err != nil {
 				return fmt.Errorf("Mastodon 4.3 notification settings for user id=%d: %w", row.ID, err)
@@ -81,16 +98,22 @@ func applyNotificationPolicyBackfill(tx *gorm.DB, version string, preserveExisti
 			if !required {
 				continue
 			}
-			conflict := `DO UPDATE SET filter_not_following = EXCLUDED.filter_not_following, filter_not_followers = EXCLUDED.filter_not_followers, filter_private_mentions = EXCLUDED.filter_private_mentions, updated_at = EXCLUDED.updated_at`
+			statement := `INSERT INTO notification_policies (account_id, filter_not_following, filter_not_followers, filter_new_accounts, filter_private_mentions, created_at, updated_at) VALUES (?, ?, ?, false, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT (account_id) DO UPDATE SET filter_not_following = EXCLUDED.filter_not_following, filter_not_followers = EXCLUDED.filter_not_followers, filter_private_mentions = EXCLUDED.filter_private_mentions, updated_at = CASE WHEN notification_policies.filter_not_following IS NOT DISTINCT FROM EXCLUDED.filter_not_following AND notification_policies.filter_not_followers IS NOT DISTINCT FROM EXCLUDED.filter_not_followers AND notification_policies.filter_private_mentions IS NOT DISTINCT FROM EXCLUDED.filter_private_mentions THEN notification_policies.updated_at ELSE EXCLUDED.updated_at END`
+			arguments := []any{row.AccountID, policy.FilterNotFollowing, policy.FilterNotFollowers, policy.FilterPrivateMentions}
 			if preserveExisting {
-				conflict = `DO NOTHING`
+				// The second upstream migration excludes existing policies before
+				// insert_all. ON CONFLICT alone consumes sequence values even when
+				// no row is inserted, changing every subsequently generated ID.
+				statement = `INSERT INTO notification_policies (account_id, filter_not_following, filter_not_followers, filter_new_accounts, filter_private_mentions, created_at, updated_at) SELECT ?, ?, ?, false, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP WHERE NOT EXISTS (SELECT 1 FROM notification_policies WHERE account_id = ?) ON CONFLICT (account_id) DO NOTHING`
+				arguments = append(arguments, row.AccountID)
 			}
-			statement := `INSERT INTO notification_policies (account_id, filter_not_following, filter_not_followers, filter_new_accounts, filter_private_mentions, created_at, updated_at) VALUES (?, ?, ?, false, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT (account_id) ` + conflict
-			if err := tx.Exec(statement, row.AccountID, policy.FilterNotFollowing, policy.FilterNotFollowers, policy.FilterPrivateMentions).Error; err != nil {
+			if err := tx.Exec(statement, arguments...).Error; err != nil {
 				return fmt.Errorf("Mastodon 4.3 notification policy for user id=%d: %w", row.ID, err)
 			}
 		}
-		if len(rows) < migrationBatchSize {
+		lastID = upperID
+		firstBatch = false
+		if len(ids) < notificationBatchSize {
 			break
 		}
 	}

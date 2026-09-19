@@ -1,0 +1,2 @@
+-- Mastodon 4.6.6, upstream migration 20260318144837, phase backfill.
+-- Go handler: applyMastodon46Backfill updates user role permissions.

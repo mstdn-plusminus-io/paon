@@ -33,6 +33,9 @@
 /.release-cache/
 *.tsbuildinfo
 
+# Local staging database backups used by the private migration parity gate.
+/testdata/db-dump/*.dump
+
 # Ignore IDE files
 .vscode/
 .idea/

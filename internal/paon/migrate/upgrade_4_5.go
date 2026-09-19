@@ -125,31 +125,11 @@ func applyMastodon45Steps(tx *gorm.DB, steps []upgradeStep) error {
 }
 
 func mastodon45ExpandSteps() []upgradeStep {
-	return []upgradeStep{
-		{version: "20250717003848", phase: "expand", statements: []string{
-			`CREATE TABLE username_blocks (id bigserial PRIMARY KEY, username character varying NOT NULL, normalized_username character varying NOT NULL, exact boolean DEFAULT false NOT NULL, allow_with_approval boolean DEFAULT false NOT NULL, created_at timestamp(6) without time zone NOT NULL, updated_at timestamp(6) without time zone NOT NULL)`,
-			`CREATE UNIQUE INDEX index_username_blocks_on_username_lower_btree ON username_blocks (lower((username)::text))`,
-			`CREATE INDEX index_username_blocks_on_normalized_username ON username_blocks (normalized_username)`,
-		}},
-		{version: "20250805075010", phase: "expand", statements: []string{`ALTER TABLE fasp_providers ADD COLUMN delivery_last_failed_at timestamp(6) without time zone`}},
-		{version: "20250820084312", phase: "expand", statements: []string{`ALTER TABLE status_stats ADD COLUMN quotes_count bigint DEFAULT 0 NOT NULL`}},
-		{version: "20250828222741", phase: "expand", statements: []string{`ALTER TABLE conversations ADD COLUMN parent_status_id bigint, ADD COLUMN parent_account_id bigint`}},
-		{version: "20250902221600", phase: "expand", statements: []string{`CREATE INDEX index_statuses_on_conversation_id ON statuses (conversation_id)`}},
-		{version: "20250909100506", phase: "expand", statements: []string{`CREATE UNIQUE INDEX index_conversations_on_parent_status_id ON conversations (parent_status_id) WHERE parent_status_id IS NOT NULL`}},
-		{version: "20250912082651", phase: "expand", statements: []string{`ALTER TABLE accounts ADD COLUMN following_url character varying DEFAULT '' NOT NULL`}},
-		{version: "20250924170259", phase: "expand", statements: []string{`ALTER TABLE accounts ADD COLUMN id_scheme integer DEFAULT 0`}},
-		{version: "20251007100627", phase: "expand", statements: []string{`CREATE INDEX index_follows_on_target_account_id_and_account_id ON follows (target_account_id, account_id)`}},
-		{version: "20251007142305", phase: "expand", statements: []string{`ALTER TABLE accounts ALTER COLUMN id_scheme SET DEFAULT 1`}},
-	}
+	return embeddedMigrationSteps("4.5.15", UpgradePhaseExpand)
 }
 
 func mastodon45BackfillSteps() []upgradeStep {
-	return []upgradeStep{
-		{version: "20250911163952", phase: "backfill"},
-		{version: "20251002140103", phase: "backfill"},
-		// 20251023210145 is deliberately finalized in contract; its landing-page
-		// data update is still performed and validated during backfill.
-	}
+	return embeddedMigrationSteps("4.5.15", UpgradePhaseBackfill)
 }
 
 func mastodon45ValidateSteps() []upgradeStep {
@@ -158,16 +138,7 @@ func mastodon45ValidateSteps() []upgradeStep {
 }
 
 func mastodon45ContractSteps() []upgradeStep {
-	return []upgradeStep{
-		{version: "20250819100545", phase: "contract", statements: []string{
-			`CREATE INDEX IF NOT EXISTS index_quotes_on_account_id_and_quoted_account_id_and_id ON quotes (account_id, quoted_account_id, id)`,
-			`DROP INDEX IF EXISTS index_quotes_on_account_id_and_quoted_account_id`,
-			`CREATE INDEX IF NOT EXISTS index_quotes_on_quoted_status_id_and_id ON quotes (quoted_status_id, id)`,
-			`DROP INDEX IF EXISTS index_quotes_on_quoted_status_id`,
-		}},
-		{version: "20251007100813", phase: "contract", statements: []string{`DROP INDEX IF EXISTS index_follows_on_target_account_id`}},
-		{version: "20251023210145", phase: "contract", statements: nil},
-	}
+	return embeddedMigrationSteps("4.5.15", UpgradePhaseContract)
 }
 
 func mastodon45PhaseVersions(phase UpgradePhase) []string {
@@ -209,10 +180,7 @@ func requireMastodon45Phase(tx *gorm.DB, phase UpgradePhase) error {
 // The two replacement quote indexes are safe to install while v4.4 processes
 // still run. Their old counterparts are retained until contract.
 func ensureMastodon45ContractIndexes(tx *gorm.DB) error {
-	for index, statement := range []string{
-		`CREATE INDEX IF NOT EXISTS index_quotes_on_account_id_and_quoted_account_id_and_id ON quotes (account_id, quoted_account_id, id)`,
-		`CREATE INDEX IF NOT EXISTS index_quotes_on_quoted_status_id_and_id ON quotes (quoted_status_id, id)`,
-	} {
+	for index, statement := range embeddedMigrationStatements("migrations/4.5.15/20250819100545_prepare.sql") {
 		if err := tx.Exec(statement).Error; err != nil {
 			return fmt.Errorf("Mastodon 4.5 expand replacement index %d: %w", index+1, err)
 		}
@@ -258,25 +226,22 @@ func fillMastodon45DefaultQuotePolicy(tx *gorm.DB) error {
 		if err := json.Unmarshal([]byte(row.Settings.String), &settings); err != nil {
 			return fmt.Errorf("Mastodon 4.5 decode settings for user id=%d: %w", row.ID, err)
 		}
-		changed := false
+		var updates []mastodonSettingUpdate
 		if rubyBlankSettingValue(settings["notification_emails.quote"]) && settingIsFalse(settings["notification_emails.reblog"]) && settingIsFalse(settings["notification_emails.mention"]) {
-			settings["notification_emails.quote"] = false
-			changed = true
+			updates = append(updates, mastodonSettingUpdate{"notification_emails.quote", false})
 		}
 		privacy, _ := settings["default_privacy"].(string)
 		quotePolicy, quotePolicySet := settings["default_quote_policy"]
 		quotePolicyName, _ := quotePolicy.(string)
 		if privacy == "private" && quotePolicyName != "nobody" {
-			settings["default_quote_policy"] = "nobody"
-			changed = true
+			updates = append(updates, mastodonSettingUpdate{"default_quote_policy", "nobody"})
 		} else if privacy == "unlisted" && (!quotePolicySet || quotePolicy == nil) {
-			settings["default_quote_policy"] = "followers"
-			changed = true
+			updates = append(updates, mastodonSettingUpdate{"default_quote_policy", "followers"})
 		}
-		if !changed {
+		if len(updates) == 0 {
 			continue
 		}
-		encoded, err := json.Marshal(settings)
+		encoded, err := rewriteMastodonSettings(row.Settings.String, updates)
 		if err != nil {
 			return fmt.Errorf("Mastodon 4.5 encode settings for user id=%d: %w", row.ID, err)
 		}

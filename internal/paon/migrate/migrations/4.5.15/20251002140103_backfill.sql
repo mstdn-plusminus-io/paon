@@ -1,0 +1,2 @@
+-- Mastodon 4.5.15, upstream migration 20251002140103, phase backfill.
+-- Go handler: migrateMastodon45TimelinePreviewSetting (YAML settings).
