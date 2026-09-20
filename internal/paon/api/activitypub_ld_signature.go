@@ -46,10 +46,10 @@ func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activi
 	}
 	var document any
 	if err := json.Unmarshal(body, &document); err != nil {
-		return nil, fmt.Errorf("parse linked-data signature document: %w", err)
+		return nil, fmt.Errorf("decode linked-data signature document: %w", err)
 	}
 	if activityPubHasUnsupportedSignedJSONLDFeature(document) {
-		return nil, fmt.Errorf("unsupported linked-data signature JSON-LD feature")
+		return nil, fmt.Errorf("unsupported signed JSON-LD graph feature")
 	}
 	actor, err := s.activityPubLinkedDataSignatureCreatorActor(payload.Signature.Creator)
 	if err != nil {

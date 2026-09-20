@@ -336,6 +336,7 @@ type Config struct {
 	DisableRemoteMediaCacheSet              bool
 	SingleUserMode                          bool
 	LimitedFederationMode                   bool
+	AllowUnverifiedActivityRefetch          bool
 	DynamoDBEnabled                         bool
 	DynamoDBAccessKey                       string
 	DynamoDBSecretKey                       string
@@ -352,7 +353,6 @@ type Config struct {
 	OmniAuthOnly                            bool
 	DisableSignupByAPI                      bool
 	DisallowUnauthenticatedAPIAccess        bool
-	AllowUnverifiedActivityRefetch          bool
 	AuthorizedFetch                         bool
 	AuthorizedFetchEnvSet                   bool
 	DisableAutoSwitchingRegistrations       bool
@@ -765,6 +765,7 @@ func FromEnv() Config {
 		DisableRemoteMediaCacheSet:              disableRemoteMediaCacheSet,
 		SingleUserMode:                          os.Getenv("SINGLE_USER_MODE") == "true",
 		LimitedFederationMode:                   os.Getenv("LIMITED_FEDERATION_MODE") == "true" || os.Getenv("WHITELIST_MODE") == "true",
+		AllowUnverifiedActivityRefetch:          os.Getenv("PAON_ALLOW_UNVERIFIED_ACTIVITY_REFETCH") == "1" || os.Getenv("PAON_ALLOW_UNVERIFIED_ACTIVITY_REFETCH") == "true",
 		DynamoDBEnabled:                         os.Getenv("DYNAMODB_ENABLED") == "true",
 		DynamoDBAccessKey:                       envOrFallback("DYNAMODB_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
 		DynamoDBSecretKey:                       envOrFallback("DYNAMODB_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),
@@ -781,7 +782,6 @@ func FromEnv() Config {
 		OmniAuthOnly:                            railsEnvTrue("OMNIAUTH_ONLY"),
 		DisableSignupByAPI:                      railsEnvTrue("DISABLE_SIGNUP_BY_API"),
 		DisallowUnauthenticatedAPIAccess:        railsEnvTrue("DISALLOW_UNAUTHENTICATED_API_ACCESS"),
-		AllowUnverifiedActivityRefetch:          os.Getenv("PAON_ALLOW_UNVERIFIED_ACTIVITY_REFETCH") == "1" || os.Getenv("PAON_ALLOW_UNVERIFIED_ACTIVITY_REFETCH") == "true",
 		AuthorizedFetch:                         railsEnvTrue("AUTHORIZED_FETCH"),
 		AuthorizedFetchEnvSet:                   envKeySet("AUTHORIZED_FETCH"),
 		DisableAutoSwitchingRegistrations:       railsEnvTrue("DISABLE_AUTOMATIC_SWITCHING_TO_APPROVED_REGISTRATIONS"),
