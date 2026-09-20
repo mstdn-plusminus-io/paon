@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
@@ -67,6 +68,9 @@ func (s *Server) createList(c *echo.Context) error {
 	if strings.TrimSpace(title) == "" {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Title can't be blank")
 	}
+	if !validListTitle(title) {
+		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Title is too long (maximum is 256 characters)")
+	}
 
 	var count int64
 	if err := s.db.Model(&models.List{}).Where("account_id = ?", account.ID).Count(&count).Error; err != nil {
@@ -117,6 +121,9 @@ func (s *Server) updateList(c *echo.Context) error {
 		if strings.TrimSpace(title) == "" {
 			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Title can't be blank")
 		}
+		if !validListTitle(title) {
+			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Title is too long (maximum is 256 characters)")
+		}
 		updates["title"] = title
 	}
 	if params.RepliesPolicy != nil {
@@ -132,6 +139,10 @@ func (s *Server) updateList(c *echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusOK, serializer.ListFromModel(*list))
+}
+
+func validListTitle(title string) bool {
+	return strings.TrimSpace(title) != "" && utf8.RuneCountInString(title) <= 256
 }
 
 func (s *Server) deleteList(c *echo.Context) error {
@@ -309,7 +320,9 @@ func (s *Server) listTimelineQuery(list models.List) *gorm.DB {
 	query := s.statusQuery().
 		Joins("JOIN list_accounts ON list_accounts.account_id = statuses.account_id").
 		Where("list_accounts.list_id = ?", list.ID).
+		Where("(list_accounts.follow_id IS NOT NULL OR list_accounts.account_id = ?)", list.AccountID).
 		Where("statuses.deleted_at IS NULL").
+		Where("statuses.reblog_of_id IS NULL OR EXISTS (SELECT 1 FROM statuses reblogged_statuses WHERE reblogged_statuses.id = statuses.reblog_of_id AND reblogged_statuses.deleted_at IS NULL)").
 		Where("statuses.visibility IN ?", []int{0, 1, 2})
 
 	switch list.RepliesPolicy {

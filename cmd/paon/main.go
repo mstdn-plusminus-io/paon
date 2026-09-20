@@ -7,12 +7,14 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/api"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	paondb "github.com/mstdn-plusminus-io/paon/internal/paon/db"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/telemetry"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/web"
 )
 
@@ -42,6 +44,17 @@ func main() {
 		if cfg.ShouldLog("warn") {
 			log.Printf("configuration warning: %s", warning)
 		}
+	}
+	if cfg.OpenTelemetryEnabled && !*checkConfig {
+		telemetryRuntime, err := telemetry.Initialize(ctx, telemetry.OptionsFromConfig(cfg, telemetryServiceRole(cfg.ProcessRole)))
+		if err != nil {
+			log.Fatalf("initialize OpenTelemetry: %v", err)
+		}
+		defer func() {
+			if err := telemetryRuntime.ShutdownWithTimeout(10 * time.Second); err != nil {
+				log.Printf("shutdown OpenTelemetry: %v", err)
+			}
+		}()
 	}
 	if err := web.ValidatePublicAssets(cfg); err != nil {
 		log.Fatalf("check public assets: %v", err)
@@ -86,6 +99,11 @@ func main() {
 	if cfg.ShouldStartBackgroundWorkers() {
 		workers = server.StartBackgroundWorkers(ctx)
 	}
+	removeWorkerReadiness, err := activateWorkerReadiness(ctx, cfg, workers)
+	if err != nil {
+		log.Fatalf("create worker readiness file: %v", err)
+	}
+	defer removeWorkerReadiness()
 	if !cfg.ShouldStartHTTPServer() {
 		if cfg.ShouldLog("info") {
 			log.Printf("paon worker role started")
@@ -102,6 +120,46 @@ func main() {
 		log.Fatal(err)
 	}
 	waitForBackgroundWorkers(workers)
+}
+
+func telemetryServiceRole(processRole string) string {
+	switch processRole {
+	case "web":
+		return "web"
+	case "worker":
+		return "worker"
+	default:
+		return "web-worker"
+	}
+}
+
+func activateWorkerReadiness(ctx context.Context, cfg config.Config, workers *api.BackgroundWorkers) (func(), error) {
+	filename := cfg.WorkerReadyFilename
+	if filename == "" || workers == nil {
+		return func() {}, nil
+	}
+	if err := workers.WaitReady(ctx); err != nil {
+		return nil, fmt.Errorf("wait for worker initialization: %w", err)
+	}
+	directory := "tmp"
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return nil, err
+	}
+	temporary, err := os.CreateTemp(directory, ".paon-worker-ready-*")
+	if err != nil {
+		return nil, err
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return nil, err
+	}
+	readyPath := filepath.Join(directory, filename)
+	if err := os.Rename(temporaryPath, readyPath); err != nil {
+		_ = os.Remove(temporaryPath)
+		return nil, err
+	}
+	return func() { _ = os.Remove(readyPath) }, nil
 }
 
 func waitForBackgroundWorkers(workers *api.BackgroundWorkers) {

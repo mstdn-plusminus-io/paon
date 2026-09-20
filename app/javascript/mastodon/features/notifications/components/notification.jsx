@@ -15,6 +15,8 @@ import AccountContainer from 'mastodon/containers/account_container';
 import StatusContainer from 'mastodon/containers/status_container';
 import { me } from 'mastodon/initial_state';
 
+import { NotificationModerationWarning } from '../../notifications_v2/components/notification_moderation_warning';
+import { NotificationSeveredRelationships } from '../../notifications_v2/components/notification_severed_relationships';
 import FollowRequestContainer from '../containers/follow_request_container';
 
 import Report from './report';
@@ -29,6 +31,7 @@ const messages = defineMessages({
   update: { id: 'notification.update', defaultMessage: '{name} edited a post' },
   adminSignUp: { id: 'notification.admin.sign_up', defaultMessage: '{name} signed up' },
   adminReport: { id: 'notification.admin.report', defaultMessage: '{name} reported {target}' },
+  unknownAccount: { id: 'notification.unknown_account', defaultMessage: 'An unavailable account' },
 });
 
 const notificationForScreenReader = (intl, message, timestamp) => {
@@ -397,12 +400,12 @@ class Notification extends ImmutablePureComponent {
     }
 
     const targetAccount = report.get('target_account');
-    const targetDisplayNameHtml = { __html: targetAccount.get('display_name_html') };
-    const targetLink = <bdi><Link className='notification__display-name' title={targetAccount.get('acct')} to={`/@${targetAccount.get('acct')}`} dangerouslySetInnerHTML={targetDisplayNameHtml} /></bdi>;
+    const targetAcct = targetAccount ? targetAccount.get('acct') : intl.formatMessage(messages.unknownAccount);
+    const targetLink = targetAccount ? <bdi><Link className='notification__display-name' title={targetAcct} data-hover-card-account={targetAccount.get('id')} to={`/@${targetAcct}`} dangerouslySetInnerHTML={{ __html: targetAccount.get('display_name_html') }} /></bdi> : targetAcct;
 
     return (
       <HotKeys handlers={this.getHandlers()}>
-        <div className={classNames('notification notification-admin-report focusable', { unread })} tabIndex={0} aria-label={notificationForScreenReader(intl, intl.formatMessage(messages.adminReport, { name: account.get('acct'), target: notification.getIn(['report', 'target_account', 'acct']) }), notification.get('created_at'))}>
+        <div className={classNames('notification notification-admin-report focusable', { unread })} tabIndex={0} aria-label={notificationForScreenReader(intl, intl.formatMessage(messages.adminReport, { name: account.get('acct'), target: targetAcct }), notification.get('created_at'))}>
           <div className='notification__message'>
             <div className='notification__favourite-icon-wrapper'>
               <Icon id='flag' fixedWidth />
@@ -421,11 +424,33 @@ class Notification extends ImmutablePureComponent {
 
   render () {
     const { notification } = this.props;
-    const account          = notification.get('account');
-    const displayNameHtml  = { __html: account.get('display_name_html') };
-    const link             = <bdi><Link className='notification__display-name' href={`/@${account.get('acct')}`} title={account.get('acct')} to={`/@${account.get('acct')}`} dangerouslySetInnerHTML={displayNameHtml} /></bdi>;
+    const type             = notification.get('type');
 
-    switch(notification.get('type')) {
+    if (type === 'severed_relationships' && notification.get('event')) {
+      return <NotificationSeveredRelationships event={notification.get('event').toJS()} unread={!!this.props.unread} />;
+    }
+
+    if (type === 'moderation_warning' && notification.get('moderation_warning')) {
+      return <NotificationModerationWarning warning={notification.get('moderation_warning').toJS()} unread={!!this.props.unread} />;
+    }
+
+    const account          = notification.get('account');
+
+    if (!account) {
+      return (
+        <div className={classNames('notification notification-43__unknown focusable', { unread: this.props.unread })} tabIndex={0}>
+          <div className='notification__message'>
+            <div className='notification__favourite-icon-wrapper'><Icon id='bell' fixedWidth /></div>
+            <span><FormattedMessage id='notification.unknown' defaultMessage='A notification is no longer available.' /></span>
+          </div>
+        </div>
+      );
+    }
+
+    const displayNameHtml  = { __html: account.get('display_name_html') };
+    const link             = <bdi><Link className='notification__display-name' href={`/@${account.get('acct')}`} title={account.get('acct')} data-hover-card-account={account.get('id')} to={`/@${account.get('acct')}`} dangerouslySetInnerHTML={displayNameHtml} /></bdi>;
+
+    switch(type) {
     case 'follow':
       return this.renderFollow(notification, account, link);
     case 'follow_request':
@@ -448,7 +473,14 @@ class Notification extends ImmutablePureComponent {
       return this.renderAdminReport(notification, account, link);
     }
 
-    return null;
+    return (
+      <div className={classNames('notification notification-43__unknown focusable', { unread: this.props.unread })} tabIndex={0}>
+        <div className='notification__message'>
+          <div className='notification__favourite-icon-wrapper'><Icon id='bell' fixedWidth /></div>
+          <span><FormattedMessage id='notification.unknown' defaultMessage='A notification is no longer available.' /></span>
+        </div>
+      </div>
+    );
   }
 
 }

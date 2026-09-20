@@ -8,6 +8,7 @@ import classNames from 'classnames';
 import ImmutablePropTypes from 'react-immutable-proptypes';
 
 import { Icon }  from 'mastodon/components/icon';
+import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { domain, searchEnabled } from 'mastodon/initial_state';
 import { HASHTAG_REGEX } from 'mastodon/utils/hashtags';
 
@@ -31,10 +32,10 @@ class Search extends PureComponent {
 
   static contextTypes = {
     router: PropTypes.object.isRequired,
-    identity: PropTypes.object.isRequired,
   };
 
   static propTypes = {
+    identity: identityContextPropShape,
     value: PropTypes.string.isRequired,
     recent: ImmutablePropTypes.orderedSet,
     submitted: PropTypes.bool,
@@ -287,7 +288,7 @@ class Search extends PureComponent {
   }
 
   _calculateOptions (value) {
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
     const trimmedValue = value.trim();
     const options = [];
 
@@ -329,7 +330,7 @@ class Search extends PureComponent {
   render () {
     const { intl, value, submitted, recent } = this.props;
     const { expanded, options, selectedOption } = this.state;
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     const hasValue = value.length > 0 || submitted;
 
@@ -415,4 +416,4 @@ class Search extends PureComponent {
 
 }
 
-export default injectIntl(Search);
+export default withIdentity(injectIntl(Search));

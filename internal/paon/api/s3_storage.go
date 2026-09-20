@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsretry "github.com/aws/aws-sdk-go-v2/aws/retry"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
@@ -37,9 +38,12 @@ const (
 	s3HTTPReadTimeout              = 5 * time.Second
 	s3HTTPExpectContinueTimeout    = 10 * time.Second
 	paperclipImmutableCacheControl = "public, max-age=315576000, immutable"
+	azureBlobCopyPollInterval      = 100 * time.Millisecond
+	azureBlobCopyTimeout           = 5 * time.Minute
 )
 
 var s3HTTPClient = &http.Client{Transport: s3HTTPTransport()}
+var storageDeleteRetryWait = waitForStorageDeleteRetry
 
 type s3SDKStorage struct {
 	client    *s3.Client
@@ -114,7 +118,13 @@ func newS3SDKStorage(ctx context.Context, cfg config.Config) (*s3SDKStorage, err
 
 	client := s3.NewFromConfig(awsCfg, func(options *s3.Options) {
 		options.HTTPClient = s3HTTPClient
-		options.Retryer = aws.NopRetryer{}
+		if cfg.S3RetryLimit > 0 {
+			options.Retryer = awsretry.NewStandard(func(retryOptions *awsretry.StandardOptions) {
+				retryOptions.MaxAttempts = cfg.S3RetryLimit + 1
+			})
+		} else {
+			options.Retryer = aws.NopRetryer{}
+		}
 		if endpoint := s3SDKBaseEndpoint(cfg); endpoint != "" {
 			options.BaseEndpoint = aws.String(endpoint)
 		}
@@ -185,17 +195,124 @@ func (s *Server) deletePaperclipObject(ctx context.Context, key string) {
 	if strings.TrimSpace(key) == "" {
 		return
 	}
+	_ = s.deletePaperclipObjectWithRetry(ctx, key)
+}
+
+func (s *Server) deletePaperclipObjectWithRetry(ctx context.Context, key string) error {
+	if strings.TrimSpace(key) == "" {
+		return nil
+	}
 	if s.s3ObjectStorageEnabled() {
-		_ = s.deleteS3Object(ctx, key)
-		return
+		// S3 single-object operations use the SDK retryer configured solely by
+		// S3_RETRY_LIMIT. Do not multiply it by the attachment-batch setting.
+		return s.deleteS3Object(ctx, key)
 	}
-	if s.azureObjectStorageEnabled() {
-		_ = s.deleteAzureBlobObject(ctx, key)
-		return
+	var deleteObject func(context.Context, string) error
+	switch {
+	case s.azureObjectStorageEnabled():
+		deleteObject = s.deleteAzureBlobObject
+	case s.swiftObjectStorageEnabled():
+		deleteObject = s.deleteSwiftObject
+	default:
+		return nil
 	}
-	if s.swiftObjectStorageEnabled() {
-		_ = s.deleteSwiftObject(ctx, key)
+	return retryStorageObjectDelete(ctx, key, storageBatchDeleteTotalAttempts(s.cfg), deleteObject, storageDeleteRetryWait)
+}
+
+func (s *Server) deletePaperclipObjects(ctx context.Context, keys []string) error {
+	keys = uniqueStorageObjectKeys(keys)
+	if len(keys) == 0 {
+		return nil
 	}
+	if s.s3ObjectStorageEnabled() {
+		if len(keys) == 1 {
+			return s.deleteS3Object(ctx, keys[0])
+		}
+		return s.deleteS3Objects(ctx, keys)
+	}
+	var deleteObject func(context.Context, string) error
+	switch {
+	case s.azureObjectStorageEnabled():
+		deleteObject = s.deleteAzureBlobObject
+	case s.swiftObjectStorageEnabled():
+		deleteObject = s.deleteSwiftObject
+	default:
+		return nil
+	}
+	var errs []error
+	for _, key := range keys {
+		if err := retryStorageObjectDelete(ctx, key, storageBatchDeleteTotalAttempts(s.cfg), deleteObject, storageDeleteRetryWait); err != nil {
+			errs = append(errs, fmt.Errorf("delete object %q: %w", key, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func storageBatchDeleteTotalAttempts(cfg config.Config) int {
+	if cfg.S3BatchDeleteRetry > 0 {
+		return cfg.S3BatchDeleteRetry
+	}
+	return 3
+}
+
+func retryStorageObjectDelete(ctx context.Context, key string, totalAttempts int, deleteObject func(context.Context, string) error, wait func(context.Context, int) error) error {
+	if deleteObject == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	if totalAttempts < 1 {
+		totalAttempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= totalAttempts; attempt++ {
+		lastErr = deleteObject(ctx, key)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == totalAttempts || !s3DeleteErrorRetryable(lastErr) {
+			return lastErr
+		}
+		if wait != nil {
+			if err := wait(ctx, attempt); err != nil {
+				return errors.Join(lastErr, err)
+			}
+		}
+	}
+	return lastErr
+}
+
+func waitForStorageDeleteRetry(ctx context.Context, attempt int) error {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 6 {
+		attempt = 6
+	}
+	delay := time.Duration(1<<attempt) * time.Second
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func uniqueStorageObjectKeys(keys []string) []string {
+	seen := make(map[string]struct{}, len(keys))
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
 }
 
 func accountImageObjectKey(accountID int64, kind string, style string, filename string) string {
@@ -266,7 +383,7 @@ func (s *Server) presignedS3ObjectURL(key string, expires time.Duration) string 
 	}
 	output, err := storage.presigner.PresignGetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
-		Key:    aws.String(strings.TrimLeft(key, "/")),
+		Key:    aws.String(s.cfg.S3ObjectKey(key)),
 	}, func(options *s3.PresignOptions) {
 		options.Expires = expires
 	})
@@ -332,7 +449,7 @@ func (s *Server) uploadS3Object(ctx context.Context, key string, body io.Reader,
 	}
 	input := &transfermanager.UploadObjectInput{
 		Bucket:        aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
-		Key:           aws.String(strings.TrimLeft(key, "/")),
+		Key:           aws.String(s.cfg.S3ObjectKey(key)),
 		Body:          body,
 		ContentLength: aws.Int64(size),
 		CacheControl:  aws.String(paperclipImmutableCacheControl),
@@ -360,9 +477,118 @@ func (s *Server) deleteS3Object(ctx context.Context, key string) error {
 	}
 	_, err = storage.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
-		Key:    aws.String(strings.TrimLeft(key, "/")),
+		Key:    aws.String(s.cfg.S3ObjectKey(key)),
 	})
 	return err
+}
+
+func (s *Server) deleteS3Objects(ctx context.Context, keys []string) error {
+	keys = uniqueStorageObjectKeys(keys)
+	if len(keys) == 0 {
+		return nil
+	}
+	storage, err := s.s3SDK(ctx)
+	if err != nil {
+		return err
+	}
+	if storage == nil {
+		return nil
+	}
+	limit := s.cfg.S3BatchDeleteLimit
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	for start := 0; start < len(keys); start += limit {
+		end := min(start+limit, len(keys))
+		if err := s.deleteS3ObjectBatch(ctx, storage, keys[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) deleteS3ObjectBatch(ctx context.Context, storage *s3SDKStorage, keys []string) error {
+	totalAttempts := storageBatchDeleteTotalAttempts(s.cfg)
+	pending := append([]string(nil), keys...)
+	var lastErr error
+	for attempt := 1; attempt <= totalAttempts && len(pending) > 0; attempt++ {
+		objects := make([]s3types.ObjectIdentifier, 0, len(pending))
+		for _, key := range pending {
+			objects = append(objects, s3types.ObjectIdentifier{Key: aws.String(s.cfg.S3ObjectKey(key))})
+		}
+		output, err := storage.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
+			Delete: &s3types.Delete{Objects: objects, Quiet: aws.Bool(true)},
+		})
+		if err != nil {
+			lastErr = err
+			if attempt == totalAttempts || !s3DeleteErrorRetryable(err) {
+				return fmt.Errorf("delete S3 object batch: %w", err)
+			}
+			continue
+		}
+		pending = pending[:0]
+		var permanent []string
+		for _, objectErr := range output.Errors {
+			key := strings.TrimSpace(aws.ToString(objectErr.Key))
+			code := strings.TrimSpace(aws.ToString(objectErr.Code))
+			if code == "NoSuchKey" || key == "" {
+				continue
+			}
+			if s3DeleteCodeRetryable(code) {
+				pending = append(pending, removeS3KeyPrefix(s.cfg.S3KeyPrefix, key))
+			} else {
+				permanent = append(permanent, code+":"+key)
+			}
+		}
+		if len(permanent) > 0 {
+			return fmt.Errorf("delete S3 object batch failed: %s", strings.Join(permanent, ", "))
+		}
+		lastErr = nil
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("delete S3 object batch exhausted %d attempts for %d objects: %w", totalAttempts, len(pending), lastErr)
+	}
+	return nil
+}
+
+func removeS3KeyPrefix(prefix string, key string) string {
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+	if prefix == "" {
+		return key
+	}
+	return strings.TrimPrefix(key, prefix+"/")
+}
+
+func s3DeleteCodeRetryable(code string) bool {
+	switch code {
+	case "InternalError", "OperationAborted", "RequestTimeout", "RequestTimeoutException", "ServiceUnavailable", "SlowDown", "Throttling", "ThrottlingException":
+		return true
+	default:
+		return false
+	}
+}
+
+func s3DeleteErrorRetryable(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary()) {
+		return true
+	}
+	var storageHTTPError s3HTTPError
+	if errors.As(err, &storageHTTPError) {
+		return storageHTTPError.status == http.StatusRequestTimeout ||
+			storageHTTPError.status == http.StatusTooEarly ||
+			storageHTTPError.status == http.StatusTooManyRequests ||
+			storageHTTPError.status >= http.StatusInternalServerError
+	}
+	status := s3SDKHTTPStatusCode(err)
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
 }
 
 func (s *Server) s3MultipartThreshold() int {
@@ -390,7 +616,7 @@ func (s *Server) putS3ObjectACL(ctx context.Context, key string, acl string) err
 	_, err = storage.client.PutObjectAcl(ctx, &s3.PutObjectAclInput{
 		ACL:    s3types.ObjectCannedACL(acl),
 		Bucket: aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
-		Key:    aws.String(strings.TrimLeft(key, "/")),
+		Key:    aws.String(s.cfg.S3ObjectKey(key)),
 	})
 	if status := s3SDKHTTPStatusCode(err); status == http.StatusNotFound || status == http.StatusNotImplemented {
 		return nil
@@ -421,7 +647,7 @@ func (s *Server) getS3ObjectReader(ctx context.Context, key string) (io.ReadClos
 	}
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(strings.Trim(s.cfg.S3Bucket, "/")),
-		Key:    aws.String(strings.TrimLeft(key, "/")),
+		Key:    aws.String(s.cfg.S3ObjectKey(key)),
 	}
 	if s.cfg.S3EnableChecksumMode {
 		input.ChecksumMode = s3types.ChecksumModeEnabled
@@ -489,6 +715,96 @@ func (s *Server) doPutAzureBlobObject(req *http.Request) error {
 	return nil
 }
 
+// copyAzureBlobObject uses Azure's server-side Copy Blob operation. Copy Blob
+// preserves the source content properties and metadata, unlike downloading and
+// re-uploading through the paon-admin process. The signed source URL is kept in
+// the request header and is never included in logs or returned errors.
+func (s *Server) copyAzureBlobObject(ctx context.Context, sourceKey string, destinationKey string) error {
+	if !s.azureObjectStorageEnabled() || strings.TrimSpace(sourceKey) == "" || strings.TrimSpace(destinationKey) == "" || sourceKey == destinationKey {
+		return nil
+	}
+	sourceURL := s.presignedAzureBlobURL(sourceKey, azureBlobCopyTimeout+time.Minute)
+	if sourceURL == "" {
+		return errors.New("build Azure blob copy source URL")
+	}
+	req, err := s.newAzureBlobObjectRequest(ctx, http.MethodPut, destinationKey, http.NoBody, 0, "")
+	if err != nil {
+		return err
+	}
+	req.Header.Set("x-ms-copy-source", sourceURL)
+	s.signAzureBlobRequest(req)
+	resp, err := s3HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	statusCode := resp.StatusCode
+	status := strings.ToLower(strings.TrimSpace(resp.Header.Get("x-ms-copy-status")))
+	_ = resp.Body.Close()
+	if statusCode == http.StatusNotFound {
+		// Missing Paperclip objects are valid legacy state. Advancing the schema
+		// version prevents every subsequent check from rediscovering the row.
+		return nil
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		return s3HTTPError{status: statusCode}
+	}
+	switch status {
+	case "", "success":
+		if status == "success" || statusCode != http.StatusAccepted {
+			return nil
+		}
+	case "failed", "aborted":
+		return fmt.Errorf("Azure blob copy finished with status %s", status)
+	case "pending":
+		// Poll below. Copy Blob is asynchronous even when the source and
+		// destination are in the same account.
+	default:
+		return errors.New("Azure blob copy returned an unknown status")
+	}
+	return s.waitForAzureBlobCopy(ctx, destinationKey)
+}
+
+func (s *Server) waitForAzureBlobCopy(ctx context.Context, destinationKey string) error {
+	pollCtx, cancel := context.WithTimeout(ctx, azureBlobCopyTimeout)
+	defer cancel()
+	for {
+		timer := time.NewTimer(azureBlobCopyPollInterval)
+		select {
+		case <-pollCtx.Done():
+			timer.Stop()
+			return pollCtx.Err()
+		case <-timer.C:
+		}
+		req, err := s.newAzureBlobObjectRequest(pollCtx, http.MethodHead, destinationKey, http.NoBody, 0, "")
+		if err != nil {
+			return err
+		}
+		s.signAzureBlobRequest(req)
+		resp, err := s3HTTPClient.Do(req)
+		if err != nil {
+			return err
+		}
+		statusCode := resp.StatusCode
+		copyStatus := strings.ToLower(strings.TrimSpace(resp.Header.Get("x-ms-copy-status")))
+		_ = resp.Body.Close()
+		if statusCode < 200 || statusCode >= 300 {
+			return s3HTTPError{status: statusCode}
+		}
+		switch copyStatus {
+		case "success":
+			return nil
+		case "pending":
+			continue
+		case "":
+			return errors.New("Azure blob copy status is missing")
+		case "failed", "aborted":
+			return fmt.Errorf("Azure blob copy finished with status %s", copyStatus)
+		default:
+			return errors.New("Azure blob copy returned an unknown status")
+		}
+	}
+}
+
 func (s *Server) deleteAzureBlobObject(ctx context.Context, key string) error {
 	req, err := s.newAzureBlobObjectRequest(ctx, http.MethodDelete, key, http.NoBody, 0, "")
 	if err != nil {
@@ -551,6 +867,38 @@ func (s *Server) putSwiftObjectReader(ctx context.Context, key string, body io.R
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return s3HTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
+	}
+	return nil
+}
+
+// copySwiftObject uses Swift's synchronous server-side COPY operation. The
+// destination header is URL-escaped per Swift's object-copy contract while the
+// authentication token remains confined to the request header.
+func (s *Server) copySwiftObject(ctx context.Context, sourceKey string, destinationKey string) error {
+	if !s.swiftObjectStorageEnabled() || strings.TrimSpace(sourceKey) == "" || strings.TrimSpace(destinationKey) == "" || sourceKey == destinationKey {
+		return nil
+	}
+	token, err := s.swiftAuthToken(ctx)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "COPY", s.swiftObjectURL(sourceKey), http.NoBody)
+	if err != nil {
+		return err
+	}
+	destination := &url.URL{Path: "/" + path.Join(strings.Trim(s.cfg.SwiftContainer, "/"), strings.Trim(destinationKey, "/"))}
+	req.Header.Set("Destination", destination.EscapedPath())
+	req.Header.Set("X-Auth-Token", token)
+	resp, err := s3HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return s3HTTPError{status: resp.StatusCode}
 	}
 	return nil
 }

@@ -368,7 +368,6 @@ func TestApplicationFormAndShowHTMLRenderRailsClasses(t *testing.T) {
 		`value="write:statuses"`,
 		`value="admin:read:canonical_email_blocks"`,
 		`value="admin:write:reports"`,
-		`value="crypto"`,
 		`<span class="hint">`,
 		`class="actions"`,
 		`class="btn"`,
@@ -377,6 +376,9 @@ func TestApplicationFormAndShowHTMLRenderRailsClasses(t *testing.T) {
 		if !strings.Contains(form, want) {
 			t.Fatalf("application form html missing %q: %s", want, form)
 		}
+	}
+	if strings.Contains(form, `value="crypto"`) {
+		t.Fatalf("Mastodon 4.3 application form must omit removed crypto scope: %s", form)
 	}
 	show := applicationShowHTML(app, "token", "", "", "en")
 	for _, want := range []string{

@@ -18,6 +18,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	paonotp "github.com/mstdn-plusminus-io/paon/internal/paon/otp"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -307,6 +308,35 @@ func TestLegacyOTPSecretDecryptsAttrEncryptedGCM(t *testing.T) {
 	}
 }
 
+func TestOTPSecretFromUserPrefersActiveRecordAndRejectsTampering(t *testing.T) {
+	credentials := paonotp.Credentials{
+		PrimaryKey:        "primary-key-0123456789abcdef0123456789abcdef",
+		DeterministicKey:  "deterministic-key-0123456789abcdef0123456789abcdef",
+		KeyDerivationSalt: "derivation-salt-0123456789abcdef0123456789abcdef",
+	}
+	server := &Server{cfg: config.Config{
+		ActiveRecordEncryptionPrimaryKey:        credentials.PrimaryKey,
+		ActiveRecordEncryptionDeterministicKey:  credentials.DeterministicKey,
+		ActiveRecordEncryptionKeyDerivationSalt: credentials.KeyDerivationSalt,
+	}}
+	encrypted, err := paonotp.EncryptActiveRecord("JBSWY3DPEHPK3PXP", credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := &models.User{
+		OTPSecret:          sql.NullString{String: encrypted, Valid: true},
+		EncryptedOTPSecret: sql.NullString{String: goOTPSecretPrefix + "KRUGS4ZANFZSAYJA", Valid: true},
+	}
+	secret, ok, err := server.otpSecretFromUser(user)
+	if err != nil || !ok || secret != "JBSWY3DPEHPK3PXP" {
+		t.Fatalf("secret = %q ok=%v err=%v", secret, ok, err)
+	}
+	user.OTPSecret.String = strings.Replace(encrypted, `"p":"`, `"p":"A`, 1)
+	if _, _, err := server.otpSecretFromUser(user); err == nil {
+		t.Fatal("tampered Active Record value fell back to a legacy secret")
+	}
+}
+
 func legacyOTPEncryptedFixture(t *testing.T, secret string, otpSecretKey string) (string, string, string) {
 	t.Helper()
 	iv := []byte("123456789012")
@@ -389,12 +419,13 @@ func TestAuthFormExposesOTPAttemptButPasswordGrantRejectsOTPUsersLikeRails(t *te
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`goOTPSecretPrefix + secret`,
-		`"otp_required_for_login":    true`,
+		`paonotp.EncryptActiveRecord(secret`,
+		`"otp_required_for_login": true`,
+		`"otp_secret":             encryptedSecret`,
 		`validTOTP(secret, attempt, time.Now().UTC())`,
 		`s.regenerateRecoveryCodesForUser(user.ID)`,
 		`s.consumeUserRecoveryCode(user, attempt, now)`,
-		`s.legacyOTPSecretFromUser(user)`,
+		`s.otpSecretFromUser(user)`,
 		`"consumed_timestep": step`,
 		`"otp_backup_codes": hashes`,
 	} {

@@ -240,6 +240,54 @@ func TestSearchMeiliIDsUsesConfiguredIndexAndKey(t *testing.T) {
 	}
 }
 
+func TestSearchMeiliAccountIDsSeparatesAutocompleteAndFullSearch(t *testing.T) {
+	var bodies []map[string]any
+	originalClient := meiliHTTPClient
+	meiliHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, body)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"hits":[]}`))}, nil
+	})}
+	defer func() { meiliHTTPClient = originalClient }()
+
+	server := &Server{cfg: config.Config{MeiliEnabled: true, MeiliHost: "http://meili.test"}}
+	if _, err := server.searchMeiliAccountIDs(t.Context(), "alice", nil, false, false, 20, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.searchMeiliAccountIDs(t.Context(), "alice profile", nil, false, true, 20, 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("requests = %#v", bodies)
+	}
+	if got := jsonStringSlice(bodies[0]["attributesToSearchOn"]); strings.Join(got, ",") != "username,display_name" {
+		t.Fatalf("autocomplete attributes = %#v", got)
+	}
+	if _, exists := bodies[0]["matchingStrategy"]; exists {
+		t.Fatalf("autocomplete matching strategy = %#v", bodies[0])
+	}
+	if got := jsonStringSlice(bodies[1]["attributesToSearchOn"]); strings.Join(got, ",") != "username,display_name,text" {
+		t.Fatalf("full attributes = %#v", got)
+	}
+	if bodies[1]["matchingStrategy"] != "all" {
+		t.Fatalf("full matching strategy = %#v", bodies[1])
+	}
+}
+
+func jsonStringSlice(value any) []string {
+	raw, _ := value.([]any)
+	result := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if text, ok := item.(string); ok {
+			result = append(result, text)
+		}
+	}
+	return result
+}
+
 func TestMeiliHTTPClientHasDefaultTimeoutAndBodyLimit(t *testing.T) {
 	if meiliHTTPClient == nil {
 		t.Fatal("meiliHTTPClient is nil")
@@ -836,7 +884,7 @@ func TestMeiliAccountDocumentMatchesRailsSearchFields(t *testing.T) {
 		},
 	}
 	doc := server.meiliAccountDocument(account)
-	if doc.ID != 7 || doc.Username != "alice" || doc.DisplayName != "Alice" {
+	if doc.ID != 7 || doc.Username != "alice@remote.example" || doc.DisplayName != "Alice" {
 		t.Fatalf("doc core fields = %#v", doc)
 	}
 	if doc.Domain == nil || *doc.Domain != "remote.example" {

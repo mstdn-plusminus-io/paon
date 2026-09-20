@@ -212,6 +212,9 @@ func (s *Server) adminAccountAction(c *echo.Context) error {
 		if err := tx.Create(&warning).Error; err != nil {
 			return err
 		}
+		if err := createModerationWarningNotification(tx, warning, now); err != nil {
+			return err
+		}
 		createdWarning = warning
 		if err := logAdminAction(tx, user.AccountID, "create", accountWarningAuditLogTarget(warning), now); err != nil {
 			return err
@@ -224,6 +227,7 @@ func (s *Server) adminAccountAction(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
+	s.publishModerationWarningNotification(createdWarning.ID)
 	switch payload.Type {
 	case "sensitive", "silence", "suspend":
 		s.triggerAccountWebhook("account.updated", target.ID)

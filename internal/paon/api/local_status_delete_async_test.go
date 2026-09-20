@@ -17,6 +17,7 @@ func TestLocalStatusDeleteQueuesBeforeResponseWithoutSynchronousRemoval(t *testi
 	}
 	body := functionBody(t, src, "deleteStatus")
 	for _, want := range []string{
+		`asynqRemovalPayload{StatusID: status.ID, Redraft: true}`,
 		`context.WithTimeout(c.Request().Context(), localStatusDeleteEnqueueTimeout)`,
 		`s.enqueueRemovalTaskContext(enqueueCtx, removal, asynq.TaskID(removalTaskID(status.ID)))`,
 		`http.StatusServiceUnavailable`,

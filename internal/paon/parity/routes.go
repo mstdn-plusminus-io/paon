@@ -85,7 +85,7 @@ func AuditRoutes(rails []RailsRoute, goRoutes []GoRoute, accepted []AcceptedRout
 	usedGo := make(map[string]bool, len(goRoutes))
 	result := RouteAudit{}
 	for _, railsRoute := range rails {
-		paths := railsPathCandidates(railsRoute.Path)
+		paths := railsPathCandidates(railsRoute)
 		for _, method := range railsRoute.Methods {
 			mapping := RouteMapping{Method: method, RailsPath: railsRoute.Path, Controller: railsRoute.Controller, Action: railsRoute.Action}
 			for _, path := range paths {
@@ -126,20 +126,45 @@ func AuditRoutes(rails []RailsRoute, goRoutes []GoRoute, accepted []AcceptedRout
 
 var railsOptionalFormat = regexp.MustCompile(`\(\.:format\)$`)
 var railsRequiredFormat = regexp.MustCompile(`\.:format$`)
+var railsOptionalWildcard = regexp.MustCompile(`\(/\*[A-Za-z_][A-Za-z0-9_]*\)$`)
+var routeWildcardName = regexp.MustCompile(`\*[A-Za-z_][A-Za-z0-9_]*`)
+var routeParameterName = regexp.MustCompile(`:([A-Za-z_][A-Za-z0-9_]*)`)
+var literalRouteFormat = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-func railsPathCandidates(path string) []string {
+func railsPathCandidates(route RailsRoute) []string {
+	path := route.Path
+	if format := route.Constraints["format"]; literalRouteFormat.MatchString(format) {
+		path = railsOptionalFormat.ReplaceAllString(path, "")
+		path = railsRequiredFormat.ReplaceAllString(path, "")
+		return expandOptionalRailsWildcard(path + "." + format)
+	}
 	path = strings.TrimSuffix(path, "(.:format)")
 	path = railsOptionalFormat.ReplaceAllString(path, "")
-	path = strings.ReplaceAll(path, "*path", "*")
-	path = strings.ReplaceAll(path, "*other", "*")
-	candidates := []string{path}
+	candidates := expandOptionalRailsWildcard(path)
 	if railsRequiredFormat.MatchString(path) {
 		candidates = append(candidates, railsRequiredFormat.ReplaceAllString(path, ".:format"))
 	}
 	return candidates
 }
 
+func expandOptionalRailsWildcard(path string) []string {
+	if !railsOptionalWildcard.MatchString(path) {
+		return []string{path}
+	}
+	return []string{
+		railsOptionalWildcard.ReplaceAllString(path, ""),
+		railsOptionalWildcard.ReplaceAllString(path, "/*"),
+	}
+}
+
 func routeKey(method, path string) string {
+	path = routeWildcardName.ReplaceAllString(path, "*")
+	path = routeParameterName.ReplaceAllStringFunc(path, func(parameter string) string {
+		if parameter == ":format" {
+			return parameter
+		}
+		return ":param"
+	})
 	return strings.ToUpper(method) + " " + path
 }
 

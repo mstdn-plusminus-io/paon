@@ -156,6 +156,7 @@ func requiredServerRenderedLocaleKeys() []string {
 func requiredPackAssets(cfg config.Config) []string {
 	required := []string{
 		"application.js",
+		"embed.js",
 		"admin.js",
 		"public.js",
 		"error.js",
@@ -182,6 +183,10 @@ func requiredPackAssets(cfg config.Config) []string {
 		"media/images/mailer/icon_reply.png",
 		"media/images/mailer/logo.png",
 		"media/images/mailer/wordmark.png",
+		"media/images/mailer-new/common/header-bg-start.png",
+		"media/images/mailer-new/common/header-bg-end.png",
+		"media/images/mailer-new/common/logo-header.png",
+		"media/images/mailer-new/common/logo-footer.png",
 		"media/icons/favicon-16x16.png",
 		"media/icons/favicon-32x32.png",
 		"media/icons/favicon-48x48.png",
@@ -210,6 +215,8 @@ func requiredPackAssets(cfg config.Config) []string {
 		"features/compose.js",
 		"features/home_timeline.js",
 		"features/notifications.js",
+		"features/notifications/requests.js",
+		"features/notifications/request.js",
 		"features/public_timeline.js",
 		"features/community_timeline.js",
 		"features/firehose.js",
@@ -236,6 +243,7 @@ func requiredPackAssets(cfg config.Config) []string {
 		"features/mutes.js",
 		"modals/mute_modal.js",
 		"modals/block_modal.js",
+		"modals/domain_block_modal.js",
 		"modals/report_modal.js",
 		"modals/embed_modal.js",
 		"features/list_editor.js",
@@ -245,6 +253,7 @@ func requiredPackAssets(cfg config.Config) []string {
 		"features/onboarding.js",
 		"modals/compare_history_modal.js",
 		"features/explore.js",
+		"features/link_timeline.js",
 		"modals/filter_modal.js",
 		"modals/interaction_modal.js",
 		"modals/subscribed_languages_modal.js",
@@ -390,6 +399,57 @@ func (r *Renderer) ShareHTML(current *models.Account, token string, text string,
 		r.asset("locale/" + r.cfg.Locale() + "-json.js"),
 		r.asset("features/compose.js"),
 	}, CSRFTokenForSession(token), opts.User, "modal-layout compose-standalone", true, opts.DocumentTitle, opts.HeadMeta, opts.HeadLinks)
+}
+
+// EmbedHTML renders the isolated React status mount used by Mastodon oEmbed.
+// The status itself is fetched through the public REST API so this boot payload
+// intentionally contains only anonymous instance state and the status ID prop.
+func (r *Renderer) EmbedHTML(statusID string, siteTitle ...string) (string, error) {
+	initial := serializer.InitialStateFromConfig(r.cfg, nil, "")
+	initialJSON, err := json.Marshal(initial)
+	if err != nil {
+		return "", err
+	}
+	propsJSON, err := json.Marshal(map[string]string{
+		"id":     statusID,
+		"locale": r.cfg.Locale(),
+	})
+	if err != nil {
+		return "", err
+	}
+	title := r.cfg.Title
+	if len(siteTitle) > 0 && strings.TrimSpace(siteTitle[0]) != "" {
+		title = strings.TrimSpace(siteTitle[0])
+	}
+	data := struct {
+		Title       string
+		Locale      string
+		CDNHost     string
+		StorageHost string
+		InitialJSON template.JS
+		Props       string
+		CommonCSS   string
+		ThemeCSS    string
+		CommonJS    string
+		LocaleJS    string
+		EmbedJS     string
+	}{
+		Title:       title,
+		Locale:      r.cfg.Locale(),
+		CDNHost:     r.cfg.CDNHost,
+		StorageHost: r.cfg.StorageHost,
+		InitialJSON: template.JS(initialJSON),
+		Props:       string(propsJSON),
+		CommonCSS:   r.asset("common.css"),
+		ThemeCSS:    r.asset("mastodon-light.css"),
+		CommonJS:    r.asset("common.js"),
+		LocaleJS:    r.asset("locale/" + r.cfg.Locale() + "-json.js"),
+		EmbedJS:     r.asset("embed.js"),
+	}
+
+	var out string
+	err = embedTemplate.Execute(&stringWriter{target: &out}, data)
+	return out, err
 }
 
 func firstAppOptions(options []AppOptions) AppOptions {
@@ -544,7 +604,8 @@ func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID
 		AppJS       string
 		Preloads    []string
 		CommonCSS   string
-		ThemeCSS    string
+		ThemeStyles []headStylesheet
+		Theme       string
 		Favicons    []headIcon
 		AppleIcons  []headIcon
 		MaskIcon    string
@@ -569,7 +630,8 @@ func (r *Renderer) appHTML(path string, initial serializer.InitialState, mountID
 		AppJS:       appJS,
 		Preloads:    preloads,
 		CommonCSS:   r.asset("common.css"),
-		ThemeCSS:    r.asset(themeCSSAssetName(user)),
+		ThemeStyles: r.themeStylesheets(user),
+		Theme:       selectedTheme(user),
 		Favicons:    r.faviconLinks(),
 		AppleIcons:  r.appleTouchIconLinks(),
 		MaskIcon:    r.asset("media/images/logo-symbol-icon.svg"),
@@ -595,12 +657,17 @@ type headIcon struct {
 	Type  string
 }
 
+type headStylesheet struct {
+	Href  string
+	Media string
+}
+
 func (r *Renderer) faviconLinks() []headIcon {
 	sizes := []string{"16", "32", "48"}
 	links := make([]headIcon, 0, len(sizes))
 	for _, size := range sizes {
 		dimensions := size + "x" + size
-		links = append(links, headIcon{Rel: "icon", Sizes: dimensions, Href: r.asset("media/icons/favicon-" + dimensions + ".png"), Type: "image/png"})
+		links = append(links, headIcon{Rel: "icon", Sizes: dimensions, Href: "/favicon-" + dimensions + ".png", Type: "image/png"})
 	}
 	return links
 }
@@ -610,27 +677,43 @@ func (r *Renderer) appleTouchIconLinks() []headIcon {
 	links := make([]headIcon, 0, len(sizes))
 	for _, size := range sizes {
 		dimensions := size + "x" + size
-		links = append(links, headIcon{Rel: "apple-touch-icon", Sizes: dimensions, Href: r.asset("media/icons/apple-touch-icon-" + dimensions + ".png")})
+		links = append(links, headIcon{Rel: "apple-touch-icon", Sizes: dimensions, Href: "/apple-touch-icon-" + dimensions + ".png"})
 	}
 	return links
 }
 
 func themeCSSAssetName(user *models.User) string {
-	theme := "default"
+	theme := selectedTheme(user)
+	if theme == "system" {
+		theme = "default"
+	}
+	return theme + ".css"
+}
+
+func selectedTheme(user *models.User) string {
+	theme := "system"
 	settings := userSettings(user)
 	if value, ok := settings["theme"].(string); ok && supportedTheme(value) {
 		theme = value
 	}
-	return theme + ".css"
+	return theme
+}
+
+func (r *Renderer) themeStylesheets(user *models.User) []headStylesheet {
+	theme := selectedTheme(user)
+	if theme == "system" {
+		return []headStylesheet{
+			{Href: r.asset("mastodon-light.css"), Media: "not all and (prefers-color-scheme: dark)"},
+			{Href: r.asset("default.css"), Media: "(prefers-color-scheme: dark)"},
+		}
+	}
+	return []headStylesheet{{Href: r.asset(theme + ".css"), Media: "all"}}
 }
 
 func bodyClasses(base string, user *models.User, locale string) string {
 	settings := userSettings(user)
 	classes := strings.Fields(base)
-	theme := "default"
-	if value, ok := settings["theme"].(string); ok && supportedTheme(value) {
-		theme = value
-	}
+	theme := selectedTheme(user)
 	classes = append(classes, "theme-"+theme)
 	if boolSetting(settings, "web.use_system_font") {
 		classes = append(classes, "system-font")
@@ -679,6 +762,9 @@ func rtlLocale(locale string) bool {
 }
 
 func supportedTheme(theme string) bool {
+	if theme == "system" {
+		return true
+	}
 	for _, supported := range supportedThemes() {
 		if theme == supported {
 			return true
@@ -724,6 +810,21 @@ func FallbackPackAssetPath(name string) string {
 	return ""
 }
 
+// ResolvePackAssetPath returns the production fingerprinted path when a
+// manifest is available and otherwise uses the deterministic development
+// layout. Mail delivery uses this without constructing a full HTML renderer.
+func ResolvePackAssetPath(cfg config.Config, name string) string {
+	if strings.TrimSpace(cfg.PublicDir) != "" {
+		raw, err := os.ReadFile(filepath.Join(cfg.PublicDir, "packs", "manifest.json"))
+		if err == nil {
+			if value := strings.TrimSpace(parsePackManifest(raw)[name]); value != "" {
+				return value
+			}
+		}
+	}
+	return FallbackPackAssetPath(name)
+}
+
 func (r *Renderer) Asset(name string) string {
 	return r.asset(name)
 }
@@ -767,7 +868,14 @@ var appTemplate = template.Must(template.New("app").Parse(`<!DOCTYPE html>
   <link rel="mask-icon" href="{{ .MaskIcon }}" color="#6364FF">
   {{- end }}
   <link rel="manifest" href="/manifest.json">
-  <meta name="theme-color" content="#191b22">
+  {{- if eq .Theme "system" }}
+  <meta name="theme-color" content="#181820" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  {{- else if eq .Theme "mastodon-light" }}
+  <meta name="theme-color" content="#ffffff">
+  {{- else }}
+  <meta name="theme-color" content="#181820">
+  {{- end }}
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="plusminus-disable-remote-media-cache" content="{{ .RemoteCache }}">
   <meta name="initialPath" content="{{ .InitialPath }}">
@@ -790,8 +898,8 @@ var appTemplate = template.Must(template.New("app").Parse(`<!DOCTYPE html>
   {{- if .CommonCSS }}
   <link rel="stylesheet" media="all" href="{{ .CommonCSS }}" crossorigin="anonymous">
   {{- end }}
-  {{- if .ThemeCSS }}
-  <link rel="stylesheet" media="all" href="{{ .ThemeCSS }}" crossorigin="anonymous">
+  {{- range .ThemeStyles }}
+  <link rel="stylesheet" media="{{ .Media }}" href="{{ .Href }}" crossorigin="anonymous">
   {{- end }}
   <link rel="stylesheet" media="all" id="inert-style" href="/inert.css">
   <link rel="stylesheet" media="all" href="/custom.css">
@@ -829,6 +937,42 @@ var helperTemplate = template.Must(template.New("helper").Parse(`<!DOCTYPE html>
   <script src="{{ .HelperJS }}" crossorigin="anonymous" defer></script>
   {{- end }}
 </head>
+</html>`))
+
+var embedTemplate = template.Must(template.New("embed").Parse(`<!DOCTYPE html>
+<html lang="{{ .Locale }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="robots" content="noindex">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{- if .CDNHost }}
+  <link rel="dns-prefetch" href="{{ .CDNHost }}">
+  <meta name="cdn-host" content="{{ .CDNHost }}">
+  {{- end }}
+  {{- if .StorageHost }}
+  <link rel="dns-prefetch" href="{{ .StorageHost }}">
+  {{- end }}
+  <title>{{ .Title }}</title>
+  {{- if .CommonCSS }}
+  <link rel="stylesheet" media="all" href="{{ .CommonCSS }}" crossorigin="anonymous">
+  {{- end }}
+  {{- if .ThemeCSS }}
+  <link rel="stylesheet" media="all" href="{{ .ThemeCSS }}" crossorigin="anonymous">
+  {{- end }}
+  {{- if .LocaleJS }}
+  <link rel="preload" as="script" href="{{ .LocaleJS }}" crossorigin="anonymous">
+  {{- end }}
+  <script id="initial-state" type="application/json">{{ .InitialJSON }}</script>
+  {{- if .CommonJS }}
+  <script src="{{ .CommonJS }}" crossorigin="anonymous" defer></script>
+  {{- end }}
+  {{- if .EmbedJS }}
+  <script src="{{ .EmbedJS }}" crossorigin="anonymous" defer></script>
+  {{- end }}
+</head>
+<body class="embed theme-mastodon-light no-reduce-motion">
+  <div id="mastodon-status" data-props="{{ .Props }}"></div>
+</body>
 </html>`))
 
 var settingsTemplate = template.Must(template.New("settings").Parse(`<!DOCTYPE html>

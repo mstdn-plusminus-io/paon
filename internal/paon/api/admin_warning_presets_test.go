@@ -91,7 +91,7 @@ func TestAdminWarningPresetsHTMLIncludesRailsFields(t *testing.T) {
 	html := adminWarningPresetsIndexHTML([]models.AccountWarningPreset{{ID: 2, Title: "Spam", Text: "No spam"}}, adminWarningPresetForm{Title: "Draft", Text: "Draft text"}, "saved", "", "en")
 
 	for _, want := range []string{
-		"Manage warning presets",
+		"Warning presets",
 		`action="/admin/warning_presets"`,
 		`name="account_warning_preset[title]" value="Draft"`,
 		`name="account_warning_preset[text]"`,

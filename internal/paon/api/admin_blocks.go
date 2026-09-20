@@ -48,7 +48,8 @@ type adminIPBlockPayload struct {
 }
 
 type adminDomainPayload struct {
-	Domain string `json:"domain" form:"domain"`
+	Domain            string `json:"domain" form:"domain"`
+	AllowWithApproval bool   `json:"allow_with_approval" form:"allow_with_approval"`
 }
 
 type adminCanonicalEmailBlockPayload struct {
@@ -85,7 +86,7 @@ func (s *Server) adminDomainAllows(c *echo.Context) error {
 		return err
 	}
 	var rows []models.DomainAllow
-	limitValue := limit(c, 100, 200)
+	limitValue := limit(c, 100, 500)
 	if err := adminPage(c, s.db.Model(&models.DomainAllow{}), "domain_allows.id").Order("domain_allows.id DESC").Limit(limitValue).Find(&rows).Error; err != nil {
 		return err
 	}
@@ -176,7 +177,7 @@ func (s *Server) adminDomainBlocks(c *echo.Context) error {
 		return err
 	}
 	var rows []models.DomainBlock
-	limitValue := limit(c, 100, 200)
+	limitValue := limit(c, 100, 500)
 	if err := adminPage(c, s.db.Model(&models.DomainBlock{}), "domain_blocks.id").Order("domain_blocks.id DESC").Limit(limitValue).Find(&rows).Error; err != nil {
 		return err
 	}
@@ -369,7 +370,7 @@ func (s *Server) createAdminEmailDomainBlock(c *echo.Context) error {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Domain is invalid")
 	}
 	now := time.Now().UTC()
-	row := models.EmailDomainBlock{Domain: domain, CreatedAt: now, UpdatedAt: now}
+	row := models.EmailDomainBlock{Domain: domain, AllowWithApproval: payload.AllowWithApproval, CreatedAt: now, UpdatedAt: now}
 	if err := s.db.Create(&row).Error; err != nil {
 		if isUniqueConstraintError(err) {
 			return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Domain has already been taken")
@@ -828,6 +829,7 @@ func parseAdminDomainPayload(c *echo.Context) (adminDomainPayload, error) {
 	}
 	if values, err := c.FormValues(); err == nil {
 		payload.Domain = firstNonEmpty(payload.Domain, values.Get("domain"))
+		payload.AllowWithApproval = payload.AllowWithApproval || truthy(values.Get("allow_with_approval"))
 	}
 	return payload, nil
 }

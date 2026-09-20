@@ -5,15 +5,19 @@ import classNames from 'classnames';
 import ImmutablePropTypes from 'react-immutable-proptypes';
 import ImmutablePureComponent from 'react-immutable-pure-component';
 
+import HeadphonesIcon from '@/material-icons/400-24px/headphones-fill.svg?react';
+import MovieIcon from '@/material-icons/400-24px/movie-fill.svg?react';
+import VisibilityOffIcon from '@/material-icons/400-24px/visibility_off.svg?react';
+import { AltTextBadge } from 'mastodon/components/alt_text_badge';
 import { Blurhash } from 'mastodon/components/blurhash';
 import { Icon }  from 'mastodon/components/icon';
+import { formatTime } from 'mastodon/features/video';
 import { autoPlayGif, displayMedia, useBlurhash } from 'mastodon/initial_state';
 
 export default class MediaItem extends ImmutablePureComponent {
 
   static propTypes = {
     attachment: ImmutablePropTypes.map.isRequired,
-    displayWidth: PropTypes.number.isRequired,
     onOpenMedia: PropTypes.func.isRequired,
   };
 
@@ -56,98 +60,109 @@ export default class MediaItem extends ImmutablePureComponent {
   };
 
   render () {
-    const { attachment, displayWidth } = this.props;
+    const { attachment } = this.props;
     const { visible, loaded } = this.state;
 
-    const width  = `${Math.floor((displayWidth - 4) / 3) - 4}px`;
-    const height = width;
     const status = attachment.get('status');
-    const title  = status.get('spoiler_text') || attachment.get('description');
+    const description = attachment.getIn(['translation', 'description']) || attachment.get('description');
+    const title  = status.get('spoiler_text') || description;
+    const type = attachment.get('type');
 
-    let thumbnail, label, icon, content;
+    let thumbnail;
+    const badges = [];
+
+    if (description) {
+      badges.push(<AltTextBadge key='alt' description={description} />);
+    }
 
     if (!visible) {
-      icon = (
-        <span className='account-gallery__item__icons'>
-          <Icon id='eye-slash' />
-        </span>
+      thumbnail = (
+        <div className='media-gallery__item__overlay'>
+          <Icon id='eye-slash' icon={VisibilityOffIcon} />
+        </div>
       );
-    } else {
-      if (['audio', 'video'].includes(attachment.get('type'))) {
-        content = (
+    } else if (type === 'audio') {
+      thumbnail = (
+        <>
           <img
             src={attachment.get('preview_url') || attachment.get('preview_remote_url') || status.getIn(['account', 'avatar_static'])}
-            alt={attachment.get('description')}
+            alt={description}
+            title={description}
             lang={status.get('language')}
             onLoad={this.handleImageLoad}
           />
-        );
 
-        if (attachment.get('type') === 'audio') {
-          label = <Icon id='music' />;
-        } else {
-          label = <Icon id='play' />;
-        }
-      } else if (attachment.get('type') === 'image') {
-        const focusX = attachment.getIn(['meta', 'focus', 'x']) || 0;
-        const focusY = attachment.getIn(['meta', 'focus', 'y']) || 0;
-        const x      = ((focusX /  2) + .5) * 100;
-        const y      = ((focusY / -2) + .5) * 100;
+          <div className='media-gallery__item__overlay media-gallery__item__overlay--corner'>
+            <Icon id='music' icon={HeadphonesIcon} />
+          </div>
+        </>
+      );
+    } else if (type === 'image') {
+      const focusX = attachment.getIn(['meta', 'focus', 'x']) || 0;
+      const focusY = attachment.getIn(['meta', 'focus', 'y']) || 0;
+      const x      = ((focusX / 2) + .5) * 100;
+      const y      = ((focusY / -2) + .5) * 100;
 
-        content = (
-          <img
-            src={attachment.get('preview_url') || attachment.get('preview_remote_url')}
-            alt={attachment.get('description')}
-            lang={status.get('language')}
-            style={{ objectPosition: `${x}% ${y}%` }}
-            onLoad={this.handleImageLoad}
-          />
-        );
-      } else if (attachment.get('type') === 'gifv') {
-        content = (
+      thumbnail = (
+        <img
+          src={attachment.get('preview_url') || attachment.get('preview_remote_url')}
+          alt={description}
+          title={description}
+          lang={status.get('language')}
+          style={{ objectPosition: `${x}% ${y}%` }}
+          onLoad={this.handleImageLoad}
+        />
+      );
+    } else if (['video', 'gifv'].includes(type)) {
+      const duration = attachment.getIn(['meta', 'original', 'duration']);
+
+      thumbnail = (
+        <div className='media-gallery__gifv'>
           <video
             className='media-gallery__item-gifv-thumbnail'
-            aria-label={attachment.get('description')}
-            title={attachment.get('description')}
+            aria-label={description}
+            title={description}
             lang={status.get('language')}
-            role='application'
             src={attachment.get('url') || attachment.get('remote_url')}
             onMouseEnter={this.handleMouseEnter}
             onMouseLeave={this.handleMouseLeave}
+            onLoadedData={this.handleImageLoad}
             autoPlay={autoPlayGif}
             playsInline
             loop
             muted
           />
-        );
 
-        label = 'GIF';
-      }
-
-      thumbnail = (
-        <div className='media-gallery__gifv'>
-          {content}
-
-          {label && (
-            <div className='media-gallery__item__badges'>
-              <span className='media-gallery__gifv__label'>{label}</span>
+          {type === 'video' && (
+            <div className='media-gallery__item__overlay media-gallery__item__overlay--corner'>
+              <Icon id='play' icon={MovieIcon} />
             </div>
           )}
         </div>
       );
+
+      badges.push(
+        <span key={type} className='media-gallery__alt__label media-gallery__alt__label--non-interactive'>
+          {type === 'gifv' ? 'GIF' : formatTime(Math.floor(duration || 0))}
+        </span>,
+      );
     }
 
     return (
-      <div className='account-gallery__item' style={{ width, height }}>
-        <a className='media-gallery__item-thumbnail' href={`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`} onClick={this.handleClick} title={title} target='_blank' rel='noopener noreferrer'>
-          <Blurhash
-            hash={attachment.get('blurhash')}
-            className={classNames('media-gallery__preview', { 'media-gallery__preview--hidden': visible && loaded })}
-            dummy={!useBlurhash}
-          />
+      <div className='media-gallery__item media-gallery__item--square'>
+        <Blurhash
+          hash={attachment.get('blurhash')}
+          className={classNames('media-gallery__preview', { 'media-gallery__preview--hidden': visible && loaded })}
+          dummy={!useBlurhash}
+        />
 
-          {visible ? thumbnail : icon}
+        <a className='media-gallery__item-thumbnail' href={`/@${status.getIn(['account', 'acct'])}/${status.get('id')}`} onClick={this.handleClick} title={title} target='_blank' rel='noopener noreferrer'>
+          {thumbnail}
         </a>
+
+        {badges.length > 0 && (
+          <div className='media-gallery__item__badges'>{badges}</div>
+        )}
       </div>
     );
   }

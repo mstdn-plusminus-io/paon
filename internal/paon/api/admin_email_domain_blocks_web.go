@@ -15,12 +15,14 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type adminEmailDomainBlockForm struct {
-	Domain       string
-	OtherDomains []string
-	Resolved     bool
+	Domain            string
+	OtherDomains      []string
+	Resolved          bool
+	AllowWithApproval bool
 }
 
 var lookupEmailDomainBlockMX = net.LookupMX
@@ -73,7 +75,7 @@ func (s *Server) createAdminEmailDomainBlockWeb(c *echo.Context) error {
 	if s.db == nil {
 		return c.HTML(http.StatusOK, adminEmailDomainBlockFormHTML(form, adminEmailDomainBlockMessage(locale, "errors.database_unavailable", "DATABASE_URL is not set"), locale))
 	}
-	rows, err := s.insertAdminEmailDomainBlocks(domain, form.OtherDomains)
+	rows, err := s.insertAdminEmailDomainBlocks(domain, form.OtherDomains, form.AllowWithApproval)
 	if err != nil {
 		if isUniqueConstraintError(err) {
 			return c.HTML(http.StatusOK, adminEmailDomainBlockFormHTML(form, adminEmailDomainBlockMessage(locale, "errors.taken", "Domain has already been taken"), locale))
@@ -179,8 +181,9 @@ func parseAdminEmailDomainBlockForm(c *echo.Context) (adminEmailDomainBlockForm,
 		return adminEmailDomainBlockForm{}, errAdminEmailDomainBlockParamsMissing
 	}
 	return adminEmailDomainBlockForm{
-		Domain:       strings.TrimSpace(lastFormValue(req.Form, "email_domain_block[domain]")),
-		OtherDomains: normalizeAdminEmailDomainBlockDomains(req.Form["email_domain_block[other_domains][]"]),
+		Domain:            strings.TrimSpace(lastFormValue(req.Form, "email_domain_block[domain]")),
+		OtherDomains:      normalizeAdminEmailDomainBlockDomains(req.Form["email_domain_block[other_domains][]"]),
+		AllowWithApproval: truthy(lastFormValue(req.Form, "email_domain_block[allow_with_approval]")),
 	}, nil
 }
 
@@ -230,11 +233,12 @@ func resolveEmailDomainBlockMXDomains(domain string) []string {
 	return values
 }
 
-func (s *Server) insertAdminEmailDomainBlocks(domain string, otherDomains []string) ([]models.EmailDomainBlock, error) {
+func (s *Server) insertAdminEmailDomainBlocks(domain string, otherDomains []string, allowWithApproval ...bool) ([]models.EmailDomainBlock, error) {
 	now := time.Now().UTC()
+	approval := len(allowWithApproval) > 0 && allowWithApproval[0]
 	created := make([]models.EmailDomainBlock, 0, 1+len(otherDomains))
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		parent := models.EmailDomainBlock{Domain: domain, CreatedAt: now, UpdatedAt: now}
+		parent := models.EmailDomainBlock{Domain: domain, AllowWithApproval: approval, CreatedAt: now, UpdatedAt: now}
 		if err := tx.Create(&parent).Error; err != nil {
 			return err
 		}
@@ -244,16 +248,18 @@ func (s *Server) insertAdminEmailDomainBlocks(domain string, otherDomains []stri
 				continue
 			}
 			child := models.EmailDomainBlock{
-				Domain:    other,
-				ParentID:  sql.NullInt64{Int64: parent.ID, Valid: true},
-				CreatedAt: now,
-				UpdatedAt: now,
+				Domain:            other,
+				ParentID:          sql.NullInt64{Int64: parent.ID, Valid: true},
+				AllowWithApproval: approval,
+				CreatedAt:         now,
+				UpdatedAt:         now,
 			}
-			if err := tx.Create(&child).Error; err != nil {
-				if isUniqueConstraintError(err) {
-					continue
-				}
-				return err
+			result := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "domain"}}, DoNothing: true}).Create(&child)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				continue
 			}
 			created = append(created, child)
 		}
@@ -275,7 +281,11 @@ func adminEmailDomainBlocksHTML(rows []models.EmailDomainBlock, notice string, e
 				parent = `<br>` + html.EscapeString(adminTVars(loc, "admin.email_domain_blocks.resolved_through_html", "Resolved through %{domain}", map[string]string{"domain": "#" + strconv.FormatInt(row.ParentID.Int64, 10)}))
 			}
 			emailQuery := url.Values{"email": []string{"%@" + row.Domain}}
-			body.WriteString(`<div class="batch-table__row"><label class="batch-table__row__select batch-table__row__select--aligned batch-checkbox"><input type="checkbox" name="form_email_domain_block_batch[email_domain_block_ids][]" value="` + strconv.FormatInt(row.ID, 10) + `"></label><div class="batch-table__row__content pending-account"><div class="pending-account__header"><samp><a href="/admin/accounts?` + html.EscapeString(emailQuery.Encode()) + `">` + html.EscapeString(row.Domain) + `</a></samp>` + parent + `</div></div></div>`)
+			approval := ""
+			if row.AllowWithApproval {
+				approval = ` <span class="positive">` + html.EscapeString(adminT(loc, "admin.email_domain_blocks.allow_with_approval", "Allow with approval")) + `</span>`
+			}
+			body.WriteString(`<div class="batch-table__row"><label class="batch-table__row__select batch-table__row__select--aligned batch-checkbox"><input type="checkbox" name="form_email_domain_block_batch[email_domain_block_ids][]" value="` + strconv.FormatInt(row.ID, 10) + `"></label><div class="batch-table__row__content pending-account"><div class="pending-account__header"><samp><a href="/admin/accounts?` + html.EscapeString(emailQuery.Encode()) + `">` + html.EscapeString(row.Domain) + `</a></samp>` + approval + parent + `</div></div></div>`)
 		}
 	}
 	body.WriteString(`</div></div></form>`)
@@ -326,6 +336,11 @@ func adminEmailDomainBlockFormHTML(form adminEmailDomainBlockForm, errorText str
 	}
 	body := simpleFormOpen("/admin/email_domain_blocks", "post") +
 		simpleTextInput(adminT(loc, "simple_form.labels.email_domain_block.domain", "Domain"), "email_domain_block[domain]", form.Domain, "text", readonly+` required`)
+	checked := ""
+	if form.AllowWithApproval {
+		checked = ` checked`
+	}
+	body += `<div class="fields-group"><label class="boolean"><input type="checkbox" name="email_domain_block[allow_with_approval]" value="1"` + checked + `> ` + html.EscapeString(adminT(loc, "simple_form.labels.email_domain_block.allow_with_approval", "Allow registrations but require manual approval")) + `</label></div>`
 	if form.Resolved {
 		if len(form.OtherDomains) == 0 {
 			body += `<p class="lead">` + html.EscapeString(adminT(loc, "admin.email_domain_blocks.no_mx_records", "No MX records were resolved for this domain. You can still create the parent block.")) + `</p>`

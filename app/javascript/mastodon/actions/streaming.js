@@ -10,6 +10,9 @@ import {
   deleteAnnouncement,
 } from './announcements';
 import { updateConversations } from './conversations';
+import { fetchNotificationGroups, notificationsMerged, processNewNotificationForGroups } from './notification_groups';
+import { fetchNotificationPolicy } from './notification_policies';
+import { fetchNotificationRequests } from './notification_requests';
 import { updateNotifications, expandNotifications } from './notifications';
 import { updateStatus } from './statuses';
 import {
@@ -99,8 +102,18 @@ export const connectTimelineStream = (timelineId, channelName, params = {}, opti
           dispatch(deleteFromTimelines(data.payload));
           break;
         case 'notification':
-          // @ts-expect-error
-          dispatch(updateNotifications(JSON.parse(data.payload), messages, locale));
+          {
+            const notification = JSON.parse(String(data.payload));
+            dispatch(updateNotifications(notification, messages, locale));
+            dispatch(processNewNotificationForGroups(notification));
+          }
+          break;
+        case 'notifications_merged':
+          if (String(data.payload) === '1') {
+            dispatch(notificationsMerged());
+            dispatch(fetchNotificationRequests());
+            dispatch(fetchNotificationPolicy());
+          }
           break;
         case 'conversation':
           // @ts-expect-error
@@ -131,8 +144,10 @@ const refreshHomeTimelineAndNotification = (dispatch, done) => {
   // @ts-expect-error
   dispatch(expandHomeTimeline({}, () =>
     // @ts-expect-error
-    dispatch(expandNotifications({}, () =>
-      dispatch(fetchAnnouncements(done))))));
+    dispatch(expandNotifications({}, () => {
+      dispatch(fetchNotificationGroups());
+      dispatch(fetchAnnouncements(done));
+    }))));
 };
 
 /**

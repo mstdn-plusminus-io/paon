@@ -97,6 +97,7 @@ class Bookmarks extends ImmutablePureComponent {
           onLoadMore={this.handleLoadMore}
           emptyMessage={emptyMessage}
           bindToDocument={!multiColumn}
+          timelineId='bookmarks'
         />
 
         <Helmet>

@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -178,8 +179,12 @@ func TestAdminBlockListsUseRailsMinIDPagination(t *testing.T) {
 		"adminCanonicalEmailBlocks": "CanonicalEmailBlock",
 		"adminIPBlocks":             "IPBlock",
 	} {
+		maximum := 200
+		if fn == "adminDomainAllows" || fn == "adminDomainBlocks" {
+			maximum = 500
+		}
 		for _, want := range []string{
-			`limitValue := limit(c, 100, 200)`,
+			fmt.Sprintf(`limitValue := limit(c, 100, %d)`, maximum),
 			`if queryParamValuePresent(c, "min_id")`,
 			`reverseRows(rows)`,
 			`setLinkForRows(c, rows, func(row models.` + rowName + `) int64 { return row.ID }, limitValue)`,

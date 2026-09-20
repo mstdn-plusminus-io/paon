@@ -23,6 +23,11 @@
 /.go-buildcache/
 /.go-modcache/
 /.go-tmp/
+/.go-path/
+/.agent-cache-*/
+/.codex-tmp/
+/.tmp-go-cache/
+*.tsbuildinfo
 
 # Ignore IDE files
 .vscode/
@@ -64,5 +69,8 @@ bin/paon-admin
 bin/paon-cutover
 bin/paon-meili-deploy
 bin/paon-migrate
+
+# Private staging backup for the migration parity gate.
+/testdata/db-dump/*.dump
 
 *.tsbuildinfo

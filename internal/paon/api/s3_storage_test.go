@@ -234,17 +234,18 @@ func TestSwiftAuthPayloadPreservesExplicitBlankRailsDomainName(t *testing.T) {
 
 func TestRemoveMediaAttachmentDeletesKnownS3Objects(t *testing.T) {
 	var mu sync.Mutex
-	var deletes []string
+	var deleteBodies []string
 	oldClient := s3HTTPClient
 	defer func() { s3HTTPClient = oldClient }()
 	s3HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.Method != http.MethodDelete {
+		if r.Method != http.MethodPost || r.URL.Query().Has("delete") == false {
 			t.Fatalf("method = %q", r.Method)
 		}
+		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
-		deletes = append(deletes, r.URL.Path)
+		deleteBodies = append(deleteBodies, string(body))
 		mu.Unlock()
-		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/xml"}}, Body: io.NopCloser(strings.NewReader(`<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>`)), Request: r}, nil
 	})}
 
 	root := t.TempDir()
@@ -266,17 +267,84 @@ func TestRemoveMediaAttachmentDeletesKnownS3Objects(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	want := map[string]bool{
-		"/bucket-name/media_attachments/files/000/000/042/original/photo.png":            true,
-		"/bucket-name/media_attachments/thumbnails/000/000/042/original/photo-small.png": true,
+	want := []string{
+		"media_attachments/files/000/000/042/original/photo.png",
+		"media_attachments/thumbnails/000/000/042/original/photo-small.png",
 	}
-	if len(deletes) != len(want) {
-		t.Fatalf("deletes = %#v", deletes)
+	if len(deleteBodies) != 1 {
+		t.Fatalf("delete requests = %#v", deleteBodies)
 	}
-	for _, path := range deletes {
-		if !want[path] {
-			t.Fatalf("unexpected delete path %q from %#v", path, deletes)
+	for _, key := range want {
+		if !strings.Contains(deleteBodies[0], "<Key>"+key+"</Key>") {
+			t.Fatalf("delete body missing %q: %s", key, deleteBodies[0])
 		}
+	}
+}
+
+func TestDeleteS3ObjectsRetriesOnlyTransientPartialFailuresWithPrefix(t *testing.T) {
+	var bodies []string
+	oldClient := s3HTTPClient
+	defer func() { s3HTTPClient = oldClient }()
+	s3HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		responseBody := `<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>`
+		if len(bodies) == 1 {
+			responseBody = `<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Error><Key>tenant/media/retry.png</Key><Code>SlowDown</Code><Message>retry</Message></Error></DeleteResult>`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/xml"}}, Body: io.NopCloser(strings.NewReader(responseBody)), Request: r}, nil
+	})}
+	s := &Server{cfg: config.Config{
+		S3Enabled:          true,
+		S3Bucket:           "bucket-name",
+		S3Endpoint:         "https://storage.example.test",
+		S3Region:           "us-east-1",
+		S3AccessKeyID:      "access",
+		S3SecretAccessKey:  "secret",
+		S3KeyPrefix:        "tenant",
+		S3BatchDeleteLimit: 1000,
+		S3BatchDeleteRetry: 3,
+	}}
+
+	if err := s.deleteS3Objects(context.Background(), []string{"media/ok.png", "media/retry.png", "media/ok.png"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("delete requests = %d, want 2", len(bodies))
+	}
+	for _, key := range []string{"tenant/media/ok.png", "tenant/media/retry.png"} {
+		if !strings.Contains(bodies[0], "<Key>"+key+"</Key>") {
+			t.Fatalf("first delete body missing %q: %s", key, bodies[0])
+		}
+	}
+	if strings.Contains(bodies[1], "tenant/tenant/") || strings.Contains(bodies[1], "tenant/media/ok.png") || !strings.Contains(bodies[1], "<Key>tenant/media/retry.png</Key>") {
+		t.Fatalf("partial retry body = %s", bodies[1])
+	}
+}
+
+func TestDeleteS3ObjectsHonorsBatchLimit(t *testing.T) {
+	requests := 0
+	oldClient := s3HTTPClient
+	defer func() { s3HTTPClient = oldClient }()
+	s3HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/xml"}}, Body: io.NopCloser(strings.NewReader(`<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>`)), Request: r}, nil
+	})}
+	s := &Server{cfg: config.Config{
+		S3Enabled:          true,
+		S3Bucket:           "bucket-name",
+		S3Endpoint:         "https://storage.example.test",
+		S3Region:           "us-east-1",
+		S3AccessKeyID:      "access",
+		S3SecretAccessKey:  "secret",
+		S3BatchDeleteLimit: 2,
+		S3BatchDeleteRetry: 3,
+	}}
+	if err := s.deleteS3Objects(context.Background(), []string{"a", "b", "c"}); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("delete requests = %d, want 2", requests)
 	}
 }
 
@@ -395,6 +463,56 @@ func TestDeletePaperclipObjectRemovesAzureBlobStorageObject(t *testing.T) {
 	if !strings.HasPrefix(gotAuthorization, "SharedKey acct:") {
 		t.Fatalf("Authorization = %q", gotAuthorization)
 	}
+}
+
+func TestDeletePaperclipObjectRetriesOnlyTransientAzureFailures(t *testing.T) {
+	oldClient := s3HTTPClient
+	oldWait := storageDeleteRetryWait
+	t.Cleanup(func() {
+		s3HTTPClient = oldClient
+		storageDeleteRetryWait = oldWait
+	})
+	waits := 0
+	storageDeleteRetryWait = func(context.Context, int) error {
+		waits++
+		return nil
+	}
+	s := &Server{cfg: config.Config{
+		AzureEnabled:          true,
+		AzureStorageAccount:   "acct",
+		AzureStorageAccessKey: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+		AzureContainerName:    "media",
+		S3BatchDeleteRetry:    3,
+	}}
+
+	t.Run("transient", func(t *testing.T) {
+		calls := 0
+		s3HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			calls++
+			status := http.StatusAccepted
+			if calls == 1 {
+				status = http.StatusServiceUnavailable
+			}
+			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		})}
+		s.deletePaperclipObject(context.Background(), "media/file.png")
+		if calls != 2 || waits != 1 {
+			t.Fatalf("transient Azure delete calls=%d waits=%d, want 2/1", calls, waits)
+		}
+	})
+
+	t.Run("permanent", func(t *testing.T) {
+		calls := 0
+		waits = 0
+		s3HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		})}
+		s.deletePaperclipObject(context.Background(), "media/file.png")
+		if calls != 1 || waits != 0 {
+			t.Fatalf("permanent Azure delete calls=%d waits=%d, want 1/0", calls, waits)
+		}
+	})
 }
 
 func TestUploadPaperclipObjectMirrorsToSwiftObjectStorage(t *testing.T) {
@@ -517,6 +635,51 @@ func TestDeletePaperclipObjectRemovesSwiftObjectStorageObject(t *testing.T) {
 	}
 	if gotToken != "swift-token" {
 		t.Fatalf("token = %q", gotToken)
+	}
+}
+
+func TestDeletePaperclipObjectRetriesTransientSwiftFailure(t *testing.T) {
+	oldClient := s3HTTPClient
+	oldWait := storageDeleteRetryWait
+	t.Cleanup(func() {
+		s3HTTPClient = oldClient
+		storageDeleteRetryWait = oldWait
+	})
+	storageDeleteRetryWait = func(context.Context, int) error { return nil }
+	authCalls := 0
+	deleteCalls := 0
+	s3HTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host {
+		case "keystone.example.test":
+			authCalls++
+			return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"X-Subject-Token": []string{"swift-token"}}, Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+		case "swift.example.test":
+			deleteCalls++
+			status := http.StatusNoContent
+			if deleteCalls == 1 {
+				status = http.StatusTooManyRequests
+			}
+			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		default:
+			t.Fatalf("unexpected host %s", r.URL.Host)
+		}
+		return nil, nil
+	})}
+	s := &Server{cfg: config.Config{
+		SwiftEnabled:       true,
+		SwiftObjectURL:     "https://swift.example.test/v1/AUTH_project",
+		SwiftContainer:     "container",
+		SwiftUsername:      "swift-user",
+		SwiftTenant:        "tenant-name",
+		SwiftPassword:      "swift-password",
+		SwiftAuthURL:       "https://keystone.example.test/v3/auth/tokens",
+		SwiftDomainName:    "default",
+		S3BatchDeleteRetry: 3,
+	}}
+
+	s.deletePaperclipObject(context.Background(), "media/file.png")
+	if authCalls != 2 || deleteCalls != 2 {
+		t.Fatalf("Swift retry auth=%d delete=%d, want 2/2", authCalls, deleteCalls)
 	}
 }
 

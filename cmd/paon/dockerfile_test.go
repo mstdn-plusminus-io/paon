@@ -24,7 +24,7 @@ func TestDockerfileKeepsRunnableDropInRuntime(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`FROM golang:1.25-trixie AS go-builder`,
+		`FROM golang:1.25.12-trixie AS go-builder`,
 		`apt-get install -y --no-install-recommends libvips-dev pkg-config`,
 		`COPY go.mod go.sum ./`,
 		`RUN go mod download`,

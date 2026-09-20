@@ -164,6 +164,10 @@ func TestAdminSettingsBrandingHTMLIncludesRailsFields(t *testing.T) {
 		SiteContactUsername:  "admin",
 		SiteContactEmail:     "admin@example.com",
 		SiteShortDescription: "Short",
+		FaviconUploadID:      12,
+		FaviconURL:           "https://example.com/favicon.png",
+		AppIconUploadID:      13,
+		AppIconURL:           "https://example.com/app-icon.png",
 	}, "saved", "")
 
 	for _, want := range []string{
@@ -181,6 +185,12 @@ func TestAdminSettingsBrandingHTMLIncludesRailsFields(t *testing.T) {
 		`value="admin@example.com" name="form_admin_settings[site_contact_email]"`,
 		`maxlength="200" class="text optional" name="form_admin_settings[site_short_description]"`,
 		`name="form_admin_settings[thumbnail]" id="form_admin_settings_thumbnail"`,
+		`name="form_admin_settings[favicon]" id="form_admin_settings_favicon" accept="image/jpeg,image/png,image/gif,image/webp"`,
+		`name="form_admin_settings[app_icon]" id="form_admin_settings_app_icon" accept="image/jpeg,image/png,image/gif,image/webp"`,
+		`src="https://example.com/favicon.png"`,
+		`action="/admin/site_uploads/12"`,
+		`src="https://example.com/app-icon.png"`,
+		`action="/admin/site_uploads/13"`,
 		`class="input with_label string optional form_admin_settings_site_title field_with_hint"`,
 		`class="input with_block_label text optional form_admin_settings_site_short_description field_with_hint"`,
 		"Short",

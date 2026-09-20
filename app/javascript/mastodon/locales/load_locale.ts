@@ -17,24 +17,26 @@ export async function loadLocale() {
     // if the locale is already set, then do nothing
     if (isLocaleLoaded()) return;
 
-    const localeData = (await import(
+    const localeModule = (await import(
       /* webpackMode: "lazy" */
       /* webpackChunkName: "locale/[request]" */
       /* webpackInclude: /\.json$/ */
       `mastodon/locales/${locale}.json`
-    )) as LocaleData['messages'];
+    )) as { default?: LocaleData['messages'] } & LocaleData['messages'];
 
-    const ld = localeData.default as unknown as Record<string, string>;
-    Object.keys(localeData.default).forEach((key: string) => {
-      if (ld[key]) {
-        ld[key] = ld[key].replaceAll('Mastodon', 'Paon');
-        ld[key] = ld[key].replaceAll('mastodon', 'paon');
-        ld[key] = ld[key].replaceAll('マストドン', 'ぱおん');
-        ld[key] = ld[key].replaceAll(/mastodon gmbh/gi, 'Team plusminus');
-        ld[key] = ld[key].replaceAll(/mastodon ggmbh/gi, 'Team plusminus');
-      }
-    });
+    const messages =
+      localeModule.default && typeof localeModule.default === 'object'
+        ? localeModule.default
+        : localeModule;
+    for (const [key, message] of Object.entries(messages)) {
+      messages[key] = message
+        .replaceAll(/mastodon ggmbh/gi, 'Team plusminus')
+        .replaceAll(/mastodon gmbh/gi, 'Team plusminus')
+        .replaceAll('Mastodon', 'Paon')
+        .replaceAll('mastodon', 'paon')
+        .replaceAll('マストドン', 'ぱおん');
+    }
 
-    setLocale({ messages: localeData, locale });
+    setLocale({ messages, locale });
   });
 }

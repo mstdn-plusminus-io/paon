@@ -16,6 +16,7 @@ import (
 
 type adminRuleForm struct {
 	Text            string
+	Hint            string
 	Priority        int
 	PriorityPresent bool
 }
@@ -206,6 +207,7 @@ func (s *Server) insertAdminRule(form adminRuleForm) error {
 	now := time.Now().UTC()
 	rule := models.Rule{
 		Text:      form.Text,
+		Hint:      form.Hint,
 		Priority:  form.Priority,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -216,6 +218,7 @@ func (s *Server) insertAdminRule(form adminRuleForm) error {
 func (s *Server) updateAdminRuleModel(id int64, form adminRuleForm) error {
 	updates := map[string]any{
 		"text":       form.Text,
+		"hint":       form.Hint,
 		"updated_at": time.Now().UTC(),
 	}
 	if form.PriorityPresent {
@@ -226,6 +229,7 @@ func (s *Server) updateAdminRuleModel(id int64, form adminRuleForm) error {
 
 func adminRuleWithForm(rule models.Rule, form adminRuleForm) models.Rule {
 	rule.Text = form.Text
+	rule.Hint = form.Hint
 	if form.PriorityPresent {
 		rule.Priority = form.Priority
 	}
@@ -243,6 +247,7 @@ func parseAdminRuleForm(c *echo.Context) (adminRuleForm, error) {
 	}
 	form := adminRuleForm{
 		Text: lastFormValue(req.Form, "rule[text]"),
+		Hint: lastFormValue(req.Form, "rule[hint]"),
 	}
 	priority := strings.TrimSpace(lastFormValue(req.Form, "rule[priority]"))
 	if priority != "" {
@@ -275,14 +280,14 @@ func adminRulesIndexHTML(rules []models.Rule, form adminRuleForm, notice string,
 		rows.WriteString(`<div class="announcements-list">`)
 		for index, rule := range rules {
 			id := strconv.FormatInt(rule.ID, 10)
-			rows.WriteString(`<div class="announcements-list__item"><a class="announcements-list__item__title" href="/admin/rules/` + id + `/edit">` + strconv.Itoa(index+1) + `. ` + html.EscapeString(rule.Text) + `</a><div class="announcements-list__item__action-bar"><div class="announcements-list__item__meta">` + html.EscapeString(rule.Text) + `</div><div><a class="table-action-link" data-method="delete" data-confirm="` + html.EscapeString(adminT(loc, "admin.accounts.are_you_sure", "Are you sure?")) + `" href="/admin/rules/` + id + `"><i class="fa fa-trash fa-fw"></i> ` + html.EscapeString(adminT(loc, "admin.rules.delete", "Delete")) + `</a></div></div></div>`)
+			rows.WriteString(`<div class="announcements-list__item"><a class="announcements-list__item__title" href="/admin/rules/` + id + `/edit">` + strconv.Itoa(index+1) + `. ` + html.EscapeString(rule.Text) + `</a><div class="announcements-list__item__action-bar"><div class="announcements-list__item__meta">` + html.EscapeString(rule.Hint) + `</div><div><a class="table-action-link" data-method="delete" data-confirm="` + html.EscapeString(adminT(loc, "admin.accounts.are_you_sure", "Are you sure?")) + `" href="/admin/rules/` + id + `"><i class="fa fa-trash fa-fw"></i> ` + html.EscapeString(adminT(loc, "admin.rules.delete", "Delete")) + `</a></div></div></div>`)
 		}
 		rows.WriteString(`</div>`)
 	}
-	ruleField := adminRuleTextFieldHTML(form.Text, loc)
 	body := `<p>` + adminT(loc, "admin.rules.description_html", "Define the rules that apply on this server.") + `</p><hr class="spacer">` +
 		simpleFormOpen("/admin/rules", "post") +
-		`<div class="fields-group">` + ruleField + `</div>` +
+		`<div class="fields-group">` + adminRuleTextFieldHTML(form.Text, loc) + `</div>` +
+		`<div class="fields-group">` + adminRuleHintFieldHTML(form.Hint, loc) + `</div>` +
 		simpleSubmit(adminT(loc, "admin.rules.add_new", "Add rule")) +
 		simpleFormClose() + `<hr class="spacer">` +
 		rows.String()
@@ -294,6 +299,7 @@ func adminRuleEditHTML(rule models.Rule, notice string, errorText string, locale
 	id := strconv.FormatInt(rule.ID, 10)
 	body := simpleFormOpen("/admin/rules/"+id, "patch") +
 		`<div class="fields-group">` + adminRuleTextFieldHTML(rule.Text, loc) + `</div>` +
+		`<div class="fields-group">` + adminRuleHintFieldHTML(rule.Hint, loc) + `</div>` +
 		simpleSubmit(adminT(loc, "generic.save_changes", "Save changes")) +
 		simpleFormClose()
 	return authPageHTML(adminT(loc, "admin.rules.edit", "Edit rule"), notice, errorText, body, loc)
@@ -301,4 +307,8 @@ func adminRuleEditHTML(rule models.Rule, notice string, errorText string, locale
 
 func adminRuleTextFieldHTML(value string, locale string) string {
 	return `<div class="input with_block_label text required rule_text field_with_hint"><label class="text required" for="rule_text">` + html.EscapeString(adminT(locale, "simple_form.labels.rule.text", "Rule")) + filterRequiredMarker(locale) + `</label><span class="hint">` + html.EscapeString(adminT(locale, "simple_form.hints.rule.text", "Describe a rule or requirement for users. Keep it short and simple.")) + `</span><div class="label_input"><textarea class="text required" name="rule[text]" id="rule_text" maxlength="300" required="required" aria-required="true">` + html.EscapeString(value) + `</textarea></div></div>`
+}
+
+func adminRuleHintFieldHTML(value string, locale string) string {
+	return `<div class="input with_block_label text optional rule_hint field_with_hint"><label class="text optional" for="rule_hint">` + html.EscapeString(adminT(locale, "simple_form.labels.rule.hint", "Additional information")) + `</label><span class="hint">` + html.EscapeString(adminT(locale, "simple_form.hints.rule.hint", "Optional. Provide more details about the rule")) + `</span><div class="label_input"><textarea class="text optional" name="rule[hint]" id="rule_hint">` + html.EscapeString(value) + `</textarea></div></div>`
 }

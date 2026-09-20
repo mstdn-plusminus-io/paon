@@ -148,10 +148,11 @@ class Share extends PureComponent {
     account: ImmutablePropTypes.map,
     multiColumn: PropTypes.bool,
     intl: PropTypes.object,
+    onComplete: PropTypes.func,
   };
 
   render () {
-    const { onBack, account, multiColumn, intl } = this.props;
+    const { onBack, onComplete, account, multiColumn, intl } = this.props;
 
     const url = (new URL(`/@${account.get('username')}`, document.baseURI)).href;
 
@@ -176,12 +177,12 @@ class Share extends PureComponent {
           <p className='onboarding__lead'><FormattedMessage id='onboarding.share.next_steps' defaultMessage='Possible next steps:' /></p>
 
           <div className='onboarding__links'>
-            <Link to='/home' className='onboarding__link'>
+            <Link to='/home' className='onboarding__link' onClick={onComplete}>
               <FormattedMessage id='onboarding.actions.go_to_home' defaultMessage='Take me to my home feed' />
               <ArrowSmallRight />
             </Link>
 
-            <Link to='/explore' className='onboarding__link'>
+            <Link to='/explore' className='onboarding__link' onClick={onComplete}>
               <FormattedMessage id='onboarding.actions.go_to_explore' defaultMessage='Take me to trending' />
               <ArrowSmallRight />
             </Link>

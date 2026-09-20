@@ -392,6 +392,7 @@ func (s *Server) createAdminReportActionWeb(c *echo.Context) error {
 		s.fanOutAdminStatusBatchUpdates(context.Background(), sensitiveStatusIDs)
 	}
 	if createdWarning.ID != 0 && createdWarning.TargetAccountID.Valid && createdWarning.TargetAccountID.Int64 != 0 {
+		s.publishModerationWarningNotification(createdWarning.ID)
 		sendMail := report.Category != reportCategoryValue("spam")
 		_ = s.sendAdminStatusBatchWarningMail(createdWarning.TargetAccountID.Int64, createdWarning, sendMail)
 	}
@@ -593,6 +594,9 @@ func createAdminAccountActionReportWarning(tx *gorm.DB, actorAccountID int64, re
 		UpdatedAt:       now,
 	}
 	if err := tx.Create(&warning).Error; err != nil {
+		return models.AccountWarning{}, err
+	}
+	if err := createModerationWarningNotification(tx, warning, now); err != nil {
 		return models.AccountWarning{}, err
 	}
 	return warning, nil

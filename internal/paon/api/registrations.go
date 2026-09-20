@@ -110,6 +110,11 @@ func (s *Server) createAccount(c *echo.Context) error {
 	if ipRestriction.Blocked {
 		return apiError(c, http.StatusForbidden, "This method is not available")
 	}
+	emailRequiresApproval, err := s.emailSignUpRequiresApproval(c.Request().Context(), payload.Email, c.RealIP())
+	if err != nil {
+		return err
+	}
+	ipRestriction.RequiresApproval = ipRestriction.RequiresApproval || emailRequiresApproval
 
 	token := &models.OAuthAccessToken{}
 	var createdUser *models.User
@@ -189,10 +194,19 @@ func (s *Server) publicInvite(c *echo.Context) error {
 	code := publicShortAccountParam(c, "invite_code")
 	invite, err := s.findUsableInvite(code, time.Now().UTC())
 	if err != nil || invite == nil {
+		if inviteWantsJSON(c) {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": registrationInviteInvalidFallback})
+		}
 		return c.Redirect(http.StatusFound, "/")
 	}
 	if !s.webRegistrationsAllowedForInvite(invite) {
+		if inviteWantsJSON(c) {
+			return apiError(c, http.StatusForbidden, "This action is not allowed")
+		}
 		return c.Redirect(http.StatusFound, "/")
+	}
+	if inviteWantsJSON(c) {
+		return c.JSON(http.StatusOK, map[string]string{"invite_code": invite.Code, "instance_api_url": s.cfg.BaseURL() + "/api/v2/instance"})
 	}
 	if handled, err := s.registrationRulesGateForInvite(c, invite.Code, invite); handled || err != nil {
 		return err
@@ -241,6 +255,11 @@ func (s *Server) createWebRegistration(c *echo.Context) error {
 	if ipRestriction.Blocked {
 		return c.Redirect(http.StatusFound, "/")
 	}
+	emailRequiresApproval, err := s.emailSignUpRequiresApproval(c.Request().Context(), payload.Email, c.RealIP())
+	if err != nil {
+		return err
+	}
+	ipRestriction.RequiresApproval = ipRestriction.RequiresApproval || emailRequiresApproval
 	if confirm := strings.TrimSpace(c.FormValue("user[password_confirmation]")); confirm != "" && confirm != payload.Password {
 		return c.HTML(http.StatusUnprocessableEntity, s.registrationPageHTMLForInvite(registrationErrorMessage(locale, "password_confirmation_mismatch", registrationPasswordConfirmationMismatchFallback), invite, payload.InviteCode, locale, c.FormValue("accept")))
 	}
@@ -535,7 +554,7 @@ func registrationAgreementAccepted(value string) bool {
 
 func railsEmailAddressValid(email string) bool {
 	email = strings.TrimSpace(email)
-	if email == "" {
+	if email == "" || len([]rune(email)) > 320 || strings.ContainsAny(email, "%,\"") {
 		return false
 	}
 	address, err := mail.ParseAddress(email)

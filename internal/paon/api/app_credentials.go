@@ -9,31 +9,17 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/serializer"
 )
 
-type appCredentials struct {
-	Name     string  `json:"name"`
-	Website  *string `json:"website"`
-	VapidKey string  `json:"vapid_key"`
-}
-
 func (s *Server) verifyAppCredentials(c *echo.Context) error {
 	c.Response().Header().Set("Vary", "Authorization")
 	accessToken, err := s.accessTokenFromRequest(c)
 	if err != nil || !accessToken.ApplicationID.Valid {
 		return apiError(c, http.StatusUnauthorized, "The access token is invalid")
 	}
-	if !tokenHasAnyScope(accessToken.Scopes, "read") {
-		return apiError(c, http.StatusForbidden, "This action is outside the authorized scopes")
-	}
-
 	var app oauthApplication
 	if err := s.db.Where("id = ?", accessToken.ApplicationID.Int64).First(&app).Error; err != nil {
 		return apiError(c, http.StatusUnauthorized, "The access token is invalid")
 	}
-	return c.JSON(http.StatusOK, appCredentials{
-		Name:     app.Name,
-		Website:  appCredentialsWebsite(string(app.Website)),
-		VapidKey: s.cfg.VapidPublicKey,
-	})
+	return c.JSON(http.StatusOK, publicRESTApplicationResponse(app, s.cfg.VapidPublicKey))
 }
 
 func appCredentialsWebsite(website string) *string {
@@ -44,6 +30,15 @@ func appCredentialsWebsite(website string) *string {
 }
 
 func restApplicationResponse(app oauthApplication, vapidKey string) serializer.Application {
+	out := publicRESTApplicationResponse(app, vapidKey)
+	neverExpires := int64(0)
+	out.ClientID = app.UID
+	out.ClientSecret = app.Secret
+	out.ClientSecretExpiresAt = &neverExpires
+	return out
+}
+
+func publicRESTApplicationResponse(app oauthApplication, vapidKey string) serializer.Application {
 	var website *string
 	if strings.TrimSpace(string(app.Website)) != "" {
 		value := string(app.Website)
@@ -53,9 +48,9 @@ func restApplicationResponse(app oauthApplication, vapidKey string) serializer.A
 		ID:           strconv.FormatInt(app.ID, 10),
 		Name:         app.Name,
 		Website:      website,
+		Scopes:       strings.Fields(app.Scopes),
+		RedirectURIs: strings.Fields(app.RedirectURI),
 		RedirectURI:  app.RedirectURI,
-		ClientID:     app.UID,
-		ClientSecret: app.Secret,
 		VapidKey:     vapidKey,
 	}
 }

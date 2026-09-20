@@ -10,12 +10,8 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
-	"strings"
 	"testing"
-	"time"
 
-	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
-	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"github.com/piprate/json-gold/ld"
 )
 
@@ -38,39 +34,6 @@ func TestActivityPubActivityStreamsContextMatchesW3C(t *testing.T) {
 	want := activityPubW3CContextFixture(t)["@context"]
 	if got := activityPubActivityStreamsJSONLDContext(); !reflect.DeepEqual(got, want) {
 		t.Fatal("embedded ActivityStreams context differs from the W3C context")
-	}
-}
-
-func TestActivityPubEncryptedMessageContextRetainsDigest(t *testing.T) {
-	server := &Server{cfg: config.Config{Scheme: "https", LocalDomain: "origin.example", WebDomain: "origin.example"}}
-	payload := activityPubEncryptedMessagePayload(server,
-		models.Account{Username: "alice"}, models.Device{DeviceID: "alice-device"},
-		models.Account{Username: "bob"}, cryptoDevicePayload{DeviceID: "bob-device", Type: 1, Body: "ciphertext", HMAC: "message-hmac"},
-		"franking", time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC))
-	normalized, err := activityPubJSONLDNormalize(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, term := range []string{
-		"<https://www.w3.org/ns/activitystreams#digest> _:",
-		"<http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <https://www.w3.org/ns/activitystreams#Digest>",
-		`<https://w3id.org/security#digestValue> "message-hmac"`,
-		`<https://w3id.org/security#digestAlgorithm> "http://www.w3.org/2000/09/xmldsig#hmac-sha256"`,
-	} {
-		if !strings.Contains(normalized, term) {
-			t.Fatalf("encrypted message normalization lost %q:\n%s", term, normalized)
-		}
-	}
-	compacted, err := activityPubJSONLDCompactToActivityStreams(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	compactedNormalized, err := activityPubJSONLDNormalize(compacted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if compactedNormalized != normalized {
-		t.Fatal("compaction changed encrypted message digest semantics")
 	}
 }
 

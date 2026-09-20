@@ -28,11 +28,13 @@ const previewCardURLByteLimit = 2692
 type fetchedPreviewCard struct {
 	card     models.PreviewCard
 	imageURL string
+	creator  string
 }
 
 var previewCardURLPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
 var previewCardHTMLTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 var previewCardHTMLMetaPattern = regexp.MustCompile(`(?is)<meta\s+[^>]*>`)
+var previewCardHTMLLinkPattern = regexp.MustCompile(`(?is)<link\s+[^>]*>`)
 var previewCardHTMLAttrPattern = regexp.MustCompile(`(?is)([a-zA-Z_:.-]+)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))`)
 var previewCardHTMLTagPattern = regexp.MustCompile(`(?is)<[^>]+>`)
 
@@ -108,7 +110,7 @@ func (s *Server) fetchLinkCardForStatus(ctx context.Context, statusID int64) err
 	if err != nil || card == nil || card.ID == 0 {
 		return nil
 	}
-	if err := s.attachPreviewCardToStatus(ctx, statusID, card.ID); err != nil {
+	if err := s.attachPreviewCardToStatus(ctx, statusID, card.ID, rawURL); err != nil {
 		return err
 	}
 	s.invalidateStatusCache(ctx, statusID)
@@ -408,6 +410,7 @@ func previewCardFetchedUpdates(card models.PreviewCard) map[string]any {
 		"link_type":         card.LinkType,
 		"published_at":      card.PublishedAt,
 		"image_description": card.ImageDescription,
+		"author_account_id": card.AuthorAccountID,
 		"updated_at":        card.UpdatedAt,
 	}
 }
@@ -418,6 +421,7 @@ func (s *Server) fetchPreviewCard(ctx context.Context, rawURL string) (fetchedPr
 		return fetchedPreviewCard{}, false
 	}
 	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Accept-Language", s.cfg.Locale()+", *;q=0.5")
 	req.Header.Set("User-Agent", paonUserAgent(s.cfg)+" Bot")
 	resp, err := activityHTTPClient.Do(req)
 	if err != nil {
@@ -438,7 +442,12 @@ func (s *Server) fetchPreviewCard(ctx context.Context, rawURL string) (fetchedPr
 	if fetched, ok := s.previewCardFromOEmbed(ctx, finalURL, string(body), time.Now().UTC()); ok {
 		return fetched, true
 	}
-	return previewCardFromHTML(finalURL, string(body), time.Now().UTC())
+	fetched, ok := previewCardFromHTML(finalURL, string(body), time.Now().UTC())
+	if !ok {
+		return fetchedPreviewCard{}, false
+	}
+	s.applyPreviewCardAuthorAttribution(ctx, &fetched)
+	return fetched, true
 }
 
 func (s *Server) previewCardFromOEmbed(ctx context.Context, rawURL string, body string, now time.Time) (fetchedPreviewCard, bool) {
@@ -576,7 +585,7 @@ func previewCardFromHTML(rawURL string, body string, now time.Time) (fetchedPrev
 	parsed, _ := url.Parse(rawURL)
 	providerName := firstNonBlankRaw(meta["og:site_name"], previewCardProviderName(parsed.Hostname()))
 	card := models.PreviewCard{
-		URL:          rawURL,
+		URL:          previewCardCanonicalURL(rawURL, body, meta),
 		Title:        truncateString(title, 512),
 		Description:  truncateString(description, 512),
 		Type:         0,
@@ -586,14 +595,158 @@ func previewCardFromHTML(rawURL string, body string, now time.Time) (fetchedPrev
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if lang := strings.TrimSpace(meta["og:locale"]); lang != "" {
+	if lang := previewCardLanguage(body, meta); lang != "" {
 		card.Language = sql.NullString{String: truncateString(lang, 16), Valid: true}
 	}
 	imageURL := resolvePreviewCardOEmbedURL(rawURL, firstNonEmpty(meta["og:image:secure_url"], meta["og:image"], meta["twitter:image"]))
 	if imageURL != "" {
 		card.ImageDescription = truncateString(firstNonBlankRaw(meta["og:image:alt"], meta["twitter:image:alt"]), 1500)
 	}
-	return fetchedPreviewCard{card: card, imageURL: imageURL}, true
+	return fetchedPreviewCard{card: card, imageURL: imageURL, creator: strings.TrimSpace(meta["fediverse:creator"])}, true
+}
+
+func previewCardLanguage(body string, meta map[string]string) string {
+	if language := validStatusLocaleOrNil(strings.TrimSpace(meta["og:locale"])); language != "" {
+		return language
+	}
+	document, err := nethtml.Parse(strings.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	var find func(*nethtml.Node) string
+	find = func(node *nethtml.Node) string {
+		if node.Type == nethtml.ElementNode && strings.EqualFold(node.Data, "html") {
+			for _, attr := range node.Attr {
+				if strings.EqualFold(attr.Key, "lang") {
+					return validStatusLocaleOrNil(strings.TrimSpace(attr.Val))
+				}
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			if language := find(child); language != "" {
+				return language
+			}
+		}
+		return ""
+	}
+	return find(document)
+}
+
+func (s *Server) applyPreviewCardAuthorAttribution(ctx context.Context, fetched *fetchedPreviewCard) {
+	if s == nil || s.db == nil || fetched == nil {
+		return
+	}
+	creator := strings.TrimPrefix(strings.TrimSpace(fetched.creator), "@")
+	if creator == "" || strings.Count(creator, "@") != 1 {
+		return
+	}
+	acct, domain, ok := normalizeActivityWebFingerAcct(creator)
+	if !ok {
+		return
+	}
+	username, _, _ := strings.Cut(acct, "@")
+	query := s.db.WithContext(ctx).Where("lower(username) = ?", strings.ToLower(username))
+	if webfingerLocalHostRaw(domain, s.cfg.LocalDomain, s.cfg.WebDomain, s.cfg.AlternateDomains) {
+		query = query.Where("domain IS NULL")
+	} else {
+		query = query.Where("lower(domain) = ?", strings.ToLower(domain))
+	}
+	var account models.Account
+	err := query.First(&account).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) && !webfingerLocalHostRaw(domain, s.cfg.LocalDomain, s.cfg.WebDomain, s.cfg.AlternateDomains) {
+		resolved, resolveErr := s.fetchAndStoreActivityActorForAcct(acct)
+		if resolveErr != nil || resolved == nil {
+			return
+		}
+		account = *resolved
+	} else if err != nil {
+		return
+	}
+	cardDomain := previewCardNormalizedDomain(fetched.card.URL)
+	if cardDomain == "" || (!previewCardAccountAllowsAttribution(account, cardDomain) && !s.previewCardProviderAllowsAttribution(ctx, cardDomain)) {
+		return
+	}
+	fetched.card.AuthorAccountID = sql.NullInt64{Int64: account.ID, Valid: account.ID > 0}
+}
+
+func previewCardNormalizedDomain(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+	return normalizeActivityAttributionDomain(parsed.Hostname())
+}
+
+func previewCardAccountAllowsAttribution(account models.Account, domain string) bool {
+	domain = normalizeActivityAttributionDomain(domain)
+	if domain == "" {
+		return false
+	}
+	for _, allowed := range account.AttributionDomains {
+		allowed = normalizeActivityAttributionDomain(allowed)
+		if allowed == "" {
+			continue
+		}
+		if domain == allowed || strings.HasSuffix(domain, "."+allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) previewCardProviderAllowsAttribution(ctx context.Context, domain string) bool {
+	parts := strings.Split(normalizeActivityAttributionDomain(domain), ".")
+	if len(parts) == 0 {
+		return false
+	}
+	candidates := make([]string, 0, len(parts))
+	for index := range parts {
+		candidates = append(candidates, strings.Join(parts[index:], "."))
+	}
+	var provider models.PreviewCardProvider
+	if err := s.db.WithContext(ctx).Where("domain IN ?", candidates).Order("length(domain) DESC").First(&provider).Error; err != nil {
+		return false
+	}
+	return provider.Trendable.Valid && provider.Trendable.Bool
+}
+
+func previewCardCanonicalURL(rawURL string, body string, meta map[string]string) string {
+	candidate := ""
+	for _, tag := range previewCardHTMLLinkPattern.FindAllString(body, -1) {
+		attrs := previewCardTagAttrs(tag)
+		if relContainsToken(attrs["rel"], "canonical") {
+			candidate = attrs["href"]
+			break
+		}
+	}
+	if strings.TrimSpace(candidate) == "" {
+		candidate = meta["og:url"]
+	}
+	if strings.EqualFold(strings.TrimSpace(candidate), "undefined") {
+		return rawURL
+	}
+	base, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || base.Hostname() == "" {
+		return rawURL
+	}
+	reference, err := url.Parse(strings.TrimSpace(candidate))
+	if err != nil || strings.TrimSpace(candidate) == "" {
+		return rawURL
+	}
+	canonical := base.ResolveReference(reference)
+	if !strings.EqualFold(canonical.Hostname(), base.Hostname()) || activityNormalizedHTTPURIRaw(canonical.String()) == "" {
+		return rawURL
+	}
+	return canonical.String()
+}
+
+func relContainsToken(raw string, token string) bool {
+	for _, value := range strings.Fields(strings.ToLower(raw)) {
+		if value == strings.ToLower(token) {
+			return true
+		}
+	}
+	return false
 }
 
 func previewCardHTMLTitle(body string) string {
@@ -650,7 +803,7 @@ func previewCardProviderURL(parsed *url.URL) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-func (s *Server) attachPreviewCardToStatus(ctx context.Context, statusID int64, cardID int64) error {
+func (s *Server) attachPreviewCardToStatus(ctx context.Context, statusID int64, cardID int64, originalURL string) error {
 	acquired, releaseLock, err := s.acquireActivityPubRedisLock(ctx, "attach_card:"+strconv.FormatInt(statusID, 10), 15*time.Minute)
 	if err != nil || !acquired {
 		return err
@@ -663,7 +816,7 @@ func (s *Server) attachPreviewCardToStatus(ctx context.Context, statusID int64, 
 	if count > 0 {
 		return nil
 	}
-	return s.db.WithContext(ctx).Exec("INSERT INTO preview_cards_statuses (status_id, preview_card_id) VALUES (?, ?) ON CONFLICT DO NOTHING", statusID, cardID).Error
+	return s.db.WithContext(ctx).Exec("INSERT INTO preview_cards_statuses (status_id, preview_card_id, url) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", statusID, cardID, originalURL).Error
 }
 
 func (s *Server) cachePreviewCardImage(ctx context.Context, card *models.PreviewCard, rawURL string) {

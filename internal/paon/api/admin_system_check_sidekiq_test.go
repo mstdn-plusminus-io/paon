@@ -100,7 +100,7 @@ func TestAdminDashboardSystemChecksWireSidekiqProcessCheck(t *testing.T) {
 		"workers.Go(ctx, s.runPaonGoWorkerHeartbeat)",
 		"workers.Go(ctx, s.runActivityPubDeliveryRetryWorker)",
 		"workers.Go(ctx, s.runActivityPubInboxProcessingWorker)",
-		"workers.Go(ctx, s.startAsynqWorker)",
+		"s.startAsynqWorker(ctx, workers.markReady)",
 		"workers.Go(ctx, s.runScheduledStatusPublishWorker)",
 		"workers.Go(ctx, s.runTrendsRefreshWorker)",
 	} {

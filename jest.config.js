@@ -8,6 +8,9 @@ const config = {
     '<rootDir>/log/',
     '<rootDir>/public/',
     '<rootDir>/tmp/',
+    '<rootDir>/.go-buildcache/',
+    '<rootDir>/.go-modcache/',
+    '<rootDir>/.go-tmp/',
   ],
   setupFilesAfterEnv: ['<rootDir>/app/javascript/mastodon/test_setup.js'],
   collectCoverageFrom: [

@@ -21,6 +21,11 @@ type statsDClient struct {
 }
 
 func newStatsDClient(cfg config.Config) *statsDClient {
+	// StatsD is a Paon compatibility extension. Mastodon 4.3 replaced it with
+	// OpenTelemetry, so never emit both metric streams for the same operation.
+	if cfg.OpenTelemetryEnabled {
+		return nil
+	}
 	addr := strings.TrimSpace(cfg.StatsDAddr)
 	if addr == "" {
 		return nil

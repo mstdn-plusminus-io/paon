@@ -28,12 +28,12 @@ export default function suggestionsReducer(state = initialState, action) {
   case SUGGESTIONS_FETCH_FAIL:
     return state.set('isLoading', false);
   case SUGGESTIONS_DISMISS:
-    return state.update('items', list => list.filterNot(x => x.account === action.id));
+    return state.update('items', list => list.filterNot(x => x.get('account') === action.id));
   case ACCOUNT_BLOCK_SUCCESS:
   case ACCOUNT_MUTE_SUCCESS:
-    return state.update('items', list => list.filterNot(x => x.account === action.relationship.id));
+    return state.update('items', list => list.filterNot(x => x.get('account') === action.relationship.id));
   case DOMAIN_BLOCK_SUCCESS:
-    return state.update('items', list => list.filterNot(x => action.accounts.includes(x.account)));
+    return state.update('items', list => list.filterNot(x => action.accounts.includes(x.get('account'))));
   default:
     return state;
   }

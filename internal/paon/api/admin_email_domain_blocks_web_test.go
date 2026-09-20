@@ -101,7 +101,7 @@ func TestAdminEmailDomainBlocksHTMLIncludesRailsFields(t *testing.T) {
 		{ID: 3, Domain: "mx.example.com", ParentID: sql.NullInt64{Int64: 2, Valid: true}},
 	}, "saved", "", "1")
 	for _, want := range []string{
-		"Blocked e-mail domains",
+		"Blocked email domains",
 		`href="/admin/email_domain_blocks/new"`,
 		`action="/admin/email_domain_blocks/batch"`,
 		`name="form_email_domain_block_batch[email_domain_block_ids][]" value="2"`,

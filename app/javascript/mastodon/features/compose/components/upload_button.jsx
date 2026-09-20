@@ -6,6 +6,8 @@ import ImmutablePropTypes from 'react-immutable-proptypes';
 import ImmutablePureComponent from 'react-immutable-pure-component';
 import { connect } from 'react-redux';
 
+import PhotoLibraryIcon from '@/material-icons/400-20px/photo_library.svg?react';
+
 import { IconButton } from '../../../components/icon_button';
 
 const messages = defineMessages({
@@ -62,13 +64,14 @@ class UploadButton extends ImmutablePureComponent {
 
     return (
       <div className='compose-form__upload-button'>
-        <IconButton icon='paperclip' title={message} disabled={disabled} onClick={this.handleClick} className='compose-form__upload-button-icon' size={18} inverted style={iconStyle} />
+        <IconButton icon='paperclip' iconComponent={PhotoLibraryIcon} title={message} disabled={disabled} onClick={this.handleClick} className='compose-form__upload-button-icon' size={18} inverted style={iconStyle} />
         <label>
           <span style={{ display: 'none' }}>{message}</span>
           <input
             key={resetFileKey}
             ref={this.setRef}
             type='file'
+            name='file-upload-input'
             multiple
             accept={acceptContentTypes.toArray().join(',')}
             onChange={this.handleChange}

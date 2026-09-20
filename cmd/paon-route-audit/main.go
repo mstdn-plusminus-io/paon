@@ -27,14 +27,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	audit := parity.AuditRoutes(railsRoutes, goRoutes, []parity.AcceptedRoute{
-		{Controller: "api/v1/crypto/deliveries", Reason: "Mastodon crypto API is disabled in this fork"},
-		{Controller: "api/v1/crypto/encrypted_messages", Reason: "Mastodon crypto API is disabled in this fork"},
-		{Controller: "api/v1/crypto/keys/claims", Reason: "Mastodon crypto API is disabled in this fork"},
-		{Controller: "api/v1/crypto/keys/counts", Reason: "Mastodon crypto API is disabled in this fork"},
-		{Controller: "api/v1/crypto/keys/queries", Reason: "Mastodon crypto API is disabled in this fork"},
-		{Controller: "api/v1/crypto/keys/uploads", Reason: "Mastodon crypto API is disabled in this fork"},
-	})
+	audit := parity.AuditRoutes(railsRoutes, goRoutes, nil)
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(audit); err != nil {

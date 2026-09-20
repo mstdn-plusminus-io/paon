@@ -212,6 +212,7 @@ func TestStatusListFilterContext(t *testing.T) {
 		"/api/v1/accounts/1/statuses":   "account",
 		"/api/v1/timelines/public":      "public",
 		"/api/v1/timelines/tag/golang":  "public",
+		"/api/v1/timelines/link":        "public",
 		"/api/v1/trends/statuses":       "public",
 		"/api/v2/search":                "public",
 		"/api/v1/favourites":            "public",

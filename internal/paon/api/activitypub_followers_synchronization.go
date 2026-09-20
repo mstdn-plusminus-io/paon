@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -45,62 +44,6 @@ func (s *Server) activityPubFollowersSynchronization(c *echo.Context) error {
 	return activityJSON(c, activityPubFollowersSynchronizationObject(s, *account, items))
 }
 
-func (s *Server) activityPubClaim(c *echo.Context) error {
-	c.Response().Header().Set("Vary", "Authorization")
-	setPrivateNoStoreCacheHeaders(c)
-	account, err := s.localActivityPubAccount(c)
-	if err != nil {
-		return err
-	}
-	body, err := io.ReadAll(c.Request().Body)
-	if err != nil {
-		return err
-	}
-	c.Request().Body = io.NopCloser(bytes.NewReader(body))
-	if _, err := s.verifyActivityPubSignature(c, body); err != nil {
-		return apiError(c, http.StatusUnauthorized, err.Error())
-	}
-	key, err := s.claimLocalOneTimeKey(account.ID, activityPubClaimDeviceID(c))
-	if err != nil {
-		return err
-	}
-	if key == nil {
-		return c.JSON(http.StatusOK, nil)
-	}
-	return c.JSON(http.StatusOK, activityPubOneTimeKeyObject(*key))
-}
-
-func (s *Server) claimLocalOneTimeKey(accountID int64, deviceID string) (*models.OneTimeKey, error) {
-	if deviceID == "" {
-		return nil, nil
-	}
-	var key models.OneTimeKey
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var device models.Device
-		if err := tx.Where("account_id = ? AND device_id = ?", accountID, deviceID).First(&device).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("device_id = ?", device.ID).Order("random()").First(&key).Error; err != nil {
-			return err
-		}
-		return tx.Delete(&key).Error
-	})
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &key, nil
-}
-
-func activityPubClaimDeviceID(c *echo.Context) string {
-	if raw := c.QueryParam("id"); raw != "" {
-		return raw
-	}
-	return c.FormValue("id")
-}
-
 func (s *Server) followersSynchronizationItems(accountID int64, origin string) ([]string, error) {
 	var rows []models.Account
 	like := escapeSQLLike(strings.TrimRight(origin, "/")) + "/%"
@@ -135,19 +78,6 @@ func activityPubFollowersSynchronizationObject(s *Server, account models.Account
 		"id":           id,
 		"type":         "OrderedCollection",
 		"orderedItems": items,
-	}
-}
-
-func activityPubOneTimeKeyObject(key models.OneTimeKey) map[string]any {
-	return map[string]any{
-		"@context":        activityPubEncryptedMessageContext(),
-		"keyId":           key.KeyID,
-		"type":            "Curve25519Key",
-		"publicKeyBase64": key.Key,
-		"signature": map[string]any{
-			"type":           "Ed25519Signature",
-			"signatureValue": key.Signature,
-		},
 	}
 }
 

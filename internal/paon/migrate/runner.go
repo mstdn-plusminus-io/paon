@@ -7,38 +7,111 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	paondb "github.com/mstdn-plusminus-io/paon/internal/paon/db"
+	paonotp "github.com/mstdn-plusminus-io/paon/internal/paon/otp"
+	paonschema "github.com/mstdn-plusminus-io/paon/internal/paon/schema"
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion = "20230907150100"
+const (
+	LegacySchemaVersion  = paonschema.Mastodon4219Version
+	CurrentSchemaVersion = paonschema.Mastodon4323Version
+)
+const LatestTargetVersion = "4.3.23"
+
 const migrationAdvisoryLockID int64 = 0x50616f6e4d696772
 const statementSeparator = "-- paon:statement"
 
 //go:embed schema.sql
 var schemaFiles embed.FS
 
+type Options struct {
+	// This release branch migrates through its native Mastodon version only.
+	TargetVersion string
+	// All applies expand, backfill, validate, and acknowledged contract phases.
+	All                    bool
+	Phase                  UpgradePhase
+	AcknowledgeContract    bool
+	IgnoreInvalidOTPSecret bool
+	OTPSecret              string
+	ActiveRecordEncryption paonotp.Credentials
+	Logf                   func(format string, arguments ...any)
+}
+
+func OptionsFromEnv() Options {
+	return Options{
+		TargetVersion:          os.Getenv("PAON_MIGRATION_TARGET_VERSION"),
+		All:                    os.Getenv("PAON_MIGRATION_ALL") == "true",
+		Phase:                  UpgradePhase(os.Getenv("PAON_MIGRATION_PHASE")),
+		AcknowledgeContract:    os.Getenv("PAON_MIGRATION_ACKNOWLEDGE_CONTRACT") == "true",
+		IgnoreInvalidOTPSecret: os.Getenv("MIGRATION_IGNORE_INVALID_OTP_SECRET") == "true",
+		OTPSecret:              os.Getenv("OTP_SECRET"),
+		ActiveRecordEncryption: paonotp.Credentials{
+			PrimaryKey:        os.Getenv("ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"),
+			DeterministicKey:  os.Getenv("ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY"),
+			KeyDerivationSalt: os.Getenv("ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"),
+		},
+	}
+}
+
 func Run(ctx context.Context, database *gorm.DB) (bool, error) {
+	return RunWithOptions(ctx, database, OptionsFromEnv())
+}
+
+func RunWithOptions(ctx context.Context, database *gorm.DB, options Options) (bool, error) {
 	if database == nil {
 		return false, errors.New("migration database is not configured")
 	}
+	if target := strings.TrimSpace(options.TargetVersion); target != "" && target != LatestTargetVersion {
+		return false, fmt.Errorf("unsupported migration target %q; this branch supports %s", target, LatestTargetVersion)
+	}
+	if options.All {
+		if options.Phase != "" {
+			return false, errors.New("--all cannot be combined with --phase or PAON_MIGRATION_PHASE")
+		}
+		options.Phase = UpgradePhaseContract
+	}
+	targetPhase, err := requestedUpgradePhase(options)
+	if err != nil {
+		return false, err
+	}
+	if targetPhase == UpgradePhaseContract && !options.AcknowledgeContract {
+		return false, errors.New("Mastodon 4.3 contract phase requires --acknowledge-contract or PAON_MIGRATION_ACKNOWLEDGE_CONTRACT=true after all 4.2 processes have stopped")
+	}
 	applied := false
-	err := database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	legacySchema := false
+	err = database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", migrationAdvisoryLockID).Error; err != nil {
 			return fmt.Errorf("acquire migration lock: %w", err)
 		}
-		empty, current, err := databaseSchemaState(tx)
+		empty, current, legacy, err := databaseSchemaState(tx)
 		if err != nil {
 			return err
 		}
 		if current {
+			reconciled, err := reconcileCurrentMastodon4323(tx)
+			if err != nil {
+				return err
+			}
+			applied = applied || reconciled
+			if err := paondb.SchemaAvailable(tx); err != nil {
+				return fmt.Errorf("validate reconciled Mastodon 4.3 schema before commit: %w", err)
+			}
+			return nil
+		}
+		if legacy {
+			if err := validateMastodon4219UpgradePrerequisites(tx); err != nil {
+				return err
+			}
+			legacySchema = true
 			return nil
 		}
 		if !empty {
-			return fmt.Errorf("unsupported existing database schema; expected version %s", CurrentSchemaVersion)
+			return fmt.Errorf("unsupported existing database schema; expected version %s or %s", LegacySchemaVersion, CurrentSchemaVersion)
 		}
 		snapshot, err := schemaFiles.ReadFile("schema.sql")
 		if err != nil {
@@ -61,11 +134,35 @@ func Run(ctx context.Context, database *gorm.DB) (bool, error) {
 		if err := seedFreshDatabase(tx); err != nil {
 			return err
 		}
+		if err := paondb.SchemaAvailable(tx); err != nil {
+			return fmt.Errorf("validate fresh Mastodon 4.3 schema before commit: %w", err)
+		}
 		applied = true
 		return nil
 	})
 	if err != nil {
 		return false, err
+	}
+	if legacySchema {
+		for _, phase := range upgradePhasesThrough(targetPhase) {
+			phaseApplied, err := runMastodon43Phase(ctx, database, phase, options)
+			if err != nil {
+				return applied, err
+			}
+			applied = applied || phaseApplied
+		}
+	}
+
+	_, current, _, err := databaseSchemaState(database.WithContext(ctx))
+	if err != nil {
+		return applied, err
+	}
+	if !current {
+		// Expand, backfill, and validate intentionally leave the 4.2 marker as
+		// the latest supported application schema. Their phase-specific checks
+		// run inside the same transaction as the phase, while the final Paon
+		// schema guard runs inside and after a completed contract migration.
+		return applied, nil
 	}
 	if err := paondb.SchemaAvailable(database); err != nil {
 		return applied, fmt.Errorf("validate migrated schema: %w", err)
@@ -73,26 +170,47 @@ func Run(ctx context.Context, database *gorm.DB) (bool, error) {
 	return applied, nil
 }
 
-func databaseSchemaState(tx *gorm.DB) (empty bool, current bool, err error) {
+func databaseSchemaState(tx *gorm.DB) (empty bool, current bool, legacy bool, err error) {
 	var tableCount int64
 	if err := tx.Raw(`SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_type IN ('BASE TABLE', 'VIEW')`).Scan(&tableCount).Error; err != nil {
-		return false, false, fmt.Errorf("inspect database tables: %w", err)
+		return false, false, false, fmt.Errorf("inspect database tables: %w", err)
 	}
 	if tableCount == 0 {
-		return true, false, nil
+		return true, false, false, nil
 	}
 	var migrationsTable string
 	if err := tx.Raw(`SELECT COALESCE(to_regclass('schema_migrations')::text, '')`).Scan(&migrationsTable).Error; err != nil {
-		return false, false, fmt.Errorf("inspect schema_migrations: %w", err)
+		return false, false, false, fmt.Errorf("inspect schema_migrations: %w", err)
 	}
 	if migrationsTable == "" {
-		return false, false, nil
+		return false, false, false, nil
 	}
-	var count int64
-	if err := tx.Raw(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, CurrentSchemaVersion).Scan(&count).Error; err != nil {
-		return false, false, fmt.Errorf("read schema version: %w", err)
+	var versions struct {
+		Current int64
+		Legacy  int64
+		Future  int64
 	}
-	return false, count == 1, nil
+	if err := tx.Raw(`SELECT COUNT(*) FILTER (WHERE version = ?) AS current, COUNT(*) FILTER (WHERE version = ?) AS legacy, COUNT(*) FILTER (WHERE version > ?) AS future FROM schema_migrations`, CurrentSchemaVersion, LegacySchemaVersion, CurrentSchemaVersion).Scan(&versions).Error; err != nil {
+		return false, false, false, fmt.Errorf("read schema version: %w", err)
+	}
+	if versions.Future != 0 {
+		return false, false, false, fmt.Errorf("database schema is newer than supported Mastodon version %s; found %d future migration marker(s)", CurrentSchemaVersion, versions.Future)
+	}
+	if versions.Current == 1 || versions.Legacy == 1 {
+		var upgradeVersions []string
+		if err := tx.Raw(`SELECT version FROM schema_migrations WHERE version > ? AND version <= ? ORDER BY version`, LegacySchemaVersion, CurrentSchemaVersion).Scan(&upgradeVersions).Error; err != nil {
+			return false, false, false, fmt.Errorf("inspect Mastodon 4.3 migration markers: %w", err)
+		}
+		for _, version := range upgradeVersions {
+			if !mastodon43UpgradeVersionKnown(version) {
+				return false, false, false, fmt.Errorf("database schema contains unsupported migration marker %s between Mastodon 4.2 and 4.3", version)
+			}
+		}
+		if versions.Current == 1 && len(upgradeVersions) != paonschema.Mastodon43UpgradeVersionCount() {
+			return false, false, false, fmt.Errorf("database schema has final marker %s but only %d of %d reviewed Mastodon 4.3 migration markers", CurrentSchemaVersion, len(upgradeVersions), paonschema.Mastodon43UpgradeVersionCount())
+		}
+	}
+	return false, versions.Current == 1, versions.Current == 0 && versions.Legacy == 1, nil
 }
 
 func seedFreshDatabase(tx *gorm.DB) error {

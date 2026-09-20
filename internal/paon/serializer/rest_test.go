@@ -1015,7 +1015,7 @@ func TestInstanceFromConfigMarksTranslationDisabled(t *testing.T) {
 	}
 }
 
-func TestInstanceFromConfigUsesRailsPaonVersionShape(t *testing.T) {
+func TestInstanceFromConfigUsesMastodonCompatibleVersionAndRetainsPaonVersionInternally(t *testing.T) {
 	cfg := config.Config{
 		LocalDomain:     "example.test",
 		WebDomain:       "example.test",
@@ -1024,7 +1024,7 @@ func TestInstanceFromConfigUsesRailsPaonVersionShape(t *testing.T) {
 		MastodonVersion: "4.2.27",
 	}
 	out := InstanceFromConfig(cfg, nil)
-	if out.Version != "4.2.27 (compatible; Paon/6.0.2+nightly)" {
+	if out.Version != "4.2.27" {
 		t.Fatalf("version = %q", out.Version)
 	}
 	if out.ActualVersion != "6.0.2+nightly" {
@@ -1068,7 +1068,7 @@ func TestInstanceFromConfigIncludesMastodonConfigurationLimits(t *testing.T) {
 	}
 
 	urls, ok := out.Configuration["urls"].(map[string]any)
-	if !ok || urls["streaming"] != "wss://streaming.example.test" || urls["status"] != "" {
+	if !ok || urls["streaming"] != "wss://streaming.example.test" || urls["status"] != nil {
 		t.Fatalf("urls config = %#v", out.Configuration["urls"])
 	}
 	accounts, ok := out.Configuration["accounts"].(map[string]any)
@@ -1097,10 +1097,13 @@ func TestInstanceFromConfigIncludesMastodonConfigurationLimits(t *testing.T) {
 	cfg.MatrixLimit = 0
 	cfg.MatrixLimitSet = true
 	zeroMedia := InstanceFromConfig(cfg, nil).Configuration["media_attachments"].(map[string]any)
-	for _, key := range []string{"image_size_limit", "image_matrix_limit", "video_size_limit", "video_matrix_limit"} {
+	for _, key := range []string{"image_size_limit", "image_matrix_limit", "video_size_limit"} {
 		if zeroMedia[key] != 0 {
 			t.Fatalf("explicit Rails-style zero %s = %#v", key, zeroMedia[key])
 		}
+	}
+	if zeroMedia["video_matrix_limit"] != 8_294_400 {
+		t.Fatalf("Mastodon video matrix limit = %#v", zeroMedia["video_matrix_limit"])
 	}
 	media, ok := out.Configuration["media_attachments"].(map[string]any)
 	if !ok {
@@ -1120,7 +1123,7 @@ func TestInstanceFromConfigIncludesMastodonConfigurationLimits(t *testing.T) {
 		"image_matrix_limit":     123456,
 		"video_size_limit":       120 * 1024 * 1024,
 		"video_frame_rate_limit": 120,
-		"video_matrix_limit":     123456,
+		"video_matrix_limit":     8_294_400,
 	} {
 		if media[key] != want {
 			t.Fatalf("media[%s] = %#v, want %#v", key, media[key], want)
@@ -1231,6 +1234,11 @@ func TestInstanceFromConfigWithOptionsUsesMetadata(t *testing.T) {
 			FileFileName: sql.NullString{String: "hero.png", Valid: true},
 			Blurhash:     sql.NullString{String: "LEHV6nWB2yk8pyo0adR*.7kCMdnj", Valid: true},
 		},
+		AppIcon: &models.SiteUpload{
+			ID:           14,
+			Var:          "app_icon",
+			FileFileName: sql.NullString{String: "icon.webp", Valid: true},
+		},
 		PreviewImageURL: "https://assets.example.test/preview.png",
 		Rules: []models.Rule{
 			{ID: 2, Text: "Be kind"},
@@ -1270,6 +1278,9 @@ func TestInstanceFromConfigWithOptionsUsesMetadata(t *testing.T) {
 	}
 	if v1 := InstanceV1ThumbnailFromSiteUpload(cfg, jpgUpload, ""); v1 != "https://example.test/system/site_uploads/files/000/000/013/@1x/hero.png" {
 		t.Fatalf("jpg v1 thumbnail = %q", v1)
+	}
+	if len(out.Icon) != 9 || out.Icon[0]["src"] != "https://example.test/system/site_uploads/files/000/000/014/36/icon.png" || out.Icon[0]["size"] != "36x36" {
+		t.Fatalf("instance icons = %#v", out.Icon)
 	}
 	if len(out.Rules) != 1 {
 		t.Fatalf("rules = %#v", out.Rules)
@@ -1833,7 +1844,7 @@ func TestInitialStateFromConfigOmitsAuthenticatedOnlyMetaForAnonymousUsers(t *te
 	out := InitialStateFromConfig(cfg, nil, "")
 
 	for _, key := range []string{
-		"unfollow_modal",
+		"disable_hover_cards",
 		"boost_modal",
 		"delete_modal",
 		"expand_spoilers",
@@ -1978,6 +1989,7 @@ func TestInitialStateFromConfigIncludesAuthenticatedMetaSettings(t *testing.T) {
 	user := models.User{
 		Settings: sql.NullString{String: `{
 			"web.unfollow_modal":false,
+			"web.disable_hover_cards":true,
 			"web.reblog_modal":true,
 			"web.delete_modal":false,
 			"web.auto_play":true,
@@ -1996,19 +2008,19 @@ func TestInitialStateFromConfigIncludesAuthenticatedMetaSettings(t *testing.T) {
 	out := InitialStateFromConfigWithOptions(cfg, &account, "token", InitialStateOptions{User: &user})
 
 	for key, want := range map[string]any{
-		"unfollow_modal":    false,
-		"boost_modal":       true,
-		"delete_modal":      false,
-		"auto_play_gif":     true,
-		"display_media":     "show_all",
-		"expand_spoilers":   true,
-		"reduce_motion":     true,
-		"disable_swiping":   true,
-		"advanced_layout":   true,
-		"use_blurhash":      false,
-		"use_pending_items": true,
-		"show_trends":       false,
-		"crop_images":       false,
+		"disable_hover_cards": true,
+		"boost_modal":         true,
+		"delete_modal":        false,
+		"auto_play_gif":       true,
+		"display_media":       "show_all",
+		"expand_spoilers":     true,
+		"reduce_motion":       true,
+		"disable_swiping":     true,
+		"advanced_layout":     true,
+		"use_blurhash":        false,
+		"use_pending_items":   true,
+		"show_trends":         false,
+		"crop_images":         false,
 	} {
 		if out.Meta[key] != want {
 			t.Fatalf("meta[%s] = %#v, want %#v", key, out.Meta[key], want)
@@ -2023,19 +2035,19 @@ func TestInitialStateFromConfigUsesAuthenticatedMetaDefaults(t *testing.T) {
 	out := InitialStateFromConfigWithOptions(cfg, &account, "token", InitialStateOptions{User: &user})
 
 	for key, want := range map[string]any{
-		"unfollow_modal":    true,
-		"boost_modal":       false,
-		"delete_modal":      true,
-		"auto_play_gif":     false,
-		"display_media":     "default",
-		"expand_spoilers":   false,
-		"reduce_motion":     false,
-		"disable_swiping":   false,
-		"advanced_layout":   false,
-		"use_blurhash":      true,
-		"use_pending_items": false,
-		"show_trends":       true,
-		"crop_images":       true,
+		"disable_hover_cards": false,
+		"boost_modal":         false,
+		"delete_modal":        true,
+		"auto_play_gif":       false,
+		"display_media":       "default",
+		"expand_spoilers":     false,
+		"reduce_motion":       false,
+		"disable_swiping":     false,
+		"advanced_layout":     false,
+		"use_blurhash":        true,
+		"use_pending_items":   false,
+		"show_trends":         true,
+		"crop_images":         true,
 	} {
 		if out.Meta[key] != want {
 			t.Fatalf("meta[%s] = %#v, want %#v", key, out.Meta[key], want)

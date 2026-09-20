@@ -127,9 +127,12 @@ func (s *Server) removeMediaAttachmentLocalFiles(attachment models.MediaAttachme
 		return
 	}
 	s.bustMediaAttachmentCache(attachment)
-	for _, object := range s.mediaAttachmentStoredObjects(attachment) {
-		s.deletePaperclipObject(context.Background(), object.key)
+	objects := s.mediaAttachmentStoredObjects(attachment)
+	keys := make([]string, 0, len(objects))
+	for _, object := range objects {
+		keys = append(keys, object.key)
 	}
+	_ = s.deletePaperclipObjects(context.Background(), keys)
 	for _, root := range []string{
 		s.cfg.SystemAssetPath("media_attachments", "files", mediaPaperclipIDPartition(attachment.ID)),
 		s.cfg.SystemAssetPath("media_attachments", "thumbnails", mediaPaperclipIDPartition(attachment.ID)),
@@ -261,14 +264,20 @@ func (s *Server) removeAccountImageObjects(account models.Account) {
 		return
 	}
 	s.bustAccountImageCache(account)
+	keys := make([]string, 0, 4)
 	if account.AvatarFileName.Valid && strings.TrimSpace(account.AvatarFileName.String) != "" {
-		s.deletePaperclipObject(context.Background(), accountImageObjectKeyForAccount(account, "avatar", "original", account.AvatarFileName.String))
-		s.deletePaperclipObject(context.Background(), accountImageObjectKeyForAccount(account, "avatar", "static", profileImageStaticFilename(account.AvatarFileName.String, account.AvatarContentType.String)))
+		keys = append(keys,
+			accountImageObjectKeyForAccount(account, "avatar", "original", account.AvatarFileName.String),
+			accountImageObjectKeyForAccount(account, "avatar", "static", profileImageStaticFilename(account.AvatarFileName.String, account.AvatarContentType.String)),
+		)
 	}
 	if account.HeaderFileName.Valid && strings.TrimSpace(account.HeaderFileName.String) != "" {
-		s.deletePaperclipObject(context.Background(), accountImageObjectKeyForAccount(account, "header", "original", account.HeaderFileName.String))
-		s.deletePaperclipObject(context.Background(), accountImageObjectKeyForAccount(account, "header", "static", profileImageStaticFilename(account.HeaderFileName.String, account.HeaderContentType.String)))
+		keys = append(keys,
+			accountImageObjectKeyForAccount(account, "header", "original", account.HeaderFileName.String),
+			accountImageObjectKeyForAccount(account, "header", "static", profileImageStaticFilename(account.HeaderFileName.String, account.HeaderContentType.String)),
+		)
 	}
+	_ = s.deletePaperclipObjects(context.Background(), keys)
 }
 
 func (s *Server) removeCustomEmojiLocalFiles(emoji models.CustomEmoji) {
@@ -277,8 +286,10 @@ func (s *Server) removeCustomEmojiLocalFiles(emoji models.CustomEmoji) {
 	}
 	s.invalidateCustomEmojiEntityCaches(context.Background(), []models.CustomEmoji{emoji})
 	if emoji.ImageFileName.Valid && strings.TrimSpace(emoji.ImageFileName.String) != "" {
-		s.deletePaperclipObject(context.Background(), customEmojiObjectKey(emoji, "original", emoji.ImageFileName.String))
-		s.deletePaperclipObject(context.Background(), customEmojiObjectKey(emoji, "static", customEmojiStaticFilename(emoji.ImageFileName.String)))
+		_ = s.deletePaperclipObjects(context.Background(), []string{
+			customEmojiObjectKey(emoji, "original", emoji.ImageFileName.String),
+			customEmojiObjectKey(emoji, "static", customEmojiStaticFilename(emoji.ImageFileName.String)),
+		})
 	}
 	for _, root := range []string{
 		s.cfg.SystemAssetPath("custom_emojis", "images", adminPaperclipIDPartition(emoji.ID)),

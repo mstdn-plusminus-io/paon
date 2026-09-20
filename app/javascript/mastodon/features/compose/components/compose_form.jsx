@@ -9,6 +9,7 @@ import ImmutablePureComponent from 'react-immutable-pure-component';
 
 import { length } from 'stringz';
 
+import LockIcon from '@/material-icons/400-24px/lock.svg?react';
 import { Icon }  from 'mastodon/components/icon';
 import { encodeAme } from 'mastodon/utils/kaiwai';
 
@@ -79,17 +80,23 @@ class ComposeForm extends ImmutablePureComponent {
     isInReply: PropTypes.bool,
     singleColumn: PropTypes.bool,
     lang: PropTypes.string,
+    maxChars: PropTypes.number,
+    pollOptions: ImmutablePropTypes.list,
+    maxPollOptions: PropTypes.number,
+    maxPollOptionCharacters: PropTypes.number,
     showClose: PropTypes.bool,
     onClose: PropTypes.func,
   };
 
   static defaultProps = {
     autoFocus: false,
+    maxChars: 5000,
+    maxPollOptions: 4,
+    maxPollOptionCharacters: 50,
   };
 
   state = {
     highlighted: false,
-    maxCharacters: 5000,
     liveMode: localStorage.plusminus_config_live_mode === 'enabled',
   };
 
@@ -108,11 +115,17 @@ class ComposeForm extends ImmutablePureComponent {
   };
 
   canSubmit = () => {
-    const { isSubmitting, isChangingUpload, isUploading, anyMedia } = this.props;
+    const { isSubmitting, isChangingUpload, isUploading, anyMedia, maxChars, pollOptions, maxPollOptions, maxPollOptionCharacters } = this.props;
     const fulltext = this.getFulltextForCharacterCounting();
     const isOnlyWhitespace = fulltext.length !== 0 && fulltext.trim().length === 0;
+    const completedPollOptions = pollOptions?.filter(option => option.trim().length > 0);
+    const invalidPoll = pollOptions && (
+      completedPollOptions.size < 2 ||
+      completedPollOptions.size > maxPollOptions ||
+      completedPollOptions.some(option => length(option) > maxPollOptionCharacters)
+    );
 
-    return !(isSubmitting || isUploading || isChangingUpload || length(fulltext) > this.state.maxCharacters || (isOnlyWhitespace && !anyMedia));
+    return !(isSubmitting || isUploading || isChangingUpload || invalidPoll || length(fulltext) > maxChars || (isOnlyWhitespace && !anyMedia));
   }
 
   handleSubmit = (e) => {
@@ -164,10 +177,7 @@ class ComposeForm extends ImmutablePureComponent {
 
   componentDidMount () {
     this._updateFocusAndSelection({ });
-    api().get('/api/v1/instance').then(res => {
-      this.setState({
-        maxCharacters: res.data.configuration.statuses.max_characters,
-      });
+    api().get('/api/v2/instance').then(res => {
       this.props.onInitialize(res.data);
     }).catch(err => {
       console.error(err);
@@ -310,7 +320,7 @@ class ComposeForm extends ImmutablePureComponent {
     if (this.props.isEditing) {
       publishText = intl.formatMessage(messages.saveChanges);
     } else if (this.props.privacy === 'private' || this.props.privacy === 'direct') {
-      publishText = <span className='compose-form__publish-private'><Icon id='lock' /> {intl.formatMessage(messages.publish)}</span>;
+      publishText = <span className='compose-form__publish-private'><Icon id='lock' icon={LockIcon} /> {intl.formatMessage(messages.publish)}</span>;
     } else {
       publishText = this.props.privacy !== 'unlisted' ? intl.formatMessage(messages.publishLoud, { publish: intl.formatMessage(messages.publish) }) : intl.formatMessage(messages.publish);
     }
@@ -413,7 +423,7 @@ class ComposeForm extends ImmutablePureComponent {
 
             <div className='right-side' style={{ display: 'flex' }}>
               <div className='character-counter__wrapper'>
-                <CharacterCounter max={this.state.maxCharacters} text={this.getFulltextForCharacterCounting()} />
+                <CharacterCounter max={this.props.maxChars} text={this.getFulltextForCharacterCounting()} />
               </div>
               {isSingleColumnChatDark && this.renderPublish({ intl, publishText })}
             </div>

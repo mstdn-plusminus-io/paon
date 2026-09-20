@@ -15,6 +15,7 @@ import illustration from 'mastodon/../images/elephant_ui_conversation.svg';
 import { fetchAccount } from 'mastodon/actions/accounts';
 import { focusCompose } from 'mastodon/actions/compose';
 import { closeOnboarding } from 'mastodon/actions/onboarding';
+import { changeSetting } from 'mastodon/actions/settings';
 import Column from 'mastodon/features/ui/components/column';
 import { me } from 'mastodon/initial_state';
 import { makeGetAccount } from 'mastodon/selectors';
@@ -23,6 +24,7 @@ import { assetHost } from 'mastodon/utils/config';
 import ArrowSmallRight from './components/arrow_small_right';
 import Step from './components/step';
 import Follows from './follows';
+import { Profile } from './profile';
 import Share from './share';
 
 const messages = defineMessages({
@@ -34,6 +36,8 @@ const mapStateToProps = () => {
 
   return state => ({
     account: getAccount(state, me),
+    lastStep: state.getIn(['settings', 'onboarding', 'last_step']),
+    shareCompleted: state.getIn(['settings', 'onboarding', 'share_completed'], false),
   });
 };
 
@@ -47,28 +51,32 @@ class Onboarding extends ImmutablePureComponent {
     dispatch: PropTypes.func.isRequired,
     account: ImmutablePropTypes.map,
     multiColumn: PropTypes.bool,
+    lastStep: PropTypes.string,
+    shareCompleted: PropTypes.bool,
   };
 
   state = {
-    step: null,
-    profileClicked: false,
-    shareClicked: false,
+    step: window.location.pathname.startsWith('/start/') ? window.location.pathname.slice('/start/'.length).split('/')[0] : null,
   };
 
-  handleClose = () => {
-    const { dispatch } = this.props;
-    const { router } = this.context;
+  handleComplete = () => {
+    this.props.dispatch(closeOnboarding());
+  };
 
-    dispatch(closeOnboarding());
-    router.history.push('/home');
+  handleGoToExplore = () => {
+    this.props.dispatch(closeOnboarding());
+  };
+
+  handleGoToHome = () => {
+    this.props.dispatch(closeOnboarding());
   };
 
   handleProfileClick = () => {
-    this.setState({ profileClicked: true });
+    this.setStep('profile');
   };
 
   handleFollowClick = () => {
-    this.setState({ step: 'follows' });
+    this.setStep('follows');
   };
 
   handleComposeClick = () => {
@@ -79,11 +87,22 @@ class Onboarding extends ImmutablePureComponent {
   };
 
   handleShareClick = () => {
-    this.setState({ step: 'share', shareClicked: true });
+    this.props.dispatch(changeSetting(['onboarding', 'share_completed'], true));
+    this.setStep('share');
   };
 
   handleBackClick = () => {
-    this.setState({ step: null });
+    this.setStep(null);
+  };
+
+  handleProfileSaved = () => {
+    this.setStep('follows');
+  };
+
+  setStep = step => {
+    this.props.dispatch(changeSetting(['onboarding', 'last_step'], step));
+    this.setState({ step });
+    this.context.router.history.push(step ? `/start/${step}` : '/start');
   };
 
   handleWindowFocus = debounce(() => {
@@ -93,6 +112,10 @@ class Onboarding extends ImmutablePureComponent {
 
   componentDidMount () {
     window.addEventListener('focus', this.handleWindowFocus, false);
+    if (!this.state.step && this.props.lastStep && ['profile', 'follows', 'share'].includes(this.props.lastStep)) {
+      this.setState({ step: this.props.lastStep });
+      this.context.router.history.replace(`/start/${this.props.lastStep}`);
+    }
   }
 
   componentWillUnmount () {
@@ -100,14 +123,16 @@ class Onboarding extends ImmutablePureComponent {
   }
 
   render () {
-    const { account, multiColumn } = this.props;
-    const { step, shareClicked } = this.state;
+    const { account, multiColumn, shareCompleted } = this.props;
+    const { step } = this.state;
 
     switch(step) {
+    case 'profile':
+      return <Column><Profile onBack={this.handleBackClick} onSaved={this.handleProfileSaved} multiColumn={multiColumn} /></Column>;
     case 'follows':
       return <Follows onBack={this.handleBackClick} multiColumn={multiColumn} />;
     case 'share':
-      return <Share onBack={this.handleBackClick} multiColumn={multiColumn} />;
+      return <Share onBack={this.handleBackClick} onComplete={this.handleComplete} multiColumn={multiColumn} />;
     }
 
     return (
@@ -120,21 +145,21 @@ class Onboarding extends ImmutablePureComponent {
           </div>
 
           <div className='onboarding__steps'>
-            <Step onClick={this.handleProfileClick} href='/settings/profile' completed={(!account.get('avatar').endsWith('missing.png')) || (account.get('display_name').length > 0 && account.get('note').length > 0)} icon='address-book-o' label={<FormattedMessage id='onboarding.steps.setup_profile.title' defaultMessage='Customize your profile' />} description={<FormattedMessage id='onboarding.steps.setup_profile.body' defaultMessage='Others are more likely to interact with you with a filled out profile.' />} />
+            <Step onClick={this.handleProfileClick} completed={(!account.get('avatar').endsWith('missing.png')) || (account.get('display_name').length > 0 && account.get('note').length > 0)} icon='address-book-o' label={<FormattedMessage id='onboarding.steps.setup_profile.title' defaultMessage='Customize your profile' />} description={<FormattedMessage id='onboarding.steps.setup_profile.body' defaultMessage='Others are more likely to interact with you with a filled out profile.' />} />
             <Step onClick={this.handleFollowClick} completed={(account.get('following_count') * 1) >= 7} icon='user-plus' label={<FormattedMessage id='onboarding.steps.follow_people.title' defaultMessage='Find at least {count, plural, one {one person} other {# people}} to follow' values={{ count: 7 }} />} description={<FormattedMessage id='onboarding.steps.follow_people.body' defaultMessage="You curate your own home feed. Let's fill it with interesting people." />} />
             <Step onClick={this.handleComposeClick} completed={(account.get('statuses_count') * 1) >= 1} icon='pencil-square-o' label={<FormattedMessage id='onboarding.steps.publish_status.title' defaultMessage='Make your first post' />} description={<FormattedMessage id='onboarding.steps.publish_status.body' defaultMessage='Say hello to the world.' values={{ emoji: <img className='emojione' alt='🐘' src={`${assetHost}/emoji/1f418.svg`} /> }} />} />
-            <Step onClick={this.handleShareClick} completed={shareClicked} icon='copy' label={<FormattedMessage id='onboarding.steps.share_profile.title' defaultMessage='Share your profile' />} description={<FormattedMessage id='onboarding.steps.share_profile.body' defaultMessage='Let your friends know how to find you on Mastodon!' />} />
+            <Step onClick={this.handleShareClick} completed={shareCompleted} icon='copy' label={<FormattedMessage id='onboarding.steps.share_profile.title' defaultMessage='Share your profile' />} description={<FormattedMessage id='onboarding.steps.share_profile.body' defaultMessage='Let your friends know how to find you on Mastodon!' />} />
           </div>
 
           <p className='onboarding__lead'><FormattedMessage id='onboarding.start.skip' defaultMessage="Don't need help getting started?" /></p>
 
           <div className='onboarding__links'>
-            <Link to='/explore' className='onboarding__link'>
+            <Link to='/explore' className='onboarding__link' onClick={this.handleGoToExplore}>
               <FormattedMessage id='onboarding.actions.go_to_explore' defaultMessage='Take me to trending' />
               <ArrowSmallRight />
             </Link>
 
-            <Link to='/home' className='onboarding__link'>
+            <Link to='/home' className='onboarding__link' onClick={this.handleGoToHome}>
               <FormattedMessage id='onboarding.actions.go_to_home' defaultMessage='Take me to my home feed' />
               <ArrowSmallRight />
             </Link>

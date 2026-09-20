@@ -7,7 +7,15 @@ export function Compose () {
 }
 
 export function Notifications () {
-  return import(/* webpackChunkName: "features/notifications" */'../../notifications');
+  return import(/* webpackChunkName: "features/notifications" */'../../notifications_wrapper');
+}
+
+export function NotificationRequests () {
+  return import(/* webpackChunkName: "features/notifications/requests" */'../../notifications/requests');
+}
+
+export function NotificationRequest () {
+  return import(/* webpackChunkName: "features/notifications/request" */'../../notifications/request');
 }
 
 export function HomeTimeline () {
@@ -118,6 +126,10 @@ export function BlockModal () {
   return import(/* webpackChunkName: "modals/block_modal" */'../components/block_modal');
 }
 
+export function DomainBlockModal () {
+  return import(/* webpackChunkName: "modals/domain_block_modal" */'../components/domain_block_modal');
+}
+
 export function ReportModal () {
   return import(/* webpackChunkName: "modals/report_modal" */'../components/report_modal');
 }
@@ -164,6 +176,10 @@ export function CompareHistoryModal () {
 
 export function Explore () {
   return import(/* webpackChunkName: "features/explore" */'../../explore');
+}
+
+export function LinkTimeline () {
+  return import(/* webpackChunkName: "features/link_timeline" */'../../link_timeline');
 }
 
 export function FilterModal () {

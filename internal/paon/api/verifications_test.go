@@ -32,6 +32,46 @@ func TestVerifiedVerificationFields(t *testing.T) {
 	}
 }
 
+func TestLocalAttributionDomainsNormalizesAndValidatesMastodonInput(t *testing.T) {
+	domains, err := localAttributionDomains("https://*.Example.COM\nnews.example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(domains, ","); got != "example.com,news.example.org" {
+		t.Fatalf("domains = %q", got)
+	}
+
+	for _, raw := range []string{"example.com/path", "user@example.com", "exa_mple.com", strings.Repeat("x.example\n", 101)} {
+		if _, err := localAttributionDomains(raw); err == nil {
+			t.Fatalf("localAttributionDomains(%q) unexpectedly succeeded", raw)
+		}
+	}
+}
+
+func TestVerificationSettingsHTMLIncludesAuthorAttributionControls(t *testing.T) {
+	s := &Server{cfg: config.Config{Scheme: "https", WebDomain: "social.example", LocalDomain: "social.example", DefaultLocale: "en"}}
+	body := verificationSettingsHTML(s, models.Account{
+		Username:           "alice",
+		DisplayName:        "Alice",
+		AttributionDomains: models.StringArray{"example.com"},
+	}, "en", "default", "Paon")
+
+	for _, want := range []string{
+		`id="edit_account"`,
+		`name=&#34;fediverse:creator&#34;`,
+		`@alice@social.example`,
+		`name="account[attribution_domains_as_text]"`,
+		`autocapitalize="none"`,
+		`autocorrect="off"`,
+		`spellcheck="false"`,
+		`example.com`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("verification settings missing %q: %s", want, body)
+		}
+	}
+}
+
 func TestSettingsVerificationRequiresWebAuthentication(t *testing.T) {
 	s := &Server{}
 	req := httptest.NewRequest(http.MethodGet, "/settings/verification", nil)

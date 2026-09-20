@@ -21,10 +21,10 @@ func TestEmbedHTMLEscapesURLs(t *testing.T) {
 	if strings.Contains(html, "<bad>") {
 		t.Fatalf("html was not escaped: %s", html)
 	}
-	if !strings.Contains(html, `class="mastodon-embed"`) || !strings.Contains(html, `width="400"`) || !strings.Contains(html, `height="0"`) {
+	if !strings.Contains(html, `<blockquote class="mastodon-embed"`) || !strings.Contains(html, `data-embed-url=`) || strings.Contains(html, `<iframe`) {
 		t.Fatalf("html = %s", html)
 	}
-	if !strings.Contains(html, `async="async"`) {
+	if !strings.Contains(html, `data-allowed-prefixes=`) || !strings.Contains(html, ` async src=`) {
 		t.Fatalf("script missing async: %s", html)
 	}
 }
@@ -42,10 +42,12 @@ func TestEmbedScriptRouteServesMastodonHeightResizer(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		`iframe.mastodon-embed`,
+		`blockquote.mastodon-embed`,
 		`data.type !== 'setHeight'`,
 		`iframe.contentWindow.postMessage`,
-		`iframe.height = data.height`,
+		`iframe.contentWindow !== e.source`,
+		`iframe.height = Math.ceil(data.height)`,
+		`dataset.paonEmbedInitialized`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("/embed.js missing %q: %s", want, body)
@@ -68,8 +70,13 @@ func TestStatusEmbedUsesRailsSiteTitleSetting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !functionBodyContains(t, src, "statusEmbed", `statusEmbedHTMLWithConfig(s.settingStringValue("site_title", s.cfg.Title), s.cfg`) {
-		t.Fatal("statusEmbed must use Rails site_title setting for the embed document title")
+	for _, want := range []string{
+		`renderer.EmbedHTML(strconv.FormatInt(status.ID, 10), s.settingStringValue("site_title", s.cfg.Title))`,
+		`c.Response().Header().Del("X-Frame-Options")`,
+	} {
+		if !functionBodyContains(t, src, "statusEmbed", want) {
+			t.Fatalf("statusEmbed missing standalone React boot behavior %q", want)
+		}
 	}
 }
 

@@ -2,8 +2,11 @@ package api
 
 import (
 	"database/sql"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +71,40 @@ func TestRemovePreviewCardImageFilesRemovesPaperclipDirectories(t *testing.T) {
 	}
 }
 
+func TestRemovePreviewCardImageFilesBustsCDNAndContinuesOnFailure(t *testing.T) {
+	root := t.TempDir()
+	requests := make(chan string, 1)
+	previous := cacheBusterHTTPClient
+	cacheBusterHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests <- req.URL.String()
+		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(strings.NewReader("failed")), Header: http.Header{}}, nil
+	})}
+	t.Cleanup(func() { cacheBusterHTTPClient = previous })
+	s := &Server{cfg: config.Config{
+		PublicDir:          root,
+		CacheBusterEnabled: true,
+		CDNHost:            "https://cdn.example",
+		PaperclipRootURL:   "/system",
+	}}
+	card := models.PreviewCard{ID: 42, ImageFileName: sql.NullString{String: "card image.png", Valid: true}}
+	path := s.previewCardImagePath(card.ID, card.ImageFileName.String)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.removePreviewCardImageFiles(card); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-requests; got != "https://cdn.example/system/cache/preview_cards/images/000/000/042/original/card%20image.png" {
+		t.Fatalf("cache-bust URL = %q", got)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("preview image was not deleted after cache-bust failure: %v", err)
+	}
+}
+
 func TestPreviewCardVacuumWorkerUsesRailsPreviewCardsVacuumShape(t *testing.T) {
 	src, err := os.ReadFile("preview_card_vacuum_worker.go")
 	if err != nil {
@@ -86,6 +123,7 @@ func TestPreviewCardVacuumWorkerUsesRailsPreviewCardsVacuumShape(t *testing.T) {
 		{"vacuumCachedPreviewCardImages", `s.removePreviewCardImageFiles(card)`},
 		{"vacuumCachedPreviewCardImages", `Updates(clearPreviewCardImageUpdates(now))`},
 		{"removePreviewCardImageFiles", `s.deletePaperclipObject(context.Background(), previewCardImageObjectKey(card.ID, card.ImageFileName.String))`},
+		{"removePreviewCardImageFiles", `s.bustCacheURL(s.cacheBusterPreviewCardImageURL(card.ID, card.ImageFileName.String))`},
 	}
 	for _, check := range checks {
 		if !functionBodyContains(t, src, check.functionName, check.want) {

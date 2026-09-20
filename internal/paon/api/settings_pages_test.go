@@ -45,7 +45,11 @@ func TestSettingsNavMatchesRailsNavigationDestinations(t *testing.T) {
 	nav := settingsNavigationHTML("/settings/preferences/appearance", "en", options) +
 		settingsNavigationHTML("/settings/privacy", "en", options) +
 		settingsNavigationHTML("/settings/export", "en", options) +
-		settingsNavigationHTML("/auth/edit", "en", options)
+		settingsNavigationHTML("/auth/edit", "en", options) +
+		settingsNavigationHTML("/severed_relationships", "en", options) +
+		settingsNavigationHTML("/admin/follow_recommendations", "en", options) +
+		settingsNavigationHTML("/admin/tags", "en", options) +
+		settingsNavigationHTML("/admin/warning_presets", "en", options)
 	for _, want := range []string{
 		`href="/settings/profile"`,
 		`href="/settings/preferences"`,
@@ -53,6 +57,7 @@ func TestSettingsNavMatchesRailsNavigationDestinations(t *testing.T) {
 		`href="/settings/preferences/notifications"`,
 		`href="/settings/preferences/other"`,
 		`href="/relationships"`,
+		`href="/severed_relationships"`,
 		`href="/filters"`,
 		`href="/statuses_cleanup"`,
 		`href="/auth/edit"`,
@@ -63,14 +68,43 @@ func TestSettingsNavMatchesRailsNavigationDestinations(t *testing.T) {
 		`href="/settings/applications"`,
 		`href="/invites"`,
 		`href="/admin/trends/statuses"`,
+		`href="/admin/follow_recommendations"`,
 		`href="/admin/reports"`,
+		`href="/admin/disputes/appeals"`,
+		`href="/admin/tags"`,
 		`href="/admin/dashboard"`,
+		`href="/admin/warning_presets"`,
 		`href="/asynq"`,
 		`href="/auth/sign_out"`,
 	} {
 		if !strings.Contains(nav, want) {
 			t.Fatalf("settings nav missing implemented route %s: %s", want, nav)
 		}
+	}
+}
+
+func TestSettingsNavigationUsesMastodon43PermissionGroups(t *testing.T) {
+	appeals := settingsNavigationHTML("/admin/disputes/appeals", "en", settingsHTMLOptions{Permissions: rolePermissionManageAppeals})
+	if !strings.Contains(appeals, `id="moderation" class="selected"`) || !strings.Contains(appeals, `id="appeals" class="selected simple-navigation-active-leaf"`) {
+		t.Fatalf("appeals permission navigation = %s", appeals)
+	}
+	if strings.Contains(appeals, `id="reports"`) || strings.Contains(appeals, `id="admin"`) {
+		t.Fatalf("appeals-only navigation exposed another permission group: %s", appeals)
+	}
+
+	roles := settingsNavigationHTML("/admin/roles", "en", settingsHTMLOptions{Permissions: rolePermissionManageRoles})
+	if !strings.Contains(roles, `id="admin" class="selected"`) || !strings.Contains(roles, `id="roles" class="selected simple-navigation-active-leaf"`) {
+		t.Fatalf("roles-only navigation = %s", roles)
+	}
+
+	taxonomies := settingsHTMLOptions{Permissions: rolePermissionManageTaxonomies}
+	trends := settingsNavigationHTML("/admin/follow_recommendations", "en", taxonomies)
+	if !strings.Contains(trends, `id="trends" class="selected"`) || !strings.Contains(trends, `id="follow_recommendations" class="selected simple-navigation-active-leaf"`) {
+		t.Fatalf("follow recommendations must be nested under trends: %s", trends)
+	}
+	moderation := settingsNavigationHTML("/admin/tags", "en", taxonomies)
+	if !strings.Contains(moderation, `id="moderation" class="selected"`) || !strings.Contains(moderation, `id="moderated_tags" class="selected simple-navigation-active-leaf"`) {
+		t.Fatalf("hashtag moderation must be nested under moderation: %s", moderation)
 	}
 }
 

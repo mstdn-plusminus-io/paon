@@ -1,0 +1,163 @@
+{
+  "date": "2026-09-19",
+  "dump_sha256": "4dd84ea5c29a677aeb5d27d8d74b32884eec562d36b3ada3059c934aa86f4c46",
+  "postgresql_data_gate": "14.23",
+  "versions": {
+    "4.3.23": {
+      "upstream_commit": "efb25b6aa2014201b04f25c390ad1f516a3ff52d",
+      "upstream_image": "ghcr.io/mastodon/mastodon@sha256:4ef816f471e598b03640f0d5b4cd3cea38381c5dff59a5635081eb2c2a91f6d1",
+      "normalized_database_snapshot_sha256": "1e1f3dcfc49e259536f009ed9744b3b654f1f9d1ebe53f7683574d5fd5354a81",
+      "migration_markers": 473,
+      "tables_and_materialized_views": 102,
+      "compared_rows": 1447757,
+      "normalized_audit_timestamps": [
+        {
+          "table": "notification_policies",
+          "column": "created_at",
+          "values": 2
+        },
+        {
+          "table": "notification_policies",
+          "column": "updated_at",
+          "values": 2
+        },
+        {
+          "table": "settings",
+          "column": "created_at",
+          "values": 0
+        },
+        {
+          "table": "settings",
+          "column": "updated_at",
+          "values": 0
+        }
+      ],
+      "data_and_catalog_equal": true,
+      "rerun_unchanged": true,
+      "paon_to_mastodon_unchanged": true,
+      "mastodon_to_paon_unchanged": true
+    },
+    "4.4.22": {
+      "upstream_commit": "e5e4425d13bfee9572d8d384a19553caad7503d1",
+      "upstream_image": "ghcr.io/mastodon/mastodon@sha256:91c5a9fa6e6f970f7e96c7b6583d0eba56b570d08c8c8557c98536685feee0c1",
+      "normalized_database_snapshot_sha256": "9ef63737a7e2f9a9a9c03dd3ae61f34aa7b47239ae109f513847516d3917f6cd",
+      "migration_markers": 540,
+      "tables_and_materialized_views": 112,
+      "compared_rows": 1447803,
+      "normalized_audit_timestamps": [
+        {
+          "table": "notification_policies",
+          "column": "created_at",
+          "values": 2
+        },
+        {
+          "table": "notification_policies",
+          "column": "updated_at",
+          "values": 2
+        },
+        {
+          "table": "settings",
+          "column": "created_at",
+          "values": 0
+        },
+        {
+          "table": "settings",
+          "column": "updated_at",
+          "values": 0
+        }
+      ],
+      "data_and_catalog_equal": true,
+      "rerun_unchanged": true,
+      "paon_to_mastodon_unchanged": true,
+      "mastodon_to_paon_unchanged": true
+    },
+    "4.5.15": {
+      "upstream_commit": "bf046ffab90464faff67f98a0fbd9fca3058e588",
+      "upstream_image": "ghcr.io/mastodon/mastodon@sha256:4f637c597574118396a96736b6fca7d706371c93123abb68beda835044110064",
+      "normalized_database_snapshot_sha256": "50d1fff8746939f552d25e7229e42b020f6a6b64e3ed4b06b13a087e880eccf1",
+      "migration_markers": 555,
+      "tables_and_materialized_views": 113,
+      "compared_rows": 1447845,
+      "normalized_audit_timestamps": [
+        {
+          "table": "notification_policies",
+          "column": "created_at",
+          "values": 2
+        },
+        {
+          "table": "notification_policies",
+          "column": "updated_at",
+          "values": 2
+        },
+        {
+          "table": "settings",
+          "column": "created_at",
+          "values": 4
+        },
+        {
+          "table": "settings",
+          "column": "updated_at",
+          "values": 4
+        },
+        {
+          "table": "username_blocks",
+          "column": "created_at",
+          "values": 23
+        },
+        {
+          "table": "username_blocks",
+          "column": "updated_at",
+          "values": 23
+        }
+      ],
+      "data_and_catalog_equal": true,
+      "rerun_unchanged": true,
+      "paon_to_mastodon_unchanged": true,
+      "mastodon_to_paon_unchanged": true
+    },
+    "4.6.6": {
+      "upstream_commit": "d74bbd9a3c64740433e016dfc936e83d710858f6",
+      "upstream_image": "ghcr.io/mastodon/mastodon@sha256:3579200b208d4ebbc1affd1218828f3b02dc19953d83d0217eb095dacb84dc00",
+      "normalized_database_snapshot_sha256": "cdb313ae31c6c1887c29cd4f76447d1c29330e90d18f1fc7b056d1beca8f72db",
+      "migration_markers": 589,
+      "tables_and_materialized_views": 119,
+      "compared_rows": 1447879,
+      "normalized_audit_timestamps": [
+        {
+          "table": "notification_policies",
+          "column": "created_at",
+          "values": 2
+        },
+        {
+          "table": "notification_policies",
+          "column": "updated_at",
+          "values": 2
+        },
+        {
+          "table": "settings",
+          "column": "created_at",
+          "values": 4
+        },
+        {
+          "table": "settings",
+          "column": "updated_at",
+          "values": 4
+        },
+        {
+          "table": "username_blocks",
+          "column": "created_at",
+          "values": 23
+        },
+        {
+          "table": "username_blocks",
+          "column": "updated_at",
+          "values": 23
+        }
+      ],
+      "data_and_catalog_equal": true,
+      "rerun_unchanged": true,
+      "paon_to_mastodon_unchanged": true,
+      "mastodon_to_paon_unchanged": true
+    }
+  }
+}

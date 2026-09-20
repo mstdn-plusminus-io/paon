@@ -58,11 +58,15 @@ func (s *Server) announcements(c *echo.Context) error {
 		if err != nil {
 			return err
 		}
+		if err := s.hydrateStatusRelationships(statuses, account); err != nil {
+			return err
+		}
+		serializedStatuses := serializeStatusesWithFilterContext(s.cfg, statuses, account, s.accountFilters(account), "thread")
 		reactions, err := s.announcementReactions(account.ID, announcement.ID)
 		if err != nil {
 			return err
 		}
-		out = append(out, serializer.AnnouncementFromModel(s.cfg, announcement, &read, statuses, reactions))
+		out = append(out, serializer.AnnouncementFromModelWithStatuses(s.cfg, announcement, &read, serializedStatuses, reactions))
 	}
 	return c.JSON(http.StatusOK, out)
 }

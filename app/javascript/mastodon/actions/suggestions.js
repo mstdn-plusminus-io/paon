@@ -10,10 +10,10 @@ export const SUGGESTIONS_FETCH_FAIL    = 'SUGGESTIONS_FETCH_FAIL';
 export const SUGGESTIONS_DISMISS = 'SUGGESTIONS_DISMISS';
 
 export function fetchSuggestions(withRelationships = false) {
-  return (dispatch, getState) => {
+  return (dispatch) => {
     dispatch(fetchSuggestionsRequest());
 
-    api(getState).get('/api/v2/suggestions', { params: { limit: 20 } }).then(response => {
+    api().get('/api/v2/suggestions', { params: { limit: 20 } }).then(response => {
       dispatch(importFetchedAccounts(response.data.map(x => x.account)));
       dispatch(fetchSuggestionsSuccess(response.data));
 
@@ -48,18 +48,19 @@ export function fetchSuggestionsFail(error) {
   };
 }
 
-export const dismissSuggestion = accountId => (dispatch, getState) => {
+export const dismissSuggestion = accountId => (dispatch) => {
   dispatch({
     type: SUGGESTIONS_DISMISS,
     id: accountId,
   });
 
-  api(getState).delete(`/api/v1/suggestions/${accountId}`).then(() => {
+  api().delete(`/api/v1/suggestions/${accountId}`).then(() => {
     dispatch(fetchSuggestionsRequest());
 
-    api(getState).get('/api/v2/suggestions').then(response => {
+    api().get('/api/v2/suggestions').then(response => {
       dispatch(importFetchedAccounts(response.data.map(x => x.account)));
       dispatch(fetchSuggestionsSuccess(response.data));
+      dispatch(fetchRelationships(response.data.map(item => item.account.id)));
     }).catch(error => dispatch(fetchSuggestionsFail(error)));
   }).catch(() => {});
 };

@@ -34,6 +34,7 @@ export const Avatar: React.FC<Props> = ({
 
   return (
     <div
+      data-hover-card-account={account?.get('id')}
       className={classNames('account__avatar', {
         'account__avatar-inline': inline,
       })}

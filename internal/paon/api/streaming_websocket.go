@@ -28,6 +28,7 @@ type websocketSubscription struct {
 }
 
 func (s *Server) streamingWebSocket(c *echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "private, no-store")
 	session, err := s.currentStreamingSession(c)
 	if err != nil || session.Account == nil {
 		return apiError(c, http.StatusUnauthorized, "The access token is invalid")

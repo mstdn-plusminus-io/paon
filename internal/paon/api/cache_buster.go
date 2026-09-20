@@ -95,6 +95,10 @@ func (s *Server) cacheBusterMediaAttachmentURL(id int64, attachment string, styl
 	return s.cacheBusterAssetURL(path)
 }
 
+func (s *Server) cacheBusterPreviewCardImageURL(id int64, filename string) string {
+	return s.cacheBusterAssetURL(previewCardImageObjectKey(id, filename))
+}
+
 func (s *Server) cacheBusterAccountImageURL(id int64, kind string, style string, filename string) string {
 	return s.cacheBusterAccountImageURLWithPrefix(id, kind, style, filename, false)
 }

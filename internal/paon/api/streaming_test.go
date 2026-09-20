@@ -34,6 +34,24 @@ func TestStreamingHealthMatchesNodeServer(t *testing.T) {
 	}
 }
 
+func TestStreamingUserChannelIncludesOnlyAuthorizedNotificationChannel(t *testing.T) {
+	account := &models.Account{ID: 42}
+	base := []string{"timeline:42"}
+
+	got := streamingChannelIDsForSession("user", append([]string{}, base...), streamingSession{Account: account, Scopes: "read"})
+	if want := []string{"timeline:42", "timeline:42:notifications"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("channels = %#v, want %#v", got, want)
+	}
+	got = streamingChannelIDsForSession("user", append([]string{}, base...), streamingSession{Account: account, Scopes: "read:statuses"})
+	if !reflect.DeepEqual(got, base) {
+		t.Fatalf("read:statuses user stream should not include notifications: %#v", got)
+	}
+	got = streamingChannelIDsForSession("user", append([]string{}, base...), streamingSession{Account: account, Scopes: "read:notifications"})
+	if want := []string{"timeline:42", "timeline:42:notifications"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("read:notifications user stream channels = %#v, want %#v", got, want)
+	}
+}
+
 func TestStreamingChannelAcceptsPathAndQueryForms(t *testing.T) {
 	e := echo.New()
 	req := httptest.NewRequest("GET", "/api/v1/streaming/public/local", nil)

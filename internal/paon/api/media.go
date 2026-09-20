@@ -122,7 +122,7 @@ func (s *Server) createMediaWithOptions(c *echo.Context, delayLargerMedia bool) 
 	if hasThumbnail && !mediaAttachmentAllowsUploadedThumbnail(mediaType) {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Thumbnail must be blank")
 	}
-	if hasThumbnail && thumbnailHeader.Size >= int64(s.imageSizeLimitBytes()) {
+	if hasThumbnail && thumbnailHeader.Size > int64(mediaPreviewImageSizeLimit) {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Thumbnail is too large")
 	}
 	thumbnailAttrs, err := mediaThumbnailAttributes(thumbnailHeader)
@@ -411,7 +411,7 @@ func (s *Server) updateMedia(c *echo.Context) error {
 	if hasThumbnail && !mediaAttachmentAllowsUploadedThumbnail(attachment.Type) {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Thumbnail must be blank")
 	}
-	if hasThumbnail && thumbnailHeader.Size >= int64(s.imageSizeLimitBytes()) {
+	if hasThumbnail && thumbnailHeader.Size > int64(mediaPreviewImageSizeLimit) {
 		return apiError(c, http.StatusUnprocessableEntity, "Validation failed: Thumbnail is too large")
 	}
 	thumbnailAttrs, err := mediaThumbnailAttributes(thumbnailHeader)
@@ -1866,7 +1866,7 @@ func mediaContentType(filename string, header string) string {
 
 func railsMediaContentTypeByExtension(ext string) string {
 	switch ext {
-	case ".jpg", ".jpeg":
+	case ".jpg", ".jpeg", ".jfif":
 		return "image/jpeg"
 	case ".png":
 		return "image/png"
@@ -1946,7 +1946,7 @@ func mediaContentTypeSupported(contentType string, mediaType int) bool {
 		}
 	case 4:
 		switch contentType {
-		case "audio/wave", "audio/wav", "audio/x-wav", "audio/x-pn-wave", "audio/vnd.wave", "audio/ogg", "audio/vorbis", "audio/mpeg", "audio/mp3", "audio/webm", "audio/flac", "audio/aac", "audio/m4a", "audio/x-m4a", "audio/mp4", "audio/3gpp", "video/x-ms-asf":
+		case "audio/wave", "audio/wav", "audio/x-wav", "audio/x-pn-wave", "audio/vnd.wave", "audio/ogg", "audio/opus", "audio/vorbis", "audio/mpeg", "audio/mp3", "audio/webm", "audio/flac", "audio/aac", "audio/m4a", "audio/x-m4a", "audio/mp4", "audio/3gpp", "video/x-ms-asf":
 			return true
 		default:
 			return false

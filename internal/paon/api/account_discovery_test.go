@@ -115,7 +115,8 @@ func TestAccountSearchDatabaseFallbackUsesRailsSearchShape(t *testing.T) {
 		`accounts.moved_to_account_id IS NULL`,
 		`accounts.domain IS NOT NULL OR (users.approved = TRUE AND users.confirmed_at IS NOT NULL)`,
 		`account_search_first_degree`,
-		`count(account_search_followers.id) DESC`,
+		`ln(greatest(0, coalesce(account_search_stats.followers_count, 0)) + 1.0) / ln(10.0)`,
+		`THEN 100.0 ELSE 0.0 END`,
 		`rank DESC`,
 	} {
 		if !strings.Contains(string(src), want) {
@@ -140,7 +141,7 @@ func TestAccountSearchTermsForQueryMatchesRailsLocalDomainShape(t *testing.T) {
 }
 
 func TestAccountSearchTSQuerySanitizesRailsDisallowedCharacters(t *testing.T) {
-	if got := accountSearchTSQuery("al:ice?"); got != "' al ice  ':*" {
+	if got := accountSearchTSQuery("al:ice?"); got != "'al':* & 'ice':*" {
 		t.Fatalf("accountSearchTSQuery sanitized value = %q", got)
 	}
 	if got := accountSearchTSQuery("?:"); got != "" {

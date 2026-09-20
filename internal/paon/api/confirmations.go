@@ -47,7 +47,7 @@ func (s *Server) createAuthConfirmation(c *echo.Context) error {
 			email = strings.ToLower(strings.TrimSpace(firstNonEmpty(user.UnconfirmedEmail.String, user.Email)))
 		}
 	}
-	if email == "" || !strings.Contains(email, "@") {
+	if !railsEmailAddressValid(email) {
 		return c.HTML(http.StatusUnprocessableEntity, s.authConfirmationHTML(email, "", authInvalidEmailMessage(locale), locale))
 	}
 	delivery, err := s.refreshConfirmationTokenForEmail(email)
@@ -210,6 +210,11 @@ func (s *Server) userApprovedAfterConfirmation(user models.User, now time.Time) 
 	if err != nil {
 		return false, err
 	}
+	emailRequiresApproval, err := s.emailSignUpRequiresApproval(context.Background(), user.Email, user.SignUpIP.String)
+	if err != nil {
+		return false, err
+	}
+	restriction.RequiresApproval = restriction.RequiresApproval || emailRequiresApproval
 	return confirmationApprovesUserForRailsConfirm(registrationMode, restriction), nil
 }
 

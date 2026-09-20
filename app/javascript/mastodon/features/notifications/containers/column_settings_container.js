@@ -4,6 +4,7 @@ import { connect } from 'react-redux';
 
 import { showAlert } from '../../../actions/alerts';
 import { openModal } from '../../../actions/modal';
+import { fetchNotificationGroups } from '../../../actions/notification_groups';
 import { setFilter, clearNotifications, requestBrowserPermission } from '../../../actions/notifications';
 import { changeAlerts as changePushNotifications } from '../../../actions/push_notifications';
 import { changeSetting } from '../../../actions/settings';
@@ -41,6 +42,9 @@ const mapDispatchToProps = (dispatch, { intl }) => ({
     } else if (path[0] === 'quickFilter') {
       dispatch(changeSetting(['notifications', ...path], checked));
       dispatch(setFilter('all'));
+    } else if (path[0] === 'groupFollows') {
+      dispatch(changeSetting(['notifications', ...path], checked));
+      dispatch(fetchNotificationGroups());
     } else if (path[0] === 'alerts' && checked && typeof window.Notification !== 'undefined' && Notification.permission !== 'granted') {
       if (checked && typeof window.Notification !== 'undefined' && Notification.permission !== 'granted') {
         dispatch(requestBrowserPermission((permission) => {

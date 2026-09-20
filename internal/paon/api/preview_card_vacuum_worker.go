@@ -87,6 +87,9 @@ func (s *Server) removePreviewCardImageFiles(card models.PreviewCard) error {
 		return nil
 	}
 	if card.ImageFileName.Valid && card.ImageFileName.String != "" {
+		if s.cfg.CacheBusterEnabled {
+			s.bustCacheURL(s.cacheBusterPreviewCardImageURL(card.ID, card.ImageFileName.String))
+		}
 		s.deletePaperclipObject(context.Background(), previewCardImageObjectKey(card.ID, card.ImageFileName.String))
 	}
 	for _, base := range []string{

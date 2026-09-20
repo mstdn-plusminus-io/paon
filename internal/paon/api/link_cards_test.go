@@ -46,6 +46,29 @@ func TestFetchPreviewCardRejectsOversizedHTMLLikeRailsBodyWithLimit(t *testing.T
 	}
 }
 
+func TestFetchPreviewCardSendsServerDefaultLocale(t *testing.T) {
+	previous := activityHTTPClient
+	t.Cleanup(func() { activityHTTPClient = previous })
+	header := make(chan string, 1)
+	activityHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		header <- req.Header.Get("Accept-Language")
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+			Body:          io.NopCloser(strings.NewReader(`<html lang="ja"><head><title>記事</title></head></html>`)),
+			ContentLength: -1,
+			Request:       req,
+		}, nil
+	})}
+	server := &Server{cfg: config.Config{DefaultLocale: "ja", LocalDomain: "social.example", WebDomain: "social.example"}}
+	if _, ok := server.fetchPreviewCard(context.Background(), "https://news.example/article"); !ok {
+		t.Fatal("preview card fetch failed")
+	}
+	if got := <-header; got != "ja, *;q=0.5" {
+		t.Fatalf("Accept-Language = %q", got)
+	}
+}
+
 func TestPreviewCardFromOEmbedPayloadRejectsRichCards(t *testing.T) {
 	if _, ok := previewCardFromOEmbedPayload("https://rich.example/1", "https://rich.example/oembed", map[string]any{
 		"version": "1.0",
@@ -53,6 +76,64 @@ func TestPreviewCardFromOEmbedPayloadRejectsRichCards(t *testing.T) {
 		"html":    "<b>rich</b>",
 	}, time.Now()); ok {
 		t.Fatal("rich oEmbed card should not be stored as a preview card")
+	}
+}
+
+func TestPreviewCardCanonicalURLAndStatusOriginalURLMatchMastodon43(t *testing.T) {
+	now := time.Now().UTC()
+	fetched, ok := previewCardFromHTML("https://news.example/original", `<html><head><title>Story</title><link rel="canonical alternate" href="/canonical"></head></html>`, now)
+	if !ok || fetched.card.URL != "https://news.example/canonical" {
+		t.Fatalf("canonical card = %#v, %v", fetched.card, ok)
+	}
+	undefined, ok := previewCardFromHTML("https://news.example/original", `<html><head><title>Story</title><meta property="og:url" content="undefined"></head></html>`, now)
+	if !ok || undefined.card.URL != "https://news.example/original" {
+		t.Fatalf("undefined canonical card = %#v, %v", undefined.card, ok)
+	}
+	crossOrigin, ok := previewCardFromHTML("https://news.example/original", `<html><head><title>Story</title><link rel="canonical" href="https://attacker.example/canonical"></head></html>`, now)
+	if !ok || crossOrigin.card.URL != "https://news.example/original" {
+		t.Fatalf("cross-origin canonical card = %#v, %v", crossOrigin.card, ok)
+	}
+
+	status := models.Status{
+		PreviewCards:        []models.PreviewCard{{ID: 7, URL: "https://news.example/canonical"}},
+		PreviewCardStatuses: []models.PreviewCardStatus{{PreviewCardID: 7, URL: sql.NullString{String: "https://news.example/original", Valid: true}}},
+	}
+	card, ok := status.FirstPreviewCard()
+	if !ok || card.URL != "https://news.example/original" {
+		t.Fatalf("status preview card = %#v, %v", card, ok)
+	}
+}
+
+func TestPreviewCardExtractsCreatorAndNormalizedHTMLLanguage(t *testing.T) {
+	fetched, ok := previewCardFromHTML("https://news.example/article", `<html lang="en-US"><head><title>Story</title><meta name="fediverse:creator" content="@alice@social.example"></head></html>`, time.Now().UTC())
+	if !ok {
+		t.Fatal("preview card was not extracted")
+	}
+	if fetched.creator != "@alice@social.example" {
+		t.Fatalf("creator = %q", fetched.creator)
+	}
+	if !fetched.card.Language.Valid || fetched.card.Language.String != "en" {
+		t.Fatalf("language = %#v", fetched.card.Language)
+	}
+}
+
+func TestPreviewCardAccountAttributionAllowsConfiguredParentDomainOnly(t *testing.T) {
+	account := models.Account{AttributionDomains: models.StringArray{"example.com"}}
+	if !previewCardAccountAllowsAttribution(account, "news.example.com") {
+		t.Fatal("configured parent domain did not authorize attribution")
+	}
+	if previewCardAccountAllowsAttribution(account, "example.com.attacker.test") {
+		t.Fatal("suffix-confusion domain authorized attribution")
+	}
+	if previewCardAccountAllowsAttribution(account, "unrelated.test") {
+		t.Fatal("unrelated domain authorized attribution")
+	}
+}
+
+func TestPreviewCardFetchedUpdatesIncludesAuthorAccount(t *testing.T) {
+	updates := previewCardFetchedUpdates(models.PreviewCard{AuthorAccountID: sql.NullInt64{Int64: 42, Valid: true}})
+	if got := updates["author_account_id"]; got != (sql.NullInt64{Int64: 42, Valid: true}) {
+		t.Fatalf("author_account_id = %#v", got)
 	}
 }
 
@@ -202,7 +283,8 @@ func TestPreviewCardFetchAppliesRailsAttachSideEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`if err := s.attachPreviewCardToStatus(ctx, statusID, card.ID); err != nil {`,
+		`if err := s.attachPreviewCardToStatus(ctx, statusID, card.ID, rawURL); err != nil {`,
+		`INSERT INTO preview_cards_statuses (status_id, preview_card_id, url) VALUES (?, ?, ?)`,
 		`DELETE FROM preview_cards_statuses WHERE status_id = ? AND preview_card_id IN ?`,
 		`s.uploadPaperclipObject(ctx, previewCardImageObjectKey(card.ID, download.filename), path, download.contentType)`,
 		`s.invalidateStatusCache(ctx, statusID)`,

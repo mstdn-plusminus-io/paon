@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/telemetry"
 )
 
 type redisMessage struct {
@@ -24,13 +25,17 @@ type redisMessage struct {
 }
 
 type redisConnConfig struct {
-	network  string
-	address  string
-	username string
-	password string
-	db       int
-	tls      bool
-	prefix   string
+	network          string
+	address          string
+	username         string
+	password         string
+	db               int
+	tls              bool
+	prefix           string
+	sentinelMaster   string
+	sentinelAddrs    []string
+	sentinelUsername string
+	sentinelPassword string
 }
 
 type namedRedisConnConfig struct {
@@ -46,10 +51,14 @@ func redisEndpointConfigured(cfg config.Config) bool {
 
 func redisConfig(cfg config.Config) redisConnConfig {
 	out := redisConnConfig{
-		network:  "tcp",
-		address:  net.JoinHostPort(cfg.RedisHost, cfg.RedisPort),
-		password: cfg.RedisPassword,
-		prefix:   cfg.RedisNamespace,
+		network:          "tcp",
+		address:          net.JoinHostPort(cfg.RedisHost, cfg.RedisPort),
+		password:         cfg.RedisPassword,
+		prefix:           cfg.RedisNamespace,
+		sentinelMaster:   cfg.RedisSentinel.MasterName,
+		sentinelAddrs:    append([]string(nil), cfg.RedisSentinel.Addresses...),
+		sentinelUsername: cfg.RedisSentinel.Username,
+		sentinelPassword: cfg.RedisSentinel.Password,
 	}
 	if db, err := strconv.Atoi(cfg.RedisDB); err == nil {
 		out.db = db
@@ -93,6 +102,7 @@ func cacheRedisConfig(cfg config.Config) redisConnConfig {
 	if strings.TrimSpace(cfg.CacheRedisURL) != "" {
 		cfg.RedisURL = cfg.CacheRedisURL
 	}
+	cfg.RedisSentinel = cfg.CacheRedisSentinel
 	return redisConfig(cfg)
 }
 
@@ -100,6 +110,7 @@ func sidekiqRedisConfig(cfg config.Config) redisConnConfig {
 	if strings.TrimSpace(cfg.SidekiqRedisURL) != "" {
 		cfg.RedisURL = cfg.SidekiqRedisURL
 	}
+	cfg.RedisSentinel = cfg.SidekiqRedisSentinel
 	return redisConfig(cfg)
 }
 
@@ -130,6 +141,10 @@ func redisConnAvailabilityKey(cfg redisConnConfig) string {
 		cfg.password,
 		strconv.Itoa(cfg.db),
 		strconv.FormatBool(cfg.tls),
+		cfg.sentinelMaster,
+		strings.Join(cfg.sentinelAddrs, ","),
+		cfg.sentinelUsername,
+		cfg.sentinelPassword,
 	}, "\x00")
 }
 
@@ -223,6 +238,18 @@ func (s *Server) keepRedisSubscribed(ctx context.Context, channels []string) {
 }
 
 func dialRedis(ctx context.Context, cfg redisConnConfig) (net.Conn, *bufio.Reader, error) {
+	if strings.TrimSpace(cfg.sentinelMaster) != "" && len(cfg.sentinelAddrs) > 0 {
+		address, err := resolveRedisSentinelMaster(ctx, cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		cfg.network = "tcp"
+		cfg.address = address
+	}
+	return dialRedisDirect(ctx, cfg)
+}
+
+func dialRedisDirect(ctx context.Context, cfg redisConnConfig) (net.Conn, *bufio.Reader, error) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, cfg.network, cfg.address)
 	if err != nil {
@@ -237,6 +264,56 @@ func dialRedis(ctx context.Context, cfg redisConnConfig) (net.Conn, *bufio.Reade
 		conn = tlsConn
 	}
 	return conn, bufio.NewReader(conn), nil
+}
+
+func resolveRedisSentinelMaster(ctx context.Context, cfg redisConnConfig) (string, error) {
+	var errs []error
+	for _, address := range cfg.sentinelAddrs {
+		sentinelCfg := redisConnConfig{
+			network:  "tcp",
+			address:  address,
+			username: cfg.sentinelUsername,
+			password: cfg.sentinelPassword,
+		}
+		conn, reader, err := dialRedisDirect(ctx, sentinelCfg)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("sentinel %s: %w", address, err))
+			continue
+		}
+		if err := redisHandshake(conn, reader, sentinelCfg); err != nil {
+			_ = conn.Close()
+			errs = append(errs, fmt.Errorf("sentinel %s handshake: %w", address, err))
+			continue
+		}
+		if err := writeRedisCommand(conn, "SENTINEL", "get-master-addr-by-name", cfg.sentinelMaster); err != nil {
+			_ = conn.Close()
+			errs = append(errs, fmt.Errorf("sentinel %s query: %w", address, err))
+			continue
+		}
+		value, err := readRedisValue(reader)
+		_ = conn.Close()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("sentinel %s response: %w", address, err))
+			continue
+		}
+		items, ok := value.([]any)
+		if !ok || len(items) != 2 {
+			errs = append(errs, fmt.Errorf("sentinel %s returned no primary for %q", address, cfg.sentinelMaster))
+			continue
+		}
+		host, hostOK := items[0].(string)
+		port, portOK := items[1].(string)
+		if !hostOK || !portOK || strings.TrimSpace(host) == "" {
+			errs = append(errs, fmt.Errorf("sentinel %s returned an invalid primary for %q", address, cfg.sentinelMaster))
+			continue
+		}
+		if _, err := strconv.Atoi(port); err != nil {
+			errs = append(errs, fmt.Errorf("sentinel %s returned invalid primary port %q", address, port))
+			continue
+		}
+		return net.JoinHostPort(host, port), nil
+	}
+	return "", fmt.Errorf("resolve Redis primary %q: %w", cfg.sentinelMaster, errors.Join(errs...))
 }
 
 var redisDial = dialRedis
@@ -278,18 +355,31 @@ func (s *Server) cacheRedisCommand(ctx context.Context, args ...string) (any, er
 }
 
 func redisCommandWithConfig(ctx context.Context, cfg redisConnConfig, args ...string) (any, error) {
+	command := ""
+	if len(args) > 0 {
+		command = args[0]
+	}
+	finishTelemetry := func(error) {}
+	if telemetry.Enabled() {
+		ctx, finishTelemetry = telemetry.StartRedis(ctx, command)
+	}
 	conn, reader, err := redisDial(ctx, cfg)
 	if err != nil {
+		finishTelemetry(err)
 		return nil, err
 	}
 	defer conn.Close()
 	if err := redisHandshake(conn, reader, cfg); err != nil {
+		finishTelemetry(err)
 		return nil, err
 	}
 	if err := writeRedisCommand(conn, args...); err != nil {
+		finishTelemetry(err)
 		return nil, err
 	}
-	return readRedisValue(reader)
+	value, err := readRedisValue(reader)
+	finishTelemetry(err)
+	return value, err
 }
 
 func RedisAvailable(ctx context.Context, cfg config.Config) error {

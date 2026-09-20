@@ -44,6 +44,13 @@ func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activi
 	if payload.Signature.SignatureValue == "" {
 		return nil, fmt.Errorf("linked-data signature value is missing")
 	}
+	var document any
+	if err := json.Unmarshal(body, &document); err != nil {
+		return nil, fmt.Errorf("decode linked-data signature document: %w", err)
+	}
+	if activityPubHasUnsupportedSignedJSONLDFeature(document) {
+		return nil, fmt.Errorf("unsupported signed JSON-LD graph feature")
+	}
 	actor, err := s.activityPubLinkedDataSignatureCreatorActor(payload.Signature.Creator)
 	if err != nil {
 		return nil, fmt.Errorf("resolve linked-data signature creator %q: %w", payload.Signature.Creator, err)
@@ -78,6 +85,31 @@ func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activi
 		return nil, err
 	}
 	return actor, nil
+}
+
+// Mastodon 4.3.23 deliberately does not grant linked-data-signature authority
+// to documents using graph-restructuring keywords. JSON-LD canonicalization can
+// otherwise drop or reorder the entry which the inbox later selects.
+func activityPubHasUnsupportedSignedJSONLDFeature(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			switch key {
+			case "@graph", "@included", "@reverse":
+				return true
+			}
+			if activityPubHasUnsupportedSignedJSONLDFeature(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if activityPubHasUnsupportedSignedJSONLDFeature(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Server) activityPubLinkedDataSignatureCreatorActor(creator string) (*models.Account, error) {
@@ -445,9 +477,6 @@ func activityPubFullJSONLDContextExtensions() map[string]any {
 		"misskey":                   "https://misskey-hub.net/ns#",
 		"_misskey_quote":            "misskey:_misskey_quote",
 	}
-	for key, value := range activityPubOLMContextExtension() {
-		extensions[key] = value
-	}
 	return extensions
 }
 
@@ -594,10 +623,7 @@ func (loader mastodonJSONLDDocumentLoader) LoadDocument(uri string) (*ld.RemoteD
 }
 
 func activityPubJSONLDHTTPClient() *http.Client {
-	if activityHTTPClient == nil {
-		return &http.Client{Timeout: 10 * time.Second}
-	}
-	client := *activityHTTPClient
+	client := *activityHTTPClientClone(10 * time.Second)
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 3 {
 			return http.ErrUseLastResponse
@@ -665,35 +691,21 @@ func activityPubFEP044FJSONLDContext() map[string]any {
 
 func activityPubTootJSONLDContext() map[string]any {
 	return map[string]any{
-		"toot":             "http://joinmastodon.org/ns#",
-		"votersCount":      "toot:votersCount",
-		"blurhash":         "toot:blurhash",
-		"focalPoint":       map[string]any{"@id": "toot:focalPoint", "@container": "@list"},
-		"featured":         map[string]any{"@id": "toot:featured", "@type": "@id"},
-		"featuredTags":     map[string]any{"@id": "toot:featuredTags", "@type": "@id"},
-		"discoverable":     "toot:discoverable",
-		"indexable":        "toot:indexable",
-		"memorial":         "toot:memorial",
-		"suspended":        "toot:suspended",
-		"quoteUri":         map[string]any{"@id": "toot:quoteUri", "@type": "@id"},
-		"Emoji":            "toot:Emoji",
-		"Device":           "toot:Device",
-		"Ed25519Signature": "toot:Ed25519Signature",
-		"Ed25519Key":       "toot:Ed25519Key",
-		"Curve25519Key":    "toot:Curve25519Key",
-		"EncryptedMessage": "toot:EncryptedMessage",
-		"publicKeyBase64":  "toot:publicKeyBase64",
-		"deviceId":         "toot:deviceId",
-		"claim":            map[string]any{"@id": "toot:claim", "@type": "@id"},
-		"fingerprintKey":   map[string]any{"@id": "toot:fingerprintKey", "@type": "@id"},
-		"identityKey":      map[string]any{"@id": "toot:identityKey", "@type": "@id"},
-		"devices":          map[string]any{"@id": "toot:devices", "@type": "@id"},
-		"messageFranking":  "toot:messageFranking",
-		"messageType":      "toot:messageType",
-		"cipherText":       "toot:cipherText",
-		"Digest":           "as:Digest",
-		"digestAlgorithm":  "as:digestAlgorithm",
-		"digestValue":      "as:digestValue",
+		"toot":            "http://joinmastodon.org/ns#",
+		"votersCount":     "toot:votersCount",
+		"blurhash":        "toot:blurhash",
+		"focalPoint":      map[string]any{"@id": "toot:focalPoint", "@container": "@list"},
+		"featured":        map[string]any{"@id": "toot:featured", "@type": "@id"},
+		"featuredTags":    map[string]any{"@id": "toot:featuredTags", "@type": "@id"},
+		"discoverable":    "toot:discoverable",
+		"indexable":       "toot:indexable",
+		"memorial":        "toot:memorial",
+		"suspended":       "toot:suspended",
+		"quoteUri":        map[string]any{"@id": "toot:quoteUri", "@type": "@id"},
+		"Emoji":           "toot:Emoji",
+		"Digest":          "as:Digest",
+		"digestAlgorithm": "as:digestAlgorithm",
+		"digestValue":     "as:digestValue",
 	}
 }
 

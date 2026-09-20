@@ -191,7 +191,7 @@ export function expandNotifications({ maxId, forceLoad } = {}, done = noOp) {
 
     dispatch(expandNotificationsRequest(isLoadingMore));
 
-    api(getState).get('/api/v1/notifications', { params, signal: expandNotificationsController.signal }).then(response => {
+    api().get('/api/v1/notifications', { params, signal: expandNotificationsController.signal }).then(response => {
       const next = getLinks(response).refs.find(link => link.rel === 'next');
 
       dispatch(importFetchedAccounts(response.data.map(item => item.account)));
@@ -237,12 +237,15 @@ export function expandNotificationsFail(error, isLoadingMore) {
 }
 
 export function clearNotifications() {
-  return (dispatch, getState) => {
+  return (dispatch) => {
     dispatch({
       type: NOTIFICATIONS_CLEAR,
     });
+    dispatch({
+      type: 'NOTIFICATION_GROUPS_CLEAR_LOCAL',
+    });
 
-    api(getState).post('/api/v1/notifications/clear');
+    api().post('/api/v1/notifications/clear');
   };
 }
 

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/telemetry"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -369,7 +370,10 @@ func (s *Server) deliverActivityPubPollVotes(local models.Account, poll models.P
 	return lastErr
 }
 
-func (s *Server) deliverActivityPubActivityToFollowers(account models.Account, activity map[string]any) error {
+// deliverActivityPubActivityToAccountReach mirrors Mastodon 4.3's
+// ActivityPub::UpdateDistributionWorker. Profile updates must reach every
+// server which may retain a copy of the actor, not just current followers.
+func (s *Server) deliverActivityPubActivityToAccountReach(account models.Account, activity map[string]any) error {
 	if s.db == nil || !account.Local() {
 		return nil
 	}
@@ -519,7 +523,7 @@ func (s *Server) deliverActivityPubAccountUpdateNowWithSigningKey(account models
 		return err
 	}
 	if strings.TrimSpace(privateKey) == "" {
-		return s.deliverActivityPubActivityToFollowers(fresh, activityPubActorUpdate(s, fresh))
+		return s.deliverActivityPubActivityToAccountReach(fresh, activityPubActorUpdate(s, fresh))
 	}
 	signer := fresh
 	signer.PrivateKey = sql.NullString{String: privateKey, Valid: true}
@@ -1193,10 +1197,7 @@ func (s *Server) activityPubRemoteFollowerInboxes(accountID int64) ([]string, er
 }
 
 func (s *Server) activityPubAccountReachInboxes(account models.Account) ([]string, error) {
-	cutoff := time.Now().UTC().Add(-48 * time.Hour)
-	if account.SuspendedAt.Valid && account.SuspensionOrigin.Valid && account.SuspensionOrigin.Int64 == 0 {
-		cutoff = account.SuspendedAt.Time.UTC().Add(-48 * time.Hour)
-	}
+	cutoff := activityPubAccountReachCutoff(account, time.Now().UTC())
 	inboxes := []string{}
 	for _, query := range []func() ([]string, error){
 		func() ([]string, error) { return s.activityPubRemoteFollowerInboxes(account.ID) },
@@ -1213,6 +1214,14 @@ func (s *Server) activityPubAccountReachInboxes(account models.Account) ([]strin
 		inboxes = append(inboxes, rows...)
 	}
 	return compactActivityPubInboxes(inboxes), nil
+}
+
+func activityPubAccountReachCutoff(account models.Account, now time.Time) time.Time {
+	anchor := now.UTC()
+	if account.SuspendedAt.Valid && account.SuspensionOrigin.Valid && account.SuspensionOrigin.Int64 == 0 {
+		anchor = account.SuspendedAt.Time.UTC()
+	}
+	return anchor.Add(-48 * time.Hour)
 }
 
 func (s *Server) activityPubReporterInboxes(accountID int64) ([]string, error) {
@@ -1625,7 +1634,7 @@ func (s *Server) deliverActivityPubConfigured(local models.Account, inboxURL str
 	if !retry.BypassAvailability && !s.activityPubDeliveryAvailable(host) {
 		return nil
 	}
-	if err := s.deliverActivityPubOnce(local, inboxURL, body, host, retry.SynchronizeFollowers); err != nil {
+	if err := s.deliverActivityPubOnce(context.Background(), local, inboxURL, body, host, retry.SynchronizeFollowers); err != nil {
 		s.trackActivityPubDeliveryFailure(host)
 		s.enqueueActivityPubDeliveryRetryConfigured(local, inboxURL, body, configureRetry)
 		return err
@@ -1634,7 +1643,13 @@ func (s *Server) deliverActivityPubConfigured(local models.Account, inboxURL str
 	return nil
 }
 
-func (s *Server) deliverActivityPubOnce(local models.Account, inboxURL string, body []byte, host string, synchronizeFollowers bool) error {
+func (s *Server) deliverActivityPubOnce(ctx context.Context, local models.Account, inboxURL string, body []byte, host string, synchronizeFollowers bool) (err error) {
+	finishTelemetry := func(int, error) {}
+	if s != nil && s.cfg.OpenTelemetryEnabled {
+		ctx, finishTelemetry = telemetry.StartFederation(ctx, "outbound")
+	}
+	statusCode := 0
+	defer func() { finishTelemetry(statusCode, err) }()
 	if s.activityPubDeliveryStoplightOpen(inboxURL) {
 		return fmt.Errorf("activitypub delivery stoplight is open inbox=%q", inboxURL)
 	}
@@ -1642,7 +1657,7 @@ func (s *Server) deliverActivityPubOnce(local models.Account, inboxURL string, b
 	if err != nil {
 		return fmt.Errorf("activitypub delivery load signing key source_account_id=%d: %w", local.ID, err)
 	}
-	req, err := http.NewRequest(http.MethodPost, inboxURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, inboxURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("activitypub delivery create request inbox=%q: %w", inboxURL, err)
 	}
@@ -1670,12 +1685,13 @@ func (s *Server) deliverActivityPubOnce(local models.Account, inboxURL string, b
 	if err := s.signActivityPubRequest(req, local, key, headers); err != nil {
 		return fmt.Errorf("activitypub delivery sign request source_account_id=%d inbox=%q: %w", local.ID, inboxURL, err)
 	}
-	resp, err := activityHTTPClientForActivityDelivery().Do(req)
+	resp, err := activityHTTPClientForActivityDelivery(s, local, key, headers).Do(req)
 	if err != nil {
 		s.trackActivityPubDeliveryStoplightFailure(inboxURL)
 		return fmt.Errorf("activitypub delivery request source_account_id=%d inbox=%q: %w", local.ID, inboxURL, err)
 	}
 	defer resp.Body.Close()
+	statusCode = resp.StatusCode
 	permanentlySuspended := false
 	if resp.StatusCode == http.StatusUnauthorized {
 		permanentlySuspended, err = s.accountSuspendedPermanently(&local)
@@ -1700,7 +1716,7 @@ func (s *Server) deliverActivityPubOnce(local models.Account, inboxURL string, b
 	return fmt.Errorf("activitypub delivery failed source_account_id=%d inbox=%q status=%d response=%q", local.ID, inboxURL, resp.StatusCode, responseSnippet)
 }
 
-func activityHTTPClientForActivityDelivery() *http.Client {
+func activityHTTPClientForActivityDelivery(s *Server, signer models.Account, key *rsa.PrivateKey, headers []string) *http.Client {
 	if activityHTTPClient == nil {
 		return nil
 	}
@@ -1713,7 +1729,13 @@ func activityHTTPClientForActivityDelivery() *http.Client {
 			return fmt.Errorf("remote host is not allowed")
 		}
 		req.Header.Del("Signature")
-		return nil
+		req.Host = activityPubRequestHost(req)
+		req.Header.Set("Host", req.Host)
+		req.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
+		if s == nil || key == nil {
+			return fmt.Errorf("activitypub redirect signing key is missing")
+		}
+		return s.signActivityPubRequest(req, signer, key, headers)
 	}
 	return &client
 }

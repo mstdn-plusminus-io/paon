@@ -8,7 +8,20 @@ import ImmutablePropTypes from 'react-immutable-proptypes';
 import ImmutablePureComponent from 'react-immutable-pure-component';
 import { connect } from 'react-redux';
 
+import BookmarkIcon from '@/material-icons/400-24px/bookmark-fill.svg?react';
+import BookmarkBorderIcon from '@/material-icons/400-24px/bookmark.svg?react';
+import FlagIcon from '@/material-icons/400-24px/flag.svg?react';
+import MoreHorizIcon from '@/material-icons/400-24px/more_horiz.svg?react';
+import RepeatIcon from '@/material-icons/400-24px/repeat.svg?react';
+import ReplyIcon from '@/material-icons/400-24px/reply.svg?react';
+import ReplyAllIcon from '@/material-icons/400-24px/reply_all.svg?react';
+import StarIcon from '@/material-icons/400-24px/star-fill.svg?react';
+import StarBorderIcon from '@/material-icons/400-24px/star.svg?react';
+import VisibilityIcon from '@/material-icons/400-24px/visibility.svg?react';
+import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { PERMISSION_MANAGE_USERS, PERMISSION_MANAGE_FEDERATION } from 'mastodon/permissions';
+import { canEmbedStatus } from 'mastodon/utils/status_embed';
+import { isStatusQuoteable } from 'mastodon/utils/status_quote';
 
 import DropdownMenuContainer from '../containers/dropdown_menu_container';
 import { me, feature_quote } from '../initial_state';
@@ -63,10 +76,10 @@ class StatusActionBar extends ImmutablePureComponent {
 
   static contextTypes = {
     router: PropTypes.object,
-    identity: PropTypes.object,
   };
 
   static propTypes = {
+    identity: identityContextPropShape,
     status: ImmutablePropTypes.map.isRequired,
     relationship: ImmutablePropTypes.map,
     onReply: PropTypes.func,
@@ -105,7 +118,7 @@ class StatusActionBar extends ImmutablePureComponent {
   ];
 
   handleReplyClick = () => {
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       this.props.onReply(this.props.status, this.context.router.history);
@@ -115,7 +128,7 @@ class StatusActionBar extends ImmutablePureComponent {
   };
 
   handleQuoteClick = () => {
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       this.props.onQuote(this.props.status, this.context.router.history);
@@ -134,7 +147,7 @@ class StatusActionBar extends ImmutablePureComponent {
   };
 
   handleFavouriteClick = () => {
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       this.props.onFavourite(this.props.status);
@@ -144,7 +157,7 @@ class StatusActionBar extends ImmutablePureComponent {
   };
 
   handleReblogClick = e => {
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       this.props.onReblog(this.props.status, e);
@@ -207,7 +220,7 @@ class StatusActionBar extends ImmutablePureComponent {
     const { status, onBlockDomain } = this.props;
     const account = status.get('account');
 
-    onBlockDomain(account.get('acct').split('@')[1]);
+    onBlockDomain(account);
   };
 
   handleUnblockDomain = () => {
@@ -248,7 +261,7 @@ class StatusActionBar extends ImmutablePureComponent {
 
   render () {
     const { status, relationship, intl, withDismiss, withCounters, scrollKey } = this.props;
-    const { signedIn, permissions } = this.context.identity;
+    const { signedIn, permissions } = this.props.identity;
 
     const publicStatus       = ['public', 'unlisted'].includes(status.get('visibility'));
     const pinnableStatus     = ['public', 'unlisted', 'private'].includes(status.get('visibility'));
@@ -256,6 +269,7 @@ class StatusActionBar extends ImmutablePureComponent {
     const account            = status.get('account');
     const writtenByMe        = status.getIn(['account', 'id']) === me;
     const isRemote           = status.getIn(['account', 'username']) !== status.getIn(['account', 'acct']);
+    const quoteableStatus    = feature_quote && isStatusQuoteable(status, relationship, signedIn);
 
     let menu = [];
 
@@ -271,7 +285,7 @@ class StatusActionBar extends ImmutablePureComponent {
       menu.push({ text: intl.formatMessage(messages.share), action: this.handleShareClick });
     }
 
-    if (publicStatus && (signedIn || !isRemote)) {
+    if (canEmbedStatus(status)) {
       menu.push({ text: intl.formatMessage(messages.embed), action: this.handleEmbed });
     }
 
@@ -347,12 +361,15 @@ class StatusActionBar extends ImmutablePureComponent {
     }
 
     let replyIcon;
+    let replyIconComponent;
     let replyTitle;
     if (status.get('in_reply_to_id', null) === null) {
       replyIcon = 'reply';
+      replyIconComponent = ReplyIcon;
       replyTitle = intl.formatMessage(messages.reply);
     } else {
       replyIcon = 'reply-all';
+      replyIconComponent = ReplyAllIcon;
       replyTitle = intl.formatMessage(messages.replyAll);
     }
 
@@ -370,21 +387,21 @@ class StatusActionBar extends ImmutablePureComponent {
     }
 
     const filterButton = this.props.onFilter && (
-      <IconButton className='status__action-bar__button' title={intl.formatMessage(messages.hide)} icon='eye' onClick={this.handleHideClick} />
+      <IconButton className='status__action-bar__button' title={intl.formatMessage(messages.hide)} icon='eye' iconComponent={VisibilityIcon} onClick={this.handleHideClick} />
     );
 
     return (
       <div className='status__action-bar'>
-        <IconButton className='status__action-bar__button' title={replyTitle} icon={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? 'reply' : replyIcon} onClick={this.handleReplyClick} counter={status.get('replies_count')} />
-        <IconButton className={classNames('status__action-bar__button', { reblogPrivate })} disabled={!publicStatus && !reblogPrivate} active={status.get('reblogged')} title={reblogTitle} icon='retweet' onClick={this.handleReblogClick} counter={withCounters ? status.get('reblogs_count') : undefined} />
-        {feature_quote && signedIn && <IconButton className='status__action-bar__button' title={intl.formatMessage(messages.quote)} icon='quote-right' onClick={this.handleQuoteClick} /> }
-        <IconButton className='status__action-bar__button star-icon' animate active={status.get('favourited')} title={intl.formatMessage(messages.favourite)} icon='star' onClick={this.handleFavouriteClick} counter={withCounters ? status.get('favourites_count') : undefined} />
-        <IconButton className='status__action-bar__button bookmark-icon' disabled={!signedIn} active={status.get('bookmarked')} title={intl.formatMessage(messages.bookmark)} icon='bookmark' onClick={this.handleBookmarkClick} />
+        <IconButton className='status__action-bar__button' title={replyTitle} icon={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? 'reply' : replyIcon} iconComponent={status.get('in_reply_to_account_id') === status.getIn(['account', 'id']) ? ReplyIcon : replyIconComponent} onClick={this.handleReplyClick} counter={status.get('replies_count')} />
+        <IconButton className={classNames('status__action-bar__button', { reblogPrivate })} disabled={!publicStatus && !reblogPrivate} active={status.get('reblogged')} title={reblogTitle} icon='retweet' iconComponent={RepeatIcon} onClick={this.handleReblogClick} counter={withCounters ? status.get('reblogs_count') : undefined} />
+        {quoteableStatus && <IconButton className='status__action-bar__button' title={intl.formatMessage(messages.quote)} icon='quote-right' onClick={this.handleQuoteClick} /> }
+        <IconButton className='status__action-bar__button star-icon' animate active={status.get('favourited')} title={intl.formatMessage(messages.favourite)} icon='star' iconComponent={status.get('favourited') ? StarIcon : StarBorderIcon} onClick={this.handleFavouriteClick} counter={withCounters ? status.get('favourites_count') : undefined} />
+        <IconButton className='status__action-bar__button bookmark-icon' disabled={!signedIn} active={status.get('bookmarked')} title={intl.formatMessage(messages.bookmark)} icon='bookmark' iconComponent={status.get('bookmarked') ? BookmarkIcon : BookmarkBorderIcon} onClick={this.handleBookmarkClick} />
 
         {filterButton}
 
         {localStorage.plusminus_config_quick_report === 'visible' && (
-          <div className='status__action-bar__button report-icon'><IconButton title={intl.formatMessage(messages.report, { name: status.getIn(['account', 'username']) })} icon='flag' onClick={this.handleReport} /></div>
+          <div className='status__action-bar__button report-icon'><IconButton title={intl.formatMessage(messages.report, { name: status.getIn(['account', 'username']) })} icon='flag' iconComponent={FlagIcon} onClick={this.handleReport} /></div>
         )}
 
         <div className='status__action-bar__dropdown'>
@@ -393,6 +410,7 @@ class StatusActionBar extends ImmutablePureComponent {
             status={status}
             items={menu}
             icon='ellipsis-h'
+            iconComponent={MoreHorizIcon}
             size={18}
             direction='right'
             title={intl.formatMessage(messages.more)}
@@ -404,4 +422,4 @@ class StatusActionBar extends ImmutablePureComponent {
 
 }
 
-export default connect(mapStateToProps)(injectIntl(StatusActionBar));
+export default withIdentity(connect(mapStateToProps)(injectIntl(StatusActionBar)));

@@ -56,6 +56,12 @@ func TestNativeImageFallbackResizesAndLogsWarning(t *testing.T) {
 	}
 }
 
+func TestNativePreviewImageLimitMatchesMastodon43(t *testing.T) {
+	if mediaPreviewImageSizeLimit != 2*1024*1024 {
+		t.Fatalf("native preview image limit = %d", mediaPreviewImageSizeLimit)
+	}
+}
+
 func TestNativeImageFallbackConvertsAVIF(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "source.avif")
 	sourceFile, err := os.Create(source)

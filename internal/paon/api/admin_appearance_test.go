@@ -38,12 +38,12 @@ func TestValidateAdminAppearanceSettingsRejectsInvalidTheme(t *testing.T) {
 	}
 }
 
-func TestAdminThemeSettingFallsBackToDefault(t *testing.T) {
+func TestAdminThemeSettingFallsBackToSystem(t *testing.T) {
 	if got := adminThemeSetting("mastodon-light"); got != "mastodon-light" {
 		t.Fatalf("theme = %q", got)
 	}
-	if got := adminThemeSetting("not-real"); got != "default" {
-		t.Fatalf("theme = %q, want default", got)
+	if got := adminThemeSetting("not-real"); got != "system" {
+		t.Fatalf("theme = %q, want system", got)
 	}
 }
 

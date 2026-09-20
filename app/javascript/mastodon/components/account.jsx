@@ -151,7 +151,7 @@ class Account extends ImmutablePureComponent {
     return (
       <div className={classNames('account', { 'account--minimal': minimal })}>
         <div className='account__wrapper'>
-          <Link key={account.get('id')} className='account__display-name' title={account.get('acct')} to={`/@${account.get('acct')}`}>
+          <Link key={account.get('id')} className='account__display-name' title={account.get('acct')} to={`/@${account.get('acct')}`} data-hover-card-account={account.get('id')}>
             <div className='account__avatar-wrapper'>
               <Avatar account={account} size={size} />
             </div>

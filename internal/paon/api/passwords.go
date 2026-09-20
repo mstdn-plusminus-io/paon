@@ -31,7 +31,7 @@ func (s *Server) postAuthPassword(c *echo.Context) error {
 func (s *Server) createAuthPassword(c *echo.Context) error {
 	locale := s.webLocale(c, nil)
 	email := strings.ToLower(strings.TrimSpace(c.FormValue("user[email]")))
-	if email == "" || !strings.Contains(email, "@") {
+	if !railsEmailAddressValid(email) {
 		return c.HTML(http.StatusUnprocessableEntity, s.authPasswordNewHTML(email, "", authInvalidEmailMessage(locale), locale))
 	}
 	if s.db == nil {

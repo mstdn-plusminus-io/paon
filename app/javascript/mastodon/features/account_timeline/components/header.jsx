@@ -77,7 +77,7 @@ export default class Header extends ImmutablePureComponent {
 
     if (!domain) return;
 
-    this.props.onBlockDomain(domain);
+    this.props.onBlockDomain(this.props.account);
   };
 
   handleUnblockDomain = () => {

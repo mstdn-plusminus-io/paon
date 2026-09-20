@@ -111,7 +111,6 @@ func TestNullableRailsStringColumnsUseNullSafeString(t *testing.T) {
 		table  string
 		column string
 	}{
-		{table: "accounts", column: "devices_url"},
 		{table: "account_domain_blocks", column: "domain"},
 		{table: "notifications", column: "type"},
 		{table: "poll_votes", column: "uri"},
@@ -246,9 +245,8 @@ func TestCoreRailsSchemaColumnsRemainMapped(t *testing.T) {
 			name:  "users",
 			model: User{},
 			cols: []string{
-				"admin",
 				"last_emailed_at",
-				"moderator",
+				"otp_secret",
 				"sign_in_token",
 				"sign_in_token_sent_at",
 				"skip_sign_in_token",

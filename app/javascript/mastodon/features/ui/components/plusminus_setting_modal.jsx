@@ -902,7 +902,7 @@ class PlusMinusSettingModal extends React.Component {
             </Button>
           </div>
           <Button onClick={this.handleSave}>
-            <FormattedMessage id='compose_form.save_changes' defaultMessage='Save' />
+            <FormattedMessage id='compose_form.save_changes' defaultMessage='Save changes' />
           </Button>
         </div>
       </div>

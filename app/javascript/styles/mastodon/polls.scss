@@ -238,6 +238,24 @@
         border-color: $highlight-text-color;
       }
     }
+
+    &__select {
+      display: flex;
+      flex: 1 1 50%;
+      min-width: 0;
+      flex-direction: column;
+      gap: 4px;
+      color: $lighter-text-color;
+      font-size: 12px;
+
+      + .poll__footer__select {
+        margin-inline-start: 8px;
+      }
+
+      select {
+        width: 100%;
+      }
+    }
   }
 
   .button.button-secondary {
@@ -267,6 +285,10 @@
       flex: 0 0 auto;
       width: calc(100% - (23px + 6px));
       margin-inline-end: 6px;
+    }
+
+    .poll__cancel {
+      flex: 0 0 auto;
     }
   }
 

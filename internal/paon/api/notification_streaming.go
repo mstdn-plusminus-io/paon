@@ -90,6 +90,9 @@ func (s *Server) publishNotificationIDWithContext(ctx context.Context, id int64)
 		First(&notification).Error; err != nil {
 		return
 	}
+	if notification.Filtered {
+		return
+	}
 	account := models.Account{ID: notification.AccountID}
 	_ = s.db.WithContext(ctx).Preload("AccountStat").Where("id = ?", notification.AccountID).First(&account).Error
 	notifications := []models.Notification{notification}
@@ -97,6 +100,9 @@ func (s *Server) publishNotificationIDWithContext(ctx context.Context, id int64)
 		return
 	}
 	if err := s.hydrateNotificationReports(notifications); err != nil {
+		return
+	}
+	if err := s.hydrateNotificationSpecialEvents(notifications); err != nil {
 		return
 	}
 	if err := s.hydrateNotificationStatusRelationships(notifications, &account); err != nil {

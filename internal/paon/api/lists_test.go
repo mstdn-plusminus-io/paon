@@ -300,12 +300,14 @@ func TestReturningUserHomeFeedRegenerationMatchesRailsWorkerShape(t *testing.T) 
 		{"regenerateHomeFeedForReturningUser", `!user.ConfirmedAt.Valid`},
 		{"regenerateHomeFeedForReturningUser", `!returningUserNeedsFeedUpdate(user, now)`},
 		{"regenerateHomeFeedForReturningUser", `"SET", key, "true", "NX", "EX"`},
-		{"regenerateHomeFeedForReturningUser", `s.populateHomeFeed(workerCtx, s.db, user.AccountID, user.Settings)`},
+		{"regenerateHomeFeedForReturningUser", `s.populateAccountFeeds(workerCtx, s.db, user.AccountID, user.Settings)`},
 		{"regenerateHomeFeedForReturningUser", `"DEL", key`},
 		{"populateHomeFeed", `s.homeTimelineQuery(&account)`},
 		{"populateHomeFeed", `Limit(feedMaxItems / 2)`},
 		{"populateHomeFeed", `s.addStatusToFeedContext(ctx, "home", account.ID, status, aggregateReblogs)`},
 		{"populateHomeFeed", `s.trimFeedContext(ctx, "home", account.ID)`},
+		{"populateAccountFeeds", `s.populateHomeFeed(ctx, database, accountID, settings)`},
+		{"populateAccountFeeds", `s.populateListFeed(ctx, list, settings)`},
 	} {
 		if !functionBodyContains(t, cacheSrc, check.fn, check.want) {
 			t.Fatalf("list_feed_cache.go:%s missing Rails regeneration behavior %q", check.fn, check.want)

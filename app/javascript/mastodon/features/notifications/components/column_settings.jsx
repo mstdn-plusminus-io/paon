@@ -5,19 +5,17 @@ import { FormattedMessage } from 'react-intl';
 
 import ImmutablePropTypes from 'react-immutable-proptypes';
 
+import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { PERMISSION_MANAGE_USERS, PERMISSION_MANAGE_REPORTS } from 'mastodon/permissions';
 
 import ClearColumnButton from './clear_column_button';
 import GrantPermissionButton from './grant_permission_button';
 import SettingToggle from './setting_toggle';
 
-export default class ColumnSettings extends PureComponent {
-
-  static contextTypes = {
-    identity: PropTypes.object,
-  };
+class ColumnSettings extends PureComponent {
 
   static propTypes = {
+    identity: identityContextPropShape,
     settings: ImmutablePropTypes.map.isRequired,
     pushSettings: ImmutablePropTypes.map.isRequired,
     onChange: PropTypes.func.isRequired,
@@ -38,6 +36,7 @@ export default class ColumnSettings extends PureComponent {
     const unreadMarkersShowStr = <FormattedMessage id='notifications.column_settings.unread_notifications.highlight' defaultMessage='Highlight unread notifications' />;
     const filterBarShowStr = <FormattedMessage id='notifications.column_settings.filter_bar.show_bar' defaultMessage='Show filter bar' />;
     const filterAdvancedStr = <FormattedMessage id='notifications.column_settings.filter_bar.advanced' defaultMessage='Display all categories' />;
+    const groupFollowsStr = <FormattedMessage id='notifications.column_settings.group_follows' defaultMessage='Group follow notifications' />;
     const alertStr = <FormattedMessage id='notifications.column_settings.alert' defaultMessage='Desktop notifications' />;
     const showStr = <FormattedMessage id='notifications.column_settings.show' defaultMessage='Show in column' />;
     const soundStr = <FormattedMessage id='notifications.column_settings.sound' defaultMessage='Play sound' />;
@@ -83,6 +82,16 @@ export default class ColumnSettings extends PureComponent {
           <div className='column-settings__row'>
             <SettingToggle id='show-filter-bar' prefix='notifications' settings={settings} settingPath={['quickFilter', 'show']} onChange={onChange} label={filterBarShowStr} />
             <SettingToggle id='show-filter-bar' prefix='notifications' settings={settings} settingPath={['quickFilter', 'advanced']} onChange={onChange} label={filterAdvancedStr} />
+          </div>
+        </div>
+
+        <div role='group' aria-labelledby='notifications-grouping'>
+          <span id='notifications-grouping' className='column-settings__section'>
+            <FormattedMessage id='notifications.column_settings.group' defaultMessage='Group' />
+          </span>
+
+          <div className='column-settings__row'>
+            <SettingToggle id='group-follow-notifications' prefix='notifications' settings={settings} settingPath={['groupFollows']} onChange={onChange} label={groupFollowsStr} />
           </div>
         </div>
 
@@ -174,7 +183,7 @@ export default class ColumnSettings extends PureComponent {
           </div>
         </div>
 
-        {((this.context.identity.permissions & PERMISSION_MANAGE_USERS) === PERMISSION_MANAGE_USERS) && (
+        {((this.props.identity.permissions & PERMISSION_MANAGE_USERS) === PERMISSION_MANAGE_USERS) && (
           <div role='group' aria-labelledby='notifications-admin-sign-up'>
             <span id='notifications-status' className='column-settings__section'><FormattedMessage id='notifications.column_settings.admin.sign_up' defaultMessage='New sign-ups:' /></span>
 
@@ -187,7 +196,7 @@ export default class ColumnSettings extends PureComponent {
           </div>
         )}
 
-        {((this.context.identity.permissions & PERMISSION_MANAGE_REPORTS) === PERMISSION_MANAGE_REPORTS) && (
+        {((this.props.identity.permissions & PERMISSION_MANAGE_REPORTS) === PERMISSION_MANAGE_REPORTS) && (
           <div role='group' aria-labelledby='notifications-admin-report'>
             <span id='notifications-status' className='column-settings__section'><FormattedMessage id='notifications.column_settings.admin.report' defaultMessage='New reports:' /></span>
 
@@ -204,3 +213,5 @@ export default class ColumnSettings extends PureComponent {
   }
 
 }
+
+export default withIdentity(ColumnSettings);

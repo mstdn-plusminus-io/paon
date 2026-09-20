@@ -272,8 +272,8 @@ func TestStatusListIncludesPaginationMatchesRailsPinnedAccountStatuses(t *testin
 	e := echo.New()
 	req := httptest.NewRequest("GET", "/api/v1/accounts/1/statuses?pinned=1", nil)
 	c := echo.NewContext(req, httptest.NewRecorder(), e)
-	if statusListIncludesPagination(c) {
-		t.Fatal("expected account pinned statuses to omit pagination headers")
+	if !statusListIncludesPagination(c) {
+		t.Fatal("expected Mastodon 4.3 pinned account statuses to include pagination headers")
 	}
 
 	req = httptest.NewRequest("GET", "/api/v1/timelines/public?pinned=1", nil)
@@ -311,7 +311,6 @@ func TestAccountStatusesUsesVisibilityGuard(t *testing.T) {
 		{"accountStatusTagQueryValue", `normalizedSearchTagName(raw)`},
 		{"accountBlocksAccountOrDomain", `models.AccountDomainBlock{}`},
 		{"applyOnlyMediaFilterForAccount", `timeline_media.account_id = ?`},
-		{"statusListIncludesPagination", `truthy(c.QueryParam("pinned"))`},
 	} {
 		if !functionBodyContains(t, src, check.fn, check.want) {
 			t.Fatalf("server.go:%s does not contain %q", check.fn, check.want)

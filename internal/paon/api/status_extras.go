@@ -173,7 +173,11 @@ func (s *Server) statusCard(c *echo.Context) error {
 			return apiError(c, http.StatusNotFound, "Record not found")
 		}
 	}
-	return c.JSON(http.StatusOK, serializer.PreviewCardFromModel(s.cfg, status.PreviewCards[0]))
+	card, ok := status.FirstPreviewCard()
+	if !ok {
+		return apiError(c, http.StatusNotFound, "Record not found")
+	}
+	return c.JSON(http.StatusOK, serializer.PreviewCardFromModel(s.cfg, card))
 }
 
 func statusSnapshotEdit(status models.Status) models.StatusEdit {

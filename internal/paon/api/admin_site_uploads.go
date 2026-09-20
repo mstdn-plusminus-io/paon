@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -154,6 +155,9 @@ func (s *Server) storeSiteUploadFileStyles(header *multipart.FileHeader, id int6
 	if name == "thumbnail" {
 		return s.storeSiteUploadThumbnailStyles(header, id, filename)
 	}
+	if name == "favicon" || name == "app_icon" {
+		return s.storeSiteUploadIconStyles(header, id, name, filename)
+	}
 	contentType := mediaContentType(filename, header.Header.Get("Content-Type"))
 	var originalSize int64
 	for _, style := range siteUploadStyles(name) {
@@ -171,6 +175,33 @@ func (s *Server) storeSiteUploadFileStyles(header *multipart.FileHeader, id int6
 	}
 	if originalSize <= 0 {
 		originalSize = header.Size
+	}
+	return originalSize, nil
+}
+
+func (s *Server) storeSiteUploadIconStyles(header *multipart.FileHeader, id int64, name string, filename string) (int64, error) {
+	original := s.siteUploadFilePath(id, "original", filename)
+	contentType := mediaContentType(filename, header.Header.Get("Content-Type"))
+	originalSize, err := s.storeSiteUploadOriginalStyle(header, original, contentType)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.uploadPaperclipObject(context.Background(), siteUploadObjectKey(id, "original", filename), original, contentType); err != nil {
+		return 0, err
+	}
+	for _, style := range siteUploadStyles(name)[1:] {
+		size, err := strconv.Atoi(style)
+		if err != nil {
+			return 0, err
+		}
+		styleFilename := siteUploadStyleFilename(name, style, filename)
+		target := s.siteUploadFilePath(id, style, styleFilename)
+		if err := resizeVIPSFileToFill(original, target, "image/png", size, size); err != nil {
+			return 0, err
+		}
+		if err := s.uploadPaperclipObject(context.Background(), siteUploadObjectKey(id, style, styleFilename), target, "image/png"); err != nil {
+			return 0, err
+		}
 	}
 	return originalSize, nil
 }
@@ -268,6 +299,10 @@ func siteUploadStyles(name string) []string {
 	switch name {
 	case "thumbnail":
 		return []string{"original", "@1x", "@2x"}
+	case "favicon":
+		return []string{"original", "16", "32", "48"}
+	case "app_icon":
+		return []string{"original", "57", "60", "72", "76", "114", "120", "144", "152", "167", "180", "1024", "36", "48", "96", "192", "256", "384", "512"}
 	default:
 		return []string{"original"}
 	}
@@ -278,6 +313,9 @@ func (s *Server) siteUploadFilePath(id int64, style string, filename string) str
 }
 
 func (s *Server) siteUploadBlurhash(id int64, name string, filename string) string {
+	if name == "favicon" || name == "app_icon" {
+		return ""
+	}
 	style := "original"
 	if name == "thumbnail" {
 		style = "@1x"
@@ -286,7 +324,7 @@ func (s *Server) siteUploadBlurhash(id int64, name string, filename string) stri
 }
 
 func siteUploadStyleFilename(name string, style string, filename string) string {
-	if name == "thumbnail" && style != "original" {
+	if (name == "thumbnail" || name == "favicon" || name == "app_icon") && style != "original" {
 		ext := filepath.Ext(filename)
 		if ext != "" {
 			return strings.TrimSuffix(filename, ext) + ".png"

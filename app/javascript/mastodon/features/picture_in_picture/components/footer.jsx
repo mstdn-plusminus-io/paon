@@ -14,6 +14,7 @@ import { reblog, favourite, unreblog, unfavourite } from 'mastodon/actions/inter
 import { openModal } from 'mastodon/actions/modal';
 import { IconButton } from 'mastodon/components/icon_button';
 import { fileNameFromURL } from 'mastodon/features/video';
+import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 import { me, boostModal } from 'mastodon/initial_state';
 import { makeGetStatus } from 'mastodon/selectors';
 
@@ -28,7 +29,7 @@ const messages = defineMessages({
   replyConfirm: { id: 'confirmations.reply.confirm', defaultMessage: 'Reply' },
   replyMessage: { id: 'confirmations.reply.message', defaultMessage: 'Replying now will overwrite the message you are currently composing. Are you sure you want to proceed?' },
   open: { id: 'status.open', defaultMessage: 'Expand this status' },
-  download: { id: 'video.download', defaultMessage: 'Download' },
+  download: { id: 'video.download', defaultMessage: 'Download file' },
 });
 
 const makeMapStateToProps = () => {
@@ -46,10 +47,10 @@ class Footer extends ImmutablePureComponent {
 
   static contextTypes = {
     router: PropTypes.object,
-    identity: PropTypes.object,
   };
 
   static propTypes = {
+    identity: identityContextPropShape,
     statusId: PropTypes.string.isRequired,
     status: ImmutablePropTypes.map.isRequired,
     intl: PropTypes.object.isRequired,
@@ -75,7 +76,7 @@ class Footer extends ImmutablePureComponent {
 
   handleReplyClick = () => {
     const { dispatch, askReplyConfirmation, status, intl } = this.props;
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       if (askReplyConfirmation) {
@@ -104,7 +105,7 @@ class Footer extends ImmutablePureComponent {
 
   handleFavouriteClick = () => {
     const { dispatch, status } = this.props;
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       if (status.get('favourited')) {
@@ -131,7 +132,7 @@ class Footer extends ImmutablePureComponent {
 
   handleReblogClick = e => {
     const { dispatch, status } = this.props;
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       if (status.get('reblogged')) {
@@ -234,4 +235,4 @@ class Footer extends ImmutablePureComponent {
 
 }
 
-export default connect(makeMapStateToProps)(injectIntl(Footer));
+export default connect(makeMapStateToProps)(withIdentity(injectIntl(Footer)));

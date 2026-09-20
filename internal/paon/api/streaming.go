@@ -17,11 +17,11 @@ type streamingSession struct {
 	Account         *models.Account
 	AccessTokenID   int64
 	Scopes          string
-	DeviceID        string
 	ChosenLanguages []string
 }
 
 func (s *Server) streamingHealth(c *echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "private, no-store")
 	return c.String(http.StatusOK, "OK")
 }
 
@@ -66,7 +66,7 @@ func (s *Server) streaming(c *echo.Context) error {
 
 	response := c.Response()
 	response.Header().Set("Content-Type", "text/event-stream")
-	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("Cache-Control", "private, no-store")
 	response.Header().Set("Connection", "keep-alive")
 	response.WriteHeader(http.StatusOK)
 	flusher, _ := response.(http.Flusher)
@@ -204,12 +204,6 @@ func (s *Server) currentStreamingSession(c *echo.Context) (streamingSession, err
 	var accessToken models.OAuthAccessToken
 	_ = s.db.Select("id, scopes").Where("token = ? AND revoked_at IS NULL", token).First(&accessToken).Error
 	session := streamingSession{Account: &account, AccessTokenID: accessToken.ID, Scopes: string(accessToken.Scopes), ChosenLanguages: []string(user.ChosenLanguages)}
-	if accessToken.ID != 0 && tokenHasAnyScope(accessToken.Scopes, "crypto") {
-		var device models.Device
-		if err := s.db.Select("device_id").Where("access_token_id = ?", accessToken.ID).First(&device).Error; err == nil {
-			session.DeviceID = device.DeviceID
-		}
-	}
 	return session, nil
 }
 

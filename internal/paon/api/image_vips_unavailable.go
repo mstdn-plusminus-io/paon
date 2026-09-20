@@ -4,6 +4,10 @@ package api
 
 import "fmt"
 
+// The native processor follows Mastodon's ImageMagick-compatible preview
+// limit. Original image uploads continue to use IMAGE_SIZE_LIMIT.
+const mediaPreviewImageSizeLimit = 2 * 1024 * 1024
+
 var errVIPSUnavailable = fmt.Errorf("libvips image processor is unavailable in this build")
 
 func tryConvertVIPSFileToJPEG(string, string) error {

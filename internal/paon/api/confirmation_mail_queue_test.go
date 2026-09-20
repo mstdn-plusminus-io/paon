@@ -31,7 +31,7 @@ func TestConfirmationMailTaskUsesMailersQueueAndSafePayload(t *testing.T) {
 	if err := json.Unmarshal(task.Payload(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload) != 2 || payload["user_id"] != float64(42) || payload["token"] != "raw-token" {
+	if len(payload) != 3 || payload["version"] != float64(asynqPayloadVersion43) || payload["user_id"] != float64(42) || payload["token"] != "raw-token" {
 		t.Fatalf("confirmation mail payload = %#v", payload)
 	}
 	for _, sensitive := range []string{"email", "encrypted_password", "settings", "locale", "user"} {

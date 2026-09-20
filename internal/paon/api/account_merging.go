@@ -29,6 +29,9 @@ var accountMergingOwnedTables = []string{
 	"follow_recommendation_suppressions",
 	"appeals",
 	"tag_follows",
+	"notifications",
+	"notification_permissions",
+	"notification_requests",
 }
 
 var accountMergingTargetTables = []string{
@@ -39,6 +42,15 @@ var accountMergingTargetTables = []string{
 	"account_moderation_notes",
 	"account_pins",
 	"account_notes",
+}
+
+// Mastodon 4.3 notification policies introduced a second account reference
+// (`from_account_id`) which must follow a merged remote account as well as the
+// recipient-owned `account_id` reference above.
+var accountMergingFromTables = []string{
+	"notifications",
+	"notification_permissions",
+	"notification_requests",
 }
 
 func (s *Server) mergeDuplicateRemoteActivityPubAccounts(ctx context.Context, database *gorm.DB, account models.Account) error {
@@ -82,6 +94,11 @@ func (s *Server) mergeDuplicateRemoteActivityPubAccount(ctx context.Context, dat
 		}
 		for _, table := range accountMergingTargetTables {
 			if err := mergeAccountReferenceRows(tx, table, "target_account_id", accountID, duplicateID); err != nil {
+				return err
+			}
+		}
+		for _, table := range accountMergingFromTables {
+			if err := mergeAccountReferenceRows(tx, table, "from_account_id", accountID, duplicateID); err != nil {
 				return err
 			}
 		}

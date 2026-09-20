@@ -110,6 +110,7 @@ export class DisplayName extends React.PureComponent<Props> {
 
     return (
       <span
+        data-hover-card-account={account?.get('id')}
         className='display-name'
         onMouseEnter={this.handleMouseEnter}
         onMouseLeave={this.handleMouseLeave}

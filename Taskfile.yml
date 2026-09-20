@@ -81,6 +81,7 @@ tasks:
     cmds:
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/db
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/migrate
+      - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/dbparity
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/cutover
       - go test -mod=mod -tags="{{.PAON_IMAGE_TAGS}} integration" ./internal/paon/api
 
@@ -90,8 +91,20 @@ tasks:
       - mkdir -p tmp
       - go run -mod=mod ./cmd/paon-routes > tmp/go-routes.json
 
-  test:differential:
-    desc: Compare declared HTTP contracts against live Rails and Go reference servers
+  routes:audit:
+    desc: Compare Go routes with a Mastodon 4.3.23 Rails route manifest
+    deps:
+      - routes:go
+    vars:
+      RAILS_ROUTES: '{{default "tmp/rails-routes-4.3.23.json" .PAON_RAILS_ROUTE_MANIFEST}}'
+    preconditions:
+      - sh: test -f "{{.RAILS_ROUTES}}"
+        msg: Set PAON_RAILS_ROUTE_MANIFEST to a generated Mastodon 4.3.23 Rails route manifest
+    cmds:
+      - go run -mod=mod ./cmd/paon-route-audit --rails "{{.RAILS_ROUTES}}" --go tmp/go-routes.json
+
+  test:differential:core:
+    desc: Compare public and unauthenticated HTTP contracts against live Rails and Go reference servers
     preconditions:
       - sh: test -n "$PAON_RAILS_REFERENCE_URL"
         msg: PAON_RAILS_REFERENCE_URL is required
@@ -99,6 +112,40 @@ tasks:
         msg: PAON_GO_REFERENCE_URL is required
     cmds:
       - go run -mod=mod ./cmd/paon-differential --cases testdata/differential/core.json
+
+  test:differential:
+    desc: Compare the complete public and seeded authenticated Mastodon 4.3.23 contract matrix
+    deps:
+      - test:differential:core
+    preconditions:
+      - sh: test -n "$PAON_DIFF_USER_AUTHORIZATION"
+        msg: PAON_DIFF_USER_AUTHORIZATION is required (for example, Bearer plus the seeded user token)
+      - sh: test -n "$PAON_DIFF_OWNER_AUTHORIZATION"
+        msg: PAON_DIFF_OWNER_AUTHORIZATION is required
+      - sh: test -n "$PAON_DIFF_ADMIN_AUTHORIZATION"
+        msg: PAON_DIFF_ADMIN_AUTHORIZATION is required
+      - sh: test -n "$PAON_DIFF_NO_READ_ACCOUNTS_AUTHORIZATION"
+        msg: PAON_DIFF_NO_READ_ACCOUNTS_AUTHORIZATION is required
+      - sh: test -n "$PAON_DIFF_LOCAL_ACCOUNT_ID"
+        msg: PAON_DIFF_LOCAL_ACCOUNT_ID is required
+      - sh: test -n "$PAON_DIFF_REMOTE_ACCOUNT_ID"
+        msg: PAON_DIFF_REMOTE_ACCOUNT_ID is required
+      - sh: test -n "$PAON_DIFF_SUSPENDED_ACCOUNT_ID"
+        msg: PAON_DIFF_SUSPENDED_ACCOUNT_ID is required
+      - sh: test -n "$PAON_DIFF_PUBLIC_STATUS_ID"
+        msg: PAON_DIFF_PUBLIC_STATUS_ID is required
+      - sh: test -n "$PAON_DIFF_PRIVATE_STATUS_ID"
+        msg: PAON_DIFF_PRIVATE_STATUS_ID is required
+      - sh: test -n "$PAON_DIFF_BLOCKED_STATUS_ID"
+        msg: PAON_DIFF_BLOCKED_STATUS_ID is required
+      - sh: test -n "$PAON_DIFF_SEARCH_QUERY"
+        msg: PAON_DIFF_SEARCH_QUERY is required and must be URL-encoded
+      - sh: test -n "$PAON_DIFF_SEARCH_MAX_ID"
+        msg: PAON_DIFF_SEARCH_MAX_ID is required
+      - sh: test -n "$PAON_DIFF_LINK_URL_QUERY"
+        msg: PAON_DIFF_LINK_URL_QUERY is required and must be URL-encoded
+    cmds:
+      - go run -mod=mod ./cmd/paon-differential --cases testdata/differential/authenticated.json
 
   integration:down:
     desc: Stop and delete isolated integration dependencies
@@ -108,7 +155,8 @@ tasks:
   external:up:
     desc: Start deterministic Meilisearch, S3-compatible, and SMTP test services
     cmds:
-      - docker compose -f docker-compose.integration.yml --profile external up -d --wait
+      - docker compose -f docker-compose.integration.yml --profile external up -d --wait postgres redis meilisearch minio mailpit
+      - docker compose -f docker-compose.integration.yml --profile external run --rm --no-deps minio-setup
 
   test:external:
     desc: Run real Meilisearch, S3-compatible storage, SMTP, and media-tool tests
@@ -153,7 +201,7 @@ tasks:
     desc: Apply or validate the Go-owned Rails-compatible database schema
     cmds:
       - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
-      - go run -mod=mod ./cmd/paon-migrate
+      - go run -mod=mod ./cmd/paon-migrate {{.CLI_ARGS}}
 
   meili-deploy:
     desc: Rebuild Rails-compatible Meilisearch indexes from source
@@ -203,3 +251,10 @@ tasks:
     desc: Validate Meilisearch deploy prerequisites inside Compose
     cmds:
       - docker compose run --rm web paon-meili-deploy --check-config
+
+  test:migration-parity:
+    desc: Restore the private staging dump and compare this release with pinned Mastodon
+    cmds:
+      - mkdir -p "$GOTMPDIR" "$GOCACHE" "$GOMODCACHE"
+      - python3 -B testdata/migration-parity/test_runner.py
+      - python3 bin/test-migration-parity {{.CLI_ARGS}}

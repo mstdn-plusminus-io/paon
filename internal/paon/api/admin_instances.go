@@ -205,6 +205,11 @@ func (s *Server) runPurgeAdminInstanceDomain(ctx context.Context, domain string,
 		return echo.NewHTTPError(http.StatusNotFound, "instance not found")
 	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.RelationshipSeveranceEvent{}).
+			Where("type IN ? AND lower(target_name) = ?", []int{0, 1}, domain).
+			Updates(map[string]any{"purged": true, "updated_at": now}).Error; err != nil {
+			return err
+		}
 		if err := s.purgeAdminInstanceDomainFiles(tx, domain); err != nil {
 			return err
 		}

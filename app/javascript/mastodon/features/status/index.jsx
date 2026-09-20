@@ -1,6 +1,6 @@
 import PropTypes from 'prop-types';
 
-import { defineMessages, injectIntl, FormattedMessage } from 'react-intl';
+import { defineMessages, injectIntl } from 'react-intl';
 
 import classNames from 'classnames';
 import { Helmet } from 'react-helmet';
@@ -17,6 +17,7 @@ import { Icon }  from 'mastodon/components/icon';
 import { LoadingIndicator } from 'mastodon/components/loading_indicator';
 import ScrollContainer from 'mastodon/containers/scroll_container';
 import BundleColumnError from 'mastodon/features/ui/components/bundle_column_error';
+import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 
 import {
   unblockAccount,
@@ -30,7 +31,7 @@ import {
   directCompose,
 } from '../../actions/compose';
 import {
-  blockDomain,
+  initDomainBlockModal,
   unblockDomain,
 } from '../../actions/domain_blocks';
 import {
@@ -79,7 +80,6 @@ const messages = defineMessages({
   detailedStatus: { id: 'status.detailed_status', defaultMessage: 'Detailed conversation view' },
   replyConfirm: { id: 'confirmations.reply.confirm', defaultMessage: 'Reply' },
   replyMessage: { id: 'confirmations.reply.message', defaultMessage: 'Replying now will overwrite the message you are currently composing. Are you sure you want to proceed?' },
-  blockDomainConfirm: { id: 'confirmations.domain_block.confirm', defaultMessage: 'Block entire domain' },
 });
 
 const makeMapStateToProps = () => {
@@ -141,7 +141,7 @@ const makeMapStateToProps = () => {
   });
 
   const mapStateToProps = (state, props) => {
-    const status = getStatus(state, { id: props.params.statusId });
+    const status = getStatus(state, { id: props.params.statusId, contextType: 'detailed' });
 
     let ancestorsIds   = Immutable.List();
     let descendantsIds = Immutable.List();
@@ -188,10 +188,10 @@ class Status extends ImmutablePureComponent {
 
   static contextTypes = {
     router: PropTypes.object,
-    identity: PropTypes.object,
   };
 
   static propTypes = {
+    identity: identityContextPropShape,
     params: PropTypes.object.isRequired,
     dispatch: PropTypes.func.isRequired,
     status: ImmutablePropTypes.map,
@@ -240,7 +240,7 @@ class Status extends ImmutablePureComponent {
 
   handleFavouriteClick = (status) => {
     const { dispatch } = this.props;
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       if (status.get('favourited')) {
@@ -270,7 +270,7 @@ class Status extends ImmutablePureComponent {
 
   handleReplyClick = (status) => {
     const { askReplyConfirmation, dispatch, intl } = this.props;
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       if (askReplyConfirmation) {
@@ -299,7 +299,7 @@ class Status extends ImmutablePureComponent {
 
   handleQuoteClick = (status) => {
     const { askReplyConfirmation, dispatch, intl } = this.props;
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       if (askReplyConfirmation) {
@@ -332,7 +332,7 @@ class Status extends ImmutablePureComponent {
 
   handleReblogClick = (status, e) => {
     const { dispatch } = this.props;
-    const { signedIn } = this.context.identity;
+    const { signedIn } = this.props.identity;
 
     if (signedIn) {
       if (status.get('reblogged')) {
@@ -487,15 +487,8 @@ class Status extends ImmutablePureComponent {
     this.props.dispatch(unblockAccount(account.get('id')));
   };
 
-  handleBlockDomainClick = domain => {
-    this.props.dispatch(openModal({
-      modalType: 'CONFIRM',
-      modalProps: {
-        message: <FormattedMessage id='confirmations.domain_block.message' defaultMessage='Are you really, really sure you want to block the entire {domain}? In most cases a few targeted blocks or mutes are sufficient and preferable. You will not see content from that domain in any public timelines or your notifications. Your followers from that domain will be removed.' values={{ domain: <strong>{domain}</strong> }} />,
-        confirm: this.props.intl.formatMessage(messages.blockDomainConfirm),
-        onConfirm: () => this.props.dispatch(blockDomain(domain)),
-      },
-    }));
+  handleBlockDomainClick = account => {
+    this.props.dispatch(initDomainBlockModal(account));
   };
 
   handleUnblockDomainClick = domain => {
@@ -775,4 +768,4 @@ class Status extends ImmutablePureComponent {
 
 }
 
-export default injectIntl(connect(makeMapStateToProps)(Status));
+export default injectIntl(connect(makeMapStateToProps)(withIdentity(Status)));

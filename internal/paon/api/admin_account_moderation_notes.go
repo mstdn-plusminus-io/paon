@@ -13,6 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const accountModerationNoteContentLimit = 2000
+
 func (s *Server) createAdminAccountModerationNoteWeb(c *echo.Context) error {
 	user, handled, err := s.requireAdminReportsWebUser(c)
 	if handled || err != nil {
@@ -33,7 +35,7 @@ func (s *Server) createAdminAccountModerationNoteWeb(c *echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusNotFound, "account not found")
 	}
-	if strings.TrimSpace(content) == "" || len([]rune(content)) > 500 {
+	if strings.TrimSpace(content) == "" || len([]rune(content)) > accountModerationNoteContentLimit {
 		notes, _ := s.adminAccountModerationNotes(targetID)
 		return c.HTML(http.StatusOK, adminAccountHTMLWithIPHistory(*account, "", adminT(locale, "admin.account_moderation_notes.invalid_msg", "Moderation note could not be saved"), nil, locale, s.cfg, notes...))
 	}

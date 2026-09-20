@@ -64,7 +64,9 @@ class Links extends PureComponent {
             title={link.get('title')}
             publisher={link.get('provider_name')}
             publishedAt={link.get('published_at')}
-            author={link.get('author_name')}
+            author={link.getIn(['authors', 0, 'name']) || link.get('author_name')}
+            authorUrl={link.getIn(['authors', 0, 'url'])}
+            authorAccount={link.getIn(['authors', 0, 'account', 'id'])}
             sharedTimes={link.getIn(['history', 0, 'accounts']) * 1 + link.getIn(['history', 1, 'accounts']) * 1}
             thumbnail={link.get('image')}
             thumbnailDescription={link.get('image_description')}

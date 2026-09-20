@@ -26,6 +26,212 @@ type Operations struct {
 	server *Server
 }
 
+type OperationCustomEmojiPurgeEntry struct {
+	ID        int64
+	Shortcode string
+	Domain    string
+}
+
+func (operations *Operations) CustomEmojiPurgeInventory(ctx context.Context, remoteOnly bool, suspendedOnly bool) ([]OperationCustomEmojiPurgeEntry, error) {
+	if operations == nil || operations.server == nil || operations.server.db == nil {
+		return nil, errors.New("operations database is not configured")
+	}
+	query := operations.server.db.WithContext(ctx).Model(&models.CustomEmoji{})
+	if suspendedOnly {
+		query = query.Where(`custom_emojis.domain IS NOT NULL AND custom_emojis.domain <> '' AND EXISTS (
+			SELECT 1 FROM domain_blocks
+			WHERE domain_blocks.severity = ?
+			  AND (lower(custom_emojis.domain) = lower(domain_blocks.domain)
+			       OR lower(custom_emojis.domain) LIKE ('%.' || lower(domain_blocks.domain)))
+		)`, domainBlockSeverityCode("suspend"))
+	} else if remoteOnly {
+		query = query.Where("custom_emojis.domain IS NOT NULL AND custom_emojis.domain <> ''")
+	}
+	var emojis []models.CustomEmoji
+	if err := query.Order("custom_emojis.id ASC").Find(&emojis).Error; err != nil {
+		return nil, err
+	}
+	entries := make([]OperationCustomEmojiPurgeEntry, 0, len(emojis))
+	for _, emoji := range emojis {
+		entries = append(entries, OperationCustomEmojiPurgeEntry{ID: emoji.ID, Shortcode: emoji.Shortcode, Domain: emoji.Domain.String})
+	}
+	return entries, nil
+}
+
+func (operations *Operations) PurgeCustomEmojis(ctx context.Context, remoteOnly bool, suspendedOnly bool) (int, error) {
+	entries, err := operations.CustomEmojiPurgeInventory(ctx, remoteOnly, suspendedOnly)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, entry := range entries {
+		var emoji models.CustomEmoji
+		if err := operations.server.db.WithContext(ctx).Where("id = ?", entry.ID).First(&emoji).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		} else if err != nil {
+			return removed, err
+		}
+		operations.server.removeCustomEmojiLocalFiles(emoji)
+		if err := operations.server.db.WithContext(ctx).Delete(&models.CustomEmoji{}, emoji.ID).Error; err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+type OperationMediaRefreshOptions struct {
+	StatusID int64
+	Account  string
+	Domain   string
+	Days     int
+	Force    bool
+}
+
+type OperationMediaRefreshEntry struct {
+	ID   int64
+	Size int64
+}
+
+func (operations *Operations) SearchDeployInventory(ctx context.Context) (MeiliDeployStats, error) {
+	var out MeiliDeployStats
+	if operations == nil || operations.server == nil || operations.server.db == nil {
+		return out, errors.New("operations database is not configured")
+	}
+	counts := []struct {
+		model any
+		value *int
+	}{
+		{&models.Account{}, &out.Accounts},
+		{&models.Status{}, &out.Statuses},
+		{&models.Tag{}, &out.Tags},
+		{&models.Instance{}, &out.Instances},
+	}
+	for _, item := range counts {
+		var count int64
+		if err := operations.server.db.WithContext(ctx).Model(item.model).Count(&count).Error; err != nil {
+			return out, err
+		}
+		*item.value = int(count)
+	}
+	return out, nil
+}
+
+func (operations *Operations) DeploySearch(ctx context.Context, options MeiliDeployOptions) (MeiliDeployStats, error) {
+	if operations == nil || operations.server == nil {
+		return MeiliDeployStats{}, errors.New("operations server is not configured")
+	}
+	return operations.server.DeployMeiliIndexes(ctx, options)
+}
+
+func (operations *Operations) MediaRefreshInventory(ctx context.Context, options OperationMediaRefreshOptions) ([]OperationMediaRefreshEntry, error) {
+	if operations == nil || operations.server == nil || operations.server.db == nil {
+		return nil, errors.New("operations database is not configured")
+	}
+	sources := 0
+	if options.StatusID > 0 {
+		sources++
+	}
+	if strings.TrimSpace(options.Account) != "" {
+		sources++
+	}
+	if strings.TrimSpace(options.Domain) != "" {
+		sources++
+	}
+	if options.Days > 0 {
+		sources++
+	}
+	if sources != 1 {
+		return nil, errors.New("specify exactly one of status, account, domain, or days")
+	}
+	query := operations.server.db.WithContext(ctx).Model(&models.MediaAttachment{}).
+		Select("media_attachments.id, COALESCE(media_attachments.file_file_size, 0) + COALESCE(media_attachments.thumbnail_file_size, 0) AS size").
+		Where("media_attachments.remote_url <> ''")
+	if !options.Force {
+		query = query.Where("media_attachments.file_file_name IS NULL OR media_attachments.file_file_name = ''")
+	}
+	switch {
+	case options.StatusID > 0:
+		query = query.Where("media_attachments.status_id = ?", options.StatusID)
+	case strings.TrimSpace(options.Account) != "":
+		username, domain, ok := strings.Cut(strings.ToLower(strings.TrimSpace(options.Account)), "@")
+		if !ok || username == "" || domain == "" {
+			return nil, errors.New("account must be a remote username@domain handle")
+		}
+		query = query.Joins("JOIN accounts media_refresh_accounts ON media_refresh_accounts.id = media_attachments.account_id").
+			Where("lower(media_refresh_accounts.username) = ? AND lower(media_refresh_accounts.domain) = ?", username, domain)
+	case strings.TrimSpace(options.Domain) != "":
+		domain := normalizeDomain(options.Domain)
+		if domain == "" {
+			return nil, errors.New("invalid media domain")
+		}
+		query = query.Joins("JOIN accounts media_refresh_accounts ON media_refresh_accounts.id = media_attachments.account_id").
+			Where("lower(media_refresh_accounts.domain) = ? OR lower(media_refresh_accounts.domain) LIKE ?", domain, "%."+domain)
+	case options.Days > 0:
+		query = query.Joins("JOIN accounts media_refresh_accounts ON media_refresh_accounts.id = media_attachments.account_id").
+			Where("media_refresh_accounts.domain IS NOT NULL AND media_refresh_accounts.domain <> ''").
+			Where("media_attachments.created_at >= ?", time.Now().UTC().Add(-time.Duration(options.Days)*24*time.Hour))
+	}
+	var entries []OperationMediaRefreshEntry
+	if err := query.Order("media_attachments.id ASC").Scan(&entries).Error; err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (operations *Operations) RefreshMedia(ctx context.Context, options OperationMediaRefreshOptions) (int, int64, error) {
+	entries, err := operations.MediaRefreshInventory(ctx, options)
+	if err != nil {
+		return 0, 0, err
+	}
+	queued := 0
+	var bytes int64
+	for _, entry := range entries {
+		if operations.server.enqueueRedownloadMediaTask(entry.ID) {
+			queued++
+			bytes += entry.Size
+			continue
+		}
+		if err := operations.server.redownloadRemoteMediaAttachment(ctx, entry.ID); err != nil {
+			return queued, bytes, err
+		}
+		queued++
+		bytes += entry.Size
+	}
+	return queued, bytes, nil
+}
+
+type EmailDomainBlockEntry struct {
+	ID                int64
+	Domain            string
+	ParentID          sql.NullInt64
+	AllowWithApproval bool
+}
+
+func (operations *Operations) ListEmailDomainBlockEntries(ctx context.Context) ([]EmailDomainBlockEntry, error) {
+	var rows []models.EmailDomainBlock
+	if err := operations.server.db.WithContext(ctx).Order("domain ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	parents := make([]models.EmailDomainBlock, 0, len(rows))
+	children := map[int64][]models.EmailDomainBlock{}
+	for _, row := range rows {
+		if row.ParentID.Valid {
+			children[row.ParentID.Int64] = append(children[row.ParentID.Int64], row)
+			continue
+		}
+		parents = append(parents, row)
+	}
+	out := make([]EmailDomainBlockEntry, 0, len(rows))
+	for _, parent := range parents {
+		out = append(out, EmailDomainBlockEntry{ID: parent.ID, Domain: parent.Domain, ParentID: parent.ParentID, AllowWithApproval: parent.AllowWithApproval})
+		for _, child := range children[parent.ID] {
+			out = append(out, EmailDomainBlockEntry{ID: child.ID, Domain: child.Domain, ParentID: child.ParentID, AllowWithApproval: child.AllowWithApproval})
+		}
+	}
+	return out, nil
+}
+
 func (operations *Operations) ListEmailDomainBlocks(ctx context.Context) ([]string, error) {
 	var rows []models.EmailDomainBlock
 	if err := operations.server.db.WithContext(ctx).Order("domain ASC").Find(&rows).Error; err != nil {
@@ -39,31 +245,93 @@ func (operations *Operations) ListEmailDomainBlocks(ctx context.Context) ([]stri
 }
 
 func (operations *Operations) AddEmailDomainBlocks(ctx context.Context, domains []string) (int, error) {
-	now := time.Now().UTC()
+	return operations.AddEmailDomainBlocksWithApproval(ctx, domains, false)
+}
+
+func (operations *Operations) AddEmailDomainBlocksWithApproval(ctx context.Context, domains []string, allowWithApproval bool) (int, error) {
+	added, _, err := operations.AddEmailDomainBlocksWithDNS(ctx, domains, allowWithApproval, false)
+	return added, err
+}
+
+func (operations *Operations) AddEmailDomainBlocksWithDNS(ctx context.Context, domains []string, allowWithApproval bool, withDNSRecords bool) (int, int, error) {
 	added := 0
+	skipped := 0
 	for _, raw := range domains {
-		domain := strings.ToLower(strings.TrimSpace(raw))
+		domain := normalizeDomain(raw)
 		if domain == "" || strings.ContainsAny(domain, " /@") || !strings.Contains(domain, ".") {
-			return added, fmt.Errorf("invalid email domain %q", raw)
+			return added, skipped, fmt.Errorf("invalid email domain %q", raw)
 		}
-		result := operations.server.db.WithContext(ctx).Exec(`INSERT INTO email_domain_blocks (domain, created_at, updated_at) VALUES (?, ?, ?) ON CONFLICT (domain) DO NOTHING`, domain, now, now)
-		if result.Error != nil {
-			return added, result.Error
+		var count int64
+		if err := operations.server.db.WithContext(ctx).Model(&models.EmailDomainBlock{}).Where("domain = ?", domain).Count(&count).Error; err != nil {
+			return added, skipped, err
 		}
-		added += int(result.RowsAffected)
+		if count > 0 {
+			skipped++
+			continue
+		}
+		otherDomains := []string(nil)
+		if withDNSRecords {
+			otherDomains = resolveEmailDomainBlockMXDomains(domain)
+		}
+		rows, err := operations.server.insertAdminEmailDomainBlocks(domain, otherDomains, allowWithApproval)
+		if err != nil {
+			if isUniqueConstraintError(err) {
+				skipped++
+				continue
+			}
+			return added, skipped, err
+		}
+		added += len(rows)
+		skipped += 1 + len(otherDomains) - len(rows)
 	}
-	return added, nil
+	return added, skipped, nil
 }
 
 func (operations *Operations) RemoveEmailDomainBlocks(ctx context.Context, domains []string) (int64, error) {
+	entries, err := operations.EmailDomainBlockRemovalInventory(ctx, domains)
+	if err != nil {
+		return 0, err
+	}
+	ids := make([]int64, 0, len(entries))
+	for _, entry := range entries {
+		ids = append(ids, entry.ID)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := operations.server.db.WithContext(ctx).Where("id IN ?", ids).Delete(&models.EmailDomainBlock{})
+	return result.RowsAffected, result.Error
+}
+
+func (operations *Operations) EmailDomainBlockRemovalInventory(ctx context.Context, domains []string) ([]EmailDomainBlockEntry, error) {
 	normalized := make([]string, 0, len(domains))
 	for _, domain := range domains {
 		if value := strings.ToLower(strings.TrimSpace(domain)); value != "" {
 			normalized = append(normalized, value)
 		}
 	}
-	result := operations.server.db.WithContext(ctx).Where("domain IN ?", normalized).Delete(&models.EmailDomainBlock{})
-	return result.RowsAffected, result.Error
+	if len(normalized) == 0 {
+		return []EmailDomainBlockEntry{}, nil
+	}
+	var roots []models.EmailDomainBlock
+	if err := operations.server.db.WithContext(ctx).Where("domain IN ?", normalized).Find(&roots).Error; err != nil {
+		return nil, err
+	}
+	rootIDs := make([]int64, 0, len(roots))
+	for _, root := range roots {
+		rootIDs = append(rootIDs, root.ID)
+	}
+	var rows []models.EmailDomainBlock
+	if len(rootIDs) > 0 {
+		if err := operations.server.db.WithContext(ctx).Where("id IN ? OR parent_id IN ?", rootIDs, rootIDs).Order("id ASC").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+	}
+	out := make([]EmailDomainBlockEntry, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, EmailDomainBlockEntry{ID: row.ID, Domain: row.Domain, ParentID: row.ParentID, AllowWithApproval: row.AllowWithApproval})
+	}
+	return out, nil
 }
 
 func (operations *Operations) CanonicalEmailBlockExists(ctx context.Context, email string) (bool, error) {
@@ -169,14 +437,26 @@ func normalizeOperationCIDR(value string) (string, error) {
 }
 
 func NewOperations(cfg config.Config, database *gorm.DB) *Operations {
-	return &Operations{server: &Server{cfg: cfg, db: database, asynqClient: asynq.NewClient(asynqRedisOpt(cfg))}}
+	return &Operations{server: &Server{
+		cfg:            cfg,
+		db:             database,
+		asynqClient:    asynq.NewClient(asynqRedisOpt(cfg)),
+		asynqInspector: asynq.NewInspector(asynqRedisOpt(cfg)),
+	}}
 }
 
 func (operations *Operations) Close() error {
-	if operations == nil || operations.server == nil || operations.server.asynqClient == nil {
+	if operations == nil || operations.server == nil {
 		return nil
 	}
-	return operations.server.asynqClient.Close()
+	var closeErrors []error
+	if operations.server.asynqClient != nil {
+		closeErrors = append(closeErrors, operations.server.asynqClient.Close())
+	}
+	if operations.server.asynqInspector != nil {
+		closeErrors = append(closeErrors, operations.server.asynqInspector.Close())
+	}
+	return errors.Join(closeErrors...)
 }
 
 type OperationAccountCreate struct {
@@ -262,12 +542,13 @@ func (operations *Operations) ModifyAccount(ctx context.Context, username string
 	if err != nil {
 		return OperationAccountModifyResult{}, err
 	}
-	updates := map[string]any{"updated_at": time.Now().UTC()}
+	now := time.Now().UTC()
+	updates := map[string]any{"updated_at": now}
 	if email := strings.ToLower(strings.TrimSpace(options.Email)); email != "" {
 		updates["email"] = email
 	}
 	if options.Confirm {
-		updates["confirmed_at"] = time.Now().UTC()
+		updates["confirmed_at"] = now
 		updates["confirmation_token"] = nil
 	}
 	if options.Approve {
@@ -281,7 +562,10 @@ func (operations *Operations) ModifyAccount(ctx context.Context, username string
 	}
 	if options.Disable2FA {
 		updates["otp_required_for_login"] = false
+		updates["otp_secret"] = nil
 		updates["encrypted_otp_secret"] = nil
+		updates["encrypted_otp_secret_iv"] = nil
+		updates["encrypted_otp_secret_salt"] = nil
 		updates["otp_backup_codes"] = nil
 	}
 	if options.RemoveRole {
@@ -305,11 +589,54 @@ func (operations *Operations) ModifyAccount(ctx context.Context, username string
 	if len(updates) == 1 {
 		return OperationAccountModifyResult{}, errors.New("no account modifications requested")
 	}
-	if err := operations.server.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", user.ID).Updates(updates).Error; err != nil {
+	if err := operations.server.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if options.ResetPassword {
+			if err := tx.Where("id IN (?)", tx.Model(&models.SessionActivation{}).Select("web_push_subscription_id").Where("user_id = ? AND web_push_subscription_id IS NOT NULL", user.ID)).Delete(&models.WebPushSubscription{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("user_id = ?", user.ID).Delete(&models.SessionActivation{}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Model(&models.User{}).Where("id = ?", user.ID).Updates(updates).Error
+	}); err != nil {
 		return OperationAccountModifyResult{}, err
+	}
+	if options.ResetPassword {
+		revokedTokenIDs, err := operations.revokeCredentialsAfterPasswordReset(ctx, user.ID, now)
+		if err != nil {
+			return OperationAccountModifyResult{User: user, GeneratedPassword: generatedPassword}, fmt.Errorf("password changed but credential revocation failed: %w", err)
+		}
+		operations.server.publishAccessTokenKills(revokedTokenIDs)
 	}
 	updated, err := operations.localUser(ctx, username)
 	return OperationAccountModifyResult{User: updated, GeneratedPassword: generatedPassword}, err
+}
+
+// revokeCredentialsAfterPasswordReset deliberately runs after the password and
+// browser-session transaction, mirroring User#change_password! callbacks whose
+// token revocation and streaming disconnect are separate durable effects.
+func (operations *Operations) revokeCredentialsAfterPasswordReset(ctx context.Context, userID int64, now time.Time) ([]int64, error) {
+	var revokedTokenIDs []int64
+	err := operations.server.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.OAuthAccessToken{}).
+			Where("resource_owner_id = ? AND revoked_at IS NULL", userID).
+			Pluck("id", &revokedTokenIDs).Error; err != nil {
+			return err
+		}
+		pushQuery := tx.Where("user_id = ?", userID)
+		if len(revokedTokenIDs) > 0 {
+			pushQuery = pushQuery.Or("access_token_id IN ?", revokedTokenIDs)
+		}
+		if err := pushQuery.Delete(&models.WebPushSubscription{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.OAuthAccessGrant{}).Where("resource_owner_id = ? AND revoked_at IS NULL", userID).Update("revoked_at", now).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.OAuthAccessToken{}).Where("resource_owner_id = ? AND revoked_at IS NULL", userID).Update("revoked_at", now).Error
+	})
+	return revokedTokenIDs, err
 }
 
 func (operations *Operations) RotateAccountKey(ctx context.Context, username string) error {
@@ -687,7 +1014,7 @@ func (operations *Operations) Vacuum(ctx context.Context, family string, now tim
 	case "preview-cards":
 		result.PreviewCards = operations.server.vacuumCachedPreviewCardImages(ctx, now)
 	case "feeds":
-		result.Feeds = operations.server.vacuumInactiveFeeds(ctx, now)
+		result.Feeds = operations.server.vacuumOrphanedFeeds(ctx, now)
 	default:
 		return result, fmt.Errorf("unsupported vacuum family %q", family)
 	}
@@ -702,7 +1029,9 @@ func (operations *Operations) BuildHomeFeeds(ctx context.Context, username strin
 		Select("users.account_id", "users.settings").
 		Joins("JOIN accounts ON accounts.id = users.account_id").
 		Where("accounts.domain IS NULL")
-	if !all {
+	if all {
+		query = query.Where("users.confirmed_at IS NOT NULL AND users.current_sign_in_at >= ? AND accounts.suspended_at IS NULL", time.Now().UTC().Add(-userActiveDuration()))
+	} else {
 		if strings.TrimSpace(username) == "" {
 			return 0, errors.New("username or all=true is required")
 		}
@@ -713,6 +1042,9 @@ func (operations *Operations) BuildHomeFeeds(ctx context.Context, username strin
 		return 0, err
 	}
 	if len(users) == 0 {
+		if all {
+			return 0, nil
+		}
 		return 0, errors.New("no matching local users")
 	}
 	built := 0
@@ -720,7 +1052,16 @@ func (operations *Operations) BuildHomeFeeds(ctx context.Context, username strin
 		if err := operations.server.clearHomeFeedCacheContext(ctx, user.AccountID); err != nil {
 			return built, err
 		}
-		if err := operations.server.populateHomeFeed(ctx, operations.server.db, user.AccountID, user.Settings); err != nil {
+		var listIDs []int64
+		if err := operations.server.db.WithContext(ctx).Model(&models.List{}).Where("account_id = ?", user.AccountID).Pluck("id", &listIDs).Error; err != nil {
+			return built, err
+		}
+		for _, listID := range listIDs {
+			if err := operations.server.clearListFeedCacheContext(ctx, listID); err != nil {
+				return built, err
+			}
+		}
+		if err := operations.server.populateAccountFeeds(ctx, operations.server.db, user.AccountID, user.Settings); err != nil {
 			return built, err
 		}
 		built++

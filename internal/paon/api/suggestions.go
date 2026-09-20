@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,7 +18,12 @@ import (
 
 const suggestionSourceGlobal = "global"
 const suggestionSourcePastInteractions = "past_interactions"
-const suggestionSourceStaff = "staff"
+const suggestionSourceStaff = "featured"
+const suggestionSourceFriendsOfFriends = "friends_of_friends"
+const suggestionSourceSimilarProfiles = "similar_to_recently_followed"
+
+const suggestionSourceBatchSize = 40
+const suggestionCacheTTL = 15 * time.Minute
 
 const potentialFriendshipExpireSeconds = 90 * 24 * 60 * 60
 const potentialFriendshipMaxItems = 80
@@ -24,6 +31,12 @@ const potentialFriendshipMaxItems = 80
 type suggestedAccount struct {
 	Account models.Account
 	Source  string
+	Sources []string
+}
+
+type cachedSuggestedAccount struct {
+	ID      int64    `json:"id"`
+	Sources []string `json:"sources"`
 }
 
 type staffSuggestionRef struct {
@@ -38,20 +51,30 @@ func (s *Server) suggestionsV2(c *echo.Context) error {
 	}
 	c.Response().Header().Set("Vary", "Authorization")
 
-	accounts, err := s.suggestedAccounts(account.ID, requestSuggestionLocale(c, s.cfg.DefaultLocale), limit(c, 40, 80))
+	limitValue := limit(c, 40, 80)
+	offsetValue := suggestionOffset(c.QueryParam("offset"))
+	accounts, err := s.suggestedAccounts(account.ID, requestSuggestionLocale(c, s.cfg.DefaultLocale), limitValue+offsetValue)
 	if err != nil {
 		return err
+	}
+	if offsetValue >= len(accounts) {
+		accounts = []suggestedAccount{}
+	} else {
+		accounts = accounts[offsetValue:]
+		if len(accounts) > limitValue {
+			accounts = accounts[:limitValue]
+		}
 	}
 
 	out := make([]serializer.Suggestion, 0, len(accounts))
 	for _, suggested := range accounts {
-		out = append(out, serializer.SuggestionFromModel(s.cfg, suggested.Account, suggested.Source))
+		out = append(out, serializer.SuggestionFromModelWithSources(s.cfg, suggested.Account, suggestionSources(suggested)))
 	}
 	return c.JSON(http.StatusOK, out)
 }
 
 func (s *Server) suggestionsV1(c *echo.Context) error {
-	account, _, err := s.requireAccountScope(c, "read")
+	account, _, err := s.requireAccountScope(c, "write")
 	if err != nil {
 		return err
 	}
@@ -74,39 +97,285 @@ func (s *Server) deleteSuggestion(c *echo.Context) error {
 		return err
 	}
 	c.Response().Header().Set("Vary", "Authorization")
-	ctx, cancel := context.WithTimeout((*c).Request().Context(), 500*time.Millisecond)
-	defer cancel()
-	_, _ = s.redisCommand(ctx, "ZREM", suggestionInteractionsRedisKey(s.cfg, account.ID), c.Param("id"))
+	targetAccountID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || targetAccountID <= 0 {
+		return s.notFound(c)
+	}
+	if s.db != nil {
+		now := time.Now().UTC()
+		if err := s.db.Exec(`
+			INSERT INTO follow_recommendation_mutes (account_id, target_account_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT (account_id, target_account_id) DO NOTHING
+		`, account.ID, targetAccountID, now, now).Error; err != nil {
+			return err
+		}
+	}
+	s.invalidateSuggestionCache((*c).Request().Context(), account.ID)
 	return renderEmpty(c)
 }
 
 func (s *Server) suggestedAccounts(accountID int64, locale string, limitValue int) ([]suggestedAccount, error) {
-	selected := []suggestedAccount{}
-	skip := map[int64]struct{}{}
+	if limitValue <= 0 {
+		return []suggestedAccount{}, nil
+	}
+	if cached, ok := s.readSuggestionCache(accountID); ok {
+		return s.loadCachedSuggestedAccounts(accountID, cached, limitValue)
+	}
 
-	staff, err := s.suggestedAccountsFromStaffSetting(accountID, skip, limitValue)
+	sources := []func() ([]suggestedAccount, error){
+		func() ([]suggestedAccount, error) {
+			return s.suggestedAccountsFromStaffSetting(accountID, map[int64]struct{}{}, suggestionSourceBatchSize)
+		},
+		func() ([]suggestedAccount, error) {
+			return s.suggestedAccountsFromFriendsOfFriends(accountID, suggestionSourceBatchSize)
+		},
+		func() ([]suggestedAccount, error) {
+			return s.suggestedAccountsFromSimilarProfiles(accountID, suggestionSourceBatchSize)
+		},
+		func() ([]suggestedAccount, error) {
+			return s.suggestedAccountsFromGlobalRecommendations(accountID, map[int64]struct{}{}, locale, suggestionSourceBatchSize)
+		},
+	}
+	merged := make([]cachedSuggestedAccount, 0, len(sources)*suggestionSourceBatchSize)
+	positions := map[int64]int{}
+	for _, source := range sources {
+		items, err := source()
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if position, exists := positions[item.Account.ID]; exists {
+				merged[position].Sources = appendUniqueStrings(merged[position].Sources, suggestionSources(item)...)
+				continue
+			}
+			positions[item.Account.ID] = len(merged)
+			merged = append(merged, cachedSuggestedAccount{ID: item.Account.ID, Sources: suggestionSources(item)})
+		}
+	}
+	rand.Shuffle(len(merged), func(i int, j int) { merged[i], merged[j] = merged[j], merged[i] })
+	s.writeSuggestionCache(accountID, merged)
+	return s.loadCachedSuggestedAccounts(accountID, merged, limitValue)
+}
+
+func suggestionOffset(raw string) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 0 {
+		return 0
+	}
+	// Each of the four sources contributes at most 40 cached entries.
+	if value > suggestionSourceBatchSize*4 {
+		return suggestionSourceBatchSize * 4
+	}
+	return value
+}
+
+func suggestionSources(item suggestedAccount) []string {
+	if len(item.Sources) > 0 {
+		return append([]string(nil), item.Sources...)
+	}
+	if strings.TrimSpace(item.Source) == "" {
+		return []string{}
+	}
+	return []string{item.Source}
+}
+
+func appendUniqueStrings(values []string, additions ...string) []string {
+	seen := make(map[string]struct{}, len(values)+len(additions))
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	for _, value := range additions {
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	return values
+}
+
+func suggestionCacheKey(accountID int64) string {
+	return "follow_recommendations/" + strconv.FormatInt(accountID, 10)
+}
+
+func (s *Server) readSuggestionCache(accountID int64) ([]cachedSuggestedAccount, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	value, err := s.cacheRedisCommand(ctx, "GET", suggestionCacheKey(accountID))
+	if err != nil || value == nil {
+		return nil, false
+	}
+	raw, ok := value.(string)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil, false
+	}
+	var cached []cachedSuggestedAccount
+	if err := json.Unmarshal([]byte(raw), &cached); err != nil {
+		return nil, false
+	}
+	return cached, true
+}
+
+func (s *Server) writeSuggestionCache(accountID int64, suggestions []cachedSuggestedAccount) {
+	body, err := json.Marshal(suggestions)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_, _ = s.cacheRedisCommand(ctx, "SET", suggestionCacheKey(accountID), string(body), "EX", strconv.Itoa(int(suggestionCacheTTL/time.Second)))
+}
+
+func (s *Server) invalidateSuggestionCache(ctx context.Context, accountIDs ...int64) {
+	if len(accountIDs) == 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	args := []string{"DEL"}
+	for _, accountID := range accountIDs {
+		if accountID > 0 {
+			args = append(args, suggestionCacheKey(accountID))
+		}
+	}
+	if len(args) > 1 {
+		_, _ = s.cacheRedisCommand(ctx, args...)
+	}
+}
+
+func (s *Server) loadCachedSuggestedAccounts(accountID int64, cached []cachedSuggestedAccount, limitValue int) ([]suggestedAccount, error) {
+	if len(cached) == 0 || limitValue <= 0 {
+		return []suggestedAccount{}, nil
+	}
+	ids := make([]int64, 0, len(cached))
+	for _, item := range cached {
+		if item.ID > 0 {
+			ids = append(ids, item.ID)
+		}
+	}
+	var accounts []models.Account
+	if err := s.suggestionFollowableAccountQuery(accountID).
+		Where("accounts.id IN ?", ids).
+		Find(&accounts).Error; err != nil {
+		return nil, err
+	}
+	byID := make(map[int64]models.Account, len(accounts))
+	for _, account := range accounts {
+		byID[account.ID] = account
+	}
+	out := make([]suggestedAccount, 0, min(limitValue, len(cached)))
+	for _, item := range cached {
+		account, ok := byID[item.ID]
+		if !ok {
+			continue
+		}
+		out = append(out, suggestedAccount{Account: account, Sources: append([]string(nil), item.Sources...)})
+		if len(out) >= limitValue {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) suggestedAccountsFromFriendsOfFriends(accountID int64, limitValue int) ([]suggestedAccount, error) {
+	if s.db == nil || limitValue <= 0 {
+		return []suggestedAccount{}, nil
+	}
+	var rows []struct {
+		ID int64 `gorm:"column:id"`
+	}
+	err := s.db.Raw(`
+		WITH first_degree AS (
+			SELECT follows.target_account_id
+			FROM follows
+			JOIN accounts first_degree_accounts ON first_degree_accounts.id = follows.target_account_id
+			WHERE follows.account_id = ? AND COALESCE(first_degree_accounts.hide_collections, FALSE) = FALSE
+		)
+		SELECT accounts.id
+		FROM accounts
+		JOIN follows ON follows.target_account_id = accounts.id
+		LEFT JOIN account_stats ON account_stats.account_id = accounts.id
+		WHERE follows.account_id IN (SELECT target_account_id FROM first_degree)
+		GROUP BY accounts.id, account_stats.id
+		ORDER BY COUNT(*) DESC, COALESCE(account_stats.followers_count, 0) ASC
+		LIMIT ?
+	`, accountID, limitValue*3).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	selected = appendSuggestedAccounts(selected, staff, skip, limitValue)
-	if len(selected) >= limitValue {
-		return selected, nil
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
 	}
+	return s.suggestedAccountsByOrderedIDs(accountID, ids, suggestionSourceFriendsOfFriends, limitValue)
+}
 
-	pastInteractions, err := s.suggestedAccountsFromPastInteractions(accountID, skip, limitValue-len(selected))
-	if err != nil {
+func (s *Server) suggestedAccountsFromSimilarProfiles(accountID int64, limitValue int) ([]suggestedAccount, error) {
+	if s.db == nil || !s.cfg.MeiliEnabled || limitValue <= 0 {
+		return []suggestedAccount{}, nil
+	}
+	var profiles []models.Account
+	if err := s.db.Model(&models.Account{}).
+		Select("accounts.*").
+		Joins("JOIN follows recent_suggestion_follows ON recent_suggestion_follows.target_account_id = accounts.id").
+		Where("recent_suggestion_follows.account_id = ?", accountID).
+		Order("recent_suggestion_follows.id DESC").
+		Limit(5).
+		Find(&profiles).Error; err != nil {
 		return nil, err
 	}
-	selected = appendSuggestedAccounts(selected, pastInteractions, skip, limitValue)
-	if len(selected) >= limitValue {
-		return selected, nil
+	queryParts := make([]string, 0, len(profiles)*3)
+	for _, profile := range profiles {
+		queryParts = append(queryParts, profile.Username, profile.DisplayName, plainMeiliText(profile.Note))
 	}
-
-	global, err := s.suggestedAccountsFromGlobalRecommendations(accountID, skip, locale, limitValue-len(selected))
+	query := strings.TrimSpace(strings.Join(queryParts, " "))
+	if query == "" {
+		return []suggestedAccount{}, nil
+	}
+	ids, err := s.searchMeiliIDs(context.Background(), "accounts", query, meiliSearchOptions{
+		Limit:  limitValue * 3,
+		Filter: "discoverable = true AND bot = false",
+		Sort:   []string{"followers_count:desc"},
+	})
 	if err != nil {
+		// SimilarProfiles is an optional source. Search downtime must not make
+		// the other three recommendation sources unavailable.
+		return []suggestedAccount{}, nil
+	}
+	return s.suggestedAccountsByOrderedIDs(accountID, ids, suggestionSourceSimilarProfiles, limitValue)
+}
+
+func (s *Server) suggestedAccountsByOrderedIDs(accountID int64, ids []int64, source string, limitValue int) ([]suggestedAccount, error) {
+	if len(ids) == 0 || limitValue <= 0 {
+		return []suggestedAccount{}, nil
+	}
+	var accounts []models.Account
+	if err := s.suggestionFollowableAccountQuery(accountID).
+		Where("accounts.id IN ?", ids).
+		Find(&accounts).Error; err != nil {
 		return nil, err
 	}
-	return appendSuggestedAccounts(selected, global, skip, limitValue), nil
+	byID := make(map[int64]models.Account, len(accounts))
+	for _, account := range accounts {
+		byID[account.ID] = account
+	}
+	out := make([]suggestedAccount, 0, min(limitValue, len(accounts)))
+	for _, id := range ids {
+		if account, ok := byID[id]; ok {
+			out = append(out, suggestedAccount{Account: account, Source: source})
+			if len(out) >= limitValue {
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 func appendSuggestedAccounts(selected []suggestedAccount, candidates []suggestedAccount, skip map[int64]struct{}, limitValue int) []suggestedAccount {
@@ -308,7 +577,11 @@ func (s *Server) suggestionSearchableAccountQuery() *gorm.DB {
 		Preload("User.Role").
 		Joins("LEFT JOIN users suggestion_users ON suggestion_users.account_id = accounts.id").
 		Where("accounts.suspended_at IS NULL").
+		Where("accounts.silenced_at IS NULL").
 		Where("accounts.moved_to_account_id IS NULL").
+		Where("accounts.memorial = FALSE").
+		Where("COALESCE(accounts.discoverable, FALSE) = TRUE").
+		Where("COALESCE(accounts.hide_collections, FALSE) = FALSE").
 		Where("(accounts.domain IS NOT NULL OR (suggestion_users.approved = ? AND suggestion_users.confirmed_at IS NOT NULL))", true)
 }
 
@@ -319,12 +592,14 @@ func (s *Server) suggestionFollowableAccountQuery(accountID int64) *gorm.DB {
 		Joins("LEFT JOIN blocks suggestion_account_blocks ON suggestion_account_blocks.account_id = ? AND suggestion_account_blocks.target_account_id = accounts.id", accountID).
 		Joins("LEFT JOIN blocks suggestion_target_blocks ON suggestion_target_blocks.account_id = accounts.id AND suggestion_target_blocks.target_account_id = ?", accountID).
 		Joins("LEFT JOIN mutes suggestion_account_mutes ON suggestion_account_mutes.account_id = ? AND suggestion_account_mutes.target_account_id = accounts.id", accountID).
+		Joins("LEFT JOIN follow_recommendation_mutes suggestion_mutes ON suggestion_mutes.account_id = ? AND suggestion_mutes.target_account_id = accounts.id", accountID).
 		Where("accounts.id <> ?", accountID).
 		Where("suggestion_existing_follows.id IS NULL").
 		Where("suggestion_existing_follow_requests.id IS NULL").
 		Where("suggestion_account_blocks.id IS NULL").
 		Where("suggestion_target_blocks.id IS NULL").
 		Where("suggestion_account_mutes.id IS NULL").
+		Where("suggestion_mutes.id IS NULL").
 		Where("NOT EXISTS (SELECT 1 FROM account_domain_blocks suggestion_domain_blocks WHERE suggestion_domain_blocks.account_id = ? AND lower(suggestion_domain_blocks.domain) = lower(accounts.domain))", accountID)
 }
 

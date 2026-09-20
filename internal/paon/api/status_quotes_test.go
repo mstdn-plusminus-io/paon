@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
@@ -329,5 +331,41 @@ func TestPutAndDeleteStatusQuoteBestEffortUseStore(t *testing.T) {
 	}
 	if len(store.deletes) != 1 || store.deletes[0] != "100" {
 		t.Fatalf("deletes = %#v", store.deletes)
+	}
+}
+
+func TestStatusQuoteTargetStructuralAuthorization(t *testing.T) {
+	base := models.Status{
+		ID:         99,
+		AccountID:  9,
+		Visibility: 0,
+		Account:    models.Account{ID: 9},
+	}
+	tests := []struct {
+		name   string
+		mutate func(*models.Status)
+		want   bool
+	}{
+		{name: "public", want: true},
+		{name: "quiet public", mutate: func(status *models.Status) { status.Visibility = 1 }, want: true},
+		{name: "edited public", mutate: func(status *models.Status) { status.EditedAt = sql.NullTime{Time: time.Now(), Valid: true} }, want: true},
+		{name: "followers only", mutate: func(status *models.Status) { status.Visibility = 2 }},
+		{name: "direct", mutate: func(status *models.Status) { status.Visibility = 3 }},
+		{name: "limited", mutate: func(status *models.Status) { status.Visibility = 4 }},
+		{name: "reblog", mutate: func(status *models.Status) { status.ReblogOfID = sql.NullInt64{Int64: 1, Valid: true} }},
+		{name: "deleted", mutate: func(status *models.Status) { status.DeletedAt = sql.NullTime{Time: time.Now(), Valid: true} }},
+		{name: "suspended author", mutate: func(status *models.Status) { status.Account.SuspendedAt = sql.NullTime{Time: time.Now(), Valid: true} }},
+		{name: "moved author", mutate: func(status *models.Status) { status.Account.MovedToAccountID = sql.NullInt64{Int64: 10, Valid: true} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := base
+			if tt.mutate != nil {
+				tt.mutate(&status)
+			}
+			if got := statusQuoteTargetStructurallyAllowed(&status); got != tt.want {
+				t.Fatalf("allowed = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

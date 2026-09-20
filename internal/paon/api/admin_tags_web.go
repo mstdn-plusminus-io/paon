@@ -14,6 +14,209 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
+const adminTagsPageSize = 20
+
+type adminTagIndexFilters struct {
+	Status string
+	Name   string
+	Order  string
+	Page   int
+}
+
+func (s *Server) adminTagsPage(c *echo.Context) error {
+	user, handled, err := s.requireAdminTagsWebUser(c)
+	if handled || err != nil {
+		return err
+	}
+	filters, err := adminTagIndexFiltersFromContext(c)
+	if err != nil {
+		return err
+	}
+	trendableByDefault := s.settingBoolValue("trendable_by_default", false)
+	tags, hasMore, err := s.adminTagIndexRecords(c, filters, trendableByDefault)
+	if err != nil {
+		return err
+	}
+	return c.HTML(http.StatusOK, adminTagsHTML(tags, filters, hasMore, trendableByDefault, s.webLocale(c, user)))
+}
+
+func adminTagIndexFiltersFromContext(c *echo.Context) (adminTagIndexFilters, error) {
+	filters := adminTagIndexFilters{
+		Status: strings.TrimSpace(c.QueryParam("status")),
+		Name:   strings.TrimSpace(c.QueryParam("name")),
+		Order:  strings.TrimSpace(c.QueryParam("order")),
+		Page:   1,
+	}
+	if filters.Order == "" {
+		filters.Order = "newest"
+	}
+	switch filters.Status {
+	case "", "reviewed", "review_requested", "unreviewed", "trendable", "not_trendable", "usable", "not_usable":
+	default:
+		return filters, echo.NewHTTPError(http.StatusBadRequest, "Unknown status: "+filters.Status)
+	}
+	switch filters.Order {
+	case "newest", "oldest":
+	default:
+		return filters, echo.NewHTTPError(http.StatusBadRequest, "Unknown order: "+filters.Order)
+	}
+	if page, err := strconv.Atoi(strings.TrimSpace(c.QueryParam("page"))); err == nil && page > 0 {
+		filters.Page = page
+	}
+	return filters, nil
+}
+
+func (s *Server) adminTagIndexRecords(c *echo.Context, filters adminTagIndexFilters, trendableByDefault bool) ([]models.Tag, bool, error) {
+	if s.db == nil {
+		return []models.Tag{}, false, nil
+	}
+	query := s.db.Model(&models.Tag{})
+	switch filters.Status {
+	case "reviewed":
+		query = query.Where("tags.reviewed_at IS NOT NULL")
+	case "review_requested":
+		query = query.Where("tags.reviewed_at IS NULL").Where("tags.requested_review_at IS NOT NULL")
+	case "unreviewed":
+		query = query.Where("tags.reviewed_at IS NULL")
+	case "trendable":
+		if trendableByDefault {
+			query = query.Where("tags.trendable = TRUE OR tags.trendable IS NULL")
+		} else {
+			query = query.Where("tags.trendable = TRUE")
+		}
+	case "not_trendable":
+		query = query.Where("tags.trendable = FALSE")
+	case "usable":
+		query = query.Where("tags.usable = TRUE OR tags.usable IS NULL")
+	case "not_usable":
+		query = query.Where("tags.usable = FALSE")
+	}
+	if filters.Name != "" {
+		query = query.Where("LOWER(tags.name) LIKE ?", adminTagSearchPattern(filters.Name))
+	}
+	if filters.Order == "oldest" {
+		query = query.Order("tags.created_at ASC").Order("tags.id ASC")
+	} else {
+		query = query.Order("tags.created_at DESC").Order("tags.id DESC")
+	}
+	var tags []models.Tag
+	if err := query.Offset((filters.Page - 1) * adminTagsPageSize).Limit(adminTagsPageSize + 1).Find(&tags).Error; err != nil {
+		return nil, false, err
+	}
+	hasMore := len(tags) > adminTagsPageSize
+	if hasMore {
+		tags = tags[:adminTagsPageSize]
+	}
+	return tags, hasMore, nil
+}
+
+func adminTagSearchPattern(value string) string {
+	normalized := railsNormalizeHashtagName(strings.TrimSpace(value))
+	normalized = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(normalized)
+	return normalized + "%"
+}
+
+func adminTagsHTML(tags []models.Tag, filters adminTagIndexFilters, hasMore bool, trendableByDefault bool, locale ...string) string {
+	loc := settingsLocaleArgOrEnglish(locale...)
+	var body strings.Builder
+	body.WriteString(`<form action="/admin/tags" method="get" class="simple_form"><div class="filters">`)
+	body.WriteString(adminTagIndexSelectHTML("status", adminT(loc, "admin.tags.moderation.title", "Moderation status"), filters.Status, []relationshipFilterLink{
+		{Label: adminT(loc, "generic.all", "All"), Href: ""},
+		{Label: adminT(loc, "admin.tags.moderation.reviewed", "Reviewed"), Href: "reviewed"},
+		{Label: adminT(loc, "admin.tags.moderation.review_requested", "Review requested"), Href: "review_requested"},
+		{Label: adminT(loc, "admin.tags.moderation.unreviewed", "Unreviewed"), Href: "unreviewed"},
+		{Label: adminT(loc, "admin.tags.moderation.trendable", "Trendable"), Href: "trendable"},
+		{Label: adminT(loc, "admin.tags.moderation.not_trendable", "Not trendable"), Href: "not_trendable"},
+		{Label: adminT(loc, "admin.tags.moderation.usable", "Usable"), Href: "usable"},
+		{Label: adminT(loc, "admin.tags.moderation.not_usable", "Not usable"), Href: "not_usable"},
+	}))
+	body.WriteString(adminTagIndexSelectHTML("order", adminT(loc, "generic.order_by", "Order by"), filters.Order, []relationshipFilterLink{
+		{Label: adminT(loc, "admin.tags.newest", "Newest"), Href: "newest"},
+		{Label: adminT(loc, "admin.tags.oldest", "Oldest"), Href: "oldest"},
+	}))
+	body.WriteString(`</div><div class="fields-group"><div class="input string optional"><input class="string optional" type="text" name="name" value="` + html.EscapeString(filters.Name) + `" placeholder="` + html.EscapeString(adminT(loc, "admin.tags.name", "Name")) + `"></div></div><div class="actions"><button class="button" type="submit">` + html.EscapeString(adminT(loc, "admin.tags.search", "Search")) + `</button> <a class="button negative" href="/admin/tags">` + html.EscapeString(adminT(loc, "admin.tags.reset", "Reset")) + `</a></div></form><hr class="spacer"><div class="batch-table"><div class="batch-table__body">`)
+	if len(tags) == 0 {
+		body.WriteString(adminNothingHereHTML(loc, "nothing-here--under-tabs nothing-here--no-toolbar"))
+	} else {
+		for _, tag := range tags {
+			body.WriteString(adminTagIndexRowHTML(tag, trendableByDefault, loc))
+		}
+	}
+	body.WriteString(`</div></div>`)
+	body.WriteString(adminTagIndexPaginationHTML(loc, filters, hasMore))
+	return authPageHTML(adminT(loc, "admin.tags.title", "Hashtags"), "", "", body.String(), loc)
+}
+
+func adminTagIndexSelectHTML(name string, label string, selected string, options []relationshipFilterLink) string {
+	var body strings.Builder
+	body.WriteString(`<div class="filter-subset filter-subset--with-select"><strong>` + html.EscapeString(label) + `</strong><div class="input select optional"><select name="` + html.EscapeString(name) + `">`)
+	for _, option := range options {
+		selectedAttr := ""
+		if option.Href == selected {
+			selectedAttr = ` selected`
+		}
+		body.WriteString(`<option value="` + html.EscapeString(option.Href) + `"` + selectedAttr + `>` + html.EscapeString(option.Label) + `</option>`)
+	}
+	body.WriteString(`</select></div></div>`)
+	return body.String()
+}
+
+func adminTagIndexFilterValues(filters adminTagIndexFilters) url.Values {
+	values := url.Values{}
+	if filters.Status != "" {
+		values.Set("status", filters.Status)
+	}
+	if filters.Name != "" {
+		values.Set("name", filters.Name)
+	}
+	if filters.Order != "" && filters.Order != "newest" {
+		values.Set("order", filters.Order)
+	}
+	return values
+}
+
+func adminTagIndexPaginationHTML(locale string, filters adminTagIndexFilters, hasMore bool) string {
+	var links []string
+	values := adminTagIndexFilterValues(filters)
+	if filters.Page > 1 {
+		links = append(links, `<a rel="prev" href="`+html.EscapeString(adminRailsPaginationURL("/admin/tags", values, filters.Page-1))+`">`+html.EscapeString(adminT(locale, "pagination.prev", "Previous"))+`</a>`)
+	}
+	if hasMore {
+		links = append(links, `<a rel="next" href="`+html.EscapeString(adminRailsPaginationURL("/admin/tags", values, filters.Page+1))+`">`+html.EscapeString(adminT(locale, "pagination.next", "Next"))+`</a>`)
+	}
+	if len(links) == 0 {
+		return ""
+	}
+	return `<nav class="pagination">` + strings.Join(links, " ") + `</nav>`
+}
+
+func adminTagIndexRowHTML(tag models.Tag, trendableByDefault bool, locale string) string {
+	usable := nullBoolDefaultAPI(tag.Usable, true)
+	trendable := nullBoolDefaultAPI(tag.Trendable, trendableByDefault)
+	classes := []string{"batch-table__row"}
+	if tag.ReviewedAt.Valid && !usable {
+		classes = append(classes, "batch-table__row--muted")
+	}
+	usableKey, usableLabel := "admin.tags.moderation.not_usable", "Not usable"
+	if usable {
+		usableKey, usableLabel = "admin.tags.moderation.usable", "Usable"
+	}
+	trendableKey, trendableLabel := "admin.tags.moderation.not_trendable", "Not trendable"
+	if trendable {
+		trendableKey, trendableLabel = "admin.tags.moderation.trendable", "Trendable"
+	}
+	meta := []string{
+		html.EscapeString(adminT(locale, usableKey, usableLabel)),
+		html.EscapeString(adminT(locale, trendableKey, trendableLabel)),
+	}
+	if tag.RequestedReviewAt.Valid {
+		meta = append(meta, `<span class="negative-hint">`+html.EscapeString(adminT(locale, "admin.tags.moderation.review_requested", "Review requested"))+`</span>`)
+	} else if !tag.ReviewedAt.Valid {
+		meta = append(meta, `<span class="warning-hint">`+html.EscapeString(adminT(locale, "admin.tags.moderation.pending_review", "Pending review"))+`</span>`)
+	}
+	return `<div class="` + html.EscapeString(strings.Join(classes, " ")) + `"><div class="batch-table__row__content batch-table__row__content--padded pending-account"><div class="pending-account__header"><strong><a href="/admin/tags/` + strconv.FormatInt(tag.ID, 10) + `">#` + html.EscapeString(adminTagDisplayName(tag)) + `</a></strong><br>` + strings.Join(meta, " · ") + `</div></div></div>`
+}
+
 func (s *Server) adminTagPage(c *echo.Context) error {
 	user, handled, err := s.requireAdminTagsWebUser(c)
 	if handled || err != nil {

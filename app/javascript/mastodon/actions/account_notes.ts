@@ -4,9 +4,9 @@ import api from '../api';
 
 export const submitAccountNote = createAppAsyncThunk(
   'account_note/submit',
-  async (args: { id: string; value: string }, { getState }) => {
+  async (args: { id: string; value: string }) => {
     // TODO: replace `unknown` with `ApiRelationshipJSON` when it is merged
-    const response = await api(getState).post<unknown>(
+    const response = await api().post<unknown>(
       `/api/v1/accounts/${args.id}/note`,
       {
         comment: args.value,

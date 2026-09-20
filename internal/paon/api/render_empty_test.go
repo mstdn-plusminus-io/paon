@@ -27,7 +27,6 @@ func TestRailsRenderEmptyEndpointsReturnJSONBody(t *testing.T) {
 		{file: "featured_tags.go", fns: []string{"deleteFeaturedTag"}},
 		{file: "notifications.go", fns: []string{"clearNotifications", "dismissNotification"}},
 		{file: "conversations.go", fns: []string{"deleteConversation"}},
-		{file: "crypto.go", fns: []string{"cryptoClearEncryptedMessages", "cryptoDeliveries"}},
 		{file: "registrations.go", fns: []string{"createEmailConfirmation"}},
 		{file: "filters.go", fns: []string{"deleteFilter", "deleteFilterKeyword", "deleteFilterStatus"}},
 		{file: "suggestions.go", fns: []string{"deleteSuggestion"}},

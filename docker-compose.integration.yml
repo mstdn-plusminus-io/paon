@@ -5,9 +5,9 @@ services:
       POSTGRES_PASSWORD: paon
       POSTGRES_DB: paon_integration
     ports:
-      - "127.0.0.1:55432:5432"
+      - '127.0.0.1:55432:5432'
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d paon_integration"]
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d paon_integration']
       interval: 1s
       timeout: 5s
       retries: 30
@@ -15,9 +15,9 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "127.0.0.1:56379:6379"
+      - '127.0.0.1:56379:6379'
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 1s
       timeout: 5s
       retries: 30
@@ -29,9 +29,9 @@ services:
       MEILI_ENV: development
       MEILI_MASTER_KEY: paon-integration-master-key
     ports:
-      - "127.0.0.1:57700:7700"
+      - '127.0.0.1:57700:7700'
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7700/health"]
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1:7700/health']
       interval: 1s
       timeout: 5s
       retries: 30
@@ -44,9 +44,9 @@ services:
       MINIO_ROOT_USER: paon-access
       MINIO_ROOT_PASSWORD: paon-secret-key
     ports:
-      - "127.0.0.1:59000:9000"
+      - '127.0.0.1:59000:9000'
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ['CMD', 'mc', 'ready', 'local']
       interval: 1s
       timeout: 5s
       retries: 30
@@ -57,7 +57,7 @@ services:
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
+    entrypoint: ['/bin/sh', '-c']
     command:
       - mc alias set local http://minio:9000 paon-access paon-secret-key && mc mb --ignore-existing local/paon-integration
 
@@ -65,10 +65,10 @@ services:
     image: axllent/mailpit:v1.24
     profiles: [external]
     ports:
-      - "127.0.0.1:51025:1025"
-      - "127.0.0.1:58025:8025"
+      - '127.0.0.1:51025:1025'
+      - '127.0.0.1:58025:8025'
     healthcheck:
-      test: ["CMD", "/mailpit", "readyz"]
+      test: ['CMD', '/mailpit', 'readyz']
       interval: 1s
       timeout: 5s
       retries: 30

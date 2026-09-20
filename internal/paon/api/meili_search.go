@@ -15,14 +15,17 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/telemetry"
 	"gorm.io/gorm"
 )
 
 type meiliSearchOptions struct {
-	Limit  int      `json:"limit"`
-	Offset int      `json:"offset"`
-	Filter string   `json:"filter,omitempty"`
-	Sort   []string `json:"sort,omitempty"`
+	Limit                int      `json:"limit"`
+	Offset               int      `json:"offset"`
+	Filter               string   `json:"filter,omitempty"`
+	Sort                 []string `json:"sort,omitempty"`
+	AttributesToSearchOn []string `json:"attributesToSearchOn,omitempty"`
+	MatchingStrategy     string   `json:"matchingStrategy,omitempty"`
 }
 
 type meiliSearchRequest struct {
@@ -112,10 +115,15 @@ func WaitForMeiliAvailable(ctx context.Context, cfg config.Config, timeout time.
 	}
 }
 
-func (s *Server) searchMeiliIDs(ctx context.Context, index string, query string, options meiliSearchOptions) ([]int64, error) {
+func (s *Server) searchMeiliIDs(ctx context.Context, index string, query string, options meiliSearchOptions) (ids []int64, err error) {
 	if !s.cfg.MeiliEnabled || strings.TrimSpace(s.cfg.MeiliHost) == "" {
 		return nil, errMeiliDisabled
 	}
+	finishTelemetry := func(int, error) {}
+	if s.cfg.OpenTelemetryEnabled {
+		ctx, finishTelemetry = telemetry.StartSearch(ctx, options.Offset, options.Limit)
+	}
+	defer func() { finishTelemetry(len(ids), err) }()
 
 	body, err := json.Marshal(meiliSearchRequest{Query: query, meiliSearchOptions: options})
 	if err != nil {
@@ -138,6 +146,7 @@ func (s *Server) searchMeiliIDs(ctx context.Context, index string, query string,
 	if s.cfg.MeiliMasterKey != "" {
 		req.Header.Set("Authorization", "Bearer "+s.cfg.MeiliMasterKey)
 	}
+	telemetry.InjectHTTPHeaders(ctx, req.Header)
 
 	res, err := meiliHTTPClient.Do(req)
 	if err != nil {
@@ -152,7 +161,7 @@ func (s *Server) searchMeiliIDs(ctx context.Context, index string, query string,
 	if err := decodeMeiliJSONResponse(res, &payload); err != nil {
 		return nil, err
 	}
-	ids := make([]int64, 0, len(payload.Hits))
+	ids = make([]int64, 0, len(payload.Hits))
 	for _, hit := range payload.Hits {
 		id, ok := meiliHitID(hit["id"])
 		if ok {
@@ -331,11 +340,16 @@ func (s *Server) meiliDeleteAllDocuments(ctx context.Context, index string) erro
 
 var errMeiliDisabled = fmt.Errorf("meilisearch disabled")
 
-func (s *Server) searchMeiliAccountIDs(ctx context.Context, query string, current *models.Account, following bool, limitValue int, offsetValue int) ([]int64, error) {
+func (s *Server) searchMeiliAccountIDs(ctx context.Context, query string, current *models.Account, following bool, fullText bool, limitValue int, offsetValue int) ([]int64, error) {
 	options := meiliSearchOptions{
-		Limit:  limitValue,
-		Offset: offsetValue,
-		Sort:   []string{"followers_count:desc", "statuses_count:desc"},
+		Limit:                limitValue,
+		Offset:               offsetValue,
+		Sort:                 []string{"followers_count:desc", "statuses_count:desc"},
+		AttributesToSearchOn: []string{"username", "display_name"},
+	}
+	if fullText {
+		options.AttributesToSearchOn = []string{"username", "display_name", "text"}
+		options.MatchingStrategy = "all"
 	}
 	if following && current != nil {
 		ids, err := s.followingAccountIDs(current.ID)
@@ -347,8 +361,47 @@ func (s *Server) searchMeiliAccountIDs(ctx context.Context, query string, curren
 			return []int64{}, nil
 		}
 		options.Filter = "id IN [" + joinInt64s(ids) + "]"
+		return s.searchMeiliIDs(ctx, "accounts", query, options)
 	}
-	return s.searchMeiliIDs(ctx, "accounts", query, options)
+	if current == nil {
+		return s.searchMeiliIDs(ctx, "accounts", query, options)
+	}
+
+	candidateLimit := min(1000, max(limitValue, offsetValue+limitValue))
+	options.Limit = candidateLimit
+	options.Offset = 0
+	general, err := s.searchMeiliIDs(ctx, "accounts", query, options)
+	if err != nil {
+		return nil, err
+	}
+	followedIDs, err := s.followingAccountIDs(current.ID)
+	if err != nil {
+		return nil, err
+	}
+	followedIDs = append(followedIDs, current.ID)
+	options.Filter = "id IN [" + joinInt64s(followedIDs) + "]"
+	followed, err := s.searchMeiliIDs(ctx, "accounts", query, options)
+	if err != nil {
+		return nil, err
+	}
+	merged := mergeUniqueAccountSearchIDs(followed, general...)
+	if offsetValue >= len(merged) {
+		return []int64{}, nil
+	}
+	return merged[offsetValue:min(offsetValue+limitValue, len(merged))], nil
+}
+
+func mergeUniqueAccountSearchIDs(first []int64, values ...int64) []int64 {
+	seen := make(map[int64]struct{}, len(first)+len(values))
+	result := make([]int64, 0, len(first)+len(values))
+	for _, value := range append(append([]int64(nil), first...), values...) {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *Server) searchMeiliStatusIDs(ctx context.Context, query string, current *models.Account, accountID string, minID string, maxID string, limitValue int, offsetValue int) ([]int64, error) {
@@ -650,10 +703,15 @@ func (s *Server) searchMeiliTagIDs(ctx context.Context, query string, excludeUnr
 	return s.searchMeiliIDs(ctx, "tags", searchTagQuery(query), options)
 }
 
-func (s *Server) searchMeiliInstanceDomains(ctx context.Context, query string, limitValue int) ([]string, error) {
+func (s *Server) searchMeiliInstanceDomains(ctx context.Context, query string, limitValue int) (domains []string, err error) {
 	if !s.cfg.MeiliEnabled || strings.TrimSpace(s.cfg.MeiliHost) == "" {
 		return nil, errMeiliDisabled
 	}
+	finishTelemetry := func(int, error) {}
+	if s.cfg.OpenTelemetryEnabled {
+		ctx, finishTelemetry = telemetry.StartSearch(ctx, 0, limitValue)
+	}
+	defer func() { finishTelemetry(len(domains), err) }()
 	body, err := json.Marshal(meiliSearchRequest{
 		Query: searchTagQuery(query),
 		meiliSearchOptions: meiliSearchOptions{
@@ -679,6 +737,7 @@ func (s *Server) searchMeiliInstanceDomains(ctx context.Context, query string, l
 	if s.cfg.MeiliMasterKey != "" {
 		req.Header.Set("Authorization", "Bearer "+s.cfg.MeiliMasterKey)
 	}
+	telemetry.InjectHTTPHeaders(ctx, req.Header)
 	res, err := meiliHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -691,13 +750,13 @@ func (s *Server) searchMeiliInstanceDomains(ctx context.Context, query string, l
 	if err := decodeMeiliJSONResponse(res, &payload); err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(payload.Hits))
+	domains = make([]string, 0, len(payload.Hits))
 	for _, hit := range payload.Hits {
 		if domain, ok := hit["domain"].(string); ok && strings.TrimSpace(domain) != "" {
-			out = append(out, domain)
+			domains = append(domains, domain)
 		}
 	}
-	return out, nil
+	return domains, nil
 }
 
 func decodeMeiliJSONResponse(res *http.Response, out any) error {

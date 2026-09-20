@@ -143,7 +143,7 @@ func preferencesBoolSettingKeys() map[string]struct{} {
 		"web.use_system_font":                 {},
 		"web.crop_images":                     {},
 		"web.trends":                          {},
-		"web.unfollow_modal":                  {},
+		"web.disable_hover_cards":             {},
 		"web.reblog_modal":                    {},
 		"web.delete_modal":                    {},
 		"web.use_blurhash":                    {},

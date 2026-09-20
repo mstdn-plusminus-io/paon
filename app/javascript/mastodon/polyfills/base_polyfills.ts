@@ -15,13 +15,13 @@ if (!Object.hasOwn(HTMLCanvasElement.prototype, 'toBlob')) {
       quality: unknown,
     ) {
       const dataURL: string = this.toDataURL(type, quality);
-      let data;
+      let data: BlobPart = '';
 
       if (dataURL.includes(BASE64_MARKER)) {
         const [, base64] = dataURL.split(BASE64_MARKER);
-        data = decodeBase64(base64);
+        data = decodeBase64(base64 ?? '');
       } else {
-        [, data] = dataURL.split(',');
+        data = dataURL.split(',')[1] ?? '';
       }
 
       callback(new Blob([data], { type }));

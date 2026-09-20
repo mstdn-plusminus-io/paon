@@ -77,7 +77,8 @@ const (
 	xmlencDigestSHA256 = "http://www.w3.org/2001/04/xmlenc#sha256"
 )
 
-var oidcHTTPClient = &http.Client{Timeout: 10 * time.Second}
+var defaultOIDCHTTPClient = activityHTTPClientClone(10 * time.Second)
+var oidcHTTPClient = defaultOIDCHTTPClient
 var casHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 func (s *Server) signInForm(c *echo.Context) error {
@@ -106,7 +107,7 @@ func (s *Server) signInForm(c *echo.Context) error {
 	body.WriteString(s.omniauthAlternativeLoginHTML(locale))
 	body.WriteString(s.authSharedFooterHTML("sessions", locale))
 	c.Response().Header().Set("Content-Security-Policy", railsContentSecurityPolicyWithoutDirective(s.cfg, "form-action"))
-	return c.HTML(http.StatusOK, authShellHTML(loginLabel, "", c.QueryParam("error"), body.String(), locale, s.settingStringValue("theme", "default")))
+	return c.HTML(http.StatusOK, authShellHTML(loginLabel, "", c.QueryParam("error"), body.String(), locale, s.settingStringValue("theme", "system")))
 }
 
 func (s *Server) useSeamlessExternalLogin() bool {
@@ -269,12 +270,19 @@ func (s *Server) omniauthProviderEntry(c *echo.Context) error {
 	if strings.TrimSpace(c.Param("provider")) == "openid_connect" && s.cfg.OIDCEnabled {
 		state := randomHex(16)
 		nonce := ""
+		verifier := ""
+		challenge := ""
 		if s.cfg.OIDCSendNonce {
 			nonce = randomHex(16)
 		}
-		location, err := openIDConnectAuthorizationURL(s.cfg, state, nonce)
+		if s.cfg.OIDCUsePKCE {
+			verifier = randomHex(32)
+			digest := sha256.Sum256([]byte(verifier))
+			challenge = base64.RawURLEncoding.EncodeToString(digest[:])
+		}
+		location, err := openIDConnectAuthorizationURLWithPKCE(s.cfg, state, nonce, challenge)
 		if err == nil {
-			if err := s.setBrowserOIDCState(c, state, nonce); err != nil {
+			if err := s.setBrowserOIDCStateWithPKCE(c, state, nonce, verifier); err != nil {
 				return err
 			}
 			expireCookie(c, omniauthStateCookie, s.cfg.ForceSSL)
@@ -1543,6 +1551,10 @@ func samlAttr(attrs map[string]string, keys ...string) string {
 }
 
 func openIDConnectAuthorizationURL(cfg config.Config, state string, nonce string) (string, error) {
+	return openIDConnectAuthorizationURLWithPKCE(cfg, state, nonce, "")
+}
+
+func openIDConnectAuthorizationURLWithPKCE(cfg config.Config, state string, nonce string, challenge string) (string, error) {
 	if !cfg.OIDCEnabled {
 		return "", errors.New("OIDC is not enabled")
 	}
@@ -1562,6 +1574,10 @@ func openIDConnectAuthorizationURL(cfg config.Config, state string, nonce string
 	}
 	if strings.TrimSpace(nonce) != "" {
 		q.Set("nonce", strings.TrimSpace(nonce))
+	}
+	if strings.TrimSpace(challenge) != "" {
+		q.Set("code_challenge", strings.TrimSpace(challenge))
+		q.Set("code_challenge_method", "S256")
 	}
 	if cfg.OIDCResponseMode != "" || cfg.OIDCResponseModeSet {
 		q.Set("response_mode", cfg.OIDCResponseMode)
@@ -1694,7 +1710,7 @@ func (s *Server) openIDConnectAuthFromCallback(c *echo.Context) (omniauthAuthInf
 	if code == "" {
 		return omniauthAuthInfo{Provider: "openid_connect"}, nil
 	}
-	token, err := exchangeOpenIDConnectCode(c.Request().Context(), s.cfg, code)
+	token, err := exchangeOpenIDConnectCodeWithVerifier(c.Request().Context(), s.cfg, code, s.browserOIDCPKCEVerifier(c))
 	if err != nil {
 		return omniauthAuthInfo{}, err
 	}
@@ -1774,6 +1790,10 @@ func (s *Server) validateOpenIDConnectNonceClaim(c *echo.Context, claims map[str
 }
 
 func exchangeOpenIDConnectCode(ctx context.Context, cfg config.Config, code string) (openIDConnectTokenResponse, error) {
+	return exchangeOpenIDConnectCodeWithVerifier(ctx, cfg, code, "")
+}
+
+func exchangeOpenIDConnectCodeWithVerifier(ctx context.Context, cfg config.Config, code string, verifier string) (openIDConnectTokenResponse, error) {
 	endpoint, err := openIDConnectClientEndpointURL(cfg, cfg.OIDCTokenEndpoint, "token")
 	if err != nil {
 		return openIDConnectTokenResponse{}, err
@@ -1783,6 +1803,12 @@ func exchangeOpenIDConnectCode(ctx context.Context, cfg config.Config, code stri
 	form.Set("code", code)
 	form.Set("redirect_uri", cfg.OIDCRedirectURI)
 	form.Set("client_id", cfg.OIDCClientID)
+	if cfg.OIDCUsePKCE {
+		if !validPKCEVerifier(verifier) {
+			return openIDConnectTokenResponse{}, errors.New("OIDC PKCE verifier is missing or invalid")
+		}
+		form.Set("code_verifier", verifier)
+	}
 	if cfg.OIDCSendScopeToTokenEndpoint {
 		if scope := openIDConnectScopeParam(cfg.OIDCScope); scope != "" {
 			form.Set("scope", scope)
@@ -2745,6 +2771,7 @@ func (s *Server) oauthToken(c *echo.Context) error {
 }
 
 func (s *Server) oauthRevoke(c *echo.Context) error {
+	setOAuthRevocationCORSHeaders(c, false)
 	if s.db == nil {
 		return apiError(c, http.StatusServiceUnavailable, "DATABASE_URL is not set")
 	}
@@ -2785,6 +2812,25 @@ func (s *Server) oauthRevoke(c *echo.Context) error {
 		s.publishAccessTokenKills([]int64{revokedTokenID})
 	}
 	return c.NoContent(http.StatusOK)
+}
+
+func (s *Server) oauthRevokeOptions(c *echo.Context) error {
+	setOAuthRevocationCORSHeaders(c, true)
+	return c.NoContent(http.StatusOK)
+}
+
+func setOAuthRevocationCORSHeaders(c *echo.Context, preflight bool) {
+	header := c.Response().Header()
+	header.Set("Access-Control-Allow-Origin", "*")
+	if !preflight {
+		return
+	}
+	header.Set("Access-Control-Allow-Methods", "POST")
+	header.Set("Access-Control-Expose-Headers", "")
+	header.Set("Access-Control-Max-Age", "7200")
+	if requested := strings.TrimSpace(c.Request().Header.Get("Access-Control-Request-Headers")); requested != "" {
+		header.Set("Access-Control-Allow-Headers", requested)
+	}
 }
 
 func (s *Server) oauthApplicationsForbidden(c *echo.Context) error {
@@ -2920,10 +2966,10 @@ func (s *Server) authorizationRequest(c *echo.Context) (authorizationRequestData
 	scopes := normalizeRequestedScopes(oauthScopeParam(c, "read"), app.Scopes)
 	challenge := oauthRawParamValue(c, "code_challenge")
 	method := oauthRawParamValue(c, "code_challenge_method")
-	if method == "" {
-		method = "plain"
+	if challenge != "" && (method != "S256" || !validPKCEChallenge(method, challenge)) {
+		return authorizationRequestData{}, apiError(c, http.StatusBadRequest, "Code challenge is invalid")
 	}
-	if challenge != "" && !validPKCEChallenge(method, challenge) {
+	if challenge == "" && method != "" {
 		return authorizationRequestData{}, apiError(c, http.StatusBadRequest, "Code challenge is invalid")
 	}
 	return authorizationRequestData{
@@ -2937,15 +2983,17 @@ func (s *Server) authorizationRequest(c *echo.Context) (authorizationRequestData
 }
 
 func (s *Server) redirectWithAuthorizationCode(c *echo.Context, request authorizationRequestData, user *models.User) error {
-	code := authorizationCodeToken(request.CodeChallengeMethod, request.CodeChallenge)
+	code := randomHex(32)
 	grant := models.OAuthAccessGrant{
-		Token:           code,
-		ExpiresIn:       600,
-		RedirectURI:     request.RedirectURI,
-		CreatedAt:       time.Now().UTC(),
-		Scopes:          models.NullSafeString(request.Scopes),
-		ApplicationID:   request.App.ID,
-		ResourceOwnerID: user.ID,
+		Token:               code,
+		ExpiresIn:           600,
+		RedirectURI:         request.RedirectURI,
+		CreatedAt:           time.Now().UTC(),
+		Scopes:              models.NullSafeString(request.Scopes),
+		ApplicationID:       request.App.ID,
+		ResourceOwnerID:     user.ID,
+		CodeChallenge:       sql.NullString{String: request.CodeChallenge, Valid: request.CodeChallenge != ""},
+		CodeChallengeMethod: sql.NullString{String: request.CodeChallengeMethod, Valid: request.CodeChallengeMethod != ""},
 	}
 	if err := s.db.Create(&grant).Error; err != nil {
 		return err
@@ -2993,29 +3041,39 @@ func (s *Server) exchangeAuthorizationCode(c *echo.Context) (*models.OAuthAccess
 	}
 	code := oauthRawParamValue(c, "code")
 	redirectURI := oauthRawParamValue(c, "redirect_uri")
-	var grant models.OAuthAccessGrant
-	if err := s.db.Where("token = ? AND application_id = ? AND revoked_at IS NULL", code, app.ID).First(&grant).Error; err != nil {
-		return nil, oauthTokenErrorf(http.StatusBadRequest, "invalid_grant", "The authorization code is invalid")
-	}
-	if grant.RedirectURI != redirectURI || grantExpired(grant, time.Now().UTC()) {
-		return nil, oauthTokenErrorf(http.StatusBadRequest, "invalid_grant", "The authorization code is invalid")
-	}
-	if !verifyPKCECode(grant.Token, oauthRawParamValue(c, "code_verifier")) {
-		return nil, oauthTokenErrorf(http.StatusBadRequest, "invalid_grant", "Code verifier is invalid")
-	}
 	now := time.Now().UTC()
-	token := &models.OAuthAccessToken{
-		Token:           randomHex(32),
-		CreatedAt:       now,
-		Scopes:          grant.Scopes,
-		ApplicationID:   sql.NullInt64{Int64: app.ID, Valid: true},
-		ResourceOwnerID: sql.NullInt64{Int64: grant.ResourceOwnerID, Valid: true},
-	}
+	var token *models.OAuthAccessToken
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		var grant models.OAuthAccessGrant
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("token = ? AND application_id = ? AND revoked_at IS NULL", code, app.ID).
+			First(&grant).Error; err != nil {
+			return oauthTokenErrorf(http.StatusBadRequest, "invalid_grant", "The authorization code is invalid")
+		}
+		if grant.RedirectURI != redirectURI || grantExpired(grant, now) {
+			return oauthTokenErrorf(http.StatusBadRequest, "invalid_grant", "The authorization code is invalid")
+		}
+		if !verifyPKCEChallenge(grant.CodeChallengeMethod.String, grant.CodeChallenge.String, oauthRawParamValue(c, "code_verifier")) {
+			return oauthTokenErrorf(http.StatusBadRequest, "invalid_grant", "Code verifier is invalid")
+		}
+		token = &models.OAuthAccessToken{
+			Token:           randomHex(32),
+			CreatedAt:       now,
+			Scopes:          grant.Scopes,
+			ApplicationID:   sql.NullInt64{Int64: app.ID, Valid: true},
+			ResourceOwnerID: sql.NullInt64{Int64: grant.ResourceOwnerID, Valid: true},
+		}
 		if err := tx.Create(token).Error; err != nil {
 			return err
 		}
-		return tx.Model(&models.OAuthAccessGrant{}).Where("id = ?", grant.ID).Update("revoked_at", now).Error
+		result := tx.Model(&models.OAuthAccessGrant{}).Where("id = ? AND revoked_at IS NULL", grant.ID).Update("revoked_at", now)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return oauthTokenErrorf(http.StatusBadRequest, "invalid_grant", "The authorization code is invalid")
+		}
+		return nil
 	})
 	return token, err
 }
@@ -4192,6 +4250,17 @@ func verifyPKCECode(code string, verifier string) bool {
 	default:
 		return false
 	}
+}
+
+func verifyPKCEChallenge(method string, challenge string, verifier string) bool {
+	if challenge == "" && method == "" {
+		return true
+	}
+	if method != "S256" || !validPKCEChallenge(method, challenge) || !validPKCEVerifier(verifier) {
+		return false
+	}
+	digest := sha256.Sum256([]byte(verifier))
+	return subtle.ConstantTimeCompare([]byte(base64.RawURLEncoding.EncodeToString(digest[:])), []byte(challenge)) == 1
 }
 
 func validPKCEVerifier(verifier string) bool {

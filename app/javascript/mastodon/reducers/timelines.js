@@ -17,6 +17,9 @@ import {
   TIMELINE_DISCONNECT,
   TIMELINE_LOAD_PENDING,
   TIMELINE_MARK_AS_PARTIAL,
+  TIMELINE_INSERT,
+  TIMELINE_GAP,
+  TIMELINE_SUGGESTIONS,
 } from '../actions/timelines';
 import { compareId } from '../compare_id';
 
@@ -28,9 +31,12 @@ const initialTimeline = ImmutableMap({
   top: true,
   isLoading: false,
   hasMore: true,
+  error: null,
   pendingItems: ImmutableList(),
   items: ImmutableList(),
 });
+
+const isPlaceholder = value => value === TIMELINE_GAP || value === TIMELINE_SUGGESTIONS;
 
 const expandNormalizedTimeline = (state, timeline, statuses, next, isPartial, isLoadingRecent, usePendingItems) => {
   // This method is pretty tricky because:
@@ -42,6 +48,7 @@ const expandNormalizedTimeline = (state, timeline, statuses, next, isPartial, is
 
   return state.update(timeline, initialTimeline, map => map.withMutations(mMap => {
     mMap.set('isLoading', false);
+    mMap.set('error', null);
     mMap.set('isPartial', isPartial);
 
     if (!next && !isLoadingRecent) mMap.set('hasMore', false);
@@ -63,20 +70,20 @@ const expandNormalizedTimeline = (state, timeline, statuses, next, isPartial, is
         // First, find the furthest (if properly sorted, oldest) item in the timeline that is
         // newer than the oldest fetched one, as it's most likely that it delimits the gap.
         // Start the gap *after* that item.
-        const lastIndex = oldIds.findLastIndex(id => id !== null && compareId(id, newIds.last()) >= 0) + 1;
+        const lastIndex = oldIds.findLastIndex(id => !isPlaceholder(id) && compareId(id, newIds.last()) >= 0) + 1;
 
         // Then, try to find the furthest (if properly sorted, oldest) item in the timeline that
         // is newer than the most recent fetched one, as it delimits a section comprised of only
         // items older or within `newIds` (or that were deleted from the server, so should be removed
         // anyway).
         // Stop the gap *after* that item.
-        const firstIndex = oldIds.take(lastIndex).findLastIndex(id => id !== null && compareId(id, newIds.first()) > 0) + 1;
+        const firstIndex = oldIds.take(lastIndex).findLastIndex(id => !isPlaceholder(id) && compareId(id, newIds.first()) > 0) + 1;
 
         let insertedIds = ImmutableOrderedSet(newIds).withMutations(insertedIds => {
           // It is possible, though unlikely, that the slice we are replacing contains items older
           // than the elements we got from the API. Get them and add them back at the back of the
           // slice.
-          const olderIds = oldIds.slice(firstIndex, lastIndex).filter(id => id !== null && compareId(id, newIds.last()) < 0);
+          const olderIds = oldIds.slice(firstIndex, lastIndex).filter(id => !isPlaceholder(id) && compareId(id, newIds.last()) < 0);
           insertedIds.union(olderIds);
 
           // Make sure we aren't inserting duplicates
@@ -84,8 +91,8 @@ const expandNormalizedTimeline = (state, timeline, statuses, next, isPartial, is
         }).toList();
 
         // Finally, insert a gap marker if the data is marked as partial by the server
-        if (isPartial && (firstIndex === 0 || oldIds.get(firstIndex - 1) !== null)) {
-          insertedIds = insertedIds.unshift(null);
+        if (isPartial && (firstIndex === 0 || oldIds.get(firstIndex - 1) !== TIMELINE_GAP)) {
+          insertedIds = insertedIds.unshift(TIMELINE_GAP);
         }
 
         return oldIds.take(firstIndex).concat(
@@ -189,9 +196,9 @@ export default function timelines(state = initialState, action) {
     return state.update(action.timeline, initialTimeline, map =>
       map.update('items', list => map.get('pendingItems').concat(list.take(40))).set('pendingItems', ImmutableList()).set('unread', 0));
   case TIMELINE_EXPAND_REQUEST:
-    return state.update(action.timeline, initialTimeline, map => map.set('isLoading', true));
+    return state.update(action.timeline, initialTimeline, map => map.set('isLoading', true).set('error', null));
   case TIMELINE_EXPAND_FAIL:
-    return state.update(action.timeline, initialTimeline, map => map.set('isLoading', false));
+    return state.update(action.timeline, initialTimeline, map => map.set('isLoading', false).set('error', action.error));
   case TIMELINE_EXPAND_SUCCESS:
     return expandNormalizedTimeline(state, action.timeline, fromJS(action.statuses), action.next, action.partial, action.isLoadingRecent, action.usePendingItems);
   case TIMELINE_UPDATE:
@@ -220,6 +227,12 @@ export default function timelines(state = initialState, action) {
       action.timeline,
       initialTimeline,
       map => map.set('isPartial', true).set('items', ImmutableList()).set('pendingItems', ImmutableList()).set('unread', 0),
+    );
+  case TIMELINE_INSERT:
+    return state.update(
+      action.timeline,
+      initialTimeline,
+      map => map.update('items', ImmutableList(), list => list.includes(action.key) ? list : list.insert(action.index, action.key)),
     );
   default:
     return state;

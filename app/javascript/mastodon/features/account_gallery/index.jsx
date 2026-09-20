@@ -82,10 +82,6 @@ class AccountGallery extends ImmutablePureComponent {
     multiColumn: PropTypes.bool,
   };
 
-  state = {
-    width: 323,
-  };
-
   _load () {
     const { accountId, isAccount, dispatch } = this.props;
 
@@ -163,15 +159,8 @@ class AccountGallery extends ImmutablePureComponent {
     }
   };
 
-  handleRef = c => {
-    if (c) {
-      this.setState({ width: c.offsetWidth });
-    }
-  };
-
   render () {
     const { attachments, isLoading, hasMore, isAccount, multiColumn, blockedBy, suspended } = this.props;
-    const { width } = this.state;
 
     if (!isAccount) {
       return (
@@ -214,11 +203,11 @@ class AccountGallery extends ImmutablePureComponent {
                 {emptyMessage}
               </div>
             ) : (
-              <div role='feed' className='account-gallery__container' ref={this.handleRef}>
+              <div role='feed' className='account-gallery__container'>
                 {attachments.map((attachment, index) => attachment === null ? (
                   <LoadMoreMedia key={'more:' + attachments.getIn(index + 1, 'id')} maxId={index > 0 ? attachments.getIn(index - 1, 'id') : null} onLoadMore={this.handleLoadMore} />
                 ) : (
-                  <MediaItem key={attachment.get('id')} attachment={attachment} displayWidth={width} onOpenMedia={this.handleOpenMedia} />
+                  <MediaItem key={attachment.get('id')} attachment={attachment} onOpenMedia={this.handleOpenMedia} />
                 ))}
 
                 {loadOlder}

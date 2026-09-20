@@ -23,6 +23,10 @@ type adminBrandingSettings struct {
 	SiteShortDescription string
 	ThumbnailUploadID    int64
 	ThumbnailURL         string
+	FaviconUploadID      int64
+	FaviconURL           string
+	AppIconUploadID      int64
+	AppIconURL           string
 }
 
 type adminExistingUsernameEntry struct {
@@ -79,14 +83,18 @@ func (s *Server) updateAdminSettingsBranding(c *echo.Context) error {
 	if err := s.validateExistingAdminSettingUsernames(settings.SiteContactUsername, false); err != nil {
 		return c.HTML(http.StatusOK, adminSettingsBrandingHTML(s.withAdminBrandingSiteUpload(settings), "", adminSettingErrorText(locale, err), locale, theme))
 	}
-	if err := validateAdminSiteUploadFromForm(c, "thumbnail"); err != nil {
-		return c.HTML(http.StatusOK, adminSettingsBrandingHTML(s.withAdminBrandingSiteUpload(settings), "", adminSettingErrorText(locale, err), locale, theme))
+	for _, name := range []string{"thumbnail", "favicon", "app_icon"} {
+		if err := validateAdminSiteUploadFromForm(c, name); err != nil {
+			return c.HTML(http.StatusOK, adminSettingsBrandingHTML(s.withAdminBrandingSiteUpload(settings), "", adminSettingErrorText(locale, err), locale, theme))
+		}
 	}
 	if err := s.updateAdminBrandingSettings(settings); err != nil {
 		return err
 	}
-	if err := s.storeAdminSiteUploadFromForm(c, "thumbnail"); err != nil {
-		return c.HTML(http.StatusOK, adminSettingsBrandingHTML(s.withAdminBrandingSiteUpload(settings), "", adminSettingErrorText(locale, err), locale, theme))
+	for _, name := range []string{"thumbnail", "favicon", "app_icon"} {
+		if err := s.storeAdminSiteUploadFromForm(c, name); err != nil {
+			return c.HTML(http.StatusOK, adminSettingsBrandingHTML(s.withAdminBrandingSiteUpload(settings), "", adminSettingErrorText(locale, err), locale, theme))
+		}
 	}
 	return c.Redirect(http.StatusFound, "/admin/settings/branding?notice="+url.QueryEscape(adminSettingsSavedMessage(locale, "branding")))
 }
@@ -116,6 +124,14 @@ func (s *Server) withAdminBrandingSiteUpload(settings adminBrandingSettings) adm
 	if upload, _ := s.instanceSiteUpload("thumbnail"); upload != nil {
 		settings.ThumbnailUploadID = upload.ID
 		settings.ThumbnailURL = serializer.SiteUploadFileURL(s.cfg, *upload, "@1x")
+	}
+	if upload, _ := s.instanceSiteUpload("favicon"); upload != nil {
+		settings.FaviconUploadID = upload.ID
+		settings.FaviconURL = serializer.SiteUploadFileURL(s.cfg, *upload, "48")
+	}
+	if upload, _ := s.instanceSiteUpload("app_icon"); upload != nil {
+		settings.AppIconUploadID = upload.ID
+		settings.AppIconURL = serializer.SiteUploadFileURL(s.cfg, *upload, "48")
 	}
 	return settings
 }
@@ -379,6 +395,10 @@ func adminSettingsBrandingHTML(settings adminBrandingSettings, notice string, er
   <div class="fields-group">` + adminSettingsBlockTextarea(loc, "site_short_description", "Server description", settings.SiteShortDescription, 2, 200) + `</div>
   <div class="fields-row"><div class="fields-row__column fields-row__column-6 fields-group">` + adminSettingsBlockFileInput(loc, "thumbnail", "Server thumbnail") + `</div>
   <div class="fields-row__column fields-row__column-6 fields-group">` + adminSiteUploadPreviewDeleteHTML(settings.ThumbnailUploadID, settings.ThumbnailURL, loc) + `</div></div>
+  <div class="fields-row"><div class="fields-row__column fields-row__column-6 fields-group">` + adminSettingsBlockFileInputWithAccept(loc, "favicon", "Favicon", "image/jpeg,image/png,image/gif,image/webp") + `</div>
+  <div class="fields-row__column fields-row__column-6 fields-group">` + adminSiteUploadPreviewDeleteHTML(settings.FaviconUploadID, settings.FaviconURL, loc) + `</div></div>
+  <div class="fields-row"><div class="fields-row__column fields-row__column-6 fields-group">` + adminSettingsBlockFileInputWithAccept(loc, "app_icon", "App icon", "image/jpeg,image/png,image/gif,image/webp") + `</div>
+  <div class="fields-row__column fields-row__column-6 fields-group">` + adminSiteUploadPreviewDeleteHTML(settings.AppIconUploadID, settings.AppIconURL, loc) + `</div></div>
   <div class="actions"><button name="button" type="submit" class="btn">` + html.EscapeString(settingsT(loc, "generic.save_changes", "Save changes")) + `</button></div>
 </form>`
 	return adminSettingsPageHTML(title, "branding", notice, errorText, body, loc, theme)
@@ -401,8 +421,16 @@ func adminSettingsBlockTextarea(locale string, key string, fallback string, valu
 }
 
 func adminSettingsBlockFileInput(locale string, key string, fallback string) string {
+	return adminSettingsBlockFileInputWithAccept(locale, key, fallback, "")
+}
+
+func adminSettingsBlockFileInputWithAccept(locale string, key string, fallback string, accept string) string {
 	id := "form_admin_settings_" + key
-	return `<div class="input with_block_label file optional ` + id + ` field_with_hint"><label class="file optional" for="` + id + `">` + html.EscapeString(adminSettingsLabel(locale, key, fallback)) + `</label><span class="hint">` + html.EscapeString(adminSettingsHint(locale, key, "")) + `</span><div class="label_input"><input class="file optional" type="file" name="form_admin_settings[` + key + `]" id="` + id + `"></div></div>`
+	acceptAttribute := ""
+	if strings.TrimSpace(accept) != "" {
+		acceptAttribute = ` accept="` + html.EscapeString(accept) + `"`
+	}
+	return `<div class="input with_block_label file optional ` + id + ` field_with_hint"><label class="file optional" for="` + id + `">` + html.EscapeString(adminSettingsLabel(locale, key, fallback)) + `</label><span class="hint">` + html.EscapeString(adminSettingsHint(locale, key, "")) + `</span><div class="label_input"><input class="file optional" type="file" name="form_admin_settings[` + key + `]" id="` + id + `"` + acceptAttribute + `></div></div>`
 }
 
 func adminSiteUploadPreviewDeleteHTML(id int64, imageURL string, locale string) string {

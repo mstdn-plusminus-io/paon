@@ -1,0 +1,95 @@
+{
+  "format_version": 1,
+  "source": {
+    "name": "Mastodon v4.3.23 fresh schema load",
+    "path": "fresh",
+    "tag": "v4.3.23",
+    "commit": "efb25b6aa2014201b04f25c390ad1f516a3ff52d",
+    "schema_version": "20241007071624",
+    "schema_sha256": "72d9974a13a17dbe17eef6b6d3f4617ca7e69620ae95aacf877e38910a3dd855",
+    "snowflake_sha256": "6aa3884d6ec5f6b8a489a1dcf9989586f5049c383b2ece694865baefbe1fe032",
+    "postgresql_version_number": 150018
+  },
+  "catalog": {
+    "schema": "public",
+    "postgresql_major": 15,
+    "sha256": "0fa5ad7976d2b676c903040ca6e0d44928a9bdc796e22c7d72b8c1c02749fe3b",
+    "sections": [
+      {
+        "name": "extensions",
+        "count": 1,
+        "sha256": "94c67ba1552167301a1f81ba0d4647705cf4c203a5fa75d6629f0a9e57749ef6"
+      },
+      {
+        "name": "relations",
+        "count": 102,
+        "sha256": "4ac98d2c3cda88ca334833fac31e8e91ab54717d85d588edc3d986fb7d792ab1"
+      },
+      {
+        "name": "columns",
+        "count": 845,
+        "sha256": "8b4f9c7e1f252ff113fe57a4db618794c96f5019abc188a2b4db4f8bc4325727"
+      },
+      {
+        "name": "dropped_columns",
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      {
+        "name": "indexes",
+        "count": 281,
+        "sha256": "6e3e0aee88a4c030d28eddbce7084ed7d970e779a5fb0edda5157a4db5017992"
+      },
+      {
+        "name": "constraints",
+        "count": 230,
+        "sha256": "018610326ed0fbd34523401eee1c462a0d466f8376765ccac9068be23118010e"
+      },
+      {
+        "name": "views",
+        "count": 4,
+        "sha256": "3d3bddc0a168880f1a705cb7a82ac408672c7c691e4005b7cae95a69fa8c742e"
+      },
+      {
+        "name": "functions",
+        "count": 1,
+        "sha256": "88711fed24b9c98454aa781794788887b4e880c330df52fec9b89aee19b4f251"
+      },
+      {
+        "name": "sequences",
+        "count": 93,
+        "sha256": "308630fc5ff7f7d8882026c90929d3ba722775b5dbe3bea4f9288dac7605d542"
+      },
+      {
+        "name": "triggers",
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      {
+        "name": "rules",
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      {
+        "name": "policies",
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      {
+        "name": "types",
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      {
+        "name": "migration_versions",
+        "count": 472,
+        "sha256": "f590785bb827ee23c94b762b125d49c80d90bf9b79a67bdb7e2b227a56fdc7b9"
+      },
+      {
+        "name": "active_record_metadata",
+        "count": 2,
+        "sha256": "89525dd7c7fa36f1ffd716d288ec1a5fc0c587510fd737764ee465657f065f55"
+      }
+    ]
+  }
+}

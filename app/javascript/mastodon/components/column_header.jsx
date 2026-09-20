@@ -7,6 +7,7 @@ import { FormattedMessage, injectIntl, defineMessages } from 'react-intl';
 import classNames from 'classnames';
 
 import { Icon }  from 'mastodon/components/icon';
+import { identityContextPropShape, withIdentity } from 'mastodon/identity_context';
 
 const messages = defineMessages({
   show: { id: 'column_header.show_settings', defaultMessage: 'Show settings' },
@@ -19,10 +20,10 @@ class ColumnHeader extends PureComponent {
 
   static contextTypes = {
     router: PropTypes.object,
-    identity: PropTypes.object,
   };
 
   static propTypes = {
+    identity: identityContextPropShape,
     intl: PropTypes.object.isRequired,
     title: PropTypes.node,
     icon: PropTypes.string,
@@ -147,7 +148,7 @@ class ColumnHeader extends PureComponent {
       collapsedContent.push(moveButtons);
     }
 
-    if (this.context.identity.signedIn && (children || (multiColumn && this.props.onPin))) {
+    if (this.props.identity.signedIn && (children || (multiColumn && this.props.onPin))) {
       collapseButton = (
         <button
           className={collapsibleButtonClassName}
@@ -215,4 +216,4 @@ class ColumnHeader extends PureComponent {
 
 }
 
-export default injectIntl(ColumnHeader);
+export default injectIntl(withIdentity(ColumnHeader));

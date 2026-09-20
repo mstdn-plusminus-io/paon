@@ -14,6 +14,19 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
+func TestAdminAccountModerationNoteUsesMastodon43ContentLimit(t *testing.T) {
+	if accountModerationNoteContentLimit != 2000 {
+		t.Fatalf("account moderation note limit = %d, want 2000", accountModerationNoteContentLimit)
+	}
+	src, err := os.ReadFile("admin_accounts_web.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), `name="account_moderation_note[content]" rows="6" maxlength="2000"`) {
+		t.Fatal("admin account page does not expose the 2,000-character moderation-note limit")
+	}
+}
+
 func TestAdminAccountModerationNoteCreateRequiresSession(t *testing.T) {
 	s, err := NewServer(config.Config{Title: "Paon", LocalDomain: "example.com"}, nil)
 	if err != nil {

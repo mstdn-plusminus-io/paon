@@ -97,3 +97,47 @@ func TestActivityPubFollowersSynchronizationRequiresStoredFollowersURLLikeRails(
 		t.Fatal("padded synchronization URL must be rejected like Rails non_matching_uri_hosts?")
 	}
 }
+
+func TestActivityPubFollowersSynchronizationCollectionPageShapesMatchMastodon43(t *testing.T) {
+	tests := []struct {
+		name       string
+		collection map[string]any
+		want       []string
+	}{
+		{
+			name: "ordered collection array",
+			collection: map[string]any{
+				"type":         "OrderedCollection",
+				"orderedItems": []any{"https://local.example/users/alice", map[string]any{"id": "https://local.example/users/bob"}},
+			},
+			want: []string{"https://local.example/users/alice", "https://local.example/users/bob"},
+		},
+		{
+			name: "collection compacted scalar",
+			collection: map[string]any{
+				"type":  "CollectionPage",
+				"items": "https://local.example/users/alice",
+			},
+			want: []string{"https://local.example/users/alice"},
+		},
+		{name: "missing items is an empty complete page", collection: map[string]any{"type": "CollectionPage"}},
+		{name: "unsupported page type has no items", collection: map[string]any{"type": "Note", "items": []any{"https://local.example/users/alice"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := activityPubCollectionItems(tt.collection)
+			if strings.Join(got, "\n") != strings.Join(tt.want, "\n") {
+				t.Fatalf("items = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+
+	inline := map[string]any{
+		"type":  "Collection",
+		"first": map[string]any{"type": "CollectionPage", "items": []any{"https://local.example/users/alice"}},
+	}
+	page := activityPubCollectionInlineMap(activityJSONLDValue(inline, "first"))
+	if page == nil || strings.Join(activityPubCollectionItems(page), "\n") != "https://local.example/users/alice" {
+		t.Fatalf("inline first page was not preserved: %#v", page)
+	}
+}

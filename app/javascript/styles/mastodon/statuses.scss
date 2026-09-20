@@ -150,3 +150,35 @@
     }
   }
 }
+
+body.embed {
+  min-width: 0;
+  overflow: hidden;
+
+  #mastodon-status {
+    width: 100%;
+  }
+
+  #mastodon-status > .embed {
+    box-sizing: border-box;
+    overflow: hidden;
+    border: 1px solid lighten($ui-base-color, 12%);
+    border-radius: 4px;
+    background: lighten($ui-base-color, 4%);
+  }
+
+  .detailed-status {
+    box-sizing: border-box;
+    width: 100%;
+  }
+
+  @media screen and (width <= 420px) {
+    .detailed-status {
+      padding: 12px;
+    }
+
+    .detailed-status__meta {
+      overflow-wrap: anywhere;
+    }
+  }
+}

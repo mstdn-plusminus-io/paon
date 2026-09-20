@@ -41,6 +41,7 @@ func (s *Server) refreshFollowRecommendations(ctx context.Context) int {
 	if err := s.refreshFollowRecommendationMaterializedViews(ctx); err != nil {
 		return 0
 	}
+	s.invalidateAllSuggestionCaches(ctx)
 	fallback, err := s.followRecommendationRefs(ctx, "", followRecommendationsSetSize)
 	if err != nil {
 		return 0
@@ -60,10 +61,65 @@ func (s *Server) refreshFollowRecommendations(ctx context.Context) int {
 }
 
 func (s *Server) refreshFollowRecommendationMaterializedViews(ctx context.Context) error {
-	if err := s.db.WithContext(ctx).Exec("REFRESH MATERIALIZED VIEW account_summaries").Error; err != nil {
+	if err := s.refreshFollowRecommendationMaterializedView(ctx, "account_summaries"); err != nil {
 		return err
 	}
-	return s.db.WithContext(ctx).Exec("REFRESH MATERIALIZED VIEW global_follow_recommendations").Error
+	return s.refreshFollowRecommendationMaterializedView(ctx, "global_follow_recommendations")
+}
+
+func (s *Server) refreshFollowRecommendationMaterializedView(ctx context.Context, name string) error {
+	if name != "account_summaries" && name != "global_follow_recommendations" {
+		return nil
+	}
+	var populated bool
+	if err := s.db.WithContext(ctx).Raw(`
+		SELECT ispopulated
+		FROM pg_matviews
+		WHERE schemaname = current_schema() AND matviewname = ?
+	`, name).Scan(&populated).Error; err != nil {
+		return err
+	}
+	statement := "REFRESH MATERIALIZED VIEW " + name
+	if populated {
+		statement = "REFRESH MATERIALIZED VIEW CONCURRENTLY " + name
+	}
+	return s.db.WithContext(ctx).Exec(statement).Error
+}
+
+func (s *Server) invalidateAllSuggestionCaches(ctx context.Context) {
+	patterns := []string{"follow_recommendations/*"}
+	if prefix := cacheRedisConfig(s.cfg).prefix; prefix != "" {
+		patterns = append(patterns, prefix+"follow_recommendations/*")
+	}
+	seen := map[string]struct{}{}
+	for _, pattern := range patterns {
+		cursor := "0"
+		for {
+			value, err := s.cacheRedisCommand(ctx, "SCAN", cursor, "MATCH", pattern, "COUNT", "1000")
+			if err != nil {
+				break
+			}
+			next, keys, ok := redisScanKeys(value)
+			if !ok {
+				break
+			}
+			toDelete := make([]string, 0, len(keys))
+			for _, key := range keys {
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				toDelete = append(toDelete, key)
+			}
+			if len(toDelete) > 0 {
+				_, _ = s.cacheRedisCommand(ctx, append([]string{"DEL"}, toDelete...)...)
+			}
+			if next == "0" {
+				break
+			}
+			cursor = next
+		}
+	}
 }
 
 func (s *Server) followRecommendationRefs(ctx context.Context, locale string, limitValue int) ([]followRecommendationRef, error) {

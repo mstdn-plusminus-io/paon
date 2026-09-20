@@ -27,7 +27,7 @@ func TestHealthMatchesRailsPlainOK(t *testing.T) {
 	if rec.Body.String() != "OK" {
 		t.Fatalf("body = %q", rec.Body.String())
 	}
-	if contentType := rec.Header().Get("Content-Type"); contentType != "text/plain; charset=UTF-8" {
+	if contentType := rec.Header().Get("Content-Type"); contentType != "text/plain; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", contentType)
 	}
 }
@@ -46,7 +46,7 @@ func TestHealthOptionalFormatMatchesRailsPlainOK(t *testing.T) {
 	if rec.Body.String() != "OK" {
 		t.Fatalf("body = %q", rec.Body.String())
 	}
-	if contentType := rec.Header().Get("Content-Type"); contentType != "text/plain; charset=UTF-8" {
+	if contentType := rec.Header().Get("Content-Type"); contentType != "text/plain; charset=utf-8" {
 		t.Fatalf("Content-Type = %q", contentType)
 	}
 }
