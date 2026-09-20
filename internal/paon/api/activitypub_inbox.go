@@ -101,7 +101,22 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 			// Attach evidence before fmt.Errorf snapshots the diagnostic string.
 			receipt, _ := ctx.Value(activityPubInboxReceiptContextKey{}).(*activityPubInboxReceipt)
 			attachActivityPubSignatureReceipt(err, receipt)
-			return fmt.Errorf("%w: activity actor does not match verified HTTP signature actor: %w", errActivityPubEventNotApplied, err)
+			if s.cfg.AllowUnverifiedActivityRefetch && activityPubMutationRefetchSupported(payload.Type) {
+				refetched, refetchErr := s.refetchUnverifiedActivityPubMutation(ctx, payload, actor)
+				if refetchErr != nil {
+					err = fmt.Errorf("origin refetch failed: %w; original signature error: %w", refetchErr, err)
+				} else {
+					logActivityPubMutationRefetched(ctx, payload, actor, refetched, err)
+					if refetched.Skipped {
+						return nil
+					}
+					originalBody, verificationBody, verifiedActor = refetched.Body, refetched.Body, refetched.Actor
+					payload, err = parseActivityPayload(refetched.Body)
+				}
+			}
+			if err != nil {
+				return fmt.Errorf("%w: activity actor does not match verified HTTP signature actor: %w", errActivityPubEventNotApplied, err)
+			}
 		}
 		if activityPayloadDifferentActor(payload, verifiedActor) {
 			return activityPubEventNotAppliedf("linked-data signature actor does not match activity actor")
@@ -424,9 +439,10 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 	}
 	switch payload.Type {
 	case "Create":
-		if payload.Object.TypeExact == "CacheFile" {
-			// PeerTube redundancy announcements describe cached video files.
-			// There is no Mastodon state to apply or media to fetch for them.
+		switch payload.Object.TypeExact {
+		case "CacheFile", "Playlist", "WatchAction":
+			// PeerTube cache, playlist and viewing-statistics notifications
+			// have no Mastodon state to apply or media to fetch.
 			return nil
 		}
 		s.scheduleActivityPubActorRefreshIfStale(actor, payload.ID)
@@ -440,6 +456,9 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 			return s.processActivityPubCreateNote(payload, actor, target, relayedThrough, options)
 		}
 	case "Update":
+		if payload.Object.TypeExact == "CacheFile" || payload.Object.TypeExact == "Playlist" {
+			return nil
+		}
 		s.scheduleActivityPubActorRefreshIfStale(actor, payload.ID)
 		return s.processActivityPubUpdate(payload, actor, target, relayedThrough, options)
 	case "Delete":
@@ -465,6 +484,15 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 	case "Announce":
 		return s.processActivityPubAnnounce(payload, actor, relayedThrough, options)
 	case "Undo":
+		if payload.Object.TypeExact == "Dislike" ||
+			(payload.Object.TypeExact == "Create" && payload.Object.ObjectTypeExact == "CacheFile") {
+			// Only undo notifications whose original action has no local state.
+			// Undo(Create(Note/Video)) must not be mistaken for cache removal.
+			if firstNonEmpty(payload.Object.Actor, payload.Object.ActorRaw) != actor.URI {
+				return activityPubEventNotAppliedf("Undo embedded actor does not match processing actor")
+			}
+			return nil
+		}
 		if !payload.Object.TypePresent {
 			return s.processActivityPubUndoReference(payload.Object, actor)
 		}
@@ -483,8 +511,8 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 		if payload.Object.TypeExact == "Block" {
 			return s.processActivityPubUndoBlock(payload.Object, actor)
 		}
-	case "View", "Download":
-		// PeerTube federates video view and download notifications.
+	case "View", "Download", "Dislike":
+		// PeerTube federates video view, download and dislike notifications.
 		// Mastodon has no state to apply for them, so accept the
 		// authenticated activity without sending it through retry/archive.
 		return nil
@@ -5658,6 +5686,7 @@ type activityObject struct {
 	ObjectID           string
 	ObjectIDRaw        string
 	ObjectIDPresent    bool
+	ObjectTypeExact    string
 	AttributedTo       string
 	AttributedToRaw    string
 	URL                string
@@ -6485,6 +6514,9 @@ func parseActivityObject(value any) activityObject {
 		}
 		id := activityURIFromBearcapRaw(activityJSONLDIDRaw(object))
 		objectIDValue := activityJSONLDValue(object, "object")
+		// Retain the direct nested object's type for Undo(Create(CacheFile))
+		// without recursively parsing arbitrary nested activity documents.
+		nestedObject, _ := activityJSONLDSingle(objectIDValue).(map[string]any)
 		featuredValue := activityJSONLDValue(object, "featured")
 		oneOfPollOptions := activityPollOptionListWithShape(activityJSONLDValue(object, "oneOf"))
 		anyOfPollOptions := activityPollOptionListWithShape(activityJSONLDValue(object, "anyOf"))
@@ -6511,6 +6543,7 @@ func parseActivityObject(value any) activityObject {
 			ObjectID:         activityJSONLDObjectID(object, "object"),
 			ObjectIDRaw:      activityJSONLDValueOrID(objectIDValue),
 			ObjectIDPresent:  objectIDValue != nil,
+			ObjectTypeExact:  activityJSONLDActivityType(nestedObject),
 			AttributedTo:     activityJSONLDObjectIDFirst(object, "attributedTo"),
 			AttributedToRaw:  activityJSONLDValueOrID(activityJSONLDValue(object, "attributedTo")),
 			URL:              activityActorOrStatusURL(activityJSONLDValue(object, "url"), id, activityJSONLDType(object), activityJSONLDTypes(object)),
@@ -7402,7 +7435,7 @@ func activityJSONLDGraphMaps(object map[string]any) []map[string]any {
 
 func activityJSONLDTypeIsActivity(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Block", "Create", "Delete", "Download", "Flag", "Follow", "Like", "Move", "Reject", "Remove", "Undo", "Update", "View":
+	case "Accept", "Add", "Announce", "Block", "Create", "Delete", "Dislike", "Download", "Flag", "Follow", "Like", "Move", "Reject", "Remove", "Undo", "Update", "View":
 		return true
 	default:
 		return false
@@ -7839,10 +7872,15 @@ func activityTypeValues(value any) []string {
 
 func activityCompactType(value string) string {
 	value = strings.TrimSpace(value)
-	// Signed JSON-LD compaction expands PeerTube's CacheFile term to its
-	// extension IRI. Match only this term, not arbitrary PeerTube names.
-	if value == "https://joinpeertube.org/ns#CacheFile" || value == "pt:CacheFile" {
+	// Signed JSON-LD compaction expands PeerTube terms to extension IRIs.
+	// Match individual terms so pt:Delete cannot become an AS Delete.
+	switch value {
+	case "https://joinpeertube.org/ns#CacheFile", "pt:CacheFile":
 		return "CacheFile"
+	case "https://joinpeertube.org/ns#Playlist", "pt:Playlist":
+		return "Playlist"
+	case "http://schema.org/WatchAction", "sc:WatchAction":
+		return "WatchAction"
 	}
 	if strings.HasPrefix(value, "https://www.w3.org/ns/activitystreams#") {
 		return strings.TrimPrefix(value, "https://www.w3.org/ns/activitystreams#")
@@ -7887,7 +7925,7 @@ func activityCompactType(value string) string {
 
 func activityKnownType(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "CacheFile", "Collection", "CollectionPage", "Create", "Delete", "Download", "EncryptedMessage", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Question", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video", "View":
+	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "CacheFile", "Collection", "CollectionPage", "Create", "Delete", "Dislike", "Download", "EncryptedMessage", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Playlist", "Question", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video", "View", "WatchAction":
 		return true
 	default:
 		return false

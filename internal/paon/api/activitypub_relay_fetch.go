@@ -94,59 +94,9 @@ func (s *Server) fetchActivityPubCanonicalAnnounce(ctx context.Context, claimed 
 	if claimed.Type != "Announce" || !activityPubSameHTTPSOrigin(activityID, actorURI) || claimed.Object.ID == "" {
 		return nil, fmt.Errorf("invalid canonical Announce identity")
 	}
-	parsed, _ := url.Parse(activityID)
-	if !activityFetchHostAllowed(parsed.Hostname()) {
-		return nil, fmt.Errorf("remote host is not allowed")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, activityID, nil)
+	body, err := s.fetchActivityPubOriginBody(ctx, activityID, signer)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Accept", activityDereferencerAcceptHeader)
-	req.Header.Set("User-Agent", paonUserAgent(s.cfg))
-	req.Header.Set("Accept-Encoding", "gzip")
-	if signer != nil && signer.PrivateKey.Valid && strings.TrimSpace(signer.PrivateKey.String) != "" {
-		if err := s.signActivityPubFetchRequest(req, *signer); err != nil {
-			return nil, err
-		}
-	}
-	client := activityHTTPClientForActivityFetch(s, signer)
-	checkRedirect := client.CheckRedirect
-	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-		if !activityPubSameHTTPSOrigin(activityID, request.URL.String()) {
-			return fmt.Errorf("canonical Announce redirect leaves actor origin")
-		}
-		return checkRedirect(request, via)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, activityFetchHTTPError{StatusCode: resp.StatusCode, URL: activityID}
-	}
-	if !activityJSONContentType(resp.Header.Get("Content-Type")) {
-		return nil, fmt.Errorf("unsupported activity content type")
-	}
-	if resp.ContentLength > maxActivityResourceBodySize {
-		return nil, fmt.Errorf("remote activity body too large")
-	}
-	reader := io.Reader(resp.Body)
-	if strings.EqualFold(strings.TrimSpace(resp.Header.Get("Content-Encoding")), "gzip") {
-		compressed, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return nil, err
-		}
-		defer compressed.Close()
-		reader = compressed
-	}
-	body, err := io.ReadAll(io.LimitReader(reader, maxActivityResourceBodySize+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > maxActivityResourceBodySize {
-		return nil, fmt.Errorf("remote activity body too large")
 	}
 	var document map[string]any
 	if err := json.Unmarshal(body, &document); err != nil {
@@ -170,4 +120,80 @@ func (s *Server) fetchActivityPubCanonicalAnnounce(ctx context.Context, claimed 
 		}
 	}
 	return json.Marshal(document)
+}
+
+// Fetch a separate copy from a remote HTTPS origin, retaining the existing
+// signed-fetch, SSRF, response-size and redirect-count protections.
+func (s *Server) fetchActivityPubOriginBody(ctx context.Context, uri string, signer *models.Account) ([]byte, error) {
+	if !activityPubSameHTTPSOrigin(uri, uri) || s.localActivityURI(uri) {
+		return nil, fmt.Errorf("refetch target must be a remote HTTPS URL")
+	}
+	parsed, _ := url.Parse(uri)
+	if !activityFetchHostAllowed(parsed.Hostname()) {
+		return nil, fmt.Errorf("remote host is not allowed")
+	}
+	if disallowed, err := s.remoteActivityDomainNotAllowed(uri); err != nil || disallowed {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errActivitySignatureDomainNotAllowed
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", activityDereferencerAcceptHeader)
+	req.Header.Set("User-Agent", paonUserAgent(s.cfg))
+	req.Header.Set("Accept-Encoding", "gzip")
+	if signer != nil && signer.PrivateKey.Valid && strings.TrimSpace(signer.PrivateKey.String) != "" {
+		if err := s.signActivityPubFetchRequest(req, *signer); err != nil {
+			return nil, err
+		}
+	}
+	client := activityHTTPClientForActivityFetch(s, signer)
+	checkRedirect := client.CheckRedirect
+	redirected := false
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		redirected = true
+		if !activityPubSameHTTPSOrigin(uri, request.URL.String()) {
+			return fmt.Errorf("origin refetch redirect leaves actor origin")
+		}
+		return checkRedirect(request, via)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		// A Gone response at a redirected endpoint does not establish that the
+		// original object was deleted. Callers may use only its own 410 as proof.
+		if redirected && resp.StatusCode == http.StatusGone {
+			return nil, fmt.Errorf("redirected Gone response does not confirm object deletion")
+		}
+		return nil, activityFetchHTTPError{StatusCode: resp.StatusCode, URL: uri}
+	}
+	if !activityJSONContentType(resp.Header.Get("Content-Type")) {
+		return nil, fmt.Errorf("unsupported activity content type")
+	}
+	if resp.ContentLength > maxActivityResourceBodySize {
+		return nil, fmt.Errorf("remote activity body too large")
+	}
+	reader := io.Reader(resp.Body)
+	if strings.EqualFold(strings.TrimSpace(resp.Header.Get("Content-Encoding")), "gzip") {
+		compressed, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		defer compressed.Close()
+		reader = compressed
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, maxActivityResourceBodySize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxActivityResourceBodySize {
+		return nil, fmt.Errorf("remote activity body too large")
+	}
+	return body, nil
 }
