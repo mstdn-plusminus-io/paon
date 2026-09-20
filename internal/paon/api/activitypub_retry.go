@@ -24,12 +24,13 @@ const activityPubInboxProcessingRetryKey = "paon:activitypub:ingress:retry"
 const activityPubInboxProcessingRetryLimit = 8
 
 type activityPubInboxProcessingJob struct {
-	ActorID              int64           `json:"actor_id"`
-	DeliveredToAccountID int64           `json:"delivered_to_account_id,omitempty"`
-	ActorType            string          `json:"actor_type,omitempty"`
-	Body                 json.RawMessage `json:"body"`
-	Attempts             int             `json:"attempts"`
-	CreatedAt            int64           `json:"created_at"`
+	ActorID              int64                    `json:"actor_id"`
+	DeliveredToAccountID int64                    `json:"delivered_to_account_id,omitempty"`
+	ActorType            string                   `json:"actor_type,omitempty"`
+	Body                 json.RawMessage          `json:"body"`
+	Receipt              *activityPubInboxReceipt `json:"receipt,omitempty"`
+	Attempts             int                      `json:"attempts"`
+	CreatedAt            int64                    `json:"created_at"`
 }
 
 func (s *Server) enqueueActivityPubInboxProcessingJob(actorID, deliveredTo int64, actorType string, body []byte) error {
@@ -44,6 +45,7 @@ func (s *Server) enqueueActivityPubInboxProcessingJob(actorID, deliveredTo int64
 	if s == nil {
 		return errors.New("activitypub inbox processing Asynq backend unavailable")
 	}
+	job.Receipt = newActivityPubInboxReceipt(s, body)
 	return enqueueActivityPubInboxProcessingJobWithAsynq(job, s.enqueueActivityPubProcessingTask)
 }
 
@@ -105,6 +107,9 @@ func (s *Server) performActivityPubInboxProcessingOnce(ctx context.Context, job 
 	var actor models.Account
 	if err := s.db.WithContext(ctx).Where("id = ?", job.ActorID).First(&actor).Error; err != nil {
 		return activityPubProcessingError(job.Body, job.ActorID, job.DeliveredToAccountID, fmt.Errorf("load verified actor: %w", err))
+	}
+	if job.Receipt != nil {
+		ctx = context.WithValue(ctx, activityPubInboxReceiptContextKey{}, job.Receipt)
 	}
 	err := s.processActivityPubInboxForDeliveredToWithContext(ctx, job.Body, &actor, nil, job.DeliveredToAccountID)
 	return activityPubProcessingError(job.Body, actor.ID, job.DeliveredToAccountID, err)

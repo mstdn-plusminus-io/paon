@@ -762,13 +762,14 @@ func TestActivityPubDeviceCollectionContextMatchesRailsOLMShape(t *testing.T) {
 	if _, ok := olm["fingerprintKey"].(map[string]any); !ok || olm["publicKeyBase64"] != "toot:publicKeyBase64" {
 		t.Fatalf("device key context = %#v", olm)
 	}
-	if activityPubTootJSONLDContext()["EncryptedMessage"] != "toot:EncryptedMessage" || activityPubActivityStreamsJSONLDContext()["EncryptedMessage"] != "toot:EncryptedMessage" {
+	extensions := activityPubFullJSONLDContextExtensions()
+	if activityPubTootJSONLDContext()["EncryptedMessage"] != "toot:EncryptedMessage" || extensions["EncryptedMessage"] != "toot:EncryptedMessage" {
 		t.Fatalf("LD Signature OLM context should match Rails EncryptedMessage IRI")
 	}
-	if activityPubTootJSONLDContext()["Digest"] != "as:Digest" || activityPubActivityStreamsJSONLDContext()["digestValue"] != "https://www.w3.org/ns/activitystreams#digestValue" {
+	if olm["Digest"] != "as:Digest" || olm["digest"] != "as:digest" || extensions["Digest"] != "as:Digest" || activityPubSecurityJSONLDContext()["digestValue"] != "https://w3id.org/security#digestValue" {
 		t.Fatalf("LD Signature encrypted-message digest context should match Rails shape")
 	}
-	if activityPubTootJSONLDContext()["Emoji"] != "toot:Emoji" || activityPubActivityStreamsJSONLDContext()["Emoji"] != "toot:Emoji" || activityPubActivityStreamsJSONLDContext()["Hashtag"] != "https://www.w3.org/ns/activitystreams#Hashtag" {
+	if activityPubTootJSONLDContext()["Emoji"] != "toot:Emoji" || extensions["Emoji"] != "toot:Emoji" || extensions["Hashtag"] != "as:Hashtag" {
 		t.Fatalf("LD Signature tag context should match Rails Emoji/Hashtag IRIs")
 	}
 }

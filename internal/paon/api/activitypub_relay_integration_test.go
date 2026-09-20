@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"crypto/rsa"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hibiken/asynq"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	paondb "github.com/mstdn-plusminus-io/paon/internal/paon/db"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/migrate"
@@ -120,14 +122,52 @@ func TestRelayedMisskeyActivityAuthenticatesBeforeForwardingFinalization(t *test
 		t.Fatal(err)
 	}
 	tamperedObject, _ := tampered["object"].(map[string]any)
-	tamperedObject["_misskey_summary"] = "tampered"
-	tamperedBody, err := json.Marshal(tampered)
+	tamperedObject["_misskey_summary"] = "tampered private diagnostic test content"
+	tamperedBody, err := json.MarshalIndent(tampered, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = server.processActivityPubInboxForDeliveredToWithContext(t.Context(), tamperedBody, &relay, nil, 0)
-	if !errors.Is(err, errActivityPubEventNotApplied) || !strings.Contains(err.Error(), "activity actor does not match verified HTTP signature actor") {
-		t.Fatalf("tampered relayed activity error = %v", err)
+	receiver := &Server{cfg: config.Config{Version: "receiver-test-version"}}
+	server.cfg.Version = "worker-test-version"
+	for _, withReceipt := range []bool{true, false} {
+		job := activityPubInboxProcessingJob{ActorID: relay.ID, Body: tamperedBody}
+		if withReceipt {
+			job.Receipt = newActivityPubInboxReceipt(receiver, tamperedBody)
+		}
+		queued, err := json.Marshal(job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		task := asynq.NewTask(asynqTaskActivityPubProcessing, queued)
+		err = server.handleAsynqActivityPubProcessing(t.Context(), task)
+		if !errors.Is(err, errActivityPubEventNotApplied) || !errors.Is(err, rsa.ErrVerification) {
+			t.Fatalf("tampered relayed activity error = %v", err)
+		}
+		var diagnostic *activityPubSignatureVerificationError
+		if !errors.As(err, &diagnostic) {
+			t.Fatalf("worker lost diagnostic error: %v", err)
+		}
+		details := diagnostic.Diagnostics
+		if details.HTTPActorID != relay.ID || details.HTTPActorURI != relay.URI || details.SignatureActorID != origin.ID || details.SignatureActorURI != origin.URI {
+			t.Fatalf("incorrect verification actor identities: %+v", details)
+		}
+		if details.Runtime.Version != "worker-test-version" || details.Original == nil || details.Original.Verified || details.Verification.Verified {
+			t.Fatalf("incorrect worker verification evidence: %+v", details)
+		}
+		if details.RecoveredSHA256 == "" || details.RecoveredSHA256 == details.Verification.VerificationSHA256 || details.RecoveredSHA256 == details.Original.VerificationSHA256 {
+			t.Fatalf("failed to preserve digest mismatch: %+v", details)
+		}
+		if withReceipt {
+			if details.Receipt == nil || details.Receipt.Runtime.Version != "receiver-test-version" || details.ReceiptMatchesWorkerBody == nil || !*details.ReceiptMatchesWorkerBody {
+				t.Fatalf("worker lost receipt evidence: %+v", details)
+			}
+			if details.Receipt.BodySHA256 == details.Original.BodySHA256 {
+				t.Fatal("wire whitespace was not distinguished from queue serialization")
+			}
+		} else if details.Receipt != nil || details.ReceiptMatchesWorkerBody != nil {
+			t.Fatal("legacy task has invented receiver evidence")
+		}
+		assertSignatureDiagnosticTaskLog(t, task, err, "tampered private diagnostic test content", privateKey)
 	}
 
 	forgedCollection := map[string]any{
