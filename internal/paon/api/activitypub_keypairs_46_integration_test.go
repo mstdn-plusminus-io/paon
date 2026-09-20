@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	paondb "github.com/mstdn-plusminus-io/paon/internal/paon/db"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/migrate"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	"gorm.io/gorm"
 )
@@ -33,6 +35,14 @@ func TestMastodon46RemoteKeypairPersistenceMergeFallbackAndDeleteAgainstPostgreS
 	}
 	database, err := paondb.Open(config.Config{DatabaseURL: databaseURL, DatabaseMaxOpenConns: 3, DatabaseMaxIdleConns: 1})
 	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if _, err := migrate.Run(t.Context(), database); err != nil {
 		t.Fatal(err)
 	}
 	errRollback := errors.New("rollback keypair integration fixture")
@@ -94,11 +104,62 @@ func TestMastodon46RemoteKeypairPersistenceMergeFallbackAndDeleteAgainstPostgreS
 		if err != nil || verified == nil || verified.ID != canonicalID {
 			t.Fatalf("secondary key HTTP Signature verification = %#v, %v", verified, err)
 		}
+		// The backported LD diagnostics must verify the selected 4.6 keypair,
+		// even though the account itself has no legacy public key.
+		linkedDocument := map[string]any{
+			"@context": []string{"https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"},
+			"type":     "Delete", "actor": "https://remote.example/users/canonical",
+			"object": "https://remote.example/statuses/keypair-test",
+			"signature": map[string]any{
+				"type": "RsaSignature2017", "creator": "https://remote.example/users/canonical#one",
+				"created": now.Format(time.RFC3339), "signatureValue": "pending",
+			},
+		}
+		_, toVerify, err := activityPubLinkedDataSignatureVerificationString(linkedDocument)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256([]byte(toVerify))
+		signature, err := rsa.SignPKCS1v15(rand.Reader, secondaryPrivateKey, crypto.SHA256, digest[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		linkedDocument["signature"].(map[string]any)["signatureValue"] = base64.StdEncoding.EncodeToString(signature)
+		linkedBody, err := json.Marshal(linkedDocument)
+		if err != nil {
+			t.Fatal(err)
+		}
+		linkedPayload, err := parseActivityPayload(linkedBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if actor, err := server.activityPubLinkedDataSignatureActor(linkedBody, linkedPayload); err != nil || actor == nil || actor.ID != canonicalID {
+			t.Fatalf("secondary key Linked Data signature = %#v, %v", actor, err)
+		}
+		linkedDocument["object"] = "https://remote.example/statuses/tampered"
+		tamperedBody, err := json.Marshal(linkedDocument)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, linkedErr := server.activityPubLinkedDataSignatureActor(tamperedBody, linkedPayload)
+		var diagnostic *activityPubSignatureVerificationError
+		if !errors.As(linkedErr, &diagnostic) || diagnostic.Diagnostics.SignatureActorID != canonicalID {
+			t.Fatalf("secondary key Linked Data signature diagnostic = %v", linkedErr)
+		}
 		if err := tx.Model(&models.Keypair{}).Where("uri = ?", "https://remote.example/users/canonical#one").Update("revoked", true).Error; err != nil {
 			t.Fatal(err)
 		}
 		if _, err := server.verifyActivityPubSignature(echoContext, nil); err == nil || !strings.Contains(err.Error(), "revoked") {
 			t.Fatalf("revoked secondary HTTP Signature error = %v", err)
+		}
+		if _, err := server.activityPubLinkedDataSignatureActor(linkedBody, linkedPayload); err == nil || !strings.Contains(err.Error(), "revoked") {
+			t.Fatalf("revoked secondary Linked Data signature error = %v", err)
+		}
+		if err := tx.Model(&models.Keypair{}).Where("uri = ?", "https://remote.example/users/canonical#one").Updates(map[string]any{"revoked": false, "expires_at": now.Add(-time.Minute)}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if _, err := server.activityPubLinkedDataSignatureActor(linkedBody, linkedPayload); err == nil || !strings.Contains(err.Error(), "expired") {
+			t.Fatalf("expired secondary Linked Data signature error = %v", err)
 		}
 		legacy, err := server.activityPubStoredKeypairForKeyID("https://remote.example/users/legacy#main-key")
 		if err != nil || legacy == nil || !legacy.Legacy || legacy.Account.ID != legacyID || legacy.Keypair.PublicKey != "LEGACY" {

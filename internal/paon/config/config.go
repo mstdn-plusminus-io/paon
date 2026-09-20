@@ -339,6 +339,7 @@ type Config struct {
 	DisableRemoteMediaCacheSet              bool
 	SingleUserMode                          bool
 	LimitedFederationMode                   bool
+	AllowUnverifiedActivityRefetch          bool
 	DynamoDBEnabled                         bool
 	DynamoDBAccessKey                       string
 	DynamoDBSecretKey                       string
@@ -770,6 +771,7 @@ func FromEnv() Config {
 		DisableRemoteMediaCacheSet:              disableRemoteMediaCacheSet,
 		SingleUserMode:                          os.Getenv("SINGLE_USER_MODE") == "true",
 		LimitedFederationMode:                   os.Getenv("LIMITED_FEDERATION_MODE") == "true" || os.Getenv("WHITELIST_MODE") == "true",
+		AllowUnverifiedActivityRefetch:          os.Getenv("PAON_ALLOW_UNVERIFIED_ACTIVITY_REFETCH") == "1" || os.Getenv("PAON_ALLOW_UNVERIFIED_ACTIVITY_REFETCH") == "true",
 		DynamoDBEnabled:                         os.Getenv("DYNAMODB_ENABLED") == "true",
 		DynamoDBAccessKey:                       envOrFallback("DYNAMODB_AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"),
 		DynamoDBSecretKey:                       envOrFallback("DYNAMODB_AWS_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"),

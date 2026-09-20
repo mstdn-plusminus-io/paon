@@ -33,6 +33,34 @@ func TestRailsLogLevelDefaultsToInfo(t *testing.T) {
 	}
 }
 
+func TestFromEnvAllowUnverifiedActivityRefetchRequiresExplicitOptIn(t *testing.T) {
+	const name = "PAON_ALLOW_UNVERIFIED_ACTIVITY_REFETCH"
+	unsetEnvForTest(t, name)
+	if FromEnv().AllowUnverifiedActivityRefetch {
+		t.Fatal("unverified activity refetch must be disabled when unset")
+	}
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "1", want: true},
+		{value: "true", want: true},
+		{value: "0", want: false},
+		{value: "false", want: false},
+		{value: "", want: false},
+		{value: "TRUE", want: false},
+		{value: " true ", want: false},
+		{value: "invalid", want: false},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv(name, tc.value)
+			if got := FromEnv().AllowUnverifiedActivityRefetch; got != tc.want {
+				t.Fatalf("%s=%q: AllowUnverifiedActivityRefetch = %t, want %t", name, tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFromEnvUpdateCheckURLMatchesRailsDefaultAndDisableSemantics(t *testing.T) {
 	t.Setenv("UPDATE_CHECK_URL", "")
 	cfg := FromEnv()
