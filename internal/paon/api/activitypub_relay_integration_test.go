@@ -154,6 +154,15 @@ func TestRelayedMisskeyActivityAuthenticatesBeforeForwardingFinalization(t *test
 		if details.Runtime.Version != "worker-test-version" || details.Original == nil || details.Original.Verified || details.Verification.Verified {
 			t.Fatalf("incorrect worker verification evidence: %+v", details)
 		}
+		var workerJob activityPubInboxProcessingJob
+		if err := json.Unmarshal(queued, &workerJob); err != nil {
+			t.Fatal(err)
+		}
+		if details.Original.BodySHA256 != activityPubDiagnosticSHA256(workerJob.Body) ||
+			details.Verification.BodySHA256 != activityPubDiagnosticSHA256(activityPubCompactCollectionBody(workerJob.Body)) ||
+			details.Verification.BodySHA256 == details.Original.BodySHA256 {
+			t.Fatalf("worker lost distinct original and compacted verification evidence: %+v", details)
+		}
 		if details.RecoveredSHA256 == "" || details.RecoveredSHA256 == details.Verification.VerificationSHA256 || details.RecoveredSHA256 == details.Original.VerificationSHA256 {
 			t.Fatalf("failed to preserve digest mismatch: %+v", details)
 		}
