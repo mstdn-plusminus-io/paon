@@ -98,7 +98,7 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 				payload, err = parseActivityPayload(verificationBody)
 			}
 		} else {
-			verifiedActor, err = s.activityPubLinkedDataSignatureActor(originalBody, payload)
+			verifiedActor, err = s.activityPubLinkedDataSignatureActor(verificationBody, payload)
 		}
 		if err != nil {
 			enrichActivityPubSignatureDiagnostics(s, err, body, actor)
