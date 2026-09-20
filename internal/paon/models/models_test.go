@@ -31,6 +31,16 @@ func TestAccountStatAssociationIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestAccountFieldsUsesJSONValueForPostgreSQLJSONB(t *testing.T) {
+	field, ok := reflect.TypeOf(Account{}).FieldByName("Fields")
+	if !ok {
+		t.Fatal("Account.Fields is missing")
+	}
+	if field.Type != reflect.TypeOf(JSONValue{}) {
+		t.Fatalf("Account.Fields type = %v, want JSONValue so GORM does not bind JSONB as bytea", field.Type)
+	}
+}
+
 func TestInt64ArrayScanPostgresLiteral(t *testing.T) {
 	var ids Int64Array
 	if err := ids.Scan("{3,1,2}"); err != nil {

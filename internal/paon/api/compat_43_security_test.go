@@ -252,7 +252,7 @@ func TestMastodon43MaliciousLinkedDataGraphFixturesLoseActorAuthority(t *testing
 				t.Fatal("malicious graph feature was not detected")
 			}
 
-			processedBody := activityPubProcessCollectionBody(body)
+			processedBody := activityPubCompactCollectionBody(body)
 			var processed map[string]any
 			if err := json.Unmarshal(processedBody, &processed); err != nil {
 				t.Fatal(err)
@@ -280,7 +280,7 @@ func TestMastodon43MaliciousLinkedDataGraphFixturesLoseActorAuthority(t *testing
 			if payload.Signature.Present {
 				t.Fatal("fallback payload still exposes a Linked Data Signature")
 			}
-			if test.keyRefresh && processingServer.activityPubLinkedDataSignatureActor(processedBody, payload) != nil {
+			if actor, err := processingServer.activityPubLinkedDataSignatureActor(processedBody, payload); test.keyRefresh && (actor != nil || err == nil) {
 				t.Fatal("graph fallback was allowed to authorize or refresh the embedded creator key")
 			}
 
@@ -409,7 +409,7 @@ func TestMastodon43MaliciousJSONLDGraphCannotTriggerActorKeyRefresh(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if actor := processingServer.activityPubLinkedDataSignatureActor(ordinaryBody, ordinaryPayload); actor != nil {
+	if actor, err := processingServer.activityPubLinkedDataSignatureActor(ordinaryBody, ordinaryPayload); actor != nil || err == nil {
 		t.Fatalf("failed refresh unexpectedly verified actor %#v", actor)
 	}
 	if refreshRequests == 0 {
@@ -435,7 +435,7 @@ func TestMastodon43MaliciousJSONLDGraphCannotTriggerActorKeyRefresh(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if actor := processingServer.activityPubLinkedDataSignatureActor(maliciousBody, maliciousPayload); actor != nil {
+	if actor, err := processingServer.activityPubLinkedDataSignatureActor(maliciousBody, maliciousPayload); actor != nil || err == nil {
 		t.Fatalf("malicious graph unexpectedly verified actor %#v", actor)
 	}
 	if refreshRequests != 0 {
