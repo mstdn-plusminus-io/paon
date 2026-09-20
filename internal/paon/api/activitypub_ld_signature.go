@@ -31,36 +31,60 @@ const (
 	activityPubJSONLDContextMaxBytes = 1 << 20
 )
 
-func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activityPayload) *models.Account {
-	if !payload.Signature.Present || payload.Signature.Type != "RsaSignature2017" || payload.Signature.Creator == "" || payload.Signature.SignatureValue == "" {
-		return nil
+func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activityPayload) (*models.Account, error) {
+	if !payload.Signature.Present {
+		return nil, fmt.Errorf("linked-data signature is missing")
+	}
+	if payload.Signature.Type != "RsaSignature2017" {
+		return nil, fmt.Errorf("unsupported linked-data signature type %q", payload.Signature.Type)
+	}
+	if payload.Signature.Creator == "" {
+		return nil, fmt.Errorf("linked-data signature creator is missing")
+	}
+	if payload.Signature.SignatureValue == "" {
+		return nil, fmt.Errorf("linked-data signature value is missing")
 	}
 	var document any
-	if err := json.Unmarshal(body, &document); err != nil || activityPubHasUnsupportedSignedJSONLDFeature(document) {
-		return nil
+	if err := json.Unmarshal(body, &document); err != nil {
+		return nil, fmt.Errorf("decode linked-data signature document: %w", err)
+	}
+	if activityPubHasUnsupportedSignedJSONLDFeature(document) {
+		return nil, fmt.Errorf("unsupported signed JSON-LD graph feature")
 	}
 	actor, err := s.activityPubLinkedDataSignatureCreatorActor(payload.Signature.Creator)
-	if err != nil || actor == nil {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("resolve linked-data signature creator %q: %w", payload.Signature.Creator, err)
+	}
+	if actor == nil {
+		return nil, fmt.Errorf("resolve linked-data signature creator %q: actor is missing", payload.Signature.Creator)
 	}
 	publicKey, err := activityPublicKey(actor.PublicKey)
 	if err != nil {
 		if strings.TrimSpace(actor.PublicKey) != "" {
-			return nil
+			return nil, fmt.Errorf("parse linked-data signature creator public key: %w", err)
 		}
 		actor, err = s.refreshActivityPubActorKey(payload.Signature.Creator, actor)
-		if err != nil || actor == nil {
-			return nil
+		if err != nil {
+			return nil, fmt.Errorf("refresh linked-data signature creator public key: %w", err)
+		}
+		if actor == nil {
+			return nil, fmt.Errorf("refresh linked-data signature creator public key: actor is missing")
 		}
 		publicKey, err = activityPublicKey(actor.PublicKey)
 		if err != nil {
-			return nil
+			return nil, fmt.Errorf("parse refreshed linked-data signature creator public key: %w", err)
 		}
 	}
-	if !verifyActivityPubLinkedDataSignature(body, publicKey) {
-		return nil
+	if err := verifyActivityPubLinkedDataSignatureWithError(body, publicKey); err != nil {
+		var diagnostic *activityPubSignatureVerificationError
+		if errors.As(err, &diagnostic) {
+			diagnostic.Diagnostics.SignatureActorID = actor.ID
+			diagnostic.Diagnostics.SignatureActorURI = activityPubSafeLogValue(actor.URI, 512)
+			diagnostic.Diagnostics.ActorUpdatedAt = actor.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		}
+		return nil, err
 	}
-	return actor
+	return actor, nil
 }
 
 // Mastodon 4.3.23 deliberately does not grant linked-data-signature authority
@@ -101,30 +125,45 @@ func (s *Server) activityPubLinkedDataSignatureCreatorActor(creator string) (*mo
 	}
 	var account models.Account
 	err := s.db.Preload("AccountStat").Where("uri = ?", actorURI).First(&account).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		if err != nil {
+			return nil, err
+		}
+		return &account, nil
 	}
-	return &account, err
+	// Mastodon's LinkedDataSignature resolves an unknown creator through
+	// FetchRemoteKeyService before verifying the document. Reuse the guarded
+	// HTTP-signature key resolver so relays can forward actors not yet known
+	// to this server without weakening domain, WebFinger, key-owner, or SSRF
+	// checks.
+	return s.activityPubActorFromKeyID(creator)
 }
 
 func verifyActivityPubLinkedDataSignature(body []byte, publicKey *rsa.PublicKey) bool {
+	return verifyActivityPubLinkedDataSignatureWithError(body, publicKey) == nil
+}
+
+func verifyActivityPubLinkedDataSignatureWithError(body []byte, publicKey *rsa.PublicKey) error {
 	if publicKey == nil {
-		return false
+		return fmt.Errorf("linked-data signature public key is missing")
 	}
 	var document map[string]any
 	if err := json.Unmarshal(body, &document); err != nil {
-		return false
+		return fmt.Errorf("decode linked-data signature document: %w", err)
 	}
 	signatureValue, toVerify, err := activityPubLinkedDataSignatureVerificationString(document)
 	if err != nil {
-		return false
+		return fmt.Errorf("prepare linked-data signature verification: %w", err)
 	}
 	signature, err := decodeActivityPubLinkedDataSignatureValue(signatureValue)
 	if err != nil {
-		return false
+		return fmt.Errorf("decode linked-data signature value: %w", err)
 	}
 	digest := sha256.Sum256([]byte(toVerify))
-	return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature) == nil
+	if err := rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, digest[:], signature); err != nil {
+		return newActivityPubSignatureVerificationError(fmt.Errorf("verify linked-data RSA signature: %w", err), body, document, publicKey, signature, toVerify)
+	}
+	return nil
 }
 
 func (s *Server) signActivityPubLinkedDataSignaturePayload(signer models.Account, payload map[string]any) (map[string]any, error) {
@@ -275,6 +314,10 @@ func cloneActivityPubJSONLDDocument(document map[string]any) map[string]any {
 }
 
 func activityPubLinkedDataSignatureVerificationString(document map[string]any) (string, string, error) {
+	return activityPubLinkedDataSignatureVerificationStringWithHash(document, activityPubJSONLDHash)
+}
+
+func activityPubLinkedDataSignatureVerificationStringWithHash(document map[string]any, hash func(any) (string, error)) (string, string, error) {
 	signature, ok := activityPubLinkedDataSignatureMap(document)
 	if !ok {
 		return "", "", fmt.Errorf("missing compact signature")
@@ -306,13 +349,13 @@ func activityPubLinkedDataSignatureVerificationString(document map[string]any) (
 			unsigned[key] = value
 		}
 	}
-	optionsHash, err := activityPubJSONLDHash(options)
+	optionsHash, err := hash(options)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("normalize linked-data signature options: %w", err)
 	}
-	documentHash, err := activityPubJSONLDHash(unsigned)
+	documentHash, err := hash(unsigned)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("normalize linked-data signature document: %w", err)
 	}
 	return signatureValue, optionsHash + documentHash, nil
 }
@@ -343,7 +386,11 @@ func activityPubJSONLDHash(value any) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func activityPubJSONLDNormalize(value any) (normalizedString string, err error) {
+func activityPubJSONLDNormalize(value any) (string, error) {
+	return activityPubJSONLDNormalizeWithLoader(value, activityPubJSONLDDocumentLoader())
+}
+
+func activityPubJSONLDNormalizeWithLoader(value any, loader ld.DocumentLoader) (normalizedString string, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			normalizedString = ""
@@ -357,7 +404,7 @@ func activityPubJSONLDNormalize(value any) (normalizedString string, err error) 
 	options := ld.NewJsonLdOptions("")
 	options.Algorithm = ld.AlgorithmURDNA2015
 	options.Format = "application/n-quads"
-	options.DocumentLoader = activityPubJSONLDDocumentLoader()
+	options.DocumentLoader = loader
 	normalized, err := ld.NewJsonLdProcessor().Normalize(value, options)
 	if err != nil {
 		return "", err
@@ -416,6 +463,9 @@ func activityPubFullJSONLDContextExtensions() map[string]any {
 		"discoverable":              "toot:discoverable",
 		"indexable":                 "toot:indexable",
 		"memorial":                  "toot:memorial",
+		"suspended":                 "toot:suspended",
+		"fedibird":                  "http://fedibird.com/ns#",
+		"quoteUri":                  "fedibird:quoteUri",
 		"votersCount":               "toot:votersCount",
 		"gts":                       "https://gotosocial.org/ns#",
 		"interactionPolicy":         map[string]any{"@id": "gts:interactionPolicy", "@type": "@id"},
@@ -470,7 +520,11 @@ func decodeActivityPubLinkedDataSignatureValue(value string) ([]byte, error) {
 }
 
 func activityPubJSONLDDocumentLoader() ld.DocumentLoader {
-	loader := ld.NewCachingDocumentLoader(mastodonJSONLDDocumentLoader{client: activityPubJSONLDHTTPClient(), cache: true})
+	return newActivityPubJSONLDDocumentLoader(false)
+}
+
+func newActivityPubJSONLDDocumentLoader(offline bool) ld.DocumentLoader {
+	loader := ld.NewCachingDocumentLoader(mastodonJSONLDDocumentLoader{client: activityPubJSONLDHTTPClient(), cache: true, offline: offline})
 	activityStreams := map[string]any{"@context": activityPubActivityStreamsJSONLDContext()}
 	security := map[string]any{"@context": activityPubSecurityJSONLDContext()}
 	identity := map[string]any{"@context": activityPubIdentityJSONLDContext()}
@@ -511,8 +565,9 @@ func activityPubJSONLDDocumentLoader() ld.DocumentLoader {
 }
 
 type mastodonJSONLDDocumentLoader struct {
-	client *http.Client
-	cache  bool
+	client  *http.Client
+	cache   bool
+	offline bool
 }
 
 func (loader mastodonJSONLDDocumentLoader) LoadDocument(uri string) (*ld.RemoteDocument, error) {
@@ -527,6 +582,9 @@ func (loader mastodonJSONLDDocumentLoader) LoadDocument(uri string) (*ld.RemoteD
 		if doc, ok, err := activityPubJSONLDContextCacheGet(uri); ok || err != nil {
 			return doc, err
 		}
+	}
+	if loader.offline {
+		return nil, fmt.Errorf("JSON-LD context is not cached: %q", uri)
 	}
 	client := loader.client
 	if client == nil {
@@ -697,90 +755,47 @@ func activityPubSchemaJSONLDContext() map[string]any {
 	}
 }
 
+// activityPubActivityStreamsJSONLDContext mirrors the W3C context at
+// https://www.w3.org/ns/activitystreams. Keep application extensions in
+// activityPubFullJSONLDContextExtensions: adding terms here changes the RDF
+// signed by remote servers, including otherwise undefined actor properties.
 func activityPubActivityStreamsJSONLDContext() map[string]any {
-	as := "https://www.w3.org/ns/activitystreams#"
 	ctx := map[string]any{
-		"@vocab":                    as,
-		"as":                        as,
-		"ostatus":                   "http://ostatus.org#",
-		"schema":                    "http://schema.org#",
-		"toot":                      "http://joinmastodon.org/ns#",
-		"misskey":                   "https://misskey-hub.net/ns#",
-		"fedibird":                  "http://fedibird.com/ns#",
-		"gts":                       "https://gotosocial.org/ns#",
-		"fep":                       "https://w3id.org/fep/044f#",
-		"id":                        "@id",
-		"type":                      "@type",
-		"atomUri":                   "ostatus:atomUri",
-		"inReplyToAtomUri":          "ostatus:inReplyToAtomUri",
-		"content":                   as + "content",
-		"contentMap":                map[string]any{"@id": as + "content", "@container": "@language"},
-		"duration":                  map[string]any{"@id": as + "duration", "@type": "http://www.w3.org/2001/XMLSchema#duration"},
-		"height":                    map[string]any{"@id": as + "height", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger"},
-		"mediaType":                 as + "mediaType",
-		"name":                      as + "name",
-		"nameMap":                   map[string]any{"@id": as + "name", "@container": "@language"},
-		"published":                 map[string]any{"@id": as + "published", "@type": "http://www.w3.org/2001/XMLSchema#dateTime"},
-		"rel":                       as + "rel",
-		"source":                    as + "source",
-		"startIndex":                map[string]any{"@id": as + "startIndex", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger"},
-		"summary":                   as + "summary",
-		"summaryMap":                map[string]any{"@id": as + "summary", "@container": "@language"},
-		"totalItems":                map[string]any{"@id": as + "totalItems", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger"},
-		"updated":                   map[string]any{"@id": as + "updated", "@type": "http://www.w3.org/2001/XMLSchema#dateTime"},
-		"width":                     map[string]any{"@id": as + "width", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger"},
-		"manuallyApprovesFollowers": as + "manuallyApprovesFollowers",
-		"sensitive":                 as + "sensitive",
-		"votersCount":               "toot:votersCount",
-		"blurhash":                  "toot:blurhash",
-		"focalPoint":                map[string]any{"@id": "toot:focalPoint", "@container": "@list"},
-		"featured":                  map[string]any{"@id": "toot:featured", "@type": "@id"},
-		"featuredTags":              map[string]any{"@id": "toot:featuredTags", "@type": "@id"},
-		"discoverable":              "toot:discoverable",
-		"indexable":                 "toot:indexable",
-		"memorial":                  "toot:memorial",
-		"suspended":                 "toot:suspended",
-		"quoteUrl":                  as + "quoteUrl",
-		"quoteUri":                  "fedibird:quoteUri",
-		"quote":                     map[string]any{"@id": "fep:quote", "@type": "@id"},
-		"quoteAuthorization":        map[string]any{"@id": "fep:quoteAuthorization", "@type": "@id"},
-		"QuoteAuthorization":        "fep:QuoteAuthorization",
-		"QuoteRequest":              "fep:QuoteRequest",
-		"_misskey_quote":            "misskey:_misskey_quote",
-		"interactionPolicy":         "gts:interactionPolicy",
-		"canQuote":                  map[string]any{"@id": "gts:canQuote", "@type": "@id"},
-		"automaticApproval":         map[string]any{"@id": "gts:automaticApproval", "@type": "@id"},
-		"manualApproval":            map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
-		"interactingObject":         map[string]any{"@id": "gts:interactingObject", "@type": "@id"},
-		"interactionTarget":         map[string]any{"@id": "gts:interactionTarget", "@type": "@id"},
-		"PropertyValue":             "schema:PropertyValue",
-		"value":                     "schema:value",
-		"Emoji":                     "toot:Emoji",
-		"Digest":                    as + "Digest",
-		"digestAlgorithm":           as + "digestAlgorithm",
-		"digestValue":               as + "digestValue",
+		"@vocab": "_:",
+		"xsd":    "http://www.w3.org/2001/XMLSchema#",
+		"as":     "https://www.w3.org/ns/activitystreams#",
+		"ldp":    "http://www.w3.org/ns/ldp#",
+		"vcard":  "http://www.w3.org/2006/vcard/ns#",
+		"id":     "@id",
+		"type":   "@type",
 	}
 	for _, term := range []string{
-		"Accept", "Activity", "Add", "Announce", "Application", "Arrive", "Article", "Audio", "Block", "Collection", "CollectionPage", "Create", "Delete", "Dislike", "Document", "Event", "Flag", "Follow", "Group", "Ignore", "Image", "IntransitiveActivity", "Invite", "Join", "Leave", "Like", "Listen", "Mention", "Move", "Note", "Object", "Offer", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Place", "Profile", "Question", "Read", "Reject", "Relationship", "Remove", "Service", "TentativeAccept", "TentativeReject", "Tombstone", "Travel", "Undo", "Update", "Video", "View",
+		"Accept", "Activity", "IntransitiveActivity", "Add", "Announce", "Application", "Arrive", "Article", "Audio", "Block", "Collection", "CollectionPage", "Relationship", "Create", "Delete", "Dislike", "Document", "Event", "Follow", "Flag", "Group", "Ignore", "Image", "Invite", "Join", "Leave", "Like", "Link", "Mention", "Note", "Object", "Offer", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Place", "Profile", "Question", "Reject", "Remove", "Service", "TentativeAccept", "TentativeReject", "Tombstone", "Undo", "Update", "Video", "View", "Listen", "Read", "Move", "Travel", "IsFollowing", "IsFollowedBy", "IsContact", "IsMember", "content", "name", "hreflang", "mediaType", "rel", "summary", "units", "preferredUsername", "source",
 	} {
-		ctx[term] = as + term
-	}
-	ctx["Hashtag"] = as + "Hashtag"
-	for _, term := range []string{
-		"accuracy", "altitude", "latitude", "longitude", "radius",
-	} {
-		ctx[term] = map[string]any{"@id": as + term, "@type": "http://www.w3.org/2001/XMLSchema#float"}
+		ctx[term] = "as:" + term
 	}
 	for _, term := range []string{
-		"actor", "alsoKnownAs", "anyOf", "attachment", "attributedTo", "audience", "bcc", "bto", "cc", "context", "current", "describes", "endpoints", "first", "followers", "following", "formerType", "generator", "href", "icon", "image", "inReplyTo", "instrument", "items", "last", "liked", "likes", "location", "next", "object", "oneOf", "origin", "outbox", "partOf", "prev", "preview", "result", "replies", "sharedInbox", "shares", "subject", "tag", "target", "to", "url",
+		"subject", "relationship", "actor", "attributedTo", "attachment", "bcc", "bto", "cc", "context", "current", "first", "generator", "icon", "image", "inReplyTo", "items", "instrument", "last", "location", "next", "object", "oneOf", "anyOf", "origin", "prev", "preview", "replies", "result", "audience", "partOf", "tag", "target", "to", "url", "href", "describes", "formerType", "outbox", "following", "followers", "streams", "endpoints", "uploadMedia", "proxyUrl", "liked", "oauthAuthorizationEndpoint", "oauthTokenEndpoint", "provideClientKey", "signClientKey", "sharedInbox", "Public", "likes", "shares", "alsoKnownAs",
 	} {
-		ctx[term] = map[string]any{"@id": as + term, "@type": "@id"}
+		ctx[term] = map[string]any{"@id": "as:" + term, "@type": "@id"}
 	}
-	ctx["inbox"] = map[string]any{"@id": "http://www.w3.org/ns/ldp#inbox", "@type": "@id"}
-	ctx["orderedItems"] = map[string]any{"@id": as + "items", "@type": "@id", "@container": "@list"}
-	for _, term := range []string{"closed", "deleted", "endTime", "startTime"} {
-		ctx[term] = map[string]any{"@id": as + term, "@type": "http://www.w3.org/2001/XMLSchema#dateTime"}
+	for _, term := range []string{"closed", "endTime", "published", "startTime", "updated", "deleted"} {
+		ctx[term] = map[string]any{"@id": "as:" + term, "@type": "xsd:dateTime"}
 	}
+	for _, term := range []string{"accuracy", "altitude", "latitude", "longitude", "radius"} {
+		ctx[term] = map[string]any{"@id": "as:" + term, "@type": "xsd:float"}
+	}
+	for _, term := range []string{"height", "startIndex", "totalItems", "width"} {
+		ctx[term] = map[string]any{"@id": "as:" + term, "@type": "xsd:nonNegativeInteger"}
+	}
+	for _, term := range []string{"duration"} {
+		ctx[term] = map[string]any{"@id": "as:" + term, "@type": "xsd:duration"}
+	}
+	ctx["orderedItems"] = map[string]any{"@id": "as:items", "@type": "@id", "@container": "@list"}
+	ctx["contentMap"] = map[string]any{"@id": "as:content", "@container": "@language"}
+	ctx["nameMap"] = map[string]any{"@id": "as:name", "@container": "@language"}
+	ctx["summaryMap"] = map[string]any{"@id": "as:summary", "@container": "@language"}
+	ctx["inbox"] = map[string]any{"@id": "ldp:inbox", "@type": "@id"}
 	return ctx
 }
 

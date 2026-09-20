@@ -60,14 +60,18 @@ func (s *Server) processActivityPubInboxForDeliveredTo(body []byte, actor *model
 }
 
 func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Context, body []byte, actor *models.Account, target *models.Account, deliveredToAccountID int64) error {
-	body = activityPubProcessCollectionBody(body)
-	if !json.Valid(body) {
+	originalBody := body
+	// Keep the compacted signature intact until a relayed activity has been
+	// bound to its original actor. Forwarding compatibility is handled only
+	// after authentication, on a separate serialized document.
+	verificationBody := activityPubCompactCollectionBody(body)
+	if !json.Valid(verificationBody) {
 		return activityPubEventNotAppliedf("invalid JSON document")
 	}
-	if !activityPayloadSupportedContext(body) {
+	if !activityPayloadSupportedContext(verificationBody) {
 		return activityPubEventNotAppliedf("unsupported JSON-LD context")
 	}
-	payload, err := parseActivityPayload(body)
+	payload, err := parseActivityPayload(verificationBody)
 	if err != nil {
 		return activityPubEventNotAppliedf("parse payload: %v", err)
 	}
@@ -86,9 +90,40 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 	}
 	var relayedThrough *models.Account
 	if activityPayloadDifferentActor(payload, actor) {
-		verifiedActor := s.activityPubLinkedDataSignatureActor(body, payload)
-		if verifiedActor == nil {
-			return activityPubEventNotAppliedf("activity actor does not match verified HTTP signature actor")
+		var verifiedActor *models.Account
+		if activityPubUnsignedAnnounce(originalBody, payload) {
+			verificationBody, verifiedActor, err = s.activityPubResolveRelayedAnnounce(ctx, payload, actor)
+			if err == nil {
+				originalBody = verificationBody
+				payload, err = parseActivityPayload(verificationBody)
+			}
+		} else {
+			verifiedActor, err = s.activityPubLinkedDataSignatureActor(originalBody, payload)
+		}
+		if err != nil {
+			enrichActivityPubSignatureDiagnostics(s, err, body, actor)
+			// Attach evidence before fmt.Errorf snapshots the diagnostic string.
+			receipt, _ := ctx.Value(activityPubInboxReceiptContextKey{}).(*activityPubInboxReceipt)
+			attachActivityPubSignatureReceipt(err, receipt)
+			if s.cfg.AllowUnverifiedActivityRefetch && activityPubMutationRefetchSupported(payload.Type) {
+				refetched, refetchErr := s.refetchUnverifiedActivityPubMutation(ctx, payload, actor)
+				if refetchErr != nil {
+					err = fmt.Errorf("origin refetch failed: %w; original signature error: %w", refetchErr, err)
+				} else {
+					logActivityPubMutationRefetched(ctx, payload, actor, refetched, err)
+					if refetched.Skipped {
+						return nil
+					}
+					originalBody, verificationBody, verifiedActor = refetched.Body, refetched.Body, refetched.Actor
+					payload, err = parseActivityPayload(refetched.Body)
+				}
+			}
+			if err != nil {
+				return fmt.Errorf("%w: activity actor does not match verified HTTP signature actor: %w", errActivityPubEventNotApplied, err)
+			}
+		}
+		if activityPayloadDifferentActor(payload, verifiedActor) {
+			return activityPubEventNotAppliedf("linked-data signature actor does not match activity actor")
 		}
 		relayedThrough = actor
 		actor = verifiedActor
@@ -98,6 +133,14 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 	}
 	if actor.SuspendedAt.Valid && !activityPubActivityAllowedWhileSuspended(payload.Type) {
 		return nil
+	}
+	forwardingBody := activityPubFinalizeCollectionBodyForForwarding(originalBody, verificationBody)
+	payload, err = parseActivityPayload(forwardingBody)
+	if err != nil {
+		return activityPubEventNotAppliedf("parse forwarding-safe payload: %v", err)
+	}
+	if activityPayloadDifferentActor(payload, actor) {
+		return activityPubEventNotAppliedf("forwarding-safe activity actor does not match processing actor")
 	}
 	options := activityPubProcessingOptions{
 		OverrideTimestamps:   true,
@@ -135,7 +178,7 @@ func (s *Server) activityPubDeliveredToAccount(target *models.Account, delivered
 	return &deliveredTo, nil
 }
 
-func activityPubProcessCollectionBody(body []byte) []byte {
+func activityPubCompactCollectionBody(body []byte) []byte {
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return body
@@ -159,10 +202,6 @@ func activityPubProcessCollectionBody(body []byte) []byte {
 	if activityPubHasUnsupportedSignedJSONLDFeature(compacted) {
 		return activityPubBodyWithoutLinkedDataSignature(body, raw)
 	}
-	activityPubPatchForForwarding(raw, compacted)
-	if !activityPubSafeForForwarding(raw, compacted) {
-		delete(compacted, "signature")
-	}
 	if compactedBody, err := json.Marshal(compacted); err == nil {
 		return compactedBody
 	}
@@ -180,6 +219,31 @@ func activityPubBodyWithoutLinkedDataSignature(body []byte, raw map[string]any) 
 		return fallback
 	}
 	return body
+}
+
+func activityPubFinalizeCollectionBodyForForwarding(originalBody []byte, compactedBody []byte) []byte {
+	var original map[string]any
+	if err := json.Unmarshal(originalBody, &original); err != nil {
+		return compactedBody
+	}
+	if signature, ok := original["signature"].(map[string]any); !ok || signature == nil {
+		return compactedBody
+	}
+	var compacted map[string]any
+	if err := json.Unmarshal(compactedBody, &compacted); err != nil {
+		return compactedBody
+	}
+	if signature, ok := compacted["signature"].(map[string]any); !ok || signature == nil {
+		return compactedBody
+	}
+	activityPubPatchForForwarding(original, compacted)
+	if !activityPubSafeForForwarding(original, compacted) {
+		delete(compacted, "signature")
+	}
+	if body, err := json.Marshal(compacted); err == nil {
+		return body
+	}
+	return compactedBody
 }
 
 func activityPubPatchForForwarding(original map[string]any, compacted map[string]any) {
@@ -395,6 +459,12 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 	}
 	switch payload.Type {
 	case "Create":
+		switch payload.Object.TypeExact {
+		case "CacheFile", "Playlist", "WatchAction":
+			// PeerTube cache, playlist and viewing-statistics notifications
+			// have no Mastodon state to apply or media to fetch.
+			return nil
+		}
 		s.scheduleActivityPubActorRefreshIfStale(actor, payload.ID)
 		if payload.ObjectReference && payload.Object.ID != "" {
 			return s.processActivityPubDereferencedCreate(payload, actor, target, relayedThrough, options)
@@ -403,6 +473,9 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 			return s.processActivityPubCreateNote(payload, actor, target, relayedThrough, options)
 		}
 	case "Update":
+		if payload.Object.TypeExact == "CacheFile" || payload.Object.TypeExact == "Playlist" {
+			return nil
+		}
 		s.scheduleActivityPubActorRefreshIfStale(actor, payload.ID)
 		return s.processActivityPubUpdate(payload, actor, target, relayedThrough, options)
 	case "Delete":
@@ -430,6 +503,15 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 	case "Announce":
 		return s.processActivityPubAnnounce(payload, actor, relayedThrough, options)
 	case "Undo":
+		if payload.Object.TypeExact == "Dislike" ||
+			(payload.Object.TypeExact == "Create" && payload.Object.ObjectTypeExact == "CacheFile") {
+			// Only undo notifications whose original action has no local state.
+			// Undo(Create(Note/Video)) must not be mistaken for cache removal.
+			if firstNonEmpty(payload.Object.Actor, payload.Object.ActorRaw) != actor.URI {
+				return activityPubEventNotAppliedf("Undo embedded actor does not match processing actor")
+			}
+			return nil
+		}
 		if !payload.Object.TypePresent {
 			return s.processActivityPubUndoReference(payload.Object, actor)
 		}
@@ -448,6 +530,11 @@ func (s *Server) processActivityPubPayloadWithContext(ctx context.Context, paylo
 		if payload.Object.TypeExact == "Block" {
 			return s.processActivityPubUndoBlock(payload.Object, actor)
 		}
+	case "View", "Download", "Dislike":
+		// PeerTube federates video view, download and dislike notifications.
+		// Mastodon has no state to apply for them, so accept the
+		// authenticated activity without sending it through retry/archive.
+		return nil
 	}
 	logActivityPubUnsupportedPayload(payload, actor.ID, "unsupported_activity_or_object_type")
 	return activityPubEventNotAppliedf("unsupported activity type %q or object type %q", payload.Type, payload.Object.TypeExact)
@@ -5823,6 +5910,7 @@ type activityObject struct {
 	ObjectID              string
 	ObjectIDRaw           string
 	ObjectIDPresent       bool
+	ObjectTypeExact       string
 	AttributedTo          string
 	AttributedToRaw       string
 	URL                   string
@@ -6662,6 +6750,9 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 		}
 		id := activityURIFromBearcapRaw(activityJSONLDIDRaw(object))
 		objectIDValue := activityJSONLDValue(object, "object")
+		// Retain the direct nested object's type for Undo(Create(CacheFile))
+		// without recursively parsing arbitrary nested activity documents.
+		nestedObject, _ := activityJSONLDSingle(objectIDValue).(map[string]any)
 		featuredValue := activityJSONLDValue(object, "featured")
 		oneOfPollOptions := activityPollOptionListWithShape(activityJSONLDValue(object, "oneOf"))
 		anyOfPollOptions := activityPollOptionListWithShape(activityJSONLDValue(object, "anyOf"))
@@ -6687,6 +6778,7 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 			ObjectID:              activityJSONLDObjectID(object, "object"),
 			ObjectIDRaw:           activityJSONLDValueOrID(objectIDValue),
 			ObjectIDPresent:       objectIDValue != nil,
+			ObjectTypeExact:       activityJSONLDActivityType(nestedObject),
 			AttributedTo:          activityJSONLDObjectIDFirst(object, "attributedTo"),
 			AttributedToRaw:       activityJSONLDValueOrID(activityJSONLDValue(object, "attributedTo")),
 			URL:                   activityActorOrStatusURL(activityJSONLDValue(object, "url"), id, activityJSONLDType(object), activityJSONLDTypes(object)),
@@ -7594,7 +7686,7 @@ func activityJSONLDGraphMaps(object map[string]any) []map[string]any {
 
 func activityJSONLDTypeIsActivity(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Block", "Create", "Delete", "Flag", "Follow", "Like", "Move", "QuoteRequest", "Reject", "Remove", "Undo", "Update":
+	case "Accept", "Add", "Announce", "Block", "Create", "Delete", "Dislike", "Download", "Flag", "Follow", "Like", "Move", "QuoteRequest", "Reject", "Remove", "Undo", "Update", "View":
 		return true
 	default:
 		return false
@@ -8035,6 +8127,16 @@ func activityTypeValues(value any) []string {
 
 func activityCompactType(value string) string {
 	value = strings.TrimSpace(value)
+	// Signed JSON-LD compaction expands PeerTube terms to extension IRIs.
+	// Match individual terms so pt:Delete cannot become an AS Delete.
+	switch value {
+	case "https://joinpeertube.org/ns#CacheFile", "pt:CacheFile":
+		return "CacheFile"
+	case "https://joinpeertube.org/ns#Playlist", "pt:Playlist":
+		return "Playlist"
+	case "http://schema.org/WatchAction", "sc:WatchAction":
+		return "WatchAction"
+	}
 	if strings.HasPrefix(value, "https://www.w3.org/ns/activitystreams#") {
 		return strings.TrimPrefix(value, "https://www.w3.org/ns/activitystreams#")
 	}
@@ -8081,7 +8183,7 @@ func activityCompactType(value string) string {
 
 func activityKnownType(value string) bool {
 	switch value {
-	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "Collection", "CollectionPage", "Create", "Delete", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Question", "QuoteAuthorization", "QuoteRequest", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video":
+	case "Accept", "Add", "Announce", "Application", "Article", "Audio", "Block", "CacheFile", "Collection", "CollectionPage", "Create", "Delete", "Dislike", "Download", "Event", "Flag", "Follow", "Group", "Hashtag", "Image", "Like", "Move", "Note", "OrderedCollection", "OrderedCollectionPage", "Organization", "Page", "Person", "Playlist", "Question", "QuoteAuthorization", "QuoteRequest", "Reject", "Remove", "Service", "Tombstone", "Undo", "Update", "Video", "View", "WatchAction":
 		return true
 	default:
 		return false

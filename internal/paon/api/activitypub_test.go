@@ -888,7 +888,7 @@ func TestActivityPubJSONLDContextsOmitRemovedE2EETerms(t *testing.T) {
 	if activityKnownType("EncryptedMessage") {
 		t.Fatal("EncryptedMessage must not be accepted as a Mastodon 4.3 ActivityPub type")
 	}
-	if activityPubTootJSONLDContext()["Emoji"] != "toot:Emoji" || activityPubActivityStreamsJSONLDContext()["Emoji"] != "toot:Emoji" || activityPubActivityStreamsJSONLDContext()["Hashtag"] != "https://www.w3.org/ns/activitystreams#Hashtag" {
+	if activityPubTootJSONLDContext()["Emoji"] != "toot:Emoji" || activityPubFullJSONLDContextExtensions()["Emoji"] != "toot:Emoji" || activityPubFullJSONLDContextExtensions()["Hashtag"] != "as:Hashtag" {
 		t.Fatal("removing E2EE terms must preserve Emoji and Hashtag contexts")
 	}
 }
@@ -2195,6 +2195,9 @@ func TestFetchActivityActorURLFromWebFingerFallsBackToHostMetaLikeRails(t *testi
 	requests := []string{}
 	activityHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		requests = append(requests, r.URL.String())
+		if got := r.Header.Get("User-Agent"); got != railsHTTPRequestUserAgent {
+			t.Fatalf("WebFinger/host-meta User-Agent = %q, want %q", got, railsHTTPRequestUserAgent)
+		}
 		switch r.URL.String() {
 		case "https://remote.example/.well-known/webfinger?resource=acct%3Aalice%40remote.example":
 			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(""))}, nil
