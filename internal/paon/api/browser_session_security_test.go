@@ -198,6 +198,7 @@ func TestBrowserSecurityMiddlewareInjectsAndValidatesCSRF(t *testing.T) {
 func TestBrowserSecurityMiddlewareValidatesMultipartFormCSRF(t *testing.T) {
 	server := newBrowserSecurityTestServer()
 	e := echo.New()
+	e.Use(server.rackAttackThrottleMiddleware)
 	e.Use(server.browserSecurityMiddleware)
 	e.GET("/admin/custom_emojis/new", func(c *echo.Context) error {
 		return c.HTML(http.StatusOK, `<!doctype html><html><head></head><body><form method="post" action="/admin/custom_emojis" enctype="multipart/form-data"><input type="file" name="custom_emoji[image]"></form></body></html>`)

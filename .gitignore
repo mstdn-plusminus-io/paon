@@ -72,3 +72,5 @@ bin/paon-migrate
 
 # Private staging backup for the migration parity gate.
 /testdata/db-dump/*.dump
+
+*.tsbuildinfo
