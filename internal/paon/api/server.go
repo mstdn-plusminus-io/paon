@@ -6624,23 +6624,8 @@ func (s *Server) statusListWithStatus(c *echo.Context, query *gorm.DB, statusCod
 	if s.db == nil {
 		return c.JSON(statusCode, []any{})
 	}
-	minID := c.QueryParam("min_id")
-	if maxID := c.QueryParam("max_id"); queryParamValuePresent(c, "max_id") {
-		query = query.Where("statuses.id < ?", maxID)
-	}
-	if sinceID := c.QueryParam("since_id"); queryParamValuePresent(c, "since_id") {
-		query = query.Where("statuses.id > ?", sinceID)
-	}
-	if queryParamValuePresent(c, "min_id") {
-		query = query.Where("statuses.id > ?", minID)
-	}
-	if queryParamValuePresent(c, "min_id") {
-		query = query.Order("statuses.id ASC")
-	} else {
-		query = query.Order("statuses.id DESC")
-	}
 	limitValue := limit(c, 20, 40)
-	query = query.Limit(limitValue)
+	query = applyStatusListPagination(c, query, "statuses.id").Limit(limitValue)
 
 	var statuses []models.Status
 	if err := query.Find(&statuses).Error; err != nil {
@@ -6662,6 +6647,21 @@ func (s *Server) statusListWithStatus(c *echo.Context, query *gorm.DB, statusCod
 
 	filterContext := statusListFilterContext(c)
 	return c.JSON(statusCode, serializeStatusesWithFilterContext(s.cfg, statuses, account, s.accountFilters(account), filterContext))
+}
+
+// applyStatusListPagination applies max_id/since_id/min_id bounds and the
+// matching sort direction to idColumn.
+func applyStatusListPagination(c *echo.Context, query *gorm.DB, idColumn string) *gorm.DB {
+	if maxID := c.QueryParam("max_id"); queryParamValuePresent(c, "max_id") {
+		query = query.Where(idColumn+" < ?", maxID)
+	}
+	if sinceID := c.QueryParam("since_id"); queryParamValuePresent(c, "since_id") {
+		query = query.Where(idColumn+" > ?", sinceID)
+	}
+	if queryParamValuePresent(c, "min_id") {
+		return query.Where(idColumn+" > ?", c.QueryParam("min_id")).Order(idColumn + " ASC")
+	}
+	return query.Order(idColumn + " DESC")
 }
 
 func statusListIncludesPagination(_ *echo.Context) bool {
