@@ -572,14 +572,21 @@ func (s *Server) populateListFeed(ctx context.Context, list models.List, setting
 	if s == nil || s.db == nil || list.ID == 0 {
 		return nil
 	}
-	var statuses []models.Status
-	if err := s.listTimelineQuery(list).
-		WithContext(ctx).
-		Where("statuses.reblog_of_id IS NULL OR EXISTS (SELECT 1 FROM statuses reblogged_statuses WHERE reblogged_statuses.id = statuses.reblog_of_id AND reblogged_statuses.deleted_at IS NULL)").
-		Order("statuses.id DESC").
-		Limit(feedMaxItems / 2).
-		Find(&statuses).Error; err != nil {
+	limitValue := feedMaxItems / 2
+	memberStatuses := s.listTimelineQuery(list).Order("statuses.id DESC").Limit(limitValue)
+	statusIDs, err := mergeListMemberStatusIDs(s.db.WithContext(ctx), list, memberStatuses, "list_statuses.id DESC", limitValue)
+	if err != nil {
 		return err
+	}
+	var statuses []models.Status
+	if len(statusIDs) > 0 {
+		if err := s.statusQuery().
+			WithContext(ctx).
+			Where("statuses.id IN ?", statusIDs).
+			Order("statuses.id DESC").
+			Find(&statuses).Error; err != nil {
+			return err
+		}
 	}
 	aggregateReblogs := aggregateReblogsFromSettings(settings)
 	for _, status := range statuses {
