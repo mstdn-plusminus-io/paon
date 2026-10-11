@@ -312,8 +312,43 @@ func (s *Server) listTimeline(c *echo.Context) error {
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
-	query := s.listTimelineQuery(*list)
-	return s.statusList(c, query)
+	if s.db == nil {
+		return c.JSON(http.StatusOK, []any{})
+	}
+	statusIDs, err := s.listTimelineStatusIDs(c, *list)
+	if err != nil {
+		return err
+	}
+	return s.statusList(c, s.statusQuery().Where("statuses.id IN ?", statusIDs))
+}
+
+// listTimelineStatusIDs takes the newest matching statuses of each list member
+// through index_statuses_20190820 and merges them. A plain JOIN ordered by
+// statuses.id lets PostgreSQL walk the whole statuses primary key backwards
+// until enough list members' statuses turn up, which takes tens of seconds
+// on instances that receive a lot of federated statuses.
+func (s *Server) listTimelineStatusIDs(c *echo.Context, list models.List) ([]int64, error) {
+	limitValue := limit(c, 20, 40)
+	memberStatuses := applyStatusListPagination(c, s.listTimelineQuery(list), "statuses.id").Limit(limitValue)
+	order := "list_statuses.id DESC"
+	if queryParamValuePresent(c, "min_id") {
+		order = "list_statuses.id ASC"
+	}
+	statusIDs := []int64{}
+	err := s.listMemberStatusIDsQuery(s.db, list, memberStatuses, order, limitValue).Scan(&statusIDs).Error
+	return statusIDs, err
+}
+
+// listMemberStatusIDsQuery merges memberStatuses, evaluated for each shown
+// list member, into the first limitValue status IDs in order.
+func (s *Server) listMemberStatusIDsQuery(database *gorm.DB, list models.List, memberStatuses *gorm.DB, order string, limitValue int) *gorm.DB {
+	return database.Raw(`SELECT list_statuses.id
+		FROM list_accounts
+		CROSS JOIN LATERAL (?) list_statuses
+		WHERE list_accounts.list_id = ?
+		  AND (list_accounts.follow_id IS NOT NULL OR list_accounts.account_id = ?)
+		ORDER BY `+order+`
+		LIMIT ?`, memberStatuses, list.ID, list.AccountID, limitValue)
 }
 
 func (s *Server) accountLists(c *echo.Context) error {
@@ -341,11 +376,12 @@ func (s *Server) accountLists(c *echo.Context) error {
 	return c.JSON(http.StatusOK, serializeLists(rows))
 }
 
+// listTimelineQuery selects the visible status IDs of one list member; it is
+// correlated with the outer list_accounts row in listTimelineStatusIDs.
 func (s *Server) listTimelineQuery(list models.List) *gorm.DB {
-	query := s.statusQuery().
-		Joins("JOIN list_accounts ON list_accounts.account_id = statuses.account_id").
-		Where("list_accounts.list_id = ?", list.ID).
-		Where("(list_accounts.follow_id IS NOT NULL OR list_accounts.account_id = ?)", list.AccountID).
+	query := s.db.Table("statuses").
+		Select("statuses.id").
+		Where("statuses.account_id = list_accounts.account_id").
 		Where("statuses.deleted_at IS NULL").
 		Where("statuses.reblog_of_id IS NULL OR EXISTS (SELECT 1 FROM statuses reblogged_statuses WHERE reblogged_statuses.id = statuses.reblog_of_id AND reblogged_statuses.deleted_at IS NULL)").
 		Where("statuses.visibility IN ?", []int{0, 1, 2})
