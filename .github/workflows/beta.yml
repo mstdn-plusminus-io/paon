@@ -9,7 +9,7 @@ concurrency:
   group: build-${{ github.ref }}
 
 jobs:
-  retag:
+  build_amd64:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -17,7 +17,7 @@ jobs:
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": ":loading: 𝙩𝙖𝙜 𝙧𝙤𝙩𝙖𝙩𝙚 𝙨𝙩𝙖𝙧𝙩\n\ndocker image:\nplusminusio/paon:staging 👉 plusminusio/paon:beta\ndocker image:\nplusminusio/paon:staging-arm64 👉 plusminusio/paon:beta-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": ":loading: 𝙗𝙪𝙞𝙡𝙙 𝙨𝙩𝙖𝙧𝙩\n\ndocker image: plusminusio/paon:beta\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - uses: actions/checkout@v3
         with:
@@ -31,13 +31,44 @@ jobs:
       - uses: docker/build-push-action@v4
         with:
           push: true
-          file: latest.Dockerfile
           tags: plusminusio/paon:beta
+
+      - if: success()
+        uses: joelwmale/webhook-action@2.1.0
+        with:
+          url: https://mstdn.plusminus.io/api/v1/statuses
+          headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
+          body: '{"status": "☺️ 𝙗𝙪𝙞𝙡𝙙 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\ndocker image: plusminusio/paon:beta\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - if: failure()
+        uses: joelwmale/webhook-action@2.1.0
+        with:
+          url: https://mstdn.plusminus.io/api/v1/statuses
+          headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
+          body: '{"status": "😩 𝙗𝙪𝙞𝙡𝙙 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\ndocker image: plusminusio/paon:beta\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+  build_arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: joelwmale/webhook-action@2.1.0
+        with:
+          url: https://mstdn.plusminus.io/api/v1/statuses
+          headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
+          body: '{"status": ":loading: 𝙗𝙪𝙞𝙡𝙙 𝙨𝙩𝙖𝙧𝙩\n\ndocker image: plusminusio/paon:beta-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - uses: docker/login-action@v2
+        with:
+          username: mohemohe
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: docker/build-push-action@v4
         with:
           push: true
-          file: latest-arm64.Dockerfile
           tags: plusminusio/paon:beta-arm64
 
       - if: success()
@@ -45,11 +76,11 @@ jobs:
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "☺️ 𝙩𝙖𝙜 𝙧𝙤𝙩𝙖𝙩𝙚 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\ndocker image:\nplusminusio/paon:staging 👉 plusminusio/paon:beta\ndocker image:\nplusminusio/paon:staging-arm64 👉 plusminusio/paon:beta-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "☺️ 𝙗𝙪𝙞𝙡𝙙 𝙨𝙪𝙘𝙘𝙚𝙨𝙨\n\ndocker image: plusminusio/paon:beta-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
 
       - if: failure()
         uses: joelwmale/webhook-action@2.1.0
         with:
           url: https://mstdn.plusminus.io/api/v1/statuses
           headers: '{"Authorization": "Bearer ${{ secrets.MASTODON_TOKEN }}"}'
-          body: '{"status": "😩 𝙩𝙖𝙜 𝙧𝙤𝙩𝙖𝙩𝙚 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\ndocker image:\nplusminusio/paon:staging 👉 plusminusio/paon:beta\ndocker image:\nplusminusio/paon:staging-arm64 👉 plusminusio/paon:beta-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
+          body: '{"status": "😩 𝙗𝙪𝙞𝙡𝙙 𝙛𝙖𝙞𝙡𝙪𝙧𝙚\n\ndocker image: plusminusio/paon:beta-arm64\nworkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}'
