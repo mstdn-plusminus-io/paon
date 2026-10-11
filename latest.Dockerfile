@@ -1,1 +1,0 @@
-FROM plusminusio/paon:staging
