@@ -53,8 +53,11 @@ func (s *Server) createSettingsAlias(c *echo.Context) error {
 		return err
 	}
 	uri, err := s.aliasURIForAcct(acct, account)
-	if err != nil {
+	if _, ok := err.(aliasInputError); ok {
 		return s.renderSettingsAliasError(c, account.ID, user, aliasErrorText(locale, err), locale)
+	}
+	if err != nil {
+		return err
 	}
 	now := time.Now().UTC()
 	alias := models.AccountAlias{AccountID: models.AccountAliasAccountID(account.ID), Acct: acct, URI: uri, CreatedAt: now, UpdatedAt: now}
@@ -148,28 +151,27 @@ func settingsAliasAcct(c *echo.Context) (string, error) {
 }
 
 func (s *Server) aliasURIForAcct(acct string, current *models.Account) (string, error) {
-	if acct == "" || !strings.Contains(acct, "@") {
+	if acct == "" {
+		return "", errAliasNotFound
+	}
+	if !railsDomainValidatorAcctCompliant(acct) {
 		return "", errAliasInvalidAcct
 	}
 	if strings.EqualFold(acct, current.Acct()) || strings.EqualFold(acct, current.Username+"@"+s.cfg.LocalDomain) {
 		return "", errAliasMoveToSelf
 	}
-	if account, err := s.findAccountByAcct(acct); err == nil {
-		uri := activityPubActorURL(s, *account)
-		if aliasURIIsCurrentAccount(s, current, account, uri) {
-			return "", errAliasMoveToSelf
-		}
-		return uri, nil
+	account, err := s.resolveSettingsAccount(acct, false)
+	if err != nil {
+		return "", err
 	}
-	remoteAcct, ok := s.importRemoteAcct(acct)
-	if !ok {
-		return "", errAliasInvalidAcct
-	}
-	account, err := s.fetchAndStoreActivityActorForAcct(remoteAcct)
-	if err != nil || !accountMatchesImportAcct(account, remoteAcct) {
+	if account == nil {
 		return "", errAliasNotFound
 	}
-	uri := activityPubActorURL(s, *account)
+	// AccountAlias#set_uri stores ActivityPub::TagManager#uri_for(target_account).
+	uri := activityPubAccountTagManagerURI(s, *account)
+	if uri == "" {
+		return "", errAliasNotFound
+	}
 	if aliasURIIsCurrentAccount(s, current, account, uri) {
 		return "", errAliasMoveToSelf
 	}
@@ -183,7 +185,7 @@ func aliasURIIsCurrentAccount(s *Server, current *models.Account, target *models
 	if target != nil && current.ID != 0 && target.ID == current.ID {
 		return true
 	}
-	return strings.EqualFold(uri, activityPubActorURL(s, *current))
+	return uri == activityPubAccountTagManagerURI(s, *current)
 }
 
 func updateAccountAlsoKnownAs(tx *gorm.DB, accountID int64, uri string, add bool) error {
@@ -272,11 +274,11 @@ const (
 func aliasErrorText(locale string, err error) string {
 	switch err {
 	case errAliasInvalidAcct:
-		return settingsT(locale, "aliases.errors.invalid_acct", err.Error())
+		return settingsT(locale, "errors.messages.invalid", "is invalid")
 	case errAliasMoveToSelf:
-		return settingsT(locale, "aliases.errors.move_to_self", err.Error())
+		return settingsT(locale, "migrations.errors.move_to_self", err.Error())
 	case errAliasNotFound:
-		return settingsT(locale, "aliases.errors.not_found", err.Error())
+		return settingsT(locale, "migrations.errors.not_found", err.Error())
 	case errAliasAlreadyExists:
 		return settingsT(locale, "aliases.errors.already_exists", err.Error())
 	default:

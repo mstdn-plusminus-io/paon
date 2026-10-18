@@ -1267,6 +1267,16 @@ func fetchRemoteActorServiceWebFingerURLDepth(username string, domain string, de
 	return resolution.ActorURL, err
 }
 
+// fetchRemoteActorServiceWebFingerURLAndAcct also returns the confirmed acct, the
+// username/domain FetchRemoteActorService#check_webfinger! hands to ProcessAccountService.
+func fetchRemoteActorServiceWebFingerURLAndAcct(username string, domain string) (string, string, error) {
+	resolution, err := fetchRemoteActorServiceWebFingerResolutionDepth(username, domain, 0)
+	if err != nil {
+		return "", "", err
+	}
+	return resolution.ActorURL, resolution.Username + "@" + resolution.Domain, nil
+}
+
 func fetchRemoteActorServiceWebFingerResolutionDepth(username string, domain string, depth int) (remoteActorWebfingerResolution, error) {
 	if depth > 1 {
 		return remoteActorWebfingerResolution{}, fmt.Errorf("too many webfinger redirects")

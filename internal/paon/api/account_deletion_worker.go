@@ -324,6 +324,24 @@ func (s *Server) deleteRemoteGoneAccountNow(ctx context.Context, account *models
 	return s.deleteRemoteAccountNow(ctx, account, now)
 }
 
+// queueRemoteGoneAccountDeletion mirrors ResolveAccountService#queue_deletion!:
+// the account is suspended (origin: remote) now and purged by
+// AccountDeletionWorker, or inline when the task cannot be enqueued.
+func (s *Server) queueRemoteGoneAccountDeletion(ctx context.Context, account *models.Account, now time.Time) error {
+	if s == nil || s.db == nil || account == nil || account.ID == 0 || account.Local() {
+		return nil
+	}
+	if err := s.suspendRemoteActivityPubActor(ctx, account, now); err != nil {
+		return err
+	}
+	enqueueCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if s.enqueueAccountDeletionTaskContext(enqueueCtx, account.ID) == nil {
+		return nil
+	}
+	return s.purgeAccountDeletionRequest(ctx, account.ID, now)
+}
+
 func (s *Server) deleteRemoteAccountNow(ctx context.Context, account *models.Account, now time.Time) error {
 	if s == nil || s.db == nil || account == nil || account.ID == 0 || account.Local() {
 		return nil
