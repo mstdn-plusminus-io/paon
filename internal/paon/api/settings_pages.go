@@ -80,6 +80,7 @@ func (s *Server) settingsRenderArgs(path string, locale string, theme string, us
 }
 
 func (s *Server) settingsHTMLWithOptions(path string, user models.User, account models.Account, options settingsHTMLOptions) (string, bool, error) {
+	path = settingsPathWithoutFormat(path, "")
 	settings := decodeUserSettings(user.Settings.String)
 	locale := i18n.Resolve(firstNonEmpty(userSettingString(user, "locale", ""), nullStringValue(user.Locale, "")), "", s.cfg.Locale())
 	theme := settingsWebTheme(settings)
@@ -97,7 +98,7 @@ func (s *Server) settingsHTMLWithOptions(path string, user models.User, account 
 	case "/settings/preferences/other":
 		return settingsPreferencesOtherHTMLWithMessages(user, account, settings, options.Notice, options.ErrorText, renderContext...), true, nil
 	case "/settings/privacy":
-		return settingsPrivacyHTMLWithMessages(account, settings, options.Notice, options.ErrorText, renderContext...), true, nil
+		return settingsPrivacyHTMLWithMessages(account, settingsPrivacyRenderSettings(settings, s.settingBoolValue("noindex", false)), options.Notice, options.ErrorText, renderContext...), true, nil
 	case "/settings/export":
 		backups, err := s.settingsBackups(user.ID)
 		if err != nil {
@@ -110,6 +111,11 @@ func (s *Server) settingsHTMLWithOptions(path string, user models.User, account 
 		canCreateBackup, err := s.backupCreateAllowed(nil, user.ID, time.Now().UTC())
 		return settingsExportHTML(totals, backups, canCreateBackup, renderContext...), true, err
 	case "/settings/two_factor_authentication_methods":
+		if !user.OTPRequiredForLogin {
+			// Rails redirects users without OTP to otp_authentication; never render the
+			// methods index for them (settingsPage handles the redirect for the bare path).
+			return "", false, nil
+		}
 		credentials, err := s.settingsWebauthnCredentials(user.ID)
 		return settingsTwoFactorMethodsHTML(user, credentials, renderContext...), true, err
 	default:
@@ -643,7 +649,7 @@ func settingsPreferencesAppearanceHTMLWithMessages(user models.User, settings ma
 	theme := settingsThemeArg(locale...)
 	applicationName := settingsApplicationNameArg(locale)
 	body := settingsInlineFlashHTML(notice, errorText) + `<form class="simple_form edit_user" novalidate="novalidate" method="post" action="/settings/preferences/appearance" id="edit_user"><input type="hidden" name="_method" value="put">`
-	body += `<div class="fields-row">` + settingsFieldRowColumn(settingsLocaleSelectField(user.Locale.String, loc)) + settingsFieldRowColumn(settingsTimeZoneSelectField(user.TimeZone.String, loc)) + `</div>`
+	body += `<div class="fields-row">` + settingsFieldRowColumn(settingsLocaleSelectField(settingsAppearanceSelectedLocale(user, loc), loc)) + settingsFieldRowColumn(settingsTimeZoneSelectField(user.TimeZone.String, loc)) + `</div>`
 	themeField := settingsPreferenceSelectField(settingsT(loc, "simple_form.labels.defaults.setting_theme", "Theme"), "theme", stringSetting(settings, "theme", "system"), []string{"system", "default", "contrast", "mastodon-light", "single-column-chat-dark"}, true, loc)
 	body += strings.ReplaceAll(themeField, "Mastodon", applicationName)
 	body += settingsPreferenceSelectFieldWithHint(settingsT(loc, "simple_form.labels.defaults.setting_emoji_style", "Emoji style"), settingsT(loc, "simple_form.hints.defaults.setting_emoji_style", `How to display emojis. "Auto" will try using native emoji, but falls back to Twemoji for legacy browsers.`), "web.emoji_style", stringSetting(settings, "web.emoji_style", "auto"), []string{"auto", "native", "twemoji"}, false, loc)
@@ -856,7 +862,7 @@ func settingsPrivacyHTMLWithMessages(account models.Account, settings map[string
 	loc := settingsLocaleArg(locale...)
 	theme := settingsThemeArg(locale...)
 	applicationName := settingsApplicationNameArg(locale)
-	discoverable := !account.Discoverable.Valid || account.Discoverable.Bool
+	discoverable := account.Discoverable.Valid && account.Discoverable.Bool
 	showCollections := !account.HideCollections.Valid || !account.HideCollections.Bool
 	body := settingsInlineFlashHTML(notice, errorText) + `<form class="simple_form edit_account" novalidate="novalidate" method="post" action="/settings/privacy" id="edit_account_` + strconv.FormatInt(account.ID, 10) + `"><input type="hidden" name="_method" value="put">`
 	body += `<p class="lead">` + settingsT(loc, "privacy.hint_html", "<strong>Customize how you want your profile and your posts to be found.</strong> Review these settings to make sure they fit your use case.") + `</p>`
@@ -1060,9 +1066,9 @@ func (s *Server) settingsWebauthnCredentials(userID int64) ([]models.WebauthnCre
 func settingsTwoFactorMethodsHTML(user models.User, credentials []models.WebauthnCredential, locale ...string) string {
 	loc := settingsLocaleArg(locale...)
 	theme := settingsThemeArg(locale...)
-	webauthnAction := `<a class="table-action-link" data-method="get" href="/settings/security_keys/new"><i class="fa fa-key fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.add", "Add")) + `</a>`
+	webauthnAction := `<a class="table-action-link" href="/settings/security_keys/new"><i class="fa fa-key fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.add", "Add")) + `</a>`
 	if len(credentials) > 0 {
-		webauthnAction = `<a class="table-action-link" data-method="get" href="/settings/security_keys"><i class="fa fa-pencil fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.edit", "Edit")) + `</a>`
+		webauthnAction = `<a class="table-action-link" href="/settings/security_keys"><i class="fa fa-pencil fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.edit", "Edit")) + `</a>`
 	}
 	body := `<p class="hint"><span class="positive-hint"><i class="fa fa-check fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.enabled", "Two-factor authentication is enabled")) + `</span></p><div class="table-wrapper"><table class="table"><thead><tr><th>` + html.EscapeString(settingsT(loc, "two_factor_authentication.methods", "Methods")) + `</th><th></th></tr></thead><tbody><tr><td>` + html.EscapeString(settingsT(loc, "two_factor_authentication.otp", "Authenticator app")) + `</td><td><a class="table-action-link" data-method="post" href="/settings/otp_authentication"><i class="fa fa-pencil fa-fw"></i> ` + html.EscapeString(settingsT(loc, "two_factor_authentication.edit", "Edit")) + `</a></td></tr><tr><td>` + html.EscapeString(settingsT(loc, "two_factor_authentication.webauthn", "Security key")) + `</td><td>` + webauthnAction + `</td></tr></tbody></table></div><hr class="spacer"><h3>` + html.EscapeString(settingsT(loc, "two_factor_authentication.recovery_codes", "Recovery codes")) + `</h3><p class="muted-hint">` + html.EscapeString(settingsT(loc, "two_factor_authentication.lost_recovery_codes", "Generate new recovery codes if you have lost yours.")) + `</p><hr class="spacer"><div class="simple_form"><a class="block-button" data-method="post" href="/settings/two_factor_authentication/recovery_codes">` + html.EscapeString(settingsT(loc, "two_factor_authentication.generate_recovery_codes", "Generate recovery codes")) + `</a></div>`
 	title := settingsT(loc, "settings.two_factor_authentication", "Two-factor authentication")
@@ -1156,6 +1162,19 @@ func settingsAppearanceSectionHeading(label string) string {
 
 func settingsFieldRowColumn(field string) string {
 	return strings.Replace(field, `class="fields-group"`, `class="fields-group fields-row__column fields-row__column-6"`, 1)
+}
+
+// settingsAppearanceSelectedLocale mirrors Rails `selected: I18n.locale`: the
+// select always marks the effective locale, so a NULL or unavailable
+// users.locale does not leave the browser submitting the first option.
+func settingsAppearanceSelectedLocale(user models.User, effective string) string {
+	if railsLocaleAvailable(user.Locale.String) {
+		return user.Locale.String
+	}
+	if locale := i18n.RailsAvailableLocale(effective); locale != "" {
+		return locale
+	}
+	return "en"
 }
 
 func settingsLocaleSelectField(current string, locale string) string {
