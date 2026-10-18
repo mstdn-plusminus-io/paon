@@ -118,7 +118,7 @@ func TestWebFilterFormHTMLRendersRailsSimpleFormStructure(t *testing.T) {
 		`value="spoiler" name="custom_filter[keywords_attributes][0][keyword]"`,
 		`value="1" name="custom_filter[keywords_attributes][0][whole_word]" id="custom_filter_keywords_attributes_0_whole_word" checked`,
 		`value="false" type="hidden" name="custom_filter[keywords_attributes][0][_destroy]"`,
-		`class="table-action-link remove_fields dynamic"`,
+		`class="table-action-link remove_fields existing"`,
 		`class="table-action-link add_fields"`,
 		`data-association-insertion-template=`,
 		`class="btn"`,
