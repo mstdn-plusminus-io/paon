@@ -7,12 +7,15 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"golang.org/x/net/idna"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -69,8 +72,11 @@ func (s *Server) createSettingsMigration(c *echo.Context) error {
 		return s.renderSettingsMigrationError(c, *user, *account, settingsT(locale, "deletes.challenge_not_passed", "Challenge did not pass"), locale)
 	}
 	target, err := s.migrationTargetAccount(params.Acct, account)
-	if err != nil {
+	if _, ok := err.(migrationInputError); ok {
 		return s.renderSettingsMigrationError(c, *user, *account, migrationErrorText(locale, err), locale)
+	}
+	if err != nil {
+		return err
 	}
 	sourceURI := activityPubActorURL(s, *account)
 	if !stringArrayContains(target.AlsoKnownAs, sourceURI) {
@@ -152,8 +158,11 @@ func (s *Server) createSettingsMigrationRedirect(c *echo.Context) error {
 		return s.renderSettingsMigrationRedirectError(c, *user, settingsT(locale, "deletes.challenge_not_passed", "Challenge did not pass"), locale)
 	}
 	target, err := s.migrationTargetAccount(params.Acct, account)
-	if err != nil {
+	if _, ok := err.(migrationInputError); ok {
 		return s.renderSettingsMigrationRedirectError(c, *user, migrationErrorText(locale, err), locale)
+	}
+	if err != nil {
+		return err
 	}
 	if err := s.setMovedToAccount(account.ID, sql.NullInt64{Int64: target.ID, Valid: true}); err != nil {
 		return err
@@ -264,28 +273,175 @@ func (s *Server) accountMigrations(accountID int64) ([]models.AccountMigration, 
 }
 
 func (s *Server) migrationTargetAccount(acct string, current *models.Account) (*models.Account, error) {
-	if acct == "" || !strings.Contains(acct, "@") {
+	if acct == "" {
+		return nil, errMigrationNotFound
+	}
+	if !railsDomainValidatorAcctCompliant(acct) {
 		return nil, errMigrationInvalidAcct
 	}
 	if strings.EqualFold(acct, current.Acct()) || strings.EqualFold(acct, current.Username+"@"+s.cfg.LocalDomain) {
 		return nil, errMigrationMoveToSelf
 	}
-	account, err := s.findAccountByAcct(acct)
+	// AccountMigration and Form::Redirect resolve with skip_cache: true so the
+	// target's alsoKnownAs is always checked against fresh origin data.
+	account, err := s.resolveSettingsAccount(acct, true)
 	if err != nil {
-		remoteAcct, ok := s.importRemoteAcct(acct)
-		if !ok {
-			return nil, errMigrationNotFound
-		}
-		account, err = s.fetchAndStoreActivityActorForAcct(remoteAcct)
-		if err != nil || !accountMatchesImportAcct(account, remoteAcct) {
-			return nil, errMigrationNotFound
-		}
+		return nil, err
+	}
+	if account == nil {
+		return nil, errMigrationNotFound
 	}
 	if current.MovedToAccountID.Valid && current.MovedToAccountID.Int64 == account.ID {
 		return nil, errMigrationAlreadyMoved
 	}
+	if account.ID == current.ID {
+		return nil, errMigrationMoveToSelf
+	}
 	return account, nil
 }
+
+// resolveSettingsAccount mirrors ResolveAccountService#call as used by AccountAlias
+// (skipCache false) and AccountMigration / Form::Redirect (skipCache true). A nil
+// account means Rails would have returned nil (not found, disallowed or gone).
+func (s *Server) resolveSettingsAccount(acct string, skipCache bool) (*models.Account, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	// TagManager#local_domain? (and WEB_DOMAIN, which Rails reaches through a
+	// WebFinger redirect to this server) resolve to the local account.
+	acct = s.resolveInteractionAccountLookupAcct(acct)
+	username, domain, remote := strings.Cut(acct, "@")
+	if username == "" {
+		return nil, nil
+	}
+	if remote {
+		if disallowed, err := s.domainNotAllowed(domain); err != nil || disallowed {
+			return nil, err
+		}
+	}
+	now := time.Now().UTC()
+	account, err := s.findSettingsResolveAccount(acct)
+	if err != nil {
+		return nil, err
+	}
+	if account != nil && (account.Local() || !skipCache && !remoteActivityActorPossiblyStale(*account, now)) {
+		return account, nil
+	}
+	if !remote {
+		return nil, nil
+	}
+	remoteAcct, ok := s.importRemoteAcct(acct)
+	if !ok {
+		return nil, nil
+	}
+	actorURL, resolvedAcct, err := fetchActivityActorURLAndAcctFromWebFinger(remoteAcct)
+	if err != nil {
+		if activityFetchGone(err) && account != nil && !account.Local() {
+			_ = s.queueRemoteGoneAccountDeletion(context.Background(), account, now)
+		}
+		return nil, nil
+	}
+	resolvedAcct = s.resolveInteractionAccountLookupAcct(resolvedAcct)
+	_, resolvedDomain, resolvedRemote := strings.Cut(resolvedAcct, "@")
+	if resolvedRemote {
+		if disallowed, err := s.domainNotAllowed(resolvedDomain); err != nil || disallowed {
+			return nil, err
+		}
+	}
+	if account == nil {
+		if account, err = s.findSettingsResolveAccount(resolvedAcct); err != nil {
+			return nil, err
+		}
+	}
+	if account != nil && (account.Local() || !skipCache && !remoteActivityActorPossiblyStale(*account, now)) {
+		return account, nil
+	}
+	if !resolvedRemote {
+		return nil, nil
+	}
+	// FetchRemoteActorService#call never fetches a local URI. Rails would return
+	// that local account, but it is not the WebFinger-confirmed remote acct (see
+	// accountMatchesWebFingerAcct), so it is rejected without a request to this
+	// instance.
+	if s.localActivityURI(actorURL) || s.remoteActivityActorURIIsLocal(actorURL) {
+		return nil, nil
+	}
+	// FetchRemoteActorService#call returns early for disallowed actor hosts.
+	if disallowed, err := s.remoteActivityDomainNotAllowed(actorURL); err != nil || disallowed {
+		return nil, err
+	}
+	fetched, err := s.fetchAndStoreActivityActorForWebFingerDB(s.db, actorURL, resolvedAcct)
+	if err != nil || fetched == nil || !accountMatchesWebFingerAcct(fetched, resolvedAcct) {
+		return nil, nil
+	}
+	return fetched, nil
+}
+
+func (s *Server) findSettingsResolveAccount(acct string) (*models.Account, error) {
+	account, err := s.findAccountByAcct(acct)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
+// accountMatchesWebFingerAcct accepts the fetched actor for the WebFinger-confirmed
+// acct. Paon stores remote accounts under the actor host, so split-domain servers
+// (LOCAL_DOMAIN != WEB_DOMAIN, GoToSocial account-domain) are accepted only when the
+// actor host's WebFinger confirms the same acct and loops back to the actor, like
+// FetchRemoteActorService#check_webfinger!.
+func accountMatchesWebFingerAcct(account *models.Account, resolvedAcct string) bool {
+	if accountMatchesImportAcct(account, resolvedAcct) {
+		return true
+	}
+	if account == nil || account.Local() || account.URI == "" {
+		return false
+	}
+	actorURL, confirmedAcct, err := fetchRemoteActorServiceWebFingerURLAndAcct(account.Username, account.Domain.String)
+	return err == nil && actorURL == account.URI && strings.EqualFold(confirmedAcct, resolvedAcct)
+}
+
+// railsDomainValidatorAcctCompliant mirrors DomainValidator with acct: true:
+// `_, domain = acct.split('@')` skips a blank domain, otherwise the normalized
+// host must be shorter than 256 characters with 1..63 character [a-z0-9-] labels.
+func railsDomainValidatorAcctCompliant(acct string) bool {
+	parts := strings.Split(acct, "@")
+	for len(parts) > 0 && parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+		return true
+	}
+	host := strings.ToLower(parts[1])
+	for _, r := range host {
+		if r > unicode.MaxASCII {
+			ascii, err := idna.Lookup.ToASCII(host)
+			if err != nil {
+				return false
+			}
+			host = ascii
+			break
+		}
+	}
+	if len(host) >= 256 {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	for len(labels) > 0 && labels[len(labels)-1] == "" {
+		labels = labels[:len(labels)-1]
+	}
+	for _, label := range labels {
+		if len(label) < 1 || len(label) > 63 || !railsDomainValidatorLabelPattern.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
+var railsDomainValidatorLabelPattern = regexp.MustCompile(`^[a-z0-9\-]+$`)
 
 func (s *Server) createAccountMigration(account *models.Account, target *models.Account, acct string) (*models.AccountMigration, error) {
 	now := time.Now().UTC()
@@ -1036,7 +1192,7 @@ const (
 func migrationErrorText(locale string, err error) string {
 	switch err {
 	case errMigrationInvalidAcct:
-		return settingsT(locale, "migrations.errors.invalid_acct", err.Error())
+		return settingsT(locale, "errors.messages.invalid", "is invalid")
 	case errMigrationNotFound:
 		return settingsT(locale, "migrations.errors.not_found", err.Error())
 	case errMigrationAlreadyMoved:
