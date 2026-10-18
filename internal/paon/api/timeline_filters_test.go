@@ -203,7 +203,9 @@ func TestHomeTimelineAppliesRailsFeedManagerFilters(t *testing.T) {
 		want string
 	}{
 		{"homeTimeline", `statusIDs, err := s.homeTimelineStatusIDs(c, account)`},
-		{"homeTimelineStatusIDs", `homeTimelineConditions(s.db.Table("statuses").Select("statuses.id"), account)`},
+		{"homeTimelineStatusIDs", `viewer, err := s.loadHomeTimelineViewer(account)`},
+		{"homeTimelineSourceStatuses", `Where("account_id = ? AND deleted_at IS NULL", source.accountID)`},
+		{"filterHomeTimelineStatuses", `Where("status_id IN ? AND silent = false AND account_id IN ?", statusIDs, hiddenIDs)`},
 		{"homeTimelineQuery", `homeTimelineConditions(s.statusQuery(), account)`},
 		{"homeTimelineConditions", `statuses.account_id = ? OR (follows.id IS NOT NULL AND statuses.visibility IN ?)`},
 		{"applyHomeTimelineFilters", `array_length(follows.languages, 1) IS NULL`},
