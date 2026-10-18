@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -4381,31 +4382,349 @@ func (s *Server) homeTimeline(c *echo.Context) error {
 	return s.statusListWithStatus(c, query, statusCode)
 }
 
-// homeTimelineStatusIDs takes the newest matching statuses of the account and
-// of each followed account through index_statuses_20190820 and merges them. A
-// LEFT JOIN with follows ordered by statuses.id lets PostgreSQL walk the whole
-// statuses primary key backwards until enough home statuses turn up, which
-// never stops early for accounts that follow nobody and have not posted.
+// homeTimelineMaxRounds bounds how many merge rounds one home timeline page may
+// take when the home filters keep dropping candidates.
+const homeTimelineMaxRounds = 50
+
+type homeTimelineFollow struct {
+	TargetAccountID int64
+	ShowReblogs     bool
+	Languages       models.StringArray
+}
+
+type homeTimelineStatus struct {
+	ID                 int64
+	AccountID          int64
+	Reply              bool
+	InReplyToID        sql.NullInt64
+	InReplyToAccountID sql.NullInt64
+	Language           sql.NullString
+	ReblogOfID         sql.NullInt64
+}
+
+type homeTimelineSource struct {
+	accountID int64
+	follow    *homeTimelineFollow
+	buffer    []homeTimelineStatus
+	last      int64
+	more      bool
+}
+
+type homeTimelineViewer struct {
+	account      *models.Account
+	follows      map[int64]*homeTimelineFollow
+	exclusive    map[int64]bool
+	blocked      map[int64]bool
+	muted        map[int64]bool
+	blockedBy    map[int64]bool
+	domainBlocks map[string]bool
+}
+
+// homeTimelineStatusIDs builds the home timeline from simple indexed queries
+// instead of one query carrying every home filter. Viewer relations are read
+// by their account_id indexes, each source account's statuses are read by
+// index_statuses_20190820, and the per-status filters run in Go on the merged
+// candidates. Joining statuses with follows and the filters lets PostgreSQL
+// walk the statuses primary key or evaluate the filter subqueries for every
+// status of every followed account.
 func (s *Server) homeTimelineStatusIDs(c *echo.Context, account *models.Account) ([]int64, error) {
 	limitValue := limit(c, 20, 40)
-	accountStatuses := homeTimelineConditions(s.db.Table("statuses").Select("statuses.id"), account).
-		Where("statuses.account_id = home_accounts.account_id")
-	accountStatuses = applyStatusListPagination(c, accountStatuses, "statuses.id").Limit(limitValue)
-	order := "home_statuses.id DESC"
-	if queryParamValuePresent(c, "min_id") {
-		order = "home_statuses.id ASC"
+	ascending := queryParamValuePresent(c, "min_id")
+	before := func(a, b int64) bool { return a > b }
+	if ascending {
+		before = func(a, b int64) bool { return a < b }
 	}
+	viewer, err := s.loadHomeTimelineViewer(account)
+	if err != nil {
+		return nil, err
+	}
+	sources := viewer.sources()
+
 	statusIDs := []int64{}
-	err := s.db.Raw(`SELECT home_statuses.id
-		FROM (
-			SELECT CAST(? AS bigint) AS account_id
-			UNION
-			SELECT follows.target_account_id FROM follows WHERE follows.account_id = ?
-		) home_accounts
-		CROSS JOIN LATERAL (?) home_statuses
-		ORDER BY `+order+`
-		LIMIT ?`, account.ID, account.ID, accountStatuses, limitValue).Scan(&statusIDs).Error
-	return statusIDs, err
+	for round := 0; round < homeTimelineMaxRounds && len(statusIDs) < limitValue; round++ {
+		for _, source := range sources {
+			if len(source.buffer) > 0 || (!source.more && round > 0) {
+				continue
+			}
+			rows, err := s.homeTimelineSourceStatuses(c, source, account.ID, round > 0, limitValue)
+			if err != nil {
+				return nil, err
+			}
+			source.buffer = rows
+			source.more = len(rows) == limitValue
+			if len(rows) > 0 {
+				source.last = rows[len(rows)-1].ID
+			}
+		}
+		// Every status at or before the watermark has been read from all
+		// sources, so those candidates are merged in their final order.
+		watermark, bounded := int64(0), false
+		for _, source := range sources {
+			if source.more && (!bounded || before(source.last, watermark)) {
+				watermark, bounded = source.last, true
+			}
+		}
+		candidates := []homeTimelineStatus{}
+		for _, source := range sources {
+			kept := source.buffer[:0]
+			for _, row := range source.buffer {
+				if bounded && before(watermark, row.ID) {
+					kept = append(kept, row)
+				} else {
+					candidates = append(candidates, row)
+				}
+			}
+			source.buffer = kept
+		}
+		sort.Slice(candidates, func(i, j int) bool { return before(candidates[i].ID, candidates[j].ID) })
+		for len(candidates) > 0 && len(statusIDs) < limitValue {
+			chunk := candidates[:min(len(candidates), limitValue)]
+			candidates = candidates[len(chunk):]
+			kept, err := s.filterHomeTimelineStatuses(viewer, chunk)
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range kept {
+				if len(statusIDs) < limitValue {
+					statusIDs = append(statusIDs, row.ID)
+				}
+			}
+		}
+		if !bounded {
+			break
+		}
+	}
+	return statusIDs, nil
+}
+
+// loadHomeTimelineViewer reads the viewer's follows, blocks, mutes, exclusive
+// list members and domain blocks, each through its account_id index.
+func (s *Server) loadHomeTimelineViewer(account *models.Account) (*homeTimelineViewer, error) {
+	viewer := &homeTimelineViewer{
+		account:      account,
+		follows:      map[int64]*homeTimelineFollow{},
+		exclusive:    map[int64]bool{},
+		blocked:      map[int64]bool{},
+		muted:        map[int64]bool{},
+		blockedBy:    map[int64]bool{},
+		domainBlocks: map[string]bool{},
+	}
+	follows := []homeTimelineFollow{}
+	if err := s.db.Table("follows").
+		Select("target_account_id", "show_reblogs", "languages").
+		Where("account_id = ?", account.ID).
+		Scan(&follows).Error; err != nil {
+		return nil, err
+	}
+	for i := range follows {
+		viewer.follows[follows[i].TargetAccountID] = &follows[i]
+	}
+	for _, relation := range []struct {
+		table  string
+		column string
+		where  string
+		into   map[int64]bool
+	}{
+		{"blocks", "target_account_id", "account_id = ?", viewer.blocked},
+		{"mutes", "target_account_id", "account_id = ?", viewer.muted},
+		{"blocks", "account_id", "target_account_id = ?", viewer.blockedBy},
+	} {
+		ids := []int64{}
+		if err := s.db.Table(relation.table).Where(relation.where, account.ID).Pluck(relation.column, &ids).Error; err != nil {
+			return nil, err
+		}
+		for _, id := range ids {
+			relation.into[id] = true
+		}
+	}
+	listIDs := []int64{}
+	if err := s.db.Table("lists").Where("account_id = ? AND exclusive = true", account.ID).Pluck("id", &listIDs).Error; err != nil {
+		return nil, err
+	}
+	if len(listIDs) > 0 {
+		memberIDs := []int64{}
+		if err := s.db.Table("list_accounts").Where("list_id IN ?", listIDs).Pluck("account_id", &memberIDs).Error; err != nil {
+			return nil, err
+		}
+		for _, id := range memberIDs {
+			viewer.exclusive[id] = true
+		}
+	}
+	domains := []string{}
+	if err := s.db.Table("account_domain_blocks").Where("account_id = ? AND domain IS NOT NULL", account.ID).Pluck("domain", &domains).Error; err != nil {
+		return nil, err
+	}
+	for _, domain := range domains {
+		viewer.domainBlocks[strings.ToLower(domain)] = true
+	}
+	return viewer, nil
+}
+
+// sources lists the viewer and every followed account whose statuses can
+// appear on the home timeline at all.
+func (v *homeTimelineViewer) sources() []*homeTimelineSource {
+	sources := []*homeTimelineSource{}
+	add := func(accountID int64, follow *homeTimelineFollow) {
+		if v.blocked[accountID] || v.muted[accountID] || v.blockedBy[accountID] || (accountID != v.account.ID && v.exclusive[accountID]) {
+			return
+		}
+		sources = append(sources, &homeTimelineSource{accountID: accountID, follow: follow})
+	}
+	add(v.account.ID, nil)
+	for accountID, follow := range v.follows {
+		if accountID != v.account.ID {
+			add(accountID, follow)
+		}
+	}
+	return sources
+}
+
+// homeTimelineSourceStatuses reads the next statuses of one source account
+// through index_statuses_20190820.
+func (s *Server) homeTimelineSourceStatuses(c *echo.Context, source *homeTimelineSource, viewerID int64, continued bool, limitValue int) ([]homeTimelineStatus, error) {
+	query := s.db.Table("statuses").
+		Select("id", "account_id", "reply", "in_reply_to_id", "in_reply_to_account_id", "language", "reblog_of_id").
+		Where("account_id = ? AND deleted_at IS NULL", source.accountID)
+	if source.accountID != viewerID {
+		query = query.Where("visibility IN ?", []int{0, 1, 2})
+	}
+	query = applyStatusListPagination(c, query, "id")
+	if continued {
+		if queryParamValuePresent(c, "min_id") {
+			query = query.Where("id > ?", source.last)
+		} else {
+			query = query.Where("id < ?", source.last)
+		}
+	}
+	rows := []homeTimelineStatus{}
+	err := query.Limit(limitValue).Scan(&rows).Error
+	return rows, err
+}
+
+// filterHomeTimelineStatuses applies the Rails FeedManager home filters to
+// candidates. Mentions and reblogged statuses are read by status_id and by
+// primary key for these candidates only.
+func (s *Server) filterHomeTimelineStatuses(viewer *homeTimelineViewer, candidates []homeTimelineStatus) ([]homeTimelineStatus, error) {
+	viewerID := viewer.account.ID
+	kept := []homeTimelineStatus{}
+	for _, row := range candidates {
+		if row.AccountID == viewerID {
+			kept = append(kept, row)
+			continue
+		}
+		follow := viewer.follows[row.AccountID]
+		if follow == nil || viewer.exclusive[row.AccountID] {
+			continue
+		}
+		if row.Reply && !(row.InReplyToID.Valid && row.InReplyToAccountID.Valid) {
+			continue
+		}
+		if len(follow.Languages) > 0 && row.Language.Valid && !slices.Contains(follow.Languages, row.Language.String) {
+			continue
+		}
+		if row.Reply && row.InReplyToAccountID.Valid {
+			replyTo := row.InReplyToAccountID.Int64
+			if replyTo != viewerID && replyTo != row.AccountID && viewer.follows[replyTo] == nil {
+				continue
+			}
+		}
+		if row.ReblogOfID.Valid && !follow.ShowReblogs {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	if len(kept) == 0 {
+		return kept, nil
+	}
+
+	hidden := map[int64]bool{}
+	for id := range viewer.blocked {
+		hidden[id] = true
+	}
+	for id := range viewer.muted {
+		hidden[id] = true
+	}
+	reblogIDs := []int64{}
+	for _, row := range kept {
+		if row.ReblogOfID.Valid {
+			reblogIDs = append(reblogIDs, row.ReblogOfID.Int64)
+		}
+	}
+	reblogAccounts := map[int64]int64{}
+	if len(reblogIDs) > 0 && (len(hidden) > 0 || len(viewer.blockedBy) > 0 || len(viewer.domainBlocks) > 0) {
+		reblogs := []struct {
+			ID        int64
+			AccountID int64
+		}{}
+		if err := s.db.Table("statuses").Select("id", "account_id").Where("id IN ?", reblogIDs).Scan(&reblogs).Error; err != nil {
+			return nil, err
+		}
+		for _, reblog := range reblogs {
+			reblogAccounts[reblog.ID] = reblog.AccountID
+		}
+	}
+	mentionsHidden := map[int64]bool{}
+	if len(hidden) > 0 {
+		statusIDs := reblogIDs
+		for _, row := range kept {
+			statusIDs = append(statusIDs, row.ID)
+		}
+		hiddenIDs := make([]int64, 0, len(hidden))
+		for id := range hidden {
+			hiddenIDs = append(hiddenIDs, id)
+		}
+		mentioned := []int64{}
+		if err := s.db.Table("mentions").
+			Where("status_id IN ? AND silent = false AND account_id IN ?", statusIDs, hiddenIDs).
+			Pluck("status_id", &mentioned).Error; err != nil {
+			return nil, err
+		}
+		for _, id := range mentioned {
+			mentionsHidden[id] = true
+		}
+	}
+	reblogDomains := map[int64]string{}
+	if len(viewer.domainBlocks) > 0 && len(reblogAccounts) > 0 {
+		accountIDs := make([]int64, 0, len(reblogAccounts))
+		for _, id := range reblogAccounts {
+			accountIDs = append(accountIDs, id)
+		}
+		domains := []struct {
+			ID     int64
+			Domain sql.NullString
+		}{}
+		if err := s.db.Table("accounts").Select("id", "domain").Where("id IN ?", accountIDs).Scan(&domains).Error; err != nil {
+			return nil, err
+		}
+		for _, account := range domains {
+			if account.Domain.Valid {
+				reblogDomains[account.ID] = strings.ToLower(account.Domain.String)
+			}
+		}
+	}
+
+	filtered := kept[:0]
+	for _, row := range kept {
+		if mentionsHidden[row.ID] {
+			continue
+		}
+		if row.ReblogOfID.Valid {
+			reblogID := row.ReblogOfID.Int64
+			if mentionsHidden[reblogID] {
+				continue
+			}
+			if reblogAccount, ok := reblogAccounts[reblogID]; ok {
+				if hidden[reblogAccount] || viewer.blockedBy[reblogAccount] {
+					continue
+				}
+				if domain, ok := reblogDomains[reblogAccount]; ok && viewer.domainBlocks[domain] {
+					continue
+				}
+			}
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered, nil
 }
 
 func (s *Server) homeFeedRegenerating(ctx context.Context, accountID int64) bool {
