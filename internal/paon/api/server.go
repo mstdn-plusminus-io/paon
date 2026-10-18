@@ -15,6 +15,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -1532,11 +1533,52 @@ func railsMultipartFormMissingBoundary(contentType string) bool {
 }
 
 func formOverrideMethod(req *http.Request) string {
+	if method, ok := multipartOverrideMethod(req); ok {
+		return method
+	}
 	values, ok := cacheURLEncodedPostForm(req)
 	if !ok {
 		return ""
 	}
 	return normalizedOverrideMethod(values.Get("_method"))
+}
+
+// multipartOverrideMethodPeekLimit bounds how much of a multipart body is
+// buffered while looking for the _method field. HTML forms emit _method
+// before any file input, so the field is found long before the limit.
+const multipartOverrideMethodPeekLimit = 1 << 20
+
+// multipartOverrideMethod reads the _method field from a multipart/form-data
+// body like Rack::MethodOverride does, then restores the consumed bytes so
+// handlers still see the complete original body.
+func multipartOverrideMethod(req *http.Request) (string, bool) {
+	if req == nil || req.Body == nil {
+		return "", false
+	}
+	mediaType, params, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, echo.MIMEMultipartForm) || params["boundary"] == "" {
+		return "", false
+	}
+	original := req.Body
+	var consumed bytes.Buffer
+	reader := multipart.NewReader(io.TeeReader(io.LimitReader(original, multipartOverrideMethodPeekLimit), &consumed), params["boundary"])
+	method := ""
+	for {
+		part, err := reader.NextRawPart()
+		if err != nil {
+			break
+		}
+		if part.FormName() == "_method" && part.FileName() == "" {
+			value, _ := io.ReadAll(io.LimitReader(part, 64))
+			method = normalizedOverrideMethod(string(value))
+			break
+		}
+	}
+	req.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(consumed.Bytes()), original), original}
+	return method, true
 }
 
 func cacheURLEncodedPostForm(req *http.Request) (url.Values, bool) {
