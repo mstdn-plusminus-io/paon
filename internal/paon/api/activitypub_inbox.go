@@ -4415,7 +4415,13 @@ func (s *Server) fetchActivityPubMentionAccountByHref(tx *gorm.DB, href string) 
 	if actor.ID == "" {
 		return nil, activityPubEventNotAppliedf("Mention actor %q is missing id", actorURI)
 	}
-	return s.upsertRemoteActivityActorDB(tx, actor)
+	account, err := s.upsertRemoteActivityActorDB(tx, actor)
+	if errors.Is(err, errRemoteActivityActorIsLocal) {
+		// FetchRemoteAccountService returns nil for actors hosted on this instance,
+		// so process_mention skips the mention instead of failing the status.
+		return nil, nil
+	}
+	return account, err
 }
 
 func (s *Server) activityPubMentionRef(item activityTag) statusMentionRef {

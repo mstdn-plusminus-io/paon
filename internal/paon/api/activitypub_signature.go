@@ -51,6 +51,9 @@ var (
 	errActivitySignatureMalformed        = errors.New("malformed activitypub signature header")
 	errActivitySignatureTemporary        = errors.New("temporary activitypub signature key resolution failure")
 	errActivityPrivateNetworkAddress     = errors.New("remote host resolves to a private network address")
+	// ActivityPub::FetchRemoteActorService resolves local URIs with TagManager#uri_to_actor
+	// instead of processing them, so actors hosted on this instance are never stored as remote.
+	errRemoteActivityActorIsLocal = errors.New("remote actor is hosted on this instance")
 )
 
 type activityHTTPAllowPrivateNetworkContextKey struct{}
@@ -906,6 +909,12 @@ func (s *Server) fetchAndStoreActivityActorForAcctDB(database *gorm.DB, acct str
 	if err != nil {
 		return nil, err
 	}
+	return s.fetchAndStoreActivityActorForWebFingerDB(database, actorURL, resolvedAcct)
+}
+
+// fetchAndStoreActivityActorForWebFingerDB is ResolveAccountService#fetch_account! for an
+// already completed WebFinger lookup (actorURL is the self link of resolvedAcct).
+func (s *Server) fetchAndStoreActivityActorForWebFingerDB(database *gorm.DB, actorURL string, resolvedAcct string) (*models.Account, error) {
 	acquired, releaseResolveLock, err := s.acquireActivityPubRedisLock(context.Background(), "resolve:"+resolvedAcct, 15*time.Minute)
 	if err != nil {
 		return nil, err
@@ -923,6 +932,14 @@ func (s *Server) fetchAndStoreActivityActorForAcctDB(database *gorm.DB, acct str
 	}
 	if actor.ID == "" || !activityRemoteActorHasPublicKey(actor) {
 		return nil, fmt.Errorf("public key not found")
+	}
+	// FetchRemoteActorService#check_webfinger! runs before ProcessAccountService:
+	// unless the looked-up acct already is preferredUsername@actor host, that
+	// acct's WebFinger must loop back to the actor before it is stored.
+	if !strings.EqualFold(actor.PreferredUsername+"@"+activityPubNormalizedURIHost(actor.ID), resolvedAcct) {
+		if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
+			return nil, err
+		}
 	}
 	account, err := s.upsertRemoteActivityActorDB(database, actor)
 	if err != nil || account == nil {
@@ -2168,6 +2185,22 @@ func (s *Server) upsertRemoteActivityActorDB(database *gorm.DB, actor remoteActi
 	return s.upsertRemoteActivityActorDBForRequest(database, actor, "")
 }
 
+// remoteActivityActorHostIsLocal reports whether an actor host is this instance
+// (LOCAL_DOMAIN, WEB_DOMAIN or one of ALTERNATE_DOMAINS).
+func (s *Server) remoteActivityActorHostIsLocal(host string) bool {
+	return s.localActivityHost(host) || webfingerLocalHost(host, s.cfg.LocalDomain, s.cfg.WebDomain, s.cfg.AlternateDomains)
+}
+
+// remoteActivityActorURIIsLocal reports whether an actor URI is hosted on this
+// instance, with or without a port.
+func (s *Server) remoteActivityActorURIIsLocal(uri string) bool {
+	parsed, err := url.Parse(uri)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return s.remoteActivityActorHostIsLocal(parsed.Host) || s.remoteActivityActorHostIsLocal(normalizeDeliveryStatsHost(parsed.Hostname()))
+}
+
 func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor remoteActivityActor, requestID string) (*models.Account, error) {
 	actor = s.fetchActivityActorPublicKey(actor)
 	if !activityRemoteActorHasPublicKey(actor) {
@@ -2176,6 +2209,9 @@ func (s *Server) upsertRemoteActivityActorDBForRequest(database *gorm.DB, actor 
 	parsed, err := url.Parse(actor.ID)
 	if err != nil || parsed.Host == "" {
 		return nil, fmt.Errorf("invalid remote actor")
+	}
+	if s.remoteActivityActorURIIsLocal(actor.ID) {
+		return nil, errRemoteActivityActorIsLocal
 	}
 	acquired, releaseAccountLock, err := s.acquireActivityPubRedisLock(context.Background(), "process_account:"+actor.ID, activityPubRedisLockDefaultTTL)
 	if err != nil || !acquired {
@@ -2666,9 +2702,14 @@ func (s *Server) remoteActorMovedToAccountID(value any, requestID string) (sql.N
 	return sql.NullInt64{Int64: account.ID, Valid: true}, true
 }
 
+// activityActorForMovedToURI is ProcessAccountService#moved_account: TagManager#uri_to_resource
+// first, then FetchRemoteAccountService.call(movedTo, break_on_redirect: true).
 func (s *Server) activityActorForMovedToURI(actorURI string, requestID string) (*models.Account, error) {
 	if s == nil || s.db == nil || strings.TrimSpace(actorURI) == "" {
 		return nil, nil
+	}
+	if s.localActivityURI(actorURI) {
+		return s.localAccountFromActivityURI(actorURI)
 	}
 	actorLookupURI := actorURI
 	if before, _, ok := strings.Cut(actorLookupURI, "#"); ok {
@@ -2682,8 +2723,14 @@ func (s *Server) activityActorForMovedToURI(actorURI string, requestID string) (
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
+	if disallowed, err := s.remoteActivityDomainNotAllowed(actorLookupURI); err != nil || disallowed {
+		return nil, err
+	}
 	actor, err := s.fetchActivityActor(actorLookupURI)
 	if err != nil || actor.ID == "" || !activityRemoteActorHasPublicKey(actor) || activityPubObjectID(actor.MovedTo) != "" {
+		return nil, nil
+	}
+	if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
 		return nil, nil
 	}
 	return s.upsertRemoteActivityActorForRequest(actor, requestID)
