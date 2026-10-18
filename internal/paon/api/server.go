@@ -3392,10 +3392,11 @@ func (s *Server) settingsPage(c *echo.Context) error {
 	if err := requireHTMLOnlyOptionalFormat(c); err != nil {
 		return err
 	}
+	path := settingsPathWithoutFormat(c.Request().URL.Path, c.Param("format"))
 	var user *models.User
 	var account *models.Account
 	var err error
-	if settingsPageSkipsFunctional(c.Request().URL.Path) {
+	if settingsPageSkipsFunctional(path) {
 		user, _, err = s.currentUserIncludingDisabled(c)
 		if err != nil {
 			return c.Redirect(http.StatusFound, "/auth/sign_in?redirect_to="+url.QueryEscape(c.Request().URL.RequestURI()))
@@ -3416,7 +3417,7 @@ func (s *Server) settingsPage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	if c.Request().URL.Path == "/settings/two_factor_authentication_methods" && !user.OTPRequiredForLogin {
+	if path == "/settings/two_factor_authentication_methods" && !user.OTPRequiredForLogin {
 		params := url.Values{}
 		for _, key := range []string{"notice", "error"} {
 			if value := strings.TrimSpace(c.QueryParam(key)); value != "" {
@@ -3428,7 +3429,7 @@ func (s *Server) settingsPage(c *echo.Context) error {
 		}
 		return c.Redirect(http.StatusFound, "/settings/otp_authentication")
 	}
-	if html, ok, err := s.settingsHTMLWithOptions(c.Request().URL.Path, *user, *account, settingsHTMLOptions{
+	if html, ok, err := s.settingsHTMLWithOptions(path, *user, *account, settingsHTMLOptions{
 		Notice:                     c.QueryParam("notice"),
 		ErrorText:                  c.QueryParam("error"),
 		Permissions:                permissions,
@@ -3443,7 +3444,7 @@ func (s *Server) settingsPage(c *echo.Context) error {
 		}
 		return c.HTML(http.StatusOK, html)
 	}
-	html, err := s.renderer.SettingsHTML(c.Request().URL.Path, account, s.settingStringValue("site_title", s.cfg.Title))
+	html, err := s.renderer.SettingsHTML(path, account, s.settingStringValue("site_title", s.cfg.Title))
 	if err != nil {
 		return err
 	}
