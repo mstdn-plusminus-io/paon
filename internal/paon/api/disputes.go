@@ -66,7 +66,12 @@ func (s *Server) disputeStrikePage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	return c.HTML(http.StatusOK, disputeStrikeHTML(*strike, appeal, c.QueryParam("notice"), c.QueryParam("error"), locale, theme, navigation))
+	options := disputeStrikeViewOptions{
+		CanAppeal:          strike.TargetAccountID.Valid && strike.TargetAccountID.Int64 == account.ID && appealStrikeWithinTimeFrame(strike.CreatedAt, time.Now().UTC()),
+		CanShowReport:      s.userCan(user, rolePermissionManageReports),
+		CanDecideOnAppeals: allowAdmin,
+	}
+	return c.HTML(http.StatusOK, disputeStrikeHTMLWithOptions(*strike, appeal, c.QueryParam("notice"), c.QueryParam("error"), options, locale, theme, navigation))
 }
 
 func (s *Server) createDisputeAppeal(c *echo.Context) error {
@@ -129,7 +134,14 @@ func (s *Server) renderDisputeAppealValidationError(c *echo.Context, strike mode
 	if err != nil {
 		return err
 	}
-	return c.HTML(http.StatusOK, disputeStrikeHTML(strike, appeal, "", message, locale, theme, navigation))
+	// The strike is already scoped to the current account here, like Rails'
+	// current_account.strikes.find in Disputes::AppealsController.
+	options := disputeStrikeViewOptions{
+		CanAppeal:          appealStrikeWithinTimeFrame(strike.CreatedAt, time.Now().UTC()),
+		CanShowReport:      s.userCan(user, rolePermissionManageReports),
+		CanDecideOnAppeals: s.userCan(user, rolePermissionManageAppeals),
+	}
+	return c.HTML(http.StatusOK, disputeStrikeHTMLWithOptions(strike, appeal, "", message, options, locale, theme, navigation))
 }
 
 func (s *Server) disputeStrikeForAccount(accountID int64, id string, allowAdmin bool) (*models.AccountWarning, *models.Appeal, error) {
@@ -298,7 +310,7 @@ func disputeAppealStateHTML(appeal *models.Appeal, locale string) string {
 	return ""
 }
 
-func disputeAppealHTML(strike models.AccountWarning, appeal *models.Appeal, locale string) string {
+func disputeAppealHTML(strike models.AccountWarning, appeal *models.Appeal, canAppeal bool, locale string) string {
 	if appeal != nil && appeal.ID > 0 {
 		stateClass := "warning-hint"
 		state := settingsT(locale, "disputes.strikes.your_appeal_pending", "You have submitted an appeal")
@@ -317,7 +329,9 @@ func disputeAppealHTML(strike models.AccountWarning, appeal *models.Appeal, loca
 		}
 		return `<h3>` + html.EscapeString(settingsT(locale, "disputes.strikes.appeal", "Appeal")) + `</h3><div class="report-notes"><div class="report-notes__item"><img src="/avatars/original/missing.png" class="report-notes__item__avatar" alt=""><div class="report-notes__item__header"><span class="username"><a href="` + html.EscapeString(accountHref) + `" class="table-action-link">` + html.EscapeString(accountName) + `</a></span> <time class="relative-formatted" datetime="` + html.EscapeString(appeal.CreatedAt.UTC().Format(time.RFC3339)) + `">` + html.EscapeString(appeal.CreatedAt.UTC().Format("2006-01-02")) + `</time> · <span class="` + stateClass + `">` + html.EscapeString(state) + `</span></div><div class="report-notes__item__content">` + disputeStrikeTextBlock(appeal.Text) + `</div></div></div>`
 	}
-	if appealStrikeWithinTimeFrame(strike.CreatedAt, time.Now().UTC()) {
+	// Rails: `- elsif can?(:appeal, @strike)` (target? && appeal window open);
+	// otherwise nothing is rendered.
+	if canAppeal {
 		value := ""
 		if appeal != nil {
 			value = appeal.Text
@@ -327,7 +341,7 @@ func disputeAppealHTML(strike models.AccountWarning, appeal *models.Appeal, loca
       <div class="actions"><button class="button" type="submit">` + html.EscapeString(settingsT(locale, "disputes.strikes.appeals.submit", "Submit appeal")) + `</button></div>
     </form>`
 	}
-	return `<p class="hint">` + html.EscapeString(settingsT(locale, "strikes.errors.too_late", "Appeal period has expired.")) + `</p>`
+	return ""
 }
 
 func appealStrikeWithinTimeFrame(strikeCreatedAt time.Time, now time.Time) bool {
@@ -360,7 +374,37 @@ func localDomainFromBaseURL(base string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(base, "https://"), "http://")
 }
 
+// disputeStrikeViewOptions mirrors the viewer-dependent `can?` checks of
+// Rails' disputes/strikes/show.html.haml.
+type disputeStrikeViewOptions struct {
+	// CanAppeal is AccountWarningPolicy#appeal?: the viewer is the strike
+	// target and the strike is still within the appeal window.
+	CanAppeal bool
+	// CanShowReport is ReportPolicy#show? (manage_reports).
+	CanShowReport bool
+	// CanDecideOnAppeals is the manage_appeals part of AppealPolicy#approve?
+	// and #reject?; pending-ness is checked against the appeal itself.
+	CanDecideOnAppeals bool
+}
+
+// disputeStrikeHTML renders the strike as seen by its target account.
 func disputeStrikeHTML(strike models.AccountWarning, appeal *models.Appeal, notice string, errorText string, localeAndTheme ...string) string {
+	options := disputeStrikeViewOptions{CanAppeal: appealStrikeWithinTimeFrame(strike.CreatedAt, time.Now().UTC())}
+	return disputeStrikeHTMLWithOptions(strike, appeal, notice, errorText, options, localeAndTheme...)
+}
+
+func disputeStrikeAppealActionsHTML(appeal *models.Appeal, options disputeStrikeViewOptions, locale string) string {
+	if !options.CanDecideOnAppeals || appeal == nil || appeal.ID <= 0 || appeal.ApprovedAt.Valid || appeal.RejectedAt.Valid {
+		return ""
+	}
+	id := strconv.FormatInt(appeal.ID, 10)
+	return `<div class="content__heading__actions">` +
+		`<a class="button" rel="nofollow" data-method="post" href="/admin/disputes/appeals/` + id + `/approve">` + html.EscapeString(settingsT(locale, "disputes.strikes.approve_appeal", "Approve appeal")) + `</a>` +
+		`<a class="button button--destructive" rel="nofollow" data-method="post" href="/admin/disputes/appeals/` + id + `/reject">` + html.EscapeString(settingsT(locale, "disputes.strikes.reject_appeal", "Reject appeal")) + `</a>` +
+		`</div>`
+}
+
+func disputeStrikeHTMLWithOptions(strike models.AccountWarning, appeal *models.Appeal, notice string, errorText string, options disputeStrikeViewOptions, localeAndTheme ...string) string {
 	loc := settingsLocaleArgOrEnglish(localeAndTheme...)
 	theme := settingsThemeArg(localeAndTheme...)
 	card := `<div class="strike-card">`
@@ -379,19 +423,19 @@ func disputeStrikeHTML(strike models.AccountWarning, appeal *models.Appeal, noti
 	details := disputeStrikeDetailItemHTML(settingsT(loc, "disputes.strikes.created_at", "Dated"), disputeStrikeTimeHTML(strike.CreatedAt))
 	details += disputeStrikeDetailItemHTML(settingsT(loc, "disputes.strikes.recipient", "Addressed to"), html.EscapeString(target))
 	details += disputeStrikeDetailItemHTML(settingsT(loc, "disputes.strikes.action_taken", "Action taken"), actionContent)
-	if strike.ReportID.Valid {
+	if strike.ReportID.Valid && options.CanShowReport {
 		reportLabel := adminTVars(loc, "admin.reports.report", "Report #%{id}", map[string]string{"id": strconv.FormatInt(strike.ReportID.Int64, 10)})
 		details += disputeStrikeDetailItemHTML(settingsT(loc, "disputes.strikes.associated_report", "Associated report"), `<a class="table-action-link" href="/admin/reports/`+strconv.FormatInt(strike.ReportID.Int64, 10)+`">`+html.EscapeString(reportLabel)+`</a>`)
 	}
-	if appeal != nil {
+	if appeal != nil && appeal.ID > 0 {
 		details += disputeStrikeDetailItemHTML(settingsT(loc, "disputes.strikes.appeal_submitted_at", "Appeal submitted"), disputeStrikeTimeHTML(appeal.CreatedAt))
 	}
 	body := settingsFlashHTML(notice, errorText) + `<p><a class="table-action-link" href="/disputes/strikes">` + html.EscapeString(settingsT(loc, "settings.strikes", "Back to strikes")) + `</a></p>` +
 		disputeAppealStateHTML(appeal, loc) +
 		`<div class="report-header"><div class="report-header__card">` + card + `</div><div class="report-header__details">` + details + `</div></div><hr class="spacer">` +
-		disputeAppealHTML(strike, appeal, loc)
+		disputeAppealHTML(strike, appeal, options.CanAppeal, loc)
 	title := disputeStrikeTitle(strike, loc)
-	return settingsPageShell(title, settingsNavigationArg(localeAndTheme, loc), body, loc, theme)
+	return settingsPageShellWithHeading(title, settingsNavigationArg(localeAndTheme, loc), body, loc, theme, "", disputeStrikeAppealActionsHTML(appeal, options, loc))
 }
 
 func settingsFlashHTML(notice string, errorText string) string {
