@@ -917,6 +917,8 @@ type CustomFilterKeyword struct {
 	CreatedAt      time.Time    `gorm:"column:created_at"`
 	UpdatedAt      time.Time    `gorm:"column:updated_at"`
 	CustomFilter   CustomFilter `gorm:"foreignKey:CustomFilterID"`
+	// MarkedForDestruction mirrors Rails marked_for_destruction? for form re-renders only.
+	MarkedForDestruction bool `gorm:"-" json:"-"`
 }
 
 func (CustomFilterKeyword) TableName() string { return "custom_filter_keywords" }
