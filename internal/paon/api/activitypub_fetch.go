@@ -1194,38 +1194,50 @@ func fetchRemoteActorServiceWebFingerURL(username string, domain string) (string
 }
 
 func fetchRemoteActorServiceWebFingerURLDepth(username string, domain string, depth int) (string, error) {
+	actorURL, _, err := fetchRemoteActorServiceWebFingerURLAndAcctDepth(username, domain, depth)
+	return actorURL, err
+}
+
+// fetchRemoteActorServiceWebFingerURLAndAcct also returns the confirmed acct, the
+// username/domain FetchRemoteActorService#check_webfinger! hands to ProcessAccountService.
+func fetchRemoteActorServiceWebFingerURLAndAcct(username string, domain string) (string, string, error) {
+	return fetchRemoteActorServiceWebFingerURLAndAcctDepth(username, domain, 0)
+}
+
+func fetchRemoteActorServiceWebFingerURLAndAcctDepth(username string, domain string, depth int) (string, string, error) {
 	if depth > 1 {
-		return "", fmt.Errorf("too many webfinger redirects")
+		return "", "", fmt.Errorf("too many webfinger redirects")
 	}
 	if username == "" || domain == "" {
-		return "", fmt.Errorf("public key not found")
+		return "", "", fmt.Errorf("public key not found")
 	}
 	if !activityFetchHostAllowed(domain) {
-		return "", fmt.Errorf("remote host is not allowed")
+		return "", "", fmt.Errorf("remote host is not allowed")
 	}
 	resource := "acct:" + username + "@" + domain
 	doc, err := fetchActivityWebFingerDocument(activityWebFingerURL(domain, resource))
 	if status, ok := activityFetchStatus(err); ok && status == http.StatusNotFound {
 		fallbackURL, fallbackErr := fetchActivityWebFingerHostMetaURL(domain, resource)
 		if fallbackErr != nil {
-			return "", fallbackErr
+			return "", "", fallbackErr
 		}
 		doc, err = fetchActivityWebFingerDocument(fallbackURL)
 	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	subjectUsername, subjectDomain, ok := activityWebFingerSubjectUsernameAndDomainRaw(doc.Subject)
 	if !ok {
-		return "", fmt.Errorf("webfinger subject does not match")
+		return "", "", fmt.Errorf("webfinger subject does not match")
 	}
 	if strings.EqualFold(username, subjectUsername) && strings.EqualFold(domain, subjectDomain) {
-		return activityWebFingerSelfLinkHref(doc)
+		actorURL, err := activityWebFingerSelfLinkHref(doc)
+		return actorURL, subjectUsername + "@" + subjectDomain, err
 	}
 	if depth == 0 {
-		return fetchRemoteActorServiceWebFingerURLDepth(subjectUsername, subjectDomain, depth+1)
+		return fetchRemoteActorServiceWebFingerURLAndAcctDepth(subjectUsername, subjectDomain, depth+1)
 	}
-	return "", fmt.Errorf("webfinger subject does not match")
+	return "", "", fmt.Errorf("webfinger subject does not match")
 }
 
 func activityWebFingerSubjectUsernameAndDomainRaw(subject string) (string, string, bool) {

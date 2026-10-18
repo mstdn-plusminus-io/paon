@@ -64,23 +64,66 @@ func TestSettingsAliasesRequireWebAuthentication(t *testing.T) {
 	}
 }
 
-func TestAliasURIRequiresResolvedRemoteAccount(t *testing.T) {
-	src, err := os.ReadFile("aliases.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		`s.importRemoteAcct(acct)`,
-		`s.fetchAndStoreActivityActorForAcct(remoteAcct)`,
-		`!accountMatchesImportAcct(account, remoteAcct)`,
-		`return "", errAliasNotFound`,
+func TestAliasErrorTextUsesRailsMigrationLocaleKeys(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{errAliasNotFound, "見つかりませんでした"},
+		{errAliasMoveToSelf, "同じアカウントに引っ越すことはできません"},
 	} {
-		if !functionBodyContains(t, src, "aliasURIForAcct", want) {
-			t.Fatalf("aliasURIForAcct missing %q", want)
+		if got := aliasErrorText("ja", test.err); got != test.want {
+			t.Fatalf("aliasErrorText(ja, %v) = %q, want %q", test.err, got, test.want)
 		}
 	}
-	if functionBodyContains(t, src, "aliasURIForAcct", `"https://"`) {
-		t.Fatal("aliasURIForAcct must not synthesize remote actor URLs without WebFinger/ActivityPub resolution")
+	if got := aliasErrorText("en", errAliasNotFound); got != "could not be found" {
+		t.Fatalf("aliasErrorText(en, not_found) = %q", got)
+	}
+	if got := aliasErrorText("en", errAliasInvalidAcct); got != "is invalid" {
+		t.Fatalf("aliasErrorText(en, invalid_acct) = %q", got)
+	}
+}
+
+func TestRailsDomainValidatorAcctCompliant(t *testing.T) {
+	for _, acct := range []string{"alice@remote.example", "bob", "alice@xn--eckwd4c7c.xn--zckzah", "alice@", "alice@例え.テスト", "alice@Remote.Example"} {
+		if !railsDomainValidatorAcctCompliant(acct) {
+			t.Fatalf("%q should pass DomainValidator(acct: true)", acct)
+		}
+	}
+	for _, acct := range []string{"alice@remote example", "alice@remote.example/users", "alice@remote.example?x", "alice@<remote>", "alice@under_score.example", "alice@remote..example", "alice@" + strings.Repeat("a", 64) + ".example"} {
+		if railsDomainValidatorAcctCompliant(acct) {
+			t.Fatalf("%q should fail DomainValidator(acct: true)", acct)
+		}
+	}
+}
+
+func TestAccountMatchesWebFingerAcctFollowsCheckWebFingerForSplitDomain(t *testing.T) {
+	oldClient := activityHTTPClient
+	defer func() { activityHTTPClient = oldClient }()
+	activityHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://gts.example.com/.well-known/webfinger?resource=acct%3Aalice%40gts.example.com":
+			return textResponse(http.StatusOK, "application/jrd+json", `{"subject":"acct:alice@example.com","links":[{"rel":"self","type":"application/activity+json","href":"https://gts.example.com/users/alice"}]}`), nil
+		case "https://example.com/.well-known/webfinger?resource=acct%3Aalice%40example.com":
+			return textResponse(http.StatusOK, "application/jrd+json", `{"subject":"acct:alice@example.com","links":[{"rel":"self","type":"application/activity+json","href":"https://gts.example.com/users/alice"}]}`), nil
+		case "https://victim.example/.well-known/webfinger?resource=acct%3Abob%40victim.example":
+			return textResponse(http.StatusOK, "application/jrd+json", `{"subject":"acct:bob@victim.example","links":[{"rel":"self","type":"application/activity+json","href":"https://victim.example/users/bob"}]}`), nil
+		default:
+			t.Fatalf("unexpected request %q", r.URL.String())
+			return nil, nil
+		}
+	})}
+
+	split := &models.Account{ID: 1, Username: "alice", Domain: sql.NullString{String: "gts.example.com", Valid: true}, URI: "https://gts.example.com/users/alice"}
+	if !accountMatchesWebFingerAcct(split, "alice@example.com") {
+		t.Fatal("split-domain actor confirmed by its host WebFinger must match the canonical acct")
+	}
+	if !accountMatchesWebFingerAcct(split, "alice@gts.example.com") {
+		t.Fatal("actor host acct must keep matching")
+	}
+	victim := &models.Account{ID: 2, Username: "bob", Domain: sql.NullString{String: "victim.example", Valid: true}, URI: "https://victim.example/users/bob"}
+	if accountMatchesWebFingerAcct(victim, "alice@example.com") {
+		t.Fatal("an actor whose host WebFinger does not confirm the acct must not match")
 	}
 }
 
@@ -116,6 +159,10 @@ func TestAliasURIRejectsResolvedCurrentAccountLikeRailsValidateTarget(t *testing
 	}
 	if aliasURIIsCurrentAccount(s, current, &models.Account{ID: 8, Username: "bob", Domain: sql.NullString{String: "remote.example", Valid: true}}, "https://remote.example/users/bob") {
 		t.Fatal("different resolved account must remain valid")
+	}
+	sameUsername := &models.Account{ID: 9, Username: "alice", Domain: sql.NullString{String: "misskey.example", Valid: true}, URI: "https://misskey.example/users/9abcdef"}
+	if aliasURIIsCurrentAccount(s, current, sameUsername, activityPubAccountTagManagerURI(s, *sameUsername)) {
+		t.Fatal("remote account sharing the local username must not be treated as move_to_self")
 	}
 }
 
