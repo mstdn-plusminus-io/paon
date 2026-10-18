@@ -107,7 +107,7 @@ func (s *Server) signInForm(c *echo.Context) error {
 	body.WriteString(s.omniauthAlternativeLoginHTML(locale))
 	body.WriteString(s.authSharedFooterHTML("sessions", locale))
 	c.Response().Header().Set("Content-Security-Policy", railsContentSecurityPolicyWithoutDirective(s.cfg, "form-action"))
-	return c.HTML(http.StatusOK, authShellHTML(loginLabel, "", c.QueryParam("error"), body.String(), locale, s.settingStringValue("theme", "system")))
+	return c.HTML(http.StatusOK, authShellHTML(loginLabel, c.QueryParam("notice"), c.QueryParam("error"), body.String(), locale, s.settingStringValue("theme", "system")))
 }
 
 func (s *Server) useSeamlessExternalLogin() bool {
