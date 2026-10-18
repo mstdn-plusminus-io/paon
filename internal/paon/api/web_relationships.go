@@ -27,9 +27,14 @@ func (s *Server) relationshipsPage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	accounts, err := s.relationshipPageAccounts(account.ID, user.ID, filters, limit(c, 40, 80))
+	page := relationshipPageNumber(c)
+	accounts, err := s.relationshipPageAccounts(account.ID, user.ID, filters, relationshipsPageSize+1, (page-1)*relationshipsPageSize)
 	if err != nil {
 		return err
+	}
+	hasNext := len(accounts) > relationshipsPageSize
+	if hasNext {
+		accounts = accounts[:relationshipsPageSize]
 	}
 	interrelationships, err := s.relationshipPageInterrelationshipsForAccounts(account.ID, accounts)
 	if err != nil {
@@ -48,6 +53,8 @@ func (s *Server) relationshipsPage(c *echo.Context) error {
 		Interrelationships: interrelationships,
 		Filters:            filters,
 		AutoPlayGIF:        rawBool(settings["web.auto_play"], false),
+		Page:               page,
+		HasNext:            hasNext,
 	}
 	return c.HTML(http.StatusOK, relationshipsHTML(view, c.QueryParam("notice"), c.QueryParam("error"), append([]string{relationshipFilterHiddenFields(c)}, renderArgs...)...))
 }
@@ -133,6 +140,19 @@ func relationshipPageFilters(c *echo.Context) (relationshipFilters, error) {
 	}
 	filters.ByDomain = relationshipRequestParam(c, "by_domain")
 	return filters, nil
+}
+
+// relationshipsPageSize mirrors Rails RelationshipsController#set_accounts `.per(40)`.
+const relationshipsPageSize = 40
+
+// relationshipPageNumber mirrors Kaminari `.page(params[:page])`: a missing, non-numeric or
+// non-positive page falls back to the first page.
+func relationshipPageNumber(c *echo.Context) int {
+	page, err := strconv.Atoi(relationshipRequestParam(c, "page"))
+	if err != nil || page < 1 {
+		return 1
+	}
+	return page
 }
 
 func relationshipInvalidFilterError(name string, value string) error {
@@ -253,8 +273,11 @@ func relationshipBatchRedirectPath(c *echo.Context, messageKey string, message s
 	return "/relationships"
 }
 
-func (s *Server) relationshipPageAccounts(accountID int64, userID int64, filters relationshipFilters, limit int) ([]models.Account, error) {
+func (s *Server) relationshipPageAccounts(accountID int64, userID int64, filters relationshipFilters, limit int, offset int) ([]models.Account, error) {
 	query := s.relationshipPageBaseQuery(accountID, userID, filters).Limit(limit)
+	if offset > 0 {
+		query = query.Offset(offset)
+	}
 	var accounts []models.Account
 	if err := query.Preload("AccountStat").Find(&accounts).Error; err != nil {
 		return nil, err
@@ -608,6 +631,8 @@ type relationshipPageView struct {
 	Interrelationships relationshipPageInterrelationships
 	Filters            relationshipFilters
 	AutoPlayGIF        bool
+	Page               int
+	HasNext            bool
 }
 
 func relationshipsHTML(view relationshipPageView, notice string, errorText string, hiddenFieldsAndLocale ...string) string {
@@ -635,12 +660,12 @@ func relationshipsHTML(view relationshipPageView, notice string, errorText strin
       ` + hidden + `
       <div class="batch-table">
         <div class="batch-table__toolbar">
-          <label class="batch-table__toolbar__select batch-checkbox-all"><input type="checkbox" name="batch_checkbox_all"></label>
+          <label class="batch-table__toolbar__select batch-checkbox-all"><input type="checkbox" name="batch_checkbox_all" id="batch_checkbox_all"></label>
           <div class="batch-table__toolbar__actions">` + relationshipBatchActionsHTML(view.Filters.Relationship, loc) + `</div>
         </div>
         <div class="batch-table__body">` + rows.String() + `</div>
       </div>
-    </form>`
+    </form>` + relationshipsPaginationHTML(view.Filters, view.Page, view.HasNext, loc)
 	return authPageHTML(settingsT(loc, "settings.relationships", "Follows and followers"), notice, errorText, body, themeArgs...)
 }
 
@@ -697,6 +722,14 @@ func relationshipFilterHref(filters relationshipFilters, key string, value strin
 		}
 	}
 
+	if encoded := relationshipFilterQuery(filters).Encode(); encoded != "" {
+		return "/relationships?" + encoded
+	}
+	return "/relationships"
+}
+
+func relationshipFilterQuery(filters relationshipFilters) url.Values {
+	filters = normalizedRelationshipFilters(filters)
 	query := url.Values{}
 	if filters.Relationship != "following" {
 		query.Set("relationship", filters.Relationship)
@@ -715,6 +748,33 @@ func relationshipFilterHref(filters relationshipFilters, key string, value strin
 	}
 	if filters.Location != "" {
 		query.Set("location", filters.Location)
+	}
+	return query
+}
+
+// relationshipsPaginationHTML renders the prev/next part of Rails `= paginate @accounts`
+// (app/views/kaminari/_prev_page / _next_page), keeping the current filters in each link.
+func relationshipsPaginationHTML(filters relationshipFilters, page int, hasNext bool, locale string) string {
+	if page < 1 {
+		page = 1
+	}
+	var links []string
+	if page > 1 {
+		links = append(links, `<span class="prev"><a rel="prev" href="`+html.EscapeString(relationshipPageHref(filters, page-1))+`"><i class="fa fa-chevron-left"></i> `+html.EscapeString(settingsT(locale, "pagination.prev", "Prev"))+`</a></span>`)
+	}
+	if hasNext {
+		links = append(links, `<span class="next"><a rel="next" href="`+html.EscapeString(relationshipPageHref(filters, page+1))+`">`+html.EscapeString(settingsT(locale, "pagination.next", "Next"))+` <i class="fa fa-chevron-right"></i></a></span>`)
+	}
+	if len(links) == 0 {
+		return ""
+	}
+	return `<nav class="pagination">` + strings.Join(links, " ") + `</nav>`
+}
+
+func relationshipPageHref(filters relationshipFilters, page int) string {
+	query := relationshipFilterQuery(filters)
+	if page > 1 {
+		query.Set("page", strconv.Itoa(page))
 	}
 	if encoded := query.Encode(); encoded != "" {
 		return "/relationships?" + encoded
