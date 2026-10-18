@@ -479,12 +479,19 @@ func (s *Server) populateListFeed(ctx context.Context, list models.List, setting
 	if s == nil || s.db == nil || list.ID == 0 {
 		return nil
 	}
+	// listTimelineQuery is correlated with list_accounts, so merge it per member
+	// like the list timeline API.
+	limitValue := feedMaxItems / 2
+	memberStatuses := s.listTimelineQuery(list).Order("statuses.id DESC").Limit(limitValue)
+	statusIDs := []int64{}
+	if err := s.listMemberStatusIDsQuery(s.db.WithContext(ctx), list, memberStatuses, "list_statuses.id DESC", limitValue).Scan(&statusIDs).Error; err != nil {
+		return err
+	}
 	var statuses []models.Status
-	if err := s.listTimelineQuery(list).
+	if err := s.statusQuery().
 		WithContext(ctx).
-		Where("statuses.reblog_of_id IS NULL OR EXISTS (SELECT 1 FROM statuses reblogged_statuses WHERE reblogged_statuses.id = statuses.reblog_of_id AND reblogged_statuses.deleted_at IS NULL)").
+		Where("statuses.id IN ?", statusIDs).
 		Order("statuses.id DESC").
-		Limit(feedMaxItems / 2).
 		Find(&statuses).Error; err != nil {
 		return err
 	}
