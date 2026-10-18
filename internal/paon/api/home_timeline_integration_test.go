@@ -110,6 +110,17 @@ func TestHomeTimelineStatusIDsMatchesJoinQueryIntegration(t *testing.T) {
 	if err := database.Create(&models.Block{AccountID: owner, TargetAccountID: accounts["blocked"], CreatedAt: now, UpdatedAt: now}).Error; err != nil {
 		t.Fatal(err)
 	}
+	// "other" blocks the owner and "exclusive" lives on a blocked domain, so
+	// followed accounts' reblogs of them exercise the reblog filters.
+	if err := database.Create(&models.Block{AccountID: accounts["other"], TargetAccountID: owner, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`UPDATE accounts SET domain = 'Remote.example' WHERE id = ?`, accounts["exclusive"]).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Exec(`INSERT INTO account_domain_blocks (account_id, domain, created_at, updated_at) VALUES (?, 'remote.example', now(), now())`, owner).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	server := &Server{cfg: cfg, db: database}
 	for _, username := range []string{"owner", "newcomer"} {
@@ -117,7 +128,7 @@ func TestHomeTimelineStatusIDsMatchesJoinQueryIntegration(t *testing.T) {
 		if err := database.First(&account, accounts[username]).Error; err != nil {
 			t.Fatal(err)
 		}
-		for _, rawQuery := range []string{"", "limit=40", "limit=50", "max_id=1500", "since_id=3900", "min_id=100", "min_id=100&max_id=400&limit=5"} {
+		for _, rawQuery := range []string{"", "limit=1", "limit=3", "limit=40", "limit=50", "max_id=1500", "max_id=1500&since_id=1400", "since_id=3900", "min_id=100", "min_id=100&max_id=400&limit=5"} {
 			t.Run(username+"/"+rawQuery, func(t *testing.T) {
 				c := echo.NewContext(httptest.NewRequest("GET", "/api/v1/timelines/home?"+rawQuery, nil), httptest.NewRecorder(), echo.New())
 				got, err := server.homeTimelineStatusIDs(c, &account)
