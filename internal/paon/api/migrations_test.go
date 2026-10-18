@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v5"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
@@ -40,20 +41,26 @@ func TestSettingsMigrationRequiresWebAuthentication(t *testing.T) {
 	}
 }
 
-func TestMigrationTargetAccountResolvesRemoteAccountsLikeRails(t *testing.T) {
-	src, err := os.ReadFile("migrations.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		`s.importRemoteAcct(acct)`,
-		`s.fetchAndStoreActivityActorForAcct(remoteAcct)`,
-		`!accountMatchesImportAcct(account, remoteAcct)`,
-		`return nil, errMigrationNotFound`,
+func TestMigrationTargetAccountValidatesAcctLikeRails(t *testing.T) {
+	s := &Server{cfg: config.Config{Scheme: "https", WebDomain: "web.example", LocalDomain: "social.example"}}
+	current := &models.Account{ID: 7, Username: "alice"}
+	for _, test := range []struct {
+		acct string
+		want error
+	}{
+		// presence fails and ResolveAccountService returns nil for a blank acct.
+		{"", errMigrationNotFound},
+		// DomainValidator(acct: true) accepts a bare local username.
+		{"bob", errMigrationNotFound},
+		{"bob@remote example", errMigrationInvalidAcct},
+		{"alice", errMigrationMoveToSelf},
 	} {
-		if !functionBodyContains(t, src, "migrationTargetAccount", want) {
-			t.Fatalf("migrationTargetAccount missing %q", want)
+		if _, err := s.migrationTargetAccount(test.acct, current); err != test.want {
+			t.Fatalf("migrationTargetAccount(%q) error = %v, want %v", test.acct, err, test.want)
 		}
+	}
+	if got := migrationErrorText("ja", errMigrationInvalidAcct); got != "は無効なドメイン名です" {
+		t.Fatalf("invalid acct text = %q", got)
 	}
 }
 
