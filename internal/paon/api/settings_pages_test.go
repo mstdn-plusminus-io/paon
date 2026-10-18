@@ -19,7 +19,7 @@ func TestSettingsPagePassesRailsSiteTitleToRenderer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !functionBodyContains(t, src, "settingsPage", `s.renderer.SettingsHTML(c.Request().URL.Path, account, s.settingStringValue("site_title", s.cfg.Title))`) {
+	if !functionBodyContains(t, src, "settingsPage", `s.renderer.SettingsHTML(path, account, s.settingStringValue("site_title", s.cfg.Title))`) {
 		t.Fatal("settingsPage must pass Rails site_title setting to the settings renderer")
 	}
 }
@@ -303,8 +303,12 @@ func TestSettingsTwoFactorMethodsRedirectsToSetupWhenDisabledLikeRails(t *testin
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`c.Request().URL.Path == "/settings/two_factor_authentication_methods" && !user.OTPRequiredForLogin`,
+		`path := settingsPathWithoutFormat(c.Request().URL.Path, c.Param("format"))`,
+		`settingsPageSkipsFunctional(path)`,
+		`path == "/settings/two_factor_authentication_methods" && !user.OTPRequiredForLogin`,
 		`c.Redirect(http.StatusFound, "/settings/otp_authentication")`,
+		`s.settingsHTMLWithOptions(path, `,
+		`s.renderer.SettingsHTML(path, `,
 	} {
 		if !functionBodyContains(t, src, "settingsPage", want) {
 			t.Fatalf("settingsPage missing disabled two-factor redirect %q", want)
