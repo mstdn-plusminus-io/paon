@@ -110,7 +110,11 @@ func (s *Server) signInForm(c *echo.Context) error {
 		body.WriteString(s.authSharedFooterHTML("sessions", locale))
 	}
 	c.Response().Header().Set("Content-Security-Policy", railsContentSecurityPolicyWithoutDirective(s.cfg, "form-action"))
-	return c.HTML(http.StatusOK, authShellHTMLWithLogoLink(loginLabel, c.QueryParam("alert"), c.QueryParam("error"), body.String(), !withinAuthorizationFlow, locale, s.settingStringValue("theme", "system")))
+	notice := c.QueryParam("notice")
+	if notice == "" {
+		notice = c.QueryParam("alert")
+	}
+	return c.HTML(http.StatusOK, authShellHTMLWithLogoLink(loginLabel, notice, c.QueryParam("error"), body.String(), !withinAuthorizationFlow, locale, s.settingStringValue("theme", "system")))
 }
 
 func signInWithinOAuthAuthorizationFlow(redirectTo string) bool {
