@@ -322,6 +322,7 @@ type Account struct {
 	StatusesCount      int64                  `json:"statuses_count"`
 	LastStatusAt       *string                `json:"last_status_at"`
 	Moved              *Account               `json:"moved,omitempty"`
+	MovedNull          bool                   `json:"-"`
 	Emojis             []CustomEmoji          `json:"emojis"`
 	Fields             []Field                `json:"fields"`
 	Roles              []any                  `json:"-"`
@@ -357,6 +358,10 @@ func (a Account) MarshalJSON() ([]byte, error) {
 			roles = []any{}
 		}
 		out.Roles = &roles
+	}
+	if a.MovedNull && a.Moved == nil {
+		// REST::AccountSerializer keeps the moved key as null for suspended moved accounts.
+		return marshalJSONWithFields(out, map[string]any{"moved": nil})
 	}
 	return json.Marshal(out)
 }
@@ -1786,6 +1791,7 @@ func accountFromModel(cfg config.Config, account models.Account, includeMoved bo
 		StatusesCount:      stats.StatusesCount,
 		LastStatusAt:       lastStatusAt,
 		Moved:              moved,
+		MovedNull:          suspended && includeMoved && account.MovedToAccountID.Valid,
 		Emojis:             emojis,
 		Fields:             fields,
 		Roles:              AccountRolesFromModel(account),
