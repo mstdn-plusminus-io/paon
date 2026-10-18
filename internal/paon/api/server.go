@@ -9259,6 +9259,9 @@ func (s *Server) fetchRemoteMentionAccount(tx *gorm.DB, ref statusMentionRef) (*
 		return nil, nil
 	}
 	account, err := s.upsertRemoteActivityActorDB(tx, actor)
+	if errors.Is(err, errRemoteActivityActorIsLocal) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
