@@ -475,6 +475,72 @@ func TestAccountFromModelIncludesMovedAccountWithoutRecursiveMoved(t *testing.T)
 	}
 }
 
+func TestAccountFromModelSerializesSuspendedMovedAsNullLikeRails(t *testing.T) {
+	cfg := config.Config{LocalDomain: "example.test", WebDomain: "example.test", Scheme: "https"}
+	target := models.Account{ID: 84, Username: "alice_new", CreatedAt: time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)}
+	moved := models.Account{
+		ID:               42,
+		Username:         "alice",
+		Domain:           sql.NullString{String: "remote.example", Valid: true},
+		CreatedAt:        time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC),
+		SuspendedAt:      sql.NullTime{Time: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC), Valid: true},
+		MovedToAccountID: sql.NullInt64{Int64: target.ID, Valid: true},
+		MovedToAccount:   &target,
+	}
+	notMoved := moved
+	notMoved.MovedToAccountID = sql.NullInt64{}
+	notMoved.MovedToAccount = nil
+	nestedSuspended := models.Account{
+		ID:               43,
+		Username:         "bob",
+		CreatedAt:        time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC),
+		MovedToAccountID: sql.NullInt64{Int64: 44, Valid: true},
+		MovedToAccount: &models.Account{
+			ID:               44,
+			Username:         "bob_new",
+			CreatedAt:        time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC),
+			SuspendedAt:      sql.NullTime{Time: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC), Valid: true},
+			MovedToAccountID: sql.NullInt64{Int64: 45, Valid: true},
+		},
+	}
+
+	decode := func(value any) map[string]any {
+		t.Helper()
+		payload, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(payload, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// moved_and_not_nested? is true, but moved_to_account returns nil for suspended accounts.
+	for name, value := range map[string]any{
+		"account":    AccountFromModel(cfg, moved),
+		"credential": CredentialAccountFromModel(cfg, moved, models.User{}, 0),
+		"muted":      MutedAccountFromModel(cfg, moved, sql.NullTime{}),
+	} {
+		out := decode(value)
+		if got, ok := out["moved"]; !ok || got != nil {
+			t.Fatalf("%s moved = %#v (present=%v), want null", name, got, ok)
+		}
+		if out["suspended"] != true || out["id"] != "42" {
+			t.Fatalf("%s payload = %#v", name, out)
+		}
+	}
+	if _, ok := decode(AccountFromModel(cfg, notMoved))["moved"]; ok {
+		t.Fatal("suspended account without moved_to_account_id must omit moved")
+	}
+	// The nested AccountDecorator reports moved? as false, so a suspended moved target omits moved.
+	nested := decode(AccountFromModel(cfg, nestedSuspended))["moved"].(map[string]any)
+	if _, ok := nested["moved"]; ok || nested["id"] != "44" {
+		t.Fatalf("nested moved account = %#v, want no moved key", nested)
+	}
+}
+
 func TestAccountRolesFromModelOmitsNonPublicRoles(t *testing.T) {
 	cases := []struct {
 		name    string
