@@ -4326,12 +4326,43 @@ func (s *Server) homeTimeline(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	query := s.homeTimelineQuery(account)
+	statusIDs, err := s.homeTimelineStatusIDs(c, account)
+	if err != nil {
+		return err
+	}
+	query := s.statusQuery().Where("statuses.id IN ?", statusIDs)
 	statusCode := http.StatusOK
 	if s.homeFeedRegenerating(c.Request().Context(), account.ID) {
 		statusCode = http.StatusPartialContent
 	}
 	return s.statusListWithStatus(c, query, statusCode)
+}
+
+// homeTimelineStatusIDs takes the newest matching statuses of the account and
+// of each followed account through index_statuses_20190820 and merges them. A
+// LEFT JOIN with follows ordered by statuses.id lets PostgreSQL walk the whole
+// statuses primary key backwards until enough home statuses turn up, which
+// never stops early for accounts that follow nobody and have not posted.
+func (s *Server) homeTimelineStatusIDs(c *echo.Context, account *models.Account) ([]int64, error) {
+	limitValue := limit(c, 20, 40)
+	accountStatuses := homeTimelineConditions(s.db.Table("statuses").Select("statuses.id"), account).
+		Where("statuses.account_id = home_accounts.account_id")
+	accountStatuses = applyStatusListPagination(c, accountStatuses, "statuses.id").Limit(limitValue)
+	order := "home_statuses.id DESC"
+	if queryParamValuePresent(c, "min_id") {
+		order = "home_statuses.id ASC"
+	}
+	statusIDs := []int64{}
+	err := s.db.Raw(`SELECT home_statuses.id
+		FROM (
+			SELECT CAST(? AS bigint) AS account_id
+			UNION
+			SELECT follows.target_account_id FROM follows WHERE follows.account_id = ?
+		) home_accounts
+		CROSS JOIN LATERAL (?) home_statuses
+		ORDER BY `+order+`
+		LIMIT ?`, account.ID, account.ID, accountStatuses, limitValue).Scan(&statusIDs).Error
+	return statusIDs, err
 }
 
 func (s *Server) homeFeedRegenerating(ctx context.Context, accountID int64) bool {
@@ -4464,7 +4495,11 @@ func (s *Server) accountStatuses(c *echo.Context) error {
 }
 
 func (s *Server) homeTimelineQuery(account *models.Account) *gorm.DB {
-	query := s.statusQuery().
+	return homeTimelineConditions(s.statusQuery(), account)
+}
+
+func homeTimelineConditions(query *gorm.DB, account *models.Account) *gorm.DB {
+	query = query.
 		Joins("LEFT JOIN follows ON follows.target_account_id = statuses.account_id AND follows.account_id = ?", account.ID).
 		Where("statuses.deleted_at IS NULL").
 		Where("(statuses.account_id = ? OR (follows.id IS NOT NULL AND statuses.visibility IN ?))", account.ID, []int{0, 1, 2})
