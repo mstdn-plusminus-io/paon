@@ -720,6 +720,16 @@ func railsAPIContentSecurityPolicy() string {
 	return "default-src 'none'; frame-ancestors 'none'; form-action 'none'"
 }
 
+// Cloudflare Turnstile loads its widget script and iframe from
+// challenges.cloudflare.com, and Cloudflare Web Analytics, injected by the
+// Cloudflare proxy, loads its beacon from static.cloudflareinsights.com and
+// reports to cloudflareinsights.com.
+const (
+	cloudflareTurnstileCSPHost       = "https://challenges.cloudflare.com"
+	cloudflareInsightsScriptCSPHost  = "https://static.cloudflareinsights.com"
+	cloudflareInsightsConnectCSPHost = "https://cloudflareinsights.com"
+)
+
 func railsContentSecurityPolicy(cfg config.Config) string {
 	assetsHost := firstNonEmptyString(cfg.CDNHost, cfg.BaseURL())
 	mediaHost := firstNonEmptyString(strings.TrimRight(cfg.CSPMediaHost, "/"), strings.TrimRight(cfg.StorageHost, "/"), assetsHost)
@@ -730,7 +740,7 @@ func railsContentSecurityPolicy(cfg config.Config) string {
 	if ssoFormActionURL := strings.TrimSpace(cfg.SSOFormActionURL); ssoFormActionURL != "" {
 		formAction += " " + ssoFormActionURL
 	}
-	scriptSrc := "script-src 'self' 'unsafe-inline' 'unsafe-eval' " + assetsHost
+	scriptSrc := "script-src 'self' 'unsafe-inline' 'unsafe-eval' " + assetsHost + " " + cloudflareTurnstileCSPHost + " " + cloudflareInsightsScriptCSPHost
 	if !railsDevelopmentEnv(cfg) {
 		scriptSrc += " 'wasm-unsafe-eval'"
 	}
@@ -742,12 +752,12 @@ func railsContentSecurityPolicy(cfg config.Config) string {
 		"img-src 'self' https: data: blob: " + assetsHost,
 		"style-src 'self' 'unsafe-inline' " + assetsHost,
 		"media-src 'self' https: data: " + assetsHost,
-		"frame-src 'self' https:",
+		"frame-src 'self' https: " + cloudflareTurnstileCSPHost,
 		"manifest-src 'self' " + assetsHost,
 		formAction,
 		"child-src 'self' blob: " + assetsHost,
 		"worker-src 'self' blob: " + assetsHost,
-		"connect-src 'self' data: blob: " + strings.Join(uniqueNonEmptyStrings(connectHosts), " "),
+		"connect-src 'self' data: blob: " + strings.Join(uniqueNonEmptyStrings(append(connectHosts, cloudflareInsightsConnectCSPHost)), " "),
 		scriptSrc,
 	}
 	return strings.Join(directives, "; ")

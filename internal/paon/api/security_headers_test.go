@@ -114,6 +114,23 @@ func TestContentSecurityPolicyIncludesRailsDevelopmentShakapackerHost(t *testing
 	}
 }
 
+func TestContentSecurityPolicyAllowsCloudflareTurnstileAndInsights(t *testing.T) {
+	cfg := config.Config{RailsEnv: "production", Scheme: "https", WebDomain: "example.com"}
+	for _, tc := range []struct {
+		directive string
+		want      string
+	}{
+		{"script-src", "https://challenges.cloudflare.com"},
+		{"script-src", "https://static.cloudflareinsights.com"},
+		{"frame-src", "https://challenges.cloudflare.com"},
+		{"connect-src", "https://cloudflareinsights.com"},
+	} {
+		if got := railsContentSecurityPolicyDirective(cfg, tc.directive); !strings.Contains(got, tc.want) {
+			t.Fatalf("%s missing %q: %q", tc.directive, tc.want, got)
+		}
+	}
+}
+
 func TestContentSecurityPolicyIncludesRailsOneClickSSOFormActionHost(t *testing.T) {
 	policy := railsContentSecurityPolicy(config.Config{
 		RailsEnv:         "production",
