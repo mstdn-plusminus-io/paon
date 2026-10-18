@@ -177,9 +177,7 @@ func (s *Server) listAccounts(c *echo.Context) error {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 
-	query := s.db.Model(&models.ListAccount{}).
-		Preload("Account.AccountStat").
-		Preload("Account.User.Role").
+	query := accountRelationSerializerPreloads(s.db.Model(&models.ListAccount{}), "Account").
 		Joins("JOIN accounts ON accounts.id = list_accounts.account_id").
 		Where("list_accounts.list_id = ? AND accounts.suspended_at IS NULL", list.ID)
 	unlimited := c.QueryParam("limit") == "0"
