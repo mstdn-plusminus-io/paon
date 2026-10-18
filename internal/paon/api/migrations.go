@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"html"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
@@ -101,8 +104,11 @@ func (s *Server) createSettingsMigration(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := s.processLocalAccountMigration(*migration); err != nil {
-		return err
+	// MoveService#call: MoveWorker, UpdateDistributionWorker and
+	// MoveDistributionWorker run independently, so a failed relationship
+	// migration never holds back the Update and Move deliveries.
+	if err := s.processLocalAccountMigration(account.ID, target.ID); err != nil {
+		log.Printf("level=ERROR event=account_migration_move_failed account_id=%d target_account_id=%d error=%q", account.ID, target.ID, err)
 	}
 	s.triggerAccountWebhook("account.updated", account.ID)
 	_ = s.enqueueFASPAccountLifecycleByID(c.Request().Context(), account.ID, "update")
@@ -473,39 +479,52 @@ func (s *Server) createAccountMigration(account *models.Account, target *models.
 	return &migration, nil
 }
 
-func (s *Server) processLocalAccountMigration(migration models.AccountMigration) error {
+// processLocalAccountMigration mirrors MoveWorker.perform_async: the local
+// relationship migration runs in the move task, or inline when it cannot be
+// enqueued.
+func (s *Server) processLocalAccountMigration(sourceAccountID int64, targetAccountID int64) error {
 	if s.db == nil {
 		return nil
 	}
-	if migration.Account.ID == 0 || migration.TargetAccount.ID == 0 {
-		if err := s.db.Preload("Account").Preload("TargetAccount").Where("id = ?", migration.ID).First(&migration).Error; err != nil {
-			return err
-		}
+	if s.enqueueMoveTask(sourceAccountID, targetAccountID) {
+		return nil
 	}
-	var deferredErr error
-	if migration.Account.Local() && migration.TargetAccount.Local() {
-		if err := s.rewriteLocalAccountMigrationFollows(migration.Account.ID, migration.TargetAccount.ID); err != nil {
-			return err
-		}
-	} else if migration.Account.Local() && !migration.TargetAccount.Local() {
-		if err := s.migrateRemoteAccountMigrationFollowers(migration.Account, migration.TargetAccount); err != nil {
-			deferredErr = err
-		}
-	} else if !migration.Account.Local() {
-		if err := s.migrateRemoteAccountMigrationFollowers(migration.Account, migration.TargetAccount); err != nil {
-			deferredErr = err
-		}
-	}
-	if err := s.carryAccountMigrationRelationships(migration.Account, migration.TargetAccount); err != nil {
-		return errors.Join(deferredErr, err)
-	}
-	return deferredErr
+	return s.performMoveWorker(context.Background(), sourceAccountID, targetAccountID)
 }
 
-func (s *Server) rewriteLocalAccountMigrationFollows(sourceAccountID int64, targetAccountID int64) error {
+// performMoveWorker mirrors MoveWorker#perform.
+func (s *Server) performMoveWorker(ctx context.Context, sourceAccountID int64, targetAccountID int64) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	var source models.Account
+	if err := s.db.WithContext(ctx).Where("id = ?", sourceAccountID).First(&source).Error; err != nil {
+		return workerLookupError("move source account lookup", err)
+	}
+	var target models.Account
+	if err := s.db.WithContext(ctx).Where("id = ?", targetAccountID).First(&target).Error; err != nil {
+		return workerLookupError("move target account lookup", err)
+	}
+	if source.Local() && target.Local() {
+		if err := s.rewriteLocalAccountMigrationFollows(ctx, source.ID, target.ID); err != nil {
+			return err
+		}
+	} else if err := s.migrateRemoteAccountMigrationFollowers(source, target); err != nil {
+		// MoveWorker#perform clears @deferred_error after queue_follow_unfollows!, so a
+		// failed follower migration never retries the move (which would copy the
+		// account notes again).
+		log.Printf("level=ERROR event=account_migration_followers_failed account_id=%d target_account_id=%d error=%q", source.ID, target.ID, err)
+	}
+	return s.carryAccountMigrationRelationships(source, target)
+}
+
+func (s *Server) rewriteLocalAccountMigrationFollows(ctx context.Context, sourceAccountID int64, targetAccountID int64) error {
 	now := time.Now().UTC()
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := s.approveTargetFollowRequestsFromSourceFollowers(tx, sourceAccountID, targetAccountID, now); err != nil {
+	var authorized []models.Account
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		authorized, err = s.approveTargetFollowRequestsFromSourceFollowers(tx, sourceAccountID, targetAccountID, now)
+		if err != nil {
 			return err
 		}
 		if err := migrateLocalAccountMigrationExistingTargetFollowLists(tx, sourceAccountID, targetAccountID); err != nil {
@@ -534,7 +553,18 @@ func (s *Server) rewriteLocalAccountMigrationFollows(sourceAccountID int64, targ
 			return err
 		}
 		return incrementAccountStatCounter(tx, targetAccountID, accountStatCounterFollowers, moved)
-	})
+	}); err != nil {
+		return err
+	}
+	// FollowRequest#authorize!: follow! (remove_potential_friendship) and
+	// MergeWorker for local followers.
+	for _, follower := range authorized {
+		s.accountMigrationFollowCacheEffects(ctx, follower, targetAccountID)
+		if follower.Local() {
+			s.mergeAfterDirectFollowBestEffort(ctx, targetAccountID, follower)
+		}
+	}
+	return nil
 }
 
 func migrateLocalAccountMigrationExistingTargetFollowLists(tx *gorm.DB, sourceAccountID int64, targetAccountID int64) error {
@@ -558,15 +588,20 @@ func migrateLocalAccountMigrationExistingTargetFollowLists(tx *gorm.DB, sourceAc
 	return nil
 }
 
-func (s *Server) approveTargetFollowRequestsFromSourceFollowers(tx *gorm.DB, sourceAccountID int64, targetAccountID int64, now time.Time) error {
+// approveTargetFollowRequestsFromSourceFollowers mirrors the first stage of
+// MoveWorker#rewrite_follows!: FollowRequest#authorize! for every follower of
+// the source account, local or remote, with a pending request to the target.
+// It returns the authorized followers for the post-commit effects.
+func (s *Server) approveTargetFollowRequestsFromSourceFollowers(tx *gorm.DB, sourceAccountID int64, targetAccountID int64, now time.Time) ([]models.Account, error) {
 	var requests []models.FollowRequest
 	if err := tx.Model(&models.FollowRequest{}).
+		Preload("Account").
 		Joins("JOIN follows source_follows ON source_follows.account_id = follow_requests.account_id AND source_follows.target_account_id = ?", sourceAccountID).
-		Joins("JOIN accounts ON accounts.id = follow_requests.account_id").
-		Where("follow_requests.target_account_id = ? AND (accounts.domain IS NULL OR accounts.domain = '')", targetAccountID).
+		Where("follow_requests.target_account_id = ?", targetAccountID).
 		Find(&requests).Error; err != nil {
-		return err
+		return nil, err
 	}
+	authorized := make([]models.Account, 0, len(requests))
 	for _, request := range requests {
 		follow := models.Follow{
 			CreatedAt:       now,
@@ -580,7 +615,7 @@ func (s *Server) approveTargetFollowRequestsFromSourceFollowers(tx *gorm.DB, sou
 		}
 		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&follow)
 		if res.Error != nil {
-			return res.Error
+			return nil, res.Error
 		}
 		if res.RowsAffected > 0 {
 			if err := tx.Model(&models.ListAccount{}).Where("follow_request_id = ?", request.ID).Updates(map[string]any{
@@ -588,23 +623,24 @@ func (s *Server) approveTargetFollowRequestsFromSourceFollowers(tx *gorm.DB, sou
 				"follow_id":         follow.ID,
 				"follow_request_id": nil,
 			}).Error; err != nil {
-				return err
+				return nil, err
 			}
 			if err := incrementAccountStatCounter(tx, request.AccountID, accountStatCounterFollowing, 1); err != nil {
-				return err
+				return nil, err
 			}
 			if err := incrementAccountStatCounter(tx, targetAccountID, accountStatCounterFollowers, 1); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		if err := tx.Where("activity_type = ? AND activity_id = ?", "FollowRequest", request.ID).Delete(&models.Notification{}).Error; err != nil {
-			return err
+			return nil, err
 		}
-		if err := tx.Delete(&request).Error; err != nil {
-			return err
+		if err := tx.Delete(&models.FollowRequest{}, request.ID).Error; err != nil {
+			return nil, err
 		}
+		authorized = append(authorized, request.Account)
 	}
-	return nil
+	return authorized, nil
 }
 
 func localMigrationFollowIDs(tx *gorm.DB, sourceAccountID int64, targetAccountID int64) ([]int64, error) {
@@ -648,6 +684,10 @@ func (s *Server) performUnfollowFollowMigration(ctx context.Context, followerAcc
 	if err := s.db.WithContext(ctx).Where("id = ?", followerAccountID).First(&follower).Error; err != nil {
 		return nil
 	}
+	var oldTarget models.Account
+	if err := s.db.WithContext(ctx).Where("id = ?", oldTargetAccountID).First(&oldTarget).Error; err != nil {
+		return nil
+	}
 	var target models.Account
 	if err := s.db.WithContext(ctx).Where("id = ?", newTargetAccountID).First(&target).Error; err != nil {
 		return nil
@@ -660,76 +700,149 @@ func (s *Server) performUnfollowFollowMigration(ctx context.Context, followerAcc
 		return err
 	}
 	var follow models.Follow
-	if err := s.db.WithContext(ctx).Preload("Account").Where("account_id = ? AND target_account_id = ?", followerAccountID, oldTargetAccountID).First(&follow).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("account_id = ? AND target_account_id = ?", followerAccountID, oldTargetAccountID).First(&follow).Error; err != nil {
 		return nil
 	}
-	if target.Local() && bypassLocked && !follower.SilencedAt.Valid {
-		created, err := s.createDirectMigrationFollow(follow, target)
+	// FollowService#call: request_follow! when the target is locked (unless
+	// bypassed), the follower is silenced or the target is remote; otherwise
+	// direct_follow! for a local target.
+	if !(target.Locked && !bypassLocked) && !follower.SilencedAt.Valid && target.Local() {
+		newFollow, created, err := s.createDirectMigrationFollow(follow, target)
 		if err != nil {
 			return err
 		}
+		s.accountMigrationFollowCacheEffects(ctx, follower, target.ID)
 		if !created {
 			return nil
 		}
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			return deleteFollow(tx, follow)
-		}); err != nil {
+		s.activityTrackerIncrementBasic(ctx, "activity:interactions", time.Now().UTC(), 1)
+		// FollowService#direct_follow!: LocalNotificationWorker 'follow' and MergeWorker.
+		if err := s.notifyAccountMigrationFollow(ctx, follower, target, newFollow.ID, "Follow", "follow"); err != nil {
 			return err
 		}
-		s.accountMigrationDirectFollowCacheEffects(ctx, follow, oldTargetAccountID, target.ID)
-		return nil
+		s.queueMeiliPrivateStatusReindexBestEffort(ctx, target.ID)
+		s.mergeAfterDirectFollowBestEffort(ctx, target.ID, follower)
+		return s.unfollowAccountMigrationOldTarget(ctx, follower, oldTarget)
 	}
 	request, created, err := s.createMigrationFollowRequest(follow, target)
 	if err != nil {
 		return err
 	}
 	if !created {
+		s.accountMigrationFollowCacheEffects(ctx, follower, target.ID)
 		return nil
 	}
-	s.accountMigrationFollowRequestCacheEffects(ctx, follow, target.ID)
+	s.accountMigrationFollowRequestCacheEffects(ctx, follower, target.ID)
+	s.activityTrackerIncrementBasic(ctx, "activity:interactions", time.Now().UTC(), 1)
 	if target.Local() {
-		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			return deleteFollow(tx, follow)
-		}); err != nil {
+		if err := s.notifyAccountMigrationFollow(ctx, follower, target, request.ID, "FollowRequest", "follow_request"); err != nil {
 			return err
 		}
-		s.accountMigrationOldFollowCacheEffects(ctx, follow, oldTargetAccountID)
-		return nil
+		return s.unfollowAccountMigrationOldTarget(ctx, follower, oldTarget)
 	}
-	if err := s.deliverActivityPubMigratedFollow(follow.Account, target, request.ID, string(request.URI), oldTargetAccountID); err != nil {
+	// ActivityPub::MigratedFollowDeliveryWorker unfollows the old target only
+	// after the Follow has been delivered (afterActivityPubDeliveryRetrySuccess).
+	_ = s.deliverActivityPubMigratedFollow(follower, target, request.ID, string(request.URI), oldTargetAccountID)
+	return nil
+}
+
+func (s *Server) accountMigrationFollowCacheEffects(ctx context.Context, follower models.Account, targetID int64) {
+	s.removePotentialFriendship(ctx, follower.ID, targetID)
+	s.invalidateFollowRelationshipCaches(ctx, follower, targetID)
+}
+
+func (s *Server) accountMigrationFollowRequestCacheEffects(ctx context.Context, follower models.Account, targetID int64) {
+	s.removePotentialFriendship(ctx, follower.ID, targetID)
+	s.invalidateRelationshipCaches(ctx, follower.ID, targetID)
+}
+
+func (s *Server) notifyAccountMigrationFollow(ctx context.Context, follower models.Account, target models.Account, activityID int64, activityType string, notificationType string) error {
+	notificationIDs, err := s.enqueueOrCreateLocalNotifications(ctx, []asynqLocalNotificationPayload{{ReceiverAccountID: target.ID, FromAccountID: follower.ID, ActivityID: activityID, ActivityType: activityType, Type: notificationType}})
+	if err != nil {
+		return err
+	}
+	s.publishNotificationIDs(notificationIDs)
+	return nil
+}
+
+// unfollowAccountMigrationOldTarget mirrors UnfollowService.new.call(source,
+// old_target, skip_unmerge: true) as called by FollowMigrationService and
+// ActivityPub::MigratedFollowDeliveryWorker: the Follow (or else the
+// FollowRequest) is destroyed and an Undo Follow is delivered to a remote old
+// target. The home feed is not unmerged.
+func (s *Server) unfollowAccountMigrationOldTarget(ctx context.Context, source models.Account, oldTarget models.Account) error {
+	acquired, releaseRelationshipLock, err := s.acquireActivityPubRedisLock(ctx, relationshipRedisLockName(source.ID, oldTarget.ID), 15*time.Minute)
+	if err != nil {
+		return err
+	}
+	if !acquired {
+		// UnfollowService#call raises when the relationship lock is held, so the
+		// worker retries instead of racing a concurrent unfollow.
+		return fmt.Errorf("relationship %d -> %d is already being changed", source.ID, oldTarget.ID)
+	}
+	defer releaseRelationshipLock()
+	var undoID int64
+	var undoURI string
+	deliverUndo := false
+	followDeleted := false
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		follow, _, deleted, err := deleteFollowEdgeReturningFollow(tx, source.ID, oldTarget.ID)
+		if err != nil {
+			return err
+		}
+		if deleted {
+			followDeleted = true
+			undoID, undoURI = follow.ID, string(follow.URI)
+			deliverUndo = !oldTarget.Local() && oldTarget.Protocol == 1
+			return nil
+		}
+		var request models.FollowRequest
+		err = tx.Where("account_id = ? AND target_account_id = ?", source.ID, oldTarget.ID).First(&request).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := tx.Where("activity_type = ? AND activity_id = ?", "FollowRequest", request.ID).Delete(&models.Notification{}).Error; err != nil {
+			return err
+		}
+		if _, err := deleteListAccountsForRejectedFollowRequest(tx, request.ID); err != nil {
+			return err
+		}
+		if err := tx.Delete(&request).Error; err != nil {
+			return err
+		}
+		undoID, undoURI = request.ID, string(request.URI)
+		deliverUndo = !oldTarget.Local()
 		return nil
+	})
+	if err != nil {
+		return err
+	}
+	s.invalidateFollowRelationshipCaches(ctx, source, oldTarget.ID)
+	if followDeleted {
+		s.queueMeiliPrivateStatusReindexBestEffort(ctx, oldTarget.ID)
+	}
+	if deliverUndo {
+		if undoURI == "" {
+			undoURI = activityPubFollowURI(s, source, undoID)
+		}
+		_ = s.deliverActivityPubUndoFollow(source, oldTarget, undoID, undoURI)
 	}
 	return nil
 }
 
-func (s *Server) accountMigrationDirectFollowCacheEffects(ctx context.Context, follow models.Follow, oldTargetID int64, newTargetID int64) {
-	s.removePotentialFriendship(ctx, follow.AccountID, newTargetID)
-	s.invalidateFollowRelationshipCaches(ctx, follow.Account, newTargetID)
-	s.accountMigrationOldFollowCacheEffects(ctx, follow, oldTargetID)
-}
-
-func (s *Server) accountMigrationFollowRequestCacheEffects(ctx context.Context, follow models.Follow, targetID int64) {
-	s.removePotentialFriendship(ctx, follow.AccountID, targetID)
-	s.invalidateRelationshipCaches(ctx, follow.AccountID, targetID)
-}
-
-func (s *Server) accountMigrationOldFollowCacheEffects(ctx context.Context, follow models.Follow, oldTargetID int64) {
-	s.invalidateFollowRelationshipCaches(ctx, follow.Account, oldTargetID)
-}
-
-func (s *Server) createDirectMigrationFollow(original models.Follow, target models.Account) (bool, error) {
+func (s *Server) createDirectMigrationFollow(original models.Follow, target models.Account) (*models.Follow, bool, error) {
 	now := time.Now().UTC()
+	var follow models.Follow
 	created := false
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var existingFollow models.Follow
-		err := tx.Where("account_id = ? AND target_account_id = ?", original.AccountID, target.ID).First(&existingFollow).Error
-		if err == nil {
-			return migrateListAccountsForAccountMigration(tx, original.ID, target.ID, sql.NullInt64{Int64: existingFollow.ID, Valid: true}, sql.NullInt64{})
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
+		existing, err := changeAccountMigrationFollowOptions(tx, original, target.ID, now)
+		if err != nil || existing {
 			return err
 		}
-		follow := models.Follow{
+		follow = models.Follow{
 			CreatedAt:       now,
 			UpdatedAt:       now,
 			AccountID:       original.AccountID,
@@ -751,7 +864,10 @@ func (s *Server) createDirectMigrationFollow(original models.Follow, target mode
 		}
 		return incrementAccountStatCounter(tx, target.ID, accountStatCounterFollowers, 1)
 	})
-	return created, err
+	if err != nil {
+		return nil, false, err
+	}
+	return &follow, created, nil
 }
 
 func (s *Server) createMigrationFollowRequest(original models.Follow, target models.Account) (*models.FollowRequest, bool, error) {
@@ -759,31 +875,10 @@ func (s *Server) createMigrationFollowRequest(original models.Follow, target mod
 	var request models.FollowRequest
 	created := false
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var existingFollow models.Follow
-		err := tx.Where("account_id = ? AND target_account_id = ?", original.AccountID, target.ID).First(&existingFollow).Error
-		if err == nil {
-			return migrateListAccountsForAccountMigration(tx, original.ID, target.ID, sql.NullInt64{Int64: existingFollow.ID, Valid: true}, sql.NullInt64{})
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
+		existing, err := changeAccountMigrationFollowOptions(tx, original, target.ID, now)
+		if err != nil || existing {
 			return err
 		}
-
-		err = tx.Where("account_id = ? AND target_account_id = ?", original.AccountID, target.ID).First(&request).Error
-		if err == nil {
-			if err := tx.Model(&request).Updates(map[string]any{
-				"show_reblogs": original.ShowReblogs,
-				"notify":       original.Notify,
-				"languages":    original.Languages,
-				"updated_at":   now,
-			}).Error; err != nil {
-				return err
-			}
-			return migrateListAccountsForAccountMigration(tx, original.ID, target.ID, sql.NullInt64{}, sql.NullInt64{Int64: request.ID, Valid: true})
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-
 		request = models.FollowRequest{
 			CreatedAt:       now,
 			UpdatedAt:       now,
@@ -804,6 +899,46 @@ func (s *Server) createMigrationFollowRequest(original models.Follow, target mod
 		return nil, false, err
 	}
 	return &request, created, nil
+}
+
+// changeAccountMigrationFollowOptions mirrors FollowMigrationService's
+// change_follow_options! / change_follow_request_options!: when the follower
+// already follows or has requested the target, the original follow's list
+// memberships are copied and follow! / request_follow! overwrite the existing
+// options (languages only when the original follow has them). The old follow is
+// kept.
+func changeAccountMigrationFollowOptions(tx *gorm.DB, original models.Follow, targetAccountID int64, now time.Time) (bool, error) {
+	updates := followPayloadUpdates(followPayload{
+		ShowReblogs:    original.ShowReblogs,
+		HasShowReblogs: true,
+		Notify:         original.Notify,
+		HasNotify:      true,
+		Languages:      original.Languages,
+		HasLanguages:   original.Languages != nil,
+	}, now)
+	var follow models.Follow
+	err := tx.Where("account_id = ? AND target_account_id = ?", original.AccountID, targetAccountID).First(&follow).Error
+	if err == nil {
+		if err := migrateListAccountsForAccountMigration(tx, original.ID, targetAccountID, sql.NullInt64{Int64: follow.ID, Valid: true}, sql.NullInt64{}); err != nil {
+			return false, err
+		}
+		return true, tx.Model(&follow).Updates(updates).Error
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+	var request models.FollowRequest
+	err = tx.Where("account_id = ? AND target_account_id = ?", original.AccountID, targetAccountID).First(&request).Error
+	if err == nil {
+		if err := migrateListAccountsForAccountMigration(tx, original.ID, targetAccountID, sql.NullInt64{}, sql.NullInt64{Int64: request.ID, Valid: true}); err != nil {
+			return false, err
+		}
+		return true, tx.Model(&request).Updates(updates).Error
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+	return false, nil
 }
 
 func migrateListAccountsForAccountMigration(tx *gorm.DB, originalFollowID int64, targetAccountID int64, followID sql.NullInt64, followRequestID sql.NullInt64) error {
@@ -828,20 +963,23 @@ func migrateListAccountsForAccountMigration(tx *gorm.DB, originalFollowID int64,
 func (s *Server) carryAccountMigrationRelationships(source models.Account, target models.Account) error {
 	now := time.Now().UTC()
 	sourceAcct := source.Acct()
+	defaultLocale := s.cfg.Locale()
 	var notePairs []accountRelationshipPair
-	var blockPairs []accountRelationshipPair
+	var blockEffects []accountMigrationBlockEffect
 	var mutePairs []accountMigrationMuteEffect
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		var err error
-		notePairs, err = copyAccountMigrationNotes(tx, source.ID, target.ID, sourceAcct, now)
+		notePairs, err = copyAccountMigrationNotes(tx, defaultLocale, source.ID, target.ID, sourceAcct, now)
 		if err != nil {
 			return err
 		}
-		blockPairs, err = s.carryAccountMigrationBlocks(tx, source.ID, target.ID, sourceAcct, now)
+		blockEffects, err = s.carryAccountMigrationBlocks(tx, defaultLocale, source.ID, target, sourceAcct, now)
 		if err != nil {
 			return err
 		}
-		mutePairs, err = carryAccountMigrationMutes(tx, source.ID, target.ID, sourceAcct, now)
+		var muteNotePairs []accountRelationshipPair
+		mutePairs, muteNotePairs, err = carryAccountMigrationMutes(tx, defaultLocale, source.ID, target.ID, sourceAcct, now)
+		notePairs = append(notePairs, muteNotePairs...)
 		return err
 	}); err != nil {
 		return err
@@ -850,11 +988,19 @@ func (s *Server) carryAccountMigrationRelationships(source models.Account, targe
 	for _, pair := range uniqueAccountRelationshipPairs(notePairs) {
 		s.invalidateRelationshipCaches(ctx, pair.accountID, pair.targetID)
 	}
-	for _, pair := range uniqueAccountRelationshipPairs(blockPairs) {
-		s.clearAfterBlockFeedCaches(ctx, pair.accountID, pair.targetID)
-		s.removePotentialFriendship(ctx, pair.accountID, pair.targetID)
-		s.invalidateBlockRelationshipCaches(ctx, pair.accountID, pair.targetID)
+	// BlockService#call side effects, in the same order as blockAccount. The
+	// private statuses are reindexed once per account after the loop instead of
+	// reindexing the target for every blocker.
+	reindexAccountIDs := make([]int64, 0, len(blockEffects)+1)
+	for _, effect := range blockEffects {
+		s.clearAfterBlockFeedCaches(ctx, effect.blocker.ID, target.ID)
+		s.removePotentialFriendship(ctx, effect.blocker.ID, target.ID)
+		s.applyAccountBlockRelationshipCleanupEffects(ctx, effect.blocker, target, effect.cleanup)
+		s.invalidateBlockRelationshipCaches(ctx, effect.blocker.ID, target.ID)
+		reindexAccountIDs = append(reindexAccountIDs, effect.blocker.ID, target.ID)
+		_ = s.deliverActivityPubBlock(effect.blocker, target, effect.block.ID, string(effect.block.URI))
 	}
+	s.queueMeiliPrivateStatusReindexBestEffort(ctx, reindexAccountIDs...)
 	for _, pair := range uniqueAccountMigrationMuteEffects(mutePairs) {
 		if pair.hideNotifications {
 			s.clearAfterBlockFeedCaches(ctx, pair.accountID, pair.targetID)
@@ -876,6 +1022,12 @@ type accountMigrationMuteEffect struct {
 	accountID         int64
 	targetID          int64
 	hideNotifications bool
+}
+
+type accountMigrationBlockEffect struct {
+	blocker models.Account
+	block   models.Block
+	cleanup accountBlockRelationshipCleanup
 }
 
 func uniqueAccountRelationshipPairs(values []accountRelationshipPair) []accountRelationshipPair {
@@ -910,22 +1062,43 @@ func uniqueAccountMigrationMuteEffects(values []accountMigrationMuteEffect) []ac
 	return out
 }
 
-func copyAccountMigrationNotes(tx *gorm.DB, sourceAccountID int64, targetAccountID int64, sourceAcct string, now time.Time) ([]accountRelationshipPair, error) {
+// accountNoteCommentMaxLength mirrors AccountNote's
+// `validates :comment, length: { maximum: 2_000 }`.
+const accountNoteCommentMaxLength = 2000
+
+func accountNoteCommentValid(comment string) bool {
+	return utf8.RuneCountInString(comment) <= accountNoteCommentMaxLength
+}
+
+// copyAccountMigrationNotes mirrors MoveWorker#copy_account_notes!.
+func copyAccountMigrationNotes(tx *gorm.DB, defaultLocale string, sourceAccountID int64, targetAccountID int64, sourceAcct string, now time.Time) ([]accountRelationshipPair, error) {
 	var notes []models.AccountNote
 	if err := tx.Where("target_account_id = ?", sourceAccountID).Find(&notes).Error; err != nil {
 		return nil, err
 	}
 	affected := []accountRelationshipPair{}
-	prefix := accountMigrationNoteText("copy", sourceAcct)
 	for _, note := range notes {
 		if !note.AccountID.Valid || note.AccountID.Int64 == 0 {
 			continue
 		}
 		accountID := note.AccountID.Int64
-		comment := prefix + "\n" + note.Comment
+		locale, err := accountMigrationNoteLocale(tx, accountID, defaultLocale)
+		if err != nil {
+			return nil, err
+		}
+		text := accountMigrationNoteText(locale, "copy_account_note_text", sourceAcct)
 		var existing models.AccountNote
-		err := tx.Where("account_id = ? AND target_account_id = ?", accountID, targetAccountID).First(&existing).Error
+		err = tx.Where("account_id = ? AND target_account_id = ?", accountID, targetAccountID).First(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// [text, note.comment].join("\n"), falling back to the bare comment
+			// when the prefixed one fails validation.
+			comment := text + "\n" + note.Comment
+			if !accountNoteCommentValid(comment) {
+				comment = note.Comment
+			}
+			if !accountNoteCommentValid(comment) {
+				continue
+			}
 			row := models.AccountNote{AccountID: models.AccountNoteAccountID(accountID), TargetAccountID: models.AccountNoteAccountID(targetAccountID), Comment: comment, CreatedAt: now, UpdatedAt: now}
 			if err := tx.Create(&row).Error; err != nil {
 				return nil, err
@@ -936,7 +1109,12 @@ func copyAccountMigrationNotes(tx *gorm.DB, sourceAccountID int64, targetAccount
 		if err != nil {
 			return nil, err
 		}
-		merged := prefix + "\n" + note.Comment + "\n\n" + existing.Comment
+		// [text, note.comment, "\n", new_note.comment].join("\n"); an invalid
+		// merged note is left unchanged.
+		merged := strings.Join([]string{text, note.Comment, "\n", existing.Comment}, "\n")
+		if !accountNoteCommentValid(merged) {
+			continue
+		}
 		if err := tx.Model(&existing).Updates(map[string]any{"comment": merged, "updated_at": now}).Error; err != nil {
 			return nil, err
 		}
@@ -945,7 +1123,10 @@ func copyAccountMigrationNotes(tx *gorm.DB, sourceAccountID int64, targetAccount
 	return affected, nil
 }
 
-func (s *Server) carryAccountMigrationBlocks(tx *gorm.DB, sourceAccountID int64, targetAccountID int64, sourceAcct string, now time.Time) ([]accountRelationshipPair, error) {
+// carryAccountMigrationBlocks mirrors MoveWorker#carry_blocks_over!, which
+// blocks the target through BlockService. The returned effects run after the
+// transaction commits.
+func (s *Server) carryAccountMigrationBlocks(tx *gorm.DB, defaultLocale string, sourceAccountID int64, target models.Account, sourceAcct string, now time.Time) ([]accountMigrationBlockEffect, error) {
 	var blocks []models.Block
 	if err := tx.Model(&models.Block{}).
 		Joins("JOIN accounts ON accounts.id = blocks.account_id").
@@ -953,68 +1134,86 @@ func (s *Server) carryAccountMigrationBlocks(tx *gorm.DB, sourceAccountID int64,
 		Find(&blocks).Error; err != nil {
 		return nil, err
 	}
-	affected := []accountRelationshipPair{}
+	affected := []accountMigrationBlockEffect{}
 	for _, block := range blocks {
-		exists, err := accountMigrationRelationshipExists(tx, &models.Block{}, block.AccountID, targetAccountID)
+		exists, err := accountMigrationRelationshipExists(tx, &models.Block{}, block.AccountID, target.ID)
 		if err != nil {
 			return nil, err
 		}
-		following, err := accountMigrationRelationshipExists(tx, &models.Follow{}, block.AccountID, targetAccountID)
+		following, err := accountMigrationRelationshipExists(tx, &models.Follow{}, block.AccountID, target.ID)
 		if err != nil {
 			return nil, err
 		}
 		if exists || following {
 			continue
 		}
-		if _, err := s.createAccountBlock(tx, block.AccountID, targetAccountID, now); err != nil {
+		// BlockService#call returns early for a self-block.
+		if block.AccountID != target.ID {
+			var blocker models.Account
+			if err := tx.Where("id = ?", block.AccountID).First(&blocker).Error; err != nil {
+				return nil, err
+			}
+			cleanup, err := cleanupAccountBlockRelationships(tx, blocker, target)
+			if err != nil {
+				return nil, err
+			}
+			carried, err := s.createAccountBlock(tx, blocker.ID, target.ID, now)
+			if err != nil {
+				return nil, err
+			}
+			affected = append(affected, accountMigrationBlockEffect{blocker: blocker, block: *carried, cleanup: cleanup})
+		}
+		if _, err := createAccountMigrationNoteIfMissing(tx, defaultLocale, block.AccountID, target.ID, "carry_blocks_over_text", sourceAcct, now); err != nil {
 			return nil, err
 		}
-		if err := afterBlockServiceCleanup(tx, block.AccountID, targetAccountID); err != nil {
-			return nil, err
-		}
-		if err := createAccountMigrationNoteIfMissing(tx, block.AccountID, targetAccountID, accountMigrationNoteText("block", sourceAcct), now); err != nil {
-			return nil, err
-		}
-		affected = append(affected, accountRelationshipPair{accountID: block.AccountID, targetID: targetAccountID})
 	}
 	return affected, nil
 }
 
-func carryAccountMigrationMutes(tx *gorm.DB, sourceAccountID int64, targetAccountID int64, sourceAcct string, now time.Time) ([]accountMigrationMuteEffect, error) {
+// carryAccountMigrationMutes mirrors MoveWorker#carry_mutes_over!: MuteService
+// creates a mute without expiry unless the account already mutes or follows
+// the target, and the note is added either way. It returns the created mutes
+// and the accounts that got a new note.
+func carryAccountMigrationMutes(tx *gorm.DB, defaultLocale string, sourceAccountID int64, targetAccountID int64, sourceAcct string, now time.Time) ([]accountMigrationMuteEffect, []accountRelationshipPair, error) {
 	var mutes []models.Mute
 	if err := tx.Model(&models.Mute{}).
 		Joins("JOIN accounts ON accounts.id = mutes.account_id").
 		Where("mutes.target_account_id = ? AND (accounts.domain IS NULL OR accounts.domain = '')", sourceAccountID).
 		Find(&mutes).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	affected := []accountMigrationMuteEffect{}
+	notes := []accountRelationshipPair{}
 	for _, mute := range mutes {
 		exists, err := accountMigrationRelationshipExists(tx, &models.Mute{}, mute.AccountID, targetAccountID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		following, err := accountMigrationRelationshipExists(tx, &models.Follow{}, mute.AccountID, targetAccountID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if exists || following {
-			continue
-		}
-		if err := upsertAccountMute(tx, mute.AccountID, targetAccountID, mute.HideNotifications, now, mute.ExpiresAt); err != nil {
-			return nil, err
-		}
-		if mute.HideNotifications {
-			if err := afterBlockServiceCleanup(tx, mute.AccountID, targetAccountID); err != nil {
-				return nil, err
+		// MuteService#call returns early for a self-mute.
+		if !exists && !following && mute.AccountID != targetAccountID {
+			if err := upsertAccountMute(tx, mute.AccountID, targetAccountID, mute.HideNotifications, now); err != nil {
+				return nil, nil, err
 			}
+			if mute.HideNotifications {
+				if err := afterBlockServiceCleanup(tx, mute.AccountID, targetAccountID); err != nil {
+					return nil, nil, err
+				}
+			}
+			affected = append(affected, accountMigrationMuteEffect{accountID: mute.AccountID, targetID: targetAccountID, hideNotifications: mute.HideNotifications})
 		}
-		if err := createAccountMigrationNoteIfMissing(tx, mute.AccountID, targetAccountID, accountMigrationNoteText("mute", sourceAcct), now); err != nil {
-			return nil, err
+		created, err := createAccountMigrationNoteIfMissing(tx, defaultLocale, mute.AccountID, targetAccountID, "carry_mutes_over_text", sourceAcct, now)
+		if err != nil {
+			return nil, nil, err
 		}
-		affected = append(affected, accountMigrationMuteEffect{accountID: mute.AccountID, targetID: targetAccountID, hideNotifications: mute.HideNotifications})
+		if created {
+			notes = append(notes, accountRelationshipPair{accountID: mute.AccountID, targetID: targetAccountID})
+		}
 	}
-	return affected, nil
+	return affected, notes, nil
 }
 
 func accountMigrationRelationshipExists(tx *gorm.DB, model any, accountID int64, targetAccountID int64) (bool, error) {
@@ -1025,29 +1224,51 @@ func accountMigrationRelationshipExists(tx *gorm.DB, model any, accountID int64,
 	return count > 0, nil
 }
 
-func createAccountMigrationNoteIfMissing(tx *gorm.DB, accountID int64, targetAccountID int64, comment string, now time.Time) error {
+// createAccountMigrationNoteIfMissing mirrors MoveWorker#add_account_note_if_needed!.
+func createAccountMigrationNoteIfMissing(tx *gorm.DB, defaultLocale string, accountID int64, targetAccountID int64, key string, sourceAcct string, now time.Time) (bool, error) {
 	var count int64
 	if err := tx.Model(&models.AccountNote{}).Where("account_id = ? AND target_account_id = ?", accountID, targetAccountID).Count(&count).Error; err != nil {
-		return err
+		return false, err
 	}
 	if count > 0 {
-		return nil
+		return false, nil
 	}
-	note := models.AccountNote{AccountID: models.AccountNoteAccountID(accountID), TargetAccountID: models.AccountNoteAccountID(targetAccountID), Comment: comment, CreatedAt: now, UpdatedAt: now}
-	return tx.Create(&note).Error
+	locale, err := accountMigrationNoteLocale(tx, accountID, defaultLocale)
+	if err != nil {
+		return false, err
+	}
+	note := models.AccountNote{AccountID: models.AccountNoteAccountID(accountID), TargetAccountID: models.AccountNoteAccountID(targetAccountID), Comment: accountMigrationNoteText(locale, key, sourceAcct), CreatedAt: now, UpdatedAt: now}
+	if err := tx.Create(&note).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-func accountMigrationNoteText(kind string, sourceAcct string) string {
-	switch kind {
-	case "copy":
-		return "This user moved from " + sourceAcct + ", here were your previous notes about them:"
-	case "block":
-		return "This user moved from " + sourceAcct + ", which you had blocked."
-	case "mute":
-		return "This user moved from " + sourceAcct + ", which you had muted."
-	default:
-		return "This user moved from " + sourceAcct + "."
+// accountMigrationNoteLocale mirrors MoveWorker's
+// `account.user&.locale.presence || I18n.default_locale`.
+func accountMigrationNoteLocale(tx *gorm.DB, accountID int64, defaultLocale string) (string, error) {
+	var locales []sql.NullString
+	if err := tx.Model(&models.User{}).Where("account_id = ?", accountID).Limit(1).Pluck("locale", &locales).Error; err != nil {
+		return "", err
 	}
+	if len(locales) > 0 && locales[0].Valid && strings.TrimSpace(locales[0].String) != "" {
+		return locales[0].String, nil
+	}
+	return defaultLocale, nil
+}
+
+// accountMigrationNoteText translates a move_handler.* note text.
+func accountMigrationNoteText(locale string, key string, sourceAcct string) string {
+	fallback := "This user moved from %{acct}."
+	switch key {
+	case "copy_account_note_text":
+		fallback = "This user moved from %{acct}, here were your previous notes about them:"
+	case "carry_blocks_over_text":
+		fallback = "This user moved from %{acct}, which you had blocked."
+	case "carry_mutes_over_text":
+		fallback = "This user moved from %{acct}, which you had muted."
+	}
+	return settingsTVars(locale, "move_handler."+key, fallback, map[string]string{"acct": sourceAcct})
 }
 
 func (s *Server) setMovedToAccount(accountID int64, target sql.NullInt64) error {
