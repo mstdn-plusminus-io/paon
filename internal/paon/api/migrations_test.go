@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v5"
+	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 )
 
@@ -40,20 +41,26 @@ func TestSettingsMigrationRequiresWebAuthentication(t *testing.T) {
 	}
 }
 
-func TestMigrationTargetAccountResolvesRemoteAccountsLikeRails(t *testing.T) {
-	src, err := os.ReadFile("migrations.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		`s.importRemoteAcct(acct)`,
-		`s.fetchAndStoreActivityActorForAcct(remoteAcct)`,
-		`!accountMatchesImportAcct(account, remoteAcct)`,
-		`return nil, errMigrationNotFound`,
+func TestMigrationTargetAccountValidatesAcctLikeRails(t *testing.T) {
+	s := &Server{cfg: config.Config{Scheme: "https", WebDomain: "web.example", LocalDomain: "social.example"}}
+	current := &models.Account{ID: 7, Username: "alice"}
+	for _, test := range []struct {
+		acct string
+		want error
+	}{
+		// presence fails and ResolveAccountService returns nil for a blank acct.
+		{"", errMigrationNotFound},
+		// DomainValidator(acct: true) accepts a bare local username.
+		{"bob", errMigrationNotFound},
+		{"bob@remote example", errMigrationInvalidAcct},
+		{"alice", errMigrationMoveToSelf},
 	} {
-		if !functionBodyContains(t, src, "migrationTargetAccount", want) {
-			t.Fatalf("migrationTargetAccount missing %q", want)
+		if _, err := s.migrationTargetAccount(test.acct, current); err != test.want {
+			t.Fatalf("migrationTargetAccount(%q) error = %v, want %v", test.acct, err, test.want)
 		}
+	}
+	if got := migrationErrorText("ja", errMigrationInvalidAcct); got != "は無効なドメイン名です" {
+		t.Fatalf("invalid acct text = %q", got)
 	}
 }
 
@@ -122,14 +129,8 @@ func TestRemoteAccountMigrationCreatesMigratedFollowRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		`migration.Account.Local() && !migration.TargetAccount.Local()`,
-		`s.migrateRemoteAccountMigrationFollowers(migration.Account, migration.TargetAccount)`,
-	} {
-		if !functionBodyContains(t, src, "processLocalAccountMigration", want) {
-			t.Fatalf("processLocalAccountMigration missing %q", want)
-		}
-	}
+	// performMoveWorker's local/remote branching is covered by
+	// TestAccountMoveWorkerIntegration.
 	for _, want := range []string{
 		`Where("follows.target_account_id = ? AND (accounts.domain IS NULL OR accounts.domain = '')", source.ID)`,
 		`bypassLocked := target.Local()`,
@@ -140,41 +141,9 @@ func TestRemoteAccountMigrationCreatesMigratedFollowRequests(t *testing.T) {
 			t.Fatalf("migrateRemoteAccountMigrationFollowers missing %q", want)
 		}
 	}
-	for _, want := range []string{
-		`Where("account_id = ? AND target_account_id = ?", followerAccountID, oldTargetAccountID)`,
-		`if target.Local() && bypassLocked && !follower.SilencedAt.Valid`,
-		`s.createDirectMigrationFollow(follow, target)`,
-		`s.createMigrationFollowRequest(follow, target)`,
-		`s.deliverActivityPubMigratedFollow(follow.Account, target, request.ID, string(request.URI), oldTargetAccountID)`,
-	} {
-		if !functionBodyContains(t, src, "performUnfollowFollowMigration", want) {
-			t.Fatalf("performUnfollowFollowMigration missing %q", want)
-		}
-	}
-	body := functionBody(t, src, "performUnfollowFollowMigration")
-	deliveryIndex := strings.Index(body, `s.deliverActivityPubMigratedFollow(follow.Account, target, request.ID, string(request.URI), oldTargetAccountID)`)
-	if deliveryIndex < 0 {
-		t.Fatal("performUnfollowFollowMigration missing migrated Follow delivery")
-	}
-	if strings.Contains(body[deliveryIndex:], `deleteFollow(tx, follow)`) {
-		t.Fatal("remote migrated Follow cleanup must wait for ActivityPub::MigratedFollowDeliveryWorker-equivalent delivery success")
-	}
-	for _, want := range []string{
-		`ShowReblogs:     original.ShowReblogs`,
-		`Notify:          original.Notify`,
-		`Languages:       original.Languages`,
-		`URI:             models.NullSafeString(activityPubGeneratedPayloadURI(s))`,
-		`migrateListAccountsForAccountMigration(tx, original.ID, target.ID`,
-		`errors.Is(err, gorm.ErrRecordNotFound)`,
-	} {
-		if !functionBodyContains(t, src, "createMigrationFollowRequest", want) {
-			t.Fatalf("createMigrationFollowRequest missing %q", want)
-		}
-	}
+	// performUnfollowFollowMigration's FollowMigrationService behavior is covered
+	// by TestAccountMigrationUnfollowFollowIntegration.
 	if !functionBodyContains(t, src, "migrateListAccountsForAccountMigration", `clause.OnConflict{DoNothing: true}`) {
 		t.Fatal("migrateListAccountsForAccountMigration must tolerate existing target list memberships")
-	}
-	if functionBodyContains(t, src, "createMigrationFollowRequest", `err != gorm.ErrRecordNotFound`) {
-		t.Fatal("createMigrationFollowRequest must tolerate wrapped gorm.ErrRecordNotFound")
 	}
 }

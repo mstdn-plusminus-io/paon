@@ -249,7 +249,10 @@ func inviteFromRequest(c *echo.Context, userID int64, now time.Time) (models.Inv
 	if !railsNestedFormRootPresent(c, "invite") {
 		return models.Invite{}, errInviteParamsMissing
 	}
-	comment := c.FormValue("invite[comment]")
+	// Rack keeps the last value for duplicated scalar keys; simple_form emits a
+	// hidden invite[autofollow]=0 before the checkbox's value.
+	req := c.Request()
+	comment := rackFormParamValue(req, "invite[comment]")
 	if len([]rune(comment)) > 420 {
 		return models.Invite{}, errInviteCommentTooLong
 	}
@@ -258,16 +261,16 @@ func inviteFromRequest(c *echo.Context, userID int64, now time.Time) (models.Inv
 		Uses:       0,
 		CreatedAt:  now,
 		UpdatedAt:  now,
-		Autofollow: formBoolValue(c.FormValue("invite[autofollow]")),
+		Autofollow: formBoolValue(rackFormParamValue(req, "invite[autofollow]")),
 	}
-	if c.Request().PostForm.Has("invite[comment]") || comment != "" {
+	if req.PostForm.Has("invite[comment]") || comment != "" {
 		invite.Comment = sql.NullString{String: comment, Valid: true}
 	}
-	if maxUses := strings.TrimSpace(c.FormValue("invite[max_uses]")); maxUses != "" {
+	if maxUses := strings.TrimSpace(rackFormParamValue(req, "invite[max_uses]")); maxUses != "" {
 		value := railsToInt64(maxUses)
 		invite.MaxUses = sql.NullInt64{Int64: value, Valid: true}
 	}
-	if expiresIn := strings.TrimSpace(c.FormValue("invite[expires_in]")); expiresIn != "" {
+	if expiresIn := strings.TrimSpace(rackFormParamValue(req, "invite[expires_in]")); expiresIn != "" {
 		value := railsToInt64(expiresIn)
 		invite.ExpiresAt = sql.NullTime{Time: now.Add(time.Duration(value) * time.Second), Valid: true}
 	}

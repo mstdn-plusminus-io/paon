@@ -1,8 +1,10 @@
 package api
 
 import (
+	"database/sql"
 	"errors"
 	"html"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -33,6 +35,11 @@ func (s *Server) updateSettingsProfile(c *echo.Context) error {
 	if err != nil {
 		return s.renderSettingsProfileError(c, *account, user, err.Error())
 	}
+	// Rails validates avatar/header together with the other attributes in
+	// account.update, so a rejected upload must not persist the text changes.
+	if err := validateSettingsProfileUploads(c, "account[avatar]", "account[header]"); err != nil {
+		return s.renderSettingsProfileError(c, settingsProfileAccountWithUpdates(*account, updates), user, err.Error())
+	}
 	accountChanged := len(updates) > 0
 	if len(updates) > 0 {
 		now := time.Now().UTC()
@@ -41,9 +48,9 @@ func (s *Server) updateSettingsProfile(c *echo.Context) error {
 			return err
 		}
 	}
-	uploadsChanged, err := s.applyProfileUploadsForKeys(c, account.ID, "account[avatar]", "account[header]")
-	if err != nil {
-		return s.renderSettingsProfileError(c, *account, user, err.Error())
+	uploadsChanged, uploadErr := s.applySettingsProfileUploads(c, account.ID)
+	if uploadErr != nil && !accountChanged && !uploadsChanged {
+		return s.renderSettingsProfileError(c, *account, user, uploadErr.Error())
 	}
 	if accountChanged || uploadsChanged {
 		reloaded, err := s.findAccountByID(strconv.FormatInt(account.ID, 10))
@@ -55,8 +62,78 @@ func (s *Server) updateSettingsProfile(c *echo.Context) error {
 			s.enqueueVerifyAccountLinksIfNeeded(c.Request().Context(), *reloaded, time.Now().UTC())
 		}
 		_ = s.enqueueActivityPubAccountUpdate(*reloaded, activityPubAccountUpdateDebounceDelay)
+		if uploadErr != nil {
+			// An image that passed pre-validation but failed while processing
+			// leaves earlier changes persisted; they are distributed above and
+			// the form is re-rendered from the stored account.
+			return s.renderSettingsProfileError(c, *reloaded, user, uploadErr.Error())
+		}
 	}
 	return c.Redirect(http.StatusFound, "/settings/profile?notice="+url.QueryEscape(settingsChangeSavedMessage(locale)))
+}
+
+// validateSettingsProfileUploads applies the same pre-storage checks as
+// storeAccountImage to every submitted profile image before anything is saved.
+func validateSettingsProfileUploads(c *echo.Context, keys ...string) error {
+	for _, key := range keys {
+		header, err := c.FormFile(key)
+		if err != nil {
+			continue
+		}
+		if err := validateSettingsProfileUpload(header); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSettingsProfileUpload(header *multipart.FileHeader) error {
+	if header.Size <= 0 {
+		return apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: File is empty"}
+	}
+	if header.Size >= profileImageSizeLimit {
+		return apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: File size is too large"}
+	}
+	contentType := mediaContentType(paperclipObfuscatedFilename(header.Filename), header.Header.Get("Content-Type"))
+	if !profileImageContentTypeSupported(contentType) {
+		return apiHTTPError{status: http.StatusUnprocessableEntity, message: "Validation failed: File type is invalid"}
+	}
+	return nil
+}
+
+// applySettingsProfileUploads stores avatar and header in order and reports
+// whether any image was stored even when a later one fails.
+func (s *Server) applySettingsProfileUploads(c *echo.Context, accountID int64) (bool, error) {
+	changed := false
+	for _, upload := range []struct{ key, kind string }{{"account[avatar]", "avatar"}, {"account[header]", "header"}} {
+		header, err := c.FormFile(upload.key)
+		if err != nil {
+			continue
+		}
+		if err := s.storeAccountImage(accountID, upload.kind, header); err != nil {
+			return changed, err
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
+// settingsProfileAccountWithUpdates mirrors Rails re-rendering the form from
+// @account with the submitted attributes assigned but not saved.
+func settingsProfileAccountWithUpdates(account models.Account, updates map[string]any) models.Account {
+	if value, ok := updates["display_name"].(string); ok {
+		account.DisplayName = value
+	}
+	if value, ok := updates["note"].(string); ok {
+		account.Note = value
+	}
+	if value, ok := updates["actor_type"].(string); ok {
+		account.ActorType = sql.NullString{String: value, Valid: true}
+	}
+	if value, ok := updates["fields"].(models.JSONValue); ok {
+		account.Fields = value
+	}
+	return account
 }
 
 func (s *Server) renderSettingsProfileError(c *echo.Context, account models.Account, user *models.User, errorText string) error {

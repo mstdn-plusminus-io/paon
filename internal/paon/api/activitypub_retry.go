@@ -325,29 +325,25 @@ func (s *Server) performActivityPubDeliveryInitial(ctx context.Context, job acti
 }
 
 func (s *Server) afterActivityPubDeliveryRetrySuccess(ctx context.Context, job activityPubDeliveryRetryJob) error {
-	if job.MigratedFollowOldTargetAccountID == 0 {
+	if s.db == nil || job.MigratedFollowOldTargetAccountID == 0 {
 		return nil
 	}
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := deleteFollowEdge(tx, job.SourceAccountID, job.MigratedFollowOldTargetAccountID); err != nil {
-			return err
-		}
-		var request models.FollowRequest
-		err := tx.Where("account_id = ? AND target_account_id = ?", job.SourceAccountID, job.MigratedFollowOldTargetAccountID).First(&request).Error
+	// ActivityPub::MigratedFollowDeliveryWorker#unfollow_old_account!
+	var source models.Account
+	if err := s.db.WithContext(ctx).Where("id = ?", job.SourceAccountID).First(&source).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
-		if err != nil {
-			return err
+		return err
+	}
+	var oldTarget models.Account
+	if err := s.db.WithContext(ctx).Where("id = ?", job.MigratedFollowOldTargetAccountID).First(&oldTarget).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
 		}
-		if err := tx.Where("activity_type = ? AND activity_id = ?", "FollowRequest", request.ID).Delete(&models.Notification{}).Error; err != nil {
-			return err
-		}
-		if _, err := deleteListAccountsForRejectedFollowRequest(tx, request.ID); err != nil {
-			return err
-		}
-		return tx.Delete(&request).Error
-	})
+		return err
+	}
+	return s.unfollowAccountMigrationOldTarget(ctx, source, oldTarget)
 }
 
 func (job activityPubDeliveryRetryJob) activityPubDeliveryRetryLimit() int {

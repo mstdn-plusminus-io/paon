@@ -31,6 +31,10 @@ func (s *Server) authEditPage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
+	hasAnyStrikes, err := s.authEditHasAnyStrikes(user.AccountID)
+	if err != nil {
+		return err
+	}
 	currentTokenID, err := s.currentAccessTokenID(currentToken)
 	if err != nil {
 		return err
@@ -53,6 +57,7 @@ func (s *Server) authEditPage(c *echo.Context) error {
 		User:                  user,
 		Account:               account,
 		Strikes:               strikes,
+		HasAnyStrikes:         hasAnyStrikes,
 		RenderArgs:            renderArgs,
 	}))
 }
@@ -95,7 +100,10 @@ func (s *Server) updateUserRegistration(c *echo.Context) error {
 		if len(password) < 8 || len(password) > 72 {
 			return c.Redirect(http.StatusFound, "/auth/edit?error="+url.QueryEscape(settingsT(locale, "users.invalid_password", "Password is invalid")))
 		}
-		if confirmation := c.FormValue("user[password_confirmation]"); confirmation != "" && confirmation != password {
+		// Devise keeps a submitted password_confirmation (even "") whenever a
+		// new password is given, and validates_confirmation_of only skips a nil
+		// confirmation, so a blank confirmation field is a mismatch.
+		if confirmation, sent := authFormValueSent(c, "user[password_confirmation]"); sent && confirmation != password {
 			return c.Redirect(http.StatusFound, "/auth/edit?error="+url.QueryEscape(settingsT(locale, "users.password_confirmation_mismatch", "Password confirmation does not match")))
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -132,6 +140,19 @@ func (s *Server) updateUserRegistration(c *echo.Context) error {
 		}
 	}
 	return c.Redirect(http.StatusFound, "/auth/edit?notice="+url.QueryEscape(settingsT(locale, "generic.changes_saved_msg", "Account settings saved")))
+}
+
+// authFormValueSent returns the last submitted value for key and whether the key
+// was submitted at all. The form must already be parsed (e.g. by c.FormValue).
+func authFormValueSent(c *echo.Context, key string) (string, bool) {
+	values, ok := c.Request().Form[key]
+	if !ok {
+		return "", false
+	}
+	if len(values) == 0 {
+		return "", true
+	}
+	return values[len(values)-1], true
 }
 
 func (s *Server) authSetupPage(c *echo.Context) error {
@@ -234,6 +255,7 @@ type authEditHTMLOptions struct {
 	User                  *models.User
 	Account               *models.Account
 	Strikes               []models.AccountWarning
+	HasAnyStrikes         bool
 	RenderArgs            []string
 }
 
@@ -245,7 +267,7 @@ func authEditHTMLWithOptions(email string, notice string, errorText string, opti
 	if suspended {
 		disabledAttr = " disabled"
 	}
-	body := authEditStatusHTML(options.User, options.Account, options.Strikes, loc) + `<h3>` + html.EscapeString(settingsT(loc, "auth.security", "Security")) + `</h3>
+	body := authEditStatusHTML(options.User, options.Account, options.Strikes, options.HasAnyStrikes, loc) + `<h3>` + html.EscapeString(settingsT(loc, "auth.security", "Security")) + `</h3>
     <form class="simple_form auth_edit" id="edit_user" method="post" action="/auth">`
 	if (!options.SeamlessExternalLogin || strings.TrimSpace(options.EncryptedPassword) != "") && !options.OmniAuthOnly {
 		body += `
@@ -297,7 +319,18 @@ func (s *Server) authEditStrikes(accountID int64, now time.Time) ([]models.Accou
 	return strikes, err
 }
 
-func authEditStatusHTML(user *models.User, account *models.Account, strikes []models.AccountWarning, locale string) string {
+// authEditHasAnyStrikes mirrors Rails' `@user.account.strikes.exists?`, which
+// is not limited to the recent strikes listed on the page.
+func (s *Server) authEditHasAnyStrikes(accountID int64) (bool, error) {
+	if s.db == nil || accountID == 0 {
+		return false, nil
+	}
+	var count int64
+	err := s.db.Model(&models.AccountWarning{}).Where("target_account_id = ?", accountID).Limit(1).Count(&count).Error
+	return count > 0, err
+}
+
+func authEditStatusHTML(user *models.User, account *models.Account, strikes []models.AccountWarning, hasAnyStrikes bool, locale string) string {
 	if user == nil || account == nil {
 		return ""
 	}
@@ -333,7 +366,7 @@ func authEditStatusHTML(user *models.User, account *models.Account, strikes []mo
 		}
 		body.WriteString(`</div></div></a>`)
 	}
-	if len(strikes) > 0 {
+	if hasAnyStrikes || len(strikes) > 0 {
 		body.WriteString(`<hr class="spacer"><p class="muted-hint"><a href="/disputes/strikes">` + html.EscapeString(settingsT(locale, "auth.status.view_strikes", "View account strikes")) + `</a></p>`)
 	}
 	body.WriteString(`<hr class="spacer">`)
@@ -347,7 +380,7 @@ func authSetupHTML(email string, notice string, errorText string, signUpScriptPa
 	if strings.TrimSpace(signUpScriptPath) != "" {
 		script = `<script src="` + html.EscapeString(signUpScriptPath) + `" crossorigin="anonymous"></script>`
 	}
-	body := `<form class="simple_form edit_user" id="edit_user" novalidate="novalidate" method="post" action="/auth/setup">` + registrationProgressHTML("confirm", false, loc) + `
+	body := `<form class="simple_form edit_user" id="edit_user" novalidate="novalidate" method="post" action="/auth/setup"><input type="hidden" name="_method" value="patch" autocomplete="off">` + registrationProgressHTML("confirm", false, loc) + `
       <h1 class="title">` + html.EscapeString(settingsT(loc, "auth.setup.title", settingsT(loc, "auth.confirmations.confirm_email", "Confirm your email"))) + `</h1>
       <p class="lead">` + settingsTVars(loc, "auth.setup.email_settings_hint_html", "We sent a confirmation link to <strong>%{email}</strong>.", map[string]string{"email": html.EscapeString(email)}) + `</p>
       <p class="lead"><strong>` + html.EscapeString(settingsT(loc, "auth.setup.link_not_received", "Did not receive the link?")) + `</strong></p>

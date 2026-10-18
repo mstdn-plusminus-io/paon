@@ -149,10 +149,10 @@ func (s *Server) updateWebFilter(c *echo.Context) error {
 	}
 	updates["phrase"] = payload.Title
 	contexts := normalizeFilterContexts(payload.Context)
+	if !webFilterUpdateContextsValid(c.Request().Form, contexts) {
+		return c.HTML(http.StatusOK, webFilterFormHTML(settingsT(locale, "filters.edit.title", "Edit filter"), "/filters/"+strconv.FormatInt(filter.ID, 10), "put", webFilterFromPayload(*filter, payload, time.Now().UTC()), "", settingsT(locale, "filters.errors.invalid_context", "Filter context is invalid"), renderArgs...))
+	}
 	if len(contexts) > 0 {
-		if !validFilterContexts(contexts) {
-			return c.HTML(http.StatusOK, webFilterFormHTML(settingsT(locale, "filters.edit.title", "Edit filter"), "/filters/"+strconv.FormatInt(filter.ID, 10), "put", webFilterFromPayload(*filter, payload, time.Now().UTC()), "", settingsT(locale, "filters.errors.invalid_context", "Filter context is invalid"), renderArgs...))
-		}
 		updates["context"] = models.StringArray(contexts)
 	}
 	if payload.FilterAction != "" {
@@ -165,6 +165,9 @@ func (s *Server) updateWebFilter(c *echo.Context) error {
 	if payload.ExpiresInSet {
 		updates["expires_at"] = expiresAtFromSeconds(payload.ExpiresIn, time.Now().UTC())
 	}
+	if webFilterExistingKeywordBlank(payload.KeywordsAttributes) {
+		return c.HTML(http.StatusOK, webFilterFormHTML(settingsT(locale, "filters.edit.title", "Edit filter"), "/filters/"+strconv.FormatInt(filter.ID, 10), "put", webFilterFromPayload(*filter, payload, time.Now().UTC()), "", webFilterValidationErrorMessage(locale), renderArgs...))
+	}
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.CustomFilter{}).Where("id = ? AND account_id = ?", filter.ID, account.ID).Updates(updates).Error; err != nil {
 			return err
@@ -175,6 +178,41 @@ func (s *Server) updateWebFilter(c *echo.Context) error {
 	}
 	s.invalidateFilterCacheAndBroadcast(account.ID)
 	return c.Redirect(http.StatusFound, "/filters")
+}
+
+// webFilterUpdateContextsValid mirrors Rails CustomFilter context validation on update: blank
+// entries are dropped (`normalizes :context`), and when the form submitted the context field
+// (the edit form always sends a hidden blank `custom_filter[context][]`), an empty result fails
+// `validates :context, presence: true` instead of silently keeping the previous contexts.
+// When the field is absent entirely, the stored contexts are left untouched.
+func webFilterUpdateContextsValid(form url.Values, contexts []string) bool {
+	if len(contexts) > 0 {
+		return validFilterContexts(contexts)
+	}
+	_, submitted := form["custom_filter[context][]"]
+	return !submitted
+}
+
+// webFilterExistingKeywordBlank reports whether a persisted keyword row (one carrying `[id]`) was
+// submitted with a blank `[keyword]` and is not being destroyed. Rails CustomFilterKeyword
+// validates keyword presence, so FiltersController#update re-renders the edit form; detecting it
+// before the transaction avoids the generic 422 page from applyFilterKeywordAttributes.
+func webFilterExistingKeywordBlank(attributes []filterKeywordPayload) bool {
+	for _, attr := range attributes {
+		if attr.ID != "" && !attr.Destroy && attr.KeywordSet && strings.TrimSpace(attr.Keyword) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// webFilterValidationErrorMessage returns Rails `generic.validation_errors` for a single error,
+// falling back to the locale's `other` form when it defines no `one` form.
+func webFilterValidationErrorMessage(locale string) string {
+	if invitePluralKeyExists(locale, "generic.validation_errors.one") {
+		return settingsT(locale, "generic.validation_errors.one", "Something isn't quite right yet! Please review the error below")
+	}
+	return settingsTVars(locale, "generic.validation_errors.other", "Something isn't quite right yet! Please review %{count} errors below", map[string]string{"count": "1"})
 }
 
 func (s *Server) destroyWebFilter(c *echo.Context) error {
@@ -386,14 +424,16 @@ func webFilterFromPayload(base models.CustomFilter, payload filterPayload, now t
 func webFilterKeywordsForForm(attributes []filterKeywordPayload) []models.CustomFilterKeyword {
 	keywords := make([]models.CustomFilterKeyword, 0, len(attributes))
 	for _, attr := range attributes {
-		if attr.Destroy {
-			continue
-		}
-		keyword := models.CustomFilterKeyword{Keyword: attr.Keyword}
+		keyword := models.CustomFilterKeyword{Keyword: attr.Keyword, MarkedForDestruction: attr.Destroy}
 		if attr.ID != "" {
 			if id, err := strconv.ParseInt(attr.ID, 10, 64); err == nil {
 				keyword.ID = id
 			}
+		}
+		// Like accepts_nested_attributes_for, persisted rows marked for destruction stay in the
+		// re-rendered form so the deletion survives resubmission; new rows are simply dropped.
+		if attr.Destroy && keyword.ID == 0 {
+			continue
 		}
 		if attr.WholeWord != nil {
 			keyword.WholeWord = *attr.WholeWord
@@ -559,12 +599,27 @@ func filterKeywordFields(keywords []models.CustomFilterKeyword, locale ...string
 func filterKeywordRowHTML(keyword models.CustomFilterKeyword, index string, locale string) string {
 	prefix := `custom_filter[keywords_attributes][` + index + `]`
 	idPrefix := `custom_filter_keywords_attributes_` + index
-	out := `<tr class="nested-fields"><td><div class="input string required custom_filter_keywords_keyword"><input class="string required" type="text" value="` + html.EscapeString(keyword.Keyword) + `" name="` + prefix + `[keyword]" id="` + idPrefix + `_keyword"></div></td>`
+	rowAttrs := ""
+	if keyword.MarkedForDestruction {
+		rowAttrs = ` style="display: none;"`
+	}
+	out := `<tr class="nested-fields"` + rowAttrs + `><td><div class="input string required custom_filter_keywords_keyword"><input class="string required" type="text" value="` + html.EscapeString(keyword.Keyword) + `" name="` + prefix + `[keyword]" id="` + idPrefix + `_keyword"></div></td>`
 	out += `<td><div class="label_input__wrapper"><input value="0" type="hidden" name="` + prefix + `[whole_word]"><label class="checkbox"><input class="boolean optional" type="checkbox" value="1" name="` + prefix + `[whole_word]" id="` + idPrefix + `_whole_word"` + checkedAttr(keyword.WholeWord) + `></label></div></td><td>`
 	if keyword.ID != 0 {
 		out += `<input type="hidden" name="` + prefix + `[id]" value="` + strconv.FormatInt(keyword.ID, 10) + `">`
 	}
-	out += `<input value="false" type="hidden" name="` + prefix + `[_destroy]" id="` + idPrefix + `__destroy"><a class="table-action-link remove_fields dynamic" href="#"><i class="fa fa-times"></i>` + html.EscapeString(settingsT(locale, "filters.index.delete", "Delete")) + `</a></td></tr>`
+	// cocoon link_to_remove_association: persisted records get "existing" so cocoon-js sets the
+	// preceding hidden [_destroy] to 1 and hides the row; new records get "dynamic" and are detached.
+	removeClass := "dynamic"
+	if keyword.ID != 0 {
+		removeClass = "existing"
+	}
+	destroyValue := "false"
+	if keyword.MarkedForDestruction {
+		removeClass += " destroyed"
+		destroyValue = "true"
+	}
+	out += `<input value="` + destroyValue + `" type="hidden" name="` + prefix + `[_destroy]" id="` + idPrefix + `__destroy"><a class="table-action-link remove_fields ` + removeClass + `" href="#"><i class="fa fa-times"></i>` + html.EscapeString(settingsT(locale, "filters.index.delete", "Delete")) + `</a></td></tr>`
 	return out
 }
 
@@ -653,7 +708,7 @@ func webFilterStatusesHTMLWithConfig(cfg config.Config, filter models.CustomFilt
       <input type="hidden" name="page" value="` + html.EscapeString(pageValue) + `">
       <div class="batch-table">
         <div class="batch-table__toolbar">
-          <label class="batch-table__toolbar__select batch-checkbox-all"><input type="checkbox" name="batch_checkbox_all"></label>
+          <label class="batch-table__toolbar__select batch-checkbox-all"><input type="checkbox" name="batch_checkbox_all" id="batch_checkbox_all"></label>
           <div class="batch-table__toolbar__actions">` + removeButton + `</div>
         </div>
         <div class="batch-table__body">` + rows.String() + `</div>

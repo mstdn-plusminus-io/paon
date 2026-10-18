@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -187,6 +189,160 @@ func TestRailsMethodOverrideReachesExistingSingletonUpdateRoutes(t *testing.T) {
 			s.echo.ServeHTTP(rec, req)
 			if rec.Code == http.StatusMethodNotAllowed || rec.Code == http.StatusNotFound {
 				t.Fatalf("method override did not route to singleton update handler: status = %d body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func multipartOverrideBody(t *testing.T, fields [][2]string, fileField string, fileContent string) (*bytes.Buffer, string) {
+	t.Helper()
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	for _, field := range fields {
+		if field[0] == fileField {
+			part, err := writer.CreateFormFile(fileField, "avatar.png")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := part.Write([]byte(fileContent)); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := writer.WriteField(field[0], field[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body, writer.FormDataContentType()
+}
+
+func TestMethodOverrideMultipartFormRunsBeforeRoutingAndRestoresBody(t *testing.T) {
+	e := echo.New()
+	e.Pre(railsFormContentTypeMiddleware)
+	e.Pre(methodOverrideMiddleware)
+	e.POST("/settings/profile", func(c *echo.Context) error {
+		return c.String(http.StatusNotFound, "not found")
+	})
+	e.PUT("/settings/profile", func(c *echo.Context) error {
+		if got := c.FormValue("authenticity_token"); got != "csrf-token" {
+			t.Fatalf("authenticity_token = %q", got)
+		}
+		if got := c.FormValue("account[display_name]"); got != "Alice" {
+			t.Fatalf("display_name = %q", got)
+		}
+		file, err := c.FormFile("account[avatar]")
+		if err != nil {
+			t.Fatal(err)
+		}
+		src, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer src.Close()
+		content, err := io.ReadAll(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != "avatar-bytes" {
+			t.Fatalf("avatar content = %q", string(content))
+		}
+		return c.String(http.StatusOK, c.Request().Method)
+	})
+
+	body, contentType := multipartOverrideBody(t, [][2]string{
+		{"authenticity_token", "csrf-token"},
+		{"_method", "put"},
+		{"account[display_name]", "Alice"},
+		{"account[avatar]", ""},
+	}, "account[avatar]", "avatar-bytes")
+	req := httptest.NewRequest(http.MethodPost, "/settings/profile", body)
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != http.MethodPut {
+		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMethodOverrideMultipartFindsMethodAfterFilePart(t *testing.T) {
+	e := echo.New()
+	e.Pre(methodOverrideMiddleware)
+	e.PATCH("/resource", func(c *echo.Context) error {
+		return c.String(http.StatusOK, c.Request().Method)
+	})
+
+	body, contentType := multipartOverrideBody(t, [][2]string{
+		{"file", ""},
+		{"_method", "PATCH"},
+	}, "file", strings.Repeat("x", 8192))
+	req := httptest.NewRequest(http.MethodPost, "/resource", body)
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != http.MethodPatch {
+		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMethodOverrideMultipartWithoutMethodKeepsPostAndBody(t *testing.T) {
+	e := echo.New()
+	e.Pre(methodOverrideMiddleware)
+	body, contentType := multipartOverrideBody(t, [][2]string{
+		{"name", "alice"},
+		{"file", ""},
+	}, "file", strings.Repeat("y", multipartOverrideMethodPeekLimit+4096))
+	expected := body.String()
+	e.POST("/resource", func(c *echo.Context) error {
+		raw, err := io.ReadAll(c.Request().Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != expected {
+			t.Fatalf("body was not restored: got %d bytes, want %d", len(raw), len(expected))
+		}
+		return c.String(http.StatusOK, c.Request().Method)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/resource", body)
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != http.MethodPost {
+		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRailsMultipartMethodOverrideReachesSettingsUpdateRoutes(t *testing.T) {
+	s, err := NewServer(config.Config{Title: "Paon", LocalDomain: "example.com"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, route := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPut, "/settings/profile"},
+		{http.MethodPatch, "/admin/settings/branding"},
+		{http.MethodPatch, "/admin/settings/appearance"},
+	} {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			body, contentType := multipartOverrideBody(t, [][2]string{
+				{"_method", strings.ToLower(route.method)},
+				{"upload", ""},
+			}, "upload", "image-bytes")
+			req := httptest.NewRequest(http.MethodPost, route.path, body)
+			req.Header.Set("Content-Type", contentType)
+			rec := httptest.NewRecorder()
+			s.echo.ServeHTTP(rec, req)
+			if rec.Code == http.StatusMethodNotAllowed || rec.Code == http.StatusNotFound {
+				t.Fatalf("multipart method override did not route to handler: status = %d body = %s", rec.Code, rec.Body.String())
 			}
 		})
 	}

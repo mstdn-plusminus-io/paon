@@ -1,9 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"os"
 	"strings"
@@ -180,5 +184,136 @@ func TestDestroySettingsProfilePictureClearsPaperclipColumnsLikeRails(t *testing
 		if !functionBodyContains(t, src, "destroySettingsProfilePicture", want) {
 			t.Fatalf("destroySettingsProfilePicture missing Rails-compatible update %q", want)
 		}
+	}
+}
+
+type settingsProfileTestUpload struct {
+	key         string
+	filename    string
+	contentType string
+	size        int
+}
+
+func settingsProfileMultipartContext(t *testing.T, uploads ...settingsProfileTestUpload) *echo.Context {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("account[display_name]", "Alice"); err != nil {
+		t.Fatal(err)
+	}
+	for _, upload := range uploads {
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Disposition", `form-data; name="`+upload.key+`"; filename="`+upload.filename+`"`)
+		header.Set("Content-Type", upload.contentType)
+		part, err := writer.CreatePart(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(bytes.Repeat([]byte{0x89}, upload.size)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/settings/profile", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	c := echo.NewContext(req, httptest.NewRecorder(), echo.New())
+	if _, err := parseSettingsProfilePayload(c); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestValidateSettingsProfileUploadsRejectsInvalidImagesBeforeSaving(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		upload settingsProfileTestUpload
+		want   string
+	}{
+		{"empty avatar", settingsProfileTestUpload{"account[avatar]", "avatar.png", "image/png", 0}, "Validation failed: File is empty"},
+		{"oversized avatar", settingsProfileTestUpload{"account[avatar]", "avatar.png", "image/png", profileImageSizeLimit}, "Validation failed: File size is too large"},
+		{"unsupported header", settingsProfileTestUpload{"account[header]", "header.txt", "text/plain", 16}, "Validation failed: File type is invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := settingsProfileMultipartContext(t, tc.upload)
+			err := validateSettingsProfileUploads(c, "account[avatar]", "account[header]")
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("validate error = %v, want %q", err, tc.want)
+			}
+			header, ferr := c.FormFile(tc.upload.key)
+			if ferr != nil {
+				t.Fatal(ferr)
+			}
+			// The pre-validation must reject exactly what storeAccountImage rejects
+			// so no text change is committed for an upload that would fail anyway.
+			if storeErr := (&Server{}).storeAccountImage(1, "avatar", header); storeErr == nil || storeErr.Error() != err.Error() {
+				t.Fatalf("storeAccountImage error = %v, want %v", storeErr, err)
+			}
+		})
+	}
+}
+
+func TestValidateSettingsProfileUploadsAcceptsSupportedImagesAndMissingFiles(t *testing.T) {
+	c := settingsProfileMultipartContext(t,
+		settingsProfileTestUpload{"account[avatar]", "avatar.png", "image/png", 128},
+		settingsProfileTestUpload{"account[header]", "header.jpg", "image/jpeg", profileImageSizeLimit - 1},
+	)
+	if err := validateSettingsProfileUploads(c, "account[avatar]", "account[header]"); err != nil {
+		t.Fatalf("supported uploads rejected: %v", err)
+	}
+	if err := validateSettingsProfileUploads(settingsProfileMultipartContext(t), "account[avatar]", "account[header]"); err != nil {
+		t.Fatalf("request without uploads rejected: %v", err)
+	}
+}
+
+func TestSettingsProfileAccountWithUpdatesKeepsSubmittedValuesLikeRailsRenderShow(t *testing.T) {
+	fields, _ := json.Marshal([]profileField{{Name: "Site", Value: "https://new.example"}})
+	original := models.Account{
+		ID:          42,
+		Username:    "alice",
+		DisplayName: "Old",
+		Note:        "Old bio",
+		ActorType:   sql.NullString{String: "Person", Valid: true},
+		Fields:      []byte(`[{"name":"Old","value":"old"}]`),
+	}
+	got := settingsProfileAccountWithUpdates(original, map[string]any{
+		"display_name": "New",
+		"note":         "New bio",
+		"actor_type":   "Service",
+		"fields":       models.JSONValue(fields),
+	})
+	if got.DisplayName != "New" || got.Note != "New bio" || got.ActorType.String != "Service" || string(got.Fields) != string(fields) {
+		t.Fatalf("overlaid account = %#v", got)
+	}
+	if original.DisplayName != "Old" {
+		t.Fatal("overlay must not mutate the stored account")
+	}
+	html := settingsProfileHTMLWithConfigMessages(config.Config{WebDomain: "https://example.test"}, got, "", "", "Validation failed: File size is too large")
+	for _, want := range []string{`value="New"`, `New bio</textarea>`, `value="https://new.example"`, `name="account[bot]" value="1" checked`, `File size is too large`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("error page missing submitted value %q", want)
+		}
+	}
+}
+
+func TestUpdateSettingsProfileValidatesUploadsBeforePersistingText(t *testing.T) {
+	src, err := os.ReadFile("settings_profile.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, src, "updateSettingsProfile")
+	validate := strings.Index(body, `validateSettingsProfileUploads(c, "account[avatar]", "account[header]")`)
+	persist := strings.Index(body, `s.updateAccountRowsAndTags(*account, updates, payload.Note, now)`)
+	if validate < 0 || persist < 0 || validate > persist {
+		t.Fatalf("uploads must be validated before account rows are written (validate=%d persist=%d)", validate, persist)
+	}
+	if !strings.Contains(body, `s.renderSettingsProfileError(c, settingsProfileAccountWithUpdates(*account, updates), user, err.Error())`) {
+		t.Fatal("rejected uploads must re-render the form with the submitted values")
+	}
+	publish := strings.Index(body, `_ = s.enqueueActivityPubAccountUpdate(*reloaded, activityPubAccountUpdateDebounceDelay)`)
+	lateError := strings.Index(body, `return s.renderSettingsProfileError(c, *reloaded, user, uploadErr.Error())`)
+	if publish < 0 || lateError < 0 || lateError < publish {
+		t.Fatal("a processing failure after persisting changes must still distribute them and render the reloaded account")
 	}
 }

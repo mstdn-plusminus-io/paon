@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"net"
 	"net/url"
 	"regexp"
 	"sort"
@@ -1669,43 +1670,57 @@ func (s *Server) revokeOutgoingFollowToRequest(follow models.Follow) error {
 	})
 }
 
+// processActivityPubMove mirrors ActivityPub::Activity::Move#perform. A Move
+// that does not apply returns without an error, so the ingress job is not
+// retried; only errors raised while applying it release the processing marker
+// and retry.
 func (s *Server) processActivityPubMove(payload activityPayload, actor *models.Account) error {
 	if actor == nil || actor.ID == 0 || actor.Local() {
 		return activityPubEventNotAppliedf("Move actor must be a persisted remote account")
 	}
 	sourceURI := actor.URI
 	if payload.Object.ID != sourceURI || payload.Target == "" {
-		return activityPubEventNotAppliedf("Move source or target is invalid")
+		logActivityPubUnsupportedPayload(payload, actor.ID, "move_source_or_target_invalid")
+		return nil
 	}
-	processing, err := s.markActivityPubMoveAsProcessing(context.Background(), actor.ID)
+	ctx := context.Background()
+	processing, err := s.markActivityPubMoveAsProcessing(ctx, actor.ID)
 	if err != nil {
 		return err
 	}
 	if !processing {
-		return activityPubEventNotAppliedf("Move for account_id=%d is already being processed", actor.ID)
+		logActivityPubUnsupportedPayload(payload, actor.ID, "move_already_processing")
+		return nil
 	}
 	target, err := s.activityActorForMoveTargetURI(payload.Target)
-	if err != nil {
-		s.unmarkActivityPubMoveAsProcessing(context.Background(), actor.ID)
+	if err != nil && !errors.Is(err, errActivityPubEventNotApplied) {
+		s.unmarkActivityPubMoveAsProcessing(ctx, actor.ID)
 		return err
 	}
-	if target == nil || target.ID == 0 || target.SuspendedAt.Valid {
-		s.unmarkActivityPubMoveAsProcessing(context.Background(), actor.ID)
-		return activityPubEventNotAppliedf("Move target %q is unavailable", payload.Target)
+	if err != nil || target == nil || target.ID == 0 || target.SuspendedAt.Valid {
+		s.unmarkActivityPubMoveAsProcessing(ctx, actor.ID)
+		logActivityPubUnsupportedPayload(payload, actor.ID, "move_target_unavailable")
+		return nil
 	}
 	if !stringArrayContains(target.AlsoKnownAs, sourceURI) {
-		s.unmarkActivityPubMoveAsProcessing(context.Background(), actor.ID)
-		return activityPubEventNotAppliedf("Move target does not reference source in alsoKnownAs")
+		s.unmarkActivityPubMoveAsProcessing(ctx, actor.ID)
+		logActivityPubUnsupportedPayload(payload, actor.ID, "move_target_missing_also_known_as")
+		return nil
 	}
 	if !(actor.MovedToAccountID.Valid && actor.MovedToAccountID.Int64 == target.ID) {
 		if err := s.setMovedToAccount(actor.ID, sql.NullInt64{Int64: target.ID, Valid: true}); err != nil {
-			s.unmarkActivityPubMoveAsProcessing(context.Background(), actor.ID)
+			s.unmarkActivityPubMoveAsProcessing(ctx, actor.ID)
 			return err
 		}
 		actor.MovedToAccountID = sql.NullInt64{Int64: target.ID, Valid: true}
+		// origin_account.update runs the Meilisearch callback, which drops the
+		// now-moved account from the accounts index.
+		s.meiliIndexAccountBestEffort(ctx, actor.ID)
 	}
-	if err := s.processLocalAccountMigration(models.AccountMigration{Account: *actor, TargetAccount: *target}); err != nil {
-		s.unmarkActivityPubMoveAsProcessing(context.Background(), actor.ID)
+	// MoveWorker.perform_async: only a failure to hand the work off releases
+	// the marker; failures inside the move task retry that task alone.
+	if err := s.processLocalAccountMigration(actor.ID, target.ID); err != nil {
+		s.unmarkActivityPubMoveAsProcessing(ctx, actor.ID)
 		return err
 	}
 	return nil
@@ -1714,6 +1729,9 @@ func (s *Server) processActivityPubMove(payload activityPayload, actor *models.A
 const activityPubMoveProcessingCooldown = 7 * 24 * time.Hour
 const activityPubRedisLockDefaultTTL = 15 * time.Minute
 
+// activityActorForMoveTargetURI mirrors ActivityPub::FetchRemoteAccountService
+// with suppress_errors: unusable responses and documents become
+// errActivityPubEventNotApplied, while transport errors are returned as-is.
 func (s *Server) activityActorForMoveTargetURI(actorURI string) (*models.Account, error) {
 	if s == nil || s.db == nil || strings.TrimSpace(actorURI) == "" {
 		return nil, activityPubEventNotAppliedf("Move target URI is missing")
@@ -1726,15 +1744,31 @@ func (s *Server) activityActorForMoveTargetURI(actorURI string) (*models.Account
 	}
 	actor, err := s.fetchActivityActor(actorURI)
 	if err != nil {
-		return nil, err
+		return nil, activityPubMoveTargetFetchError(err)
 	}
 	if actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
 		return nil, activityPubEventNotAppliedf("Move target actor is missing id or public key")
 	}
 	if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
-		return nil, err
+		return nil, activityPubMoveTargetFetchError(err)
 	}
-	return s.upsertRemoteActivityActorForRequest(actor, "")
+	account, err := s.upsertRemoteActivityActorForRequest(actor, "")
+	if errors.Is(err, errRemoteActivityActorIsLocal) {
+		return nil, fmt.Errorf("%w: %w", errActivityPubEventNotApplied, err)
+	}
+	return account, err
+}
+
+// activityPubMoveTargetFetchError keeps network failures retryable, like the
+// HTTP exceptions FetchRemoteActorService lets through, and turns error
+// responses, invalid documents and WebFinger mismatches (which it suppresses)
+// into errActivityPubEventNotApplied.
+func activityPubMoveTargetFetchError(err error) error {
+	var netErr net.Error
+	if err == nil || errors.As(err, &netErr) {
+		return err
+	}
+	return fmt.Errorf("%w: Move target could not be fetched: %w", errActivityPubEventNotApplied, err)
 }
 
 func activityPubMoveProcessingKey(prefix string, accountID int64) string {
@@ -4080,7 +4114,13 @@ func (s *Server) fetchActivityPubMentionAccountByHref(tx *gorm.DB, href string) 
 	if actor.ID == "" {
 		return nil, activityPubEventNotAppliedf("Mention actor %q is missing id", actorURI)
 	}
-	return s.upsertRemoteActivityActorDB(tx, actor)
+	account, err := s.upsertRemoteActivityActorDB(tx, actor)
+	if errors.Is(err, errRemoteActivityActorIsLocal) {
+		// FetchRemoteAccountService returns nil for actors hosted on this instance,
+		// so process_mention skips the mention instead of failing the status.
+		return nil, nil
+	}
+	return account, err
 }
 
 func (s *Server) activityPubMentionRef(item activityTag) statusMentionRef {
@@ -4850,12 +4890,9 @@ func (s *Server) processActivityPubUndoFollowWithTombstone(object activityObject
 	followDeleted := false
 	handled := false
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// Rails undo_follow only looks up @account's own relationship with target_account.
 		var follow models.Follow
-		query := tx.Where("account_id = ? AND target_account_id = ?", actor.ID, target.ID)
-		if object.ID != "" {
-			query = tx.Where("(account_id = ? AND target_account_id = ?) OR uri = ?", actor.ID, target.ID, object.ID)
-		}
-		err := query.First(&follow).Error
+		err := tx.Where("account_id = ? AND target_account_id = ?", actor.ID, target.ID).First(&follow).Error
 		if err == nil {
 			if err := deleteFollow(tx, follow); err != nil {
 				return err
@@ -4869,11 +4906,7 @@ func (s *Server) processActivityPubUndoFollowWithTombstone(object activityObject
 		}
 
 		var request models.FollowRequest
-		reqQuery := tx.Where("account_id = ? AND target_account_id = ?", actor.ID, target.ID)
-		if object.ID != "" {
-			reqQuery = tx.Where("(account_id = ? AND target_account_id = ?) OR uri = ?", actor.ID, target.ID, object.ID)
-		}
-		if err := reqQuery.First(&request).Error; err != nil {
+		if err := tx.Where("account_id = ? AND target_account_id = ?", actor.ID, target.ID).First(&request).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				if !tombstoneOnMiss {
 					return nil

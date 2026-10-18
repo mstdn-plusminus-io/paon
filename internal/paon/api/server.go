@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -1422,11 +1423,52 @@ func railsMultipartFormMissingBoundary(contentType string) bool {
 }
 
 func formOverrideMethod(req *http.Request) string {
+	if method, ok := multipartOverrideMethod(req); ok {
+		return method
+	}
 	values, ok := cacheURLEncodedPostForm(req)
 	if !ok {
 		return ""
 	}
 	return normalizedOverrideMethod(values.Get("_method"))
+}
+
+// multipartOverrideMethodPeekLimit bounds how much of a multipart body is
+// buffered while looking for the _method field. HTML forms emit _method
+// before any file input, so the field is found long before the limit.
+const multipartOverrideMethodPeekLimit = 1 << 20
+
+// multipartOverrideMethod reads the _method field from a multipart/form-data
+// body like Rack::MethodOverride does, then restores the consumed bytes so
+// handlers still see the complete original body.
+func multipartOverrideMethod(req *http.Request) (string, bool) {
+	if req == nil || req.Body == nil {
+		return "", false
+	}
+	mediaType, params, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, echo.MIMEMultipartForm) || params["boundary"] == "" {
+		return "", false
+	}
+	original := req.Body
+	var consumed bytes.Buffer
+	reader := multipart.NewReader(io.TeeReader(io.LimitReader(original, multipartOverrideMethodPeekLimit), &consumed), params["boundary"])
+	method := ""
+	for {
+		part, err := reader.NextRawPart()
+		if err != nil {
+			break
+		}
+		if part.FormName() == "_method" && part.FileName() == "" {
+			value, _ := io.ReadAll(io.LimitReader(part, 64))
+			method = normalizedOverrideMethod(string(value))
+			break
+		}
+	}
+	req.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(consumed.Bytes()), original), original}
+	return method, true
 }
 
 func cacheURLEncodedPostForm(req *http.Request) (url.Values, bool) {
@@ -3229,10 +3271,11 @@ func (s *Server) settingsPage(c *echo.Context) error {
 	if err := requireHTMLOnlyOptionalFormat(c); err != nil {
 		return err
 	}
+	path := settingsPathWithoutFormat(c.Request().URL.Path, c.Param("format"))
 	var user *models.User
 	var account *models.Account
 	var err error
-	if settingsPageSkipsFunctional(c.Request().URL.Path) {
+	if settingsPageSkipsFunctional(path) {
 		user, _, err = s.currentUserIncludingDisabled(c)
 		if err != nil {
 			return c.Redirect(http.StatusFound, "/auth/sign_in?redirect_to="+url.QueryEscape(c.Request().URL.RequestURI()))
@@ -3253,7 +3296,7 @@ func (s *Server) settingsPage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	if c.Request().URL.Path == "/settings/two_factor_authentication_methods" && !user.OTPRequiredForLogin {
+	if path == "/settings/two_factor_authentication_methods" && !user.OTPRequiredForLogin {
 		params := url.Values{}
 		for _, key := range []string{"notice", "error"} {
 			if value := strings.TrimSpace(c.QueryParam(key)); value != "" {
@@ -3265,7 +3308,7 @@ func (s *Server) settingsPage(c *echo.Context) error {
 		}
 		return c.Redirect(http.StatusFound, "/settings/otp_authentication")
 	}
-	if html, ok, err := s.settingsHTMLWithOptions(c.Request().URL.Path, *user, *account, settingsHTMLOptions{
+	if html, ok, err := s.settingsHTMLWithOptions(path, *user, *account, settingsHTMLOptions{
 		Notice:                     c.QueryParam("notice"),
 		ErrorText:                  c.QueryParam("error"),
 		Permissions:                permissions,
@@ -3280,7 +3323,7 @@ func (s *Server) settingsPage(c *echo.Context) error {
 		}
 		return c.HTML(http.StatusOK, html)
 	}
-	html, err := s.renderer.SettingsHTML(c.Request().URL.Path, account, s.settingStringValue("site_title", s.cfg.Title))
+	html, err := s.renderer.SettingsHTML(path, account, s.settingStringValue("site_title", s.cfg.Title))
 	if err != nil {
 		return err
 	}
@@ -4028,12 +4071,43 @@ func (s *Server) homeTimeline(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	query := s.homeTimelineQuery(account)
+	statusIDs, err := s.homeTimelineStatusIDs(c, account)
+	if err != nil {
+		return err
+	}
+	query := s.statusQuery().Where("statuses.id IN ?", statusIDs)
 	statusCode := http.StatusOK
 	if s.homeFeedRegenerating(c.Request().Context(), account.ID) {
 		statusCode = http.StatusPartialContent
 	}
 	return s.statusListWithStatus(c, query, statusCode)
+}
+
+// homeTimelineStatusIDs takes the newest matching statuses of the account and
+// of each followed account through index_statuses_20190820 and merges them. A
+// LEFT JOIN with follows ordered by statuses.id lets PostgreSQL walk the whole
+// statuses primary key backwards until enough home statuses turn up, which
+// never stops early for accounts that follow nobody and have not posted.
+func (s *Server) homeTimelineStatusIDs(c *echo.Context, account *models.Account) ([]int64, error) {
+	limitValue := limit(c, 20, 40)
+	accountStatuses := homeTimelineConditions(s.db.Table("statuses").Select("statuses.id"), account).
+		Where("statuses.account_id = home_accounts.account_id")
+	accountStatuses = applyStatusListPagination(c, accountStatuses, "statuses.id").Limit(limitValue)
+	order := "home_statuses.id DESC"
+	if queryParamValuePresent(c, "min_id") {
+		order = "home_statuses.id ASC"
+	}
+	statusIDs := []int64{}
+	err := s.db.Raw(`SELECT home_statuses.id
+		FROM (
+			SELECT CAST(? AS bigint) AS account_id
+			UNION
+			SELECT follows.target_account_id FROM follows WHERE follows.account_id = ?
+		) home_accounts
+		CROSS JOIN LATERAL (?) home_statuses
+		ORDER BY `+order+`
+		LIMIT ?`, account.ID, account.ID, accountStatuses, limitValue).Scan(&statusIDs).Error
+	return statusIDs, err
 }
 
 func (s *Server) homeFeedRegenerating(ctx context.Context, accountID int64) bool {
@@ -4166,7 +4240,11 @@ func (s *Server) accountStatuses(c *echo.Context) error {
 }
 
 func (s *Server) homeTimelineQuery(account *models.Account) *gorm.DB {
-	query := s.statusQuery().
+	return homeTimelineConditions(s.statusQuery(), account)
+}
+
+func homeTimelineConditions(query *gorm.DB, account *models.Account) *gorm.DB {
+	query = query.
 		Joins("LEFT JOIN follows ON follows.target_account_id = statuses.account_id AND follows.account_id = ?", account.ID).
 		Where("statuses.deleted_at IS NULL").
 		Where("(statuses.account_id = ? OR (follows.id IS NOT NULL AND statuses.visibility IN ?))", account.ID, []int{0, 1, 2})
@@ -5538,10 +5616,7 @@ func (s *Server) reblogStatus(c *echo.Context) error {
 	}
 	reblogCreated := false
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		err := tx.Preload("Account.AccountStat").
-			Preload("Account.User.Role").
-			Preload("Reblog.Account.AccountStat").
-			Preload("Reblog.Account.User.Role").
+		err := statusAccountSerializerPreloads(tx).
 			Where("account_id = ? AND reblog_of_id = ? AND deleted_at IS NULL", account.ID, target.ID).
 			First(&reblog).Error
 		if err == nil {
@@ -5609,10 +5684,7 @@ func (s *Server) unreblogStatus(c *echo.Context) error {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	var reblog models.Status
-	if err := s.db.Preload("Account.AccountStat").
-		Preload("Account.User.Role").
-		Preload("Reblog.Account.AccountStat").
-		Preload("Reblog.Account.User.Role").
+	if err := statusAccountSerializerPreloads(s.db).
 		Where("account_id = ? AND reblog_of_id = ? AND deleted_at IS NULL", account.ID, target.ID).
 		First(&reblog).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -5632,10 +5704,7 @@ func (s *Server) unreblogStatus(c *echo.Context) error {
 	}
 	defer releaseDistributionLock()
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		err := tx.Preload("Account.AccountStat").
-			Preload("Account.User.Role").
-			Preload("Reblog.Account.AccountStat").
-			Preload("Reblog.Account.User.Role").
+		err := statusAccountSerializerPreloads(tx).
 			Where("account_id = ? AND reblog_of_id = ? AND deleted_at IS NULL", account.ID, target.ID).
 			First(&reblog).Error
 		if err != nil {
@@ -6638,9 +6707,7 @@ func (s *Server) statusQuery() *gorm.DB {
 	if s.db == nil {
 		return nil
 	}
-	return s.db.Model(&models.Status{}).
-		Preload("Account.AccountStat").
-		Preload("Account.User.Role").
+	return statusAccountSerializerPreloads(s.db.Model(&models.Status{})).
 		Preload("StatusStat").
 		Preload("Application").
 		Preload("MediaAttachments").
@@ -6648,8 +6715,6 @@ func (s *Server) statusQuery() *gorm.DB {
 		Preload("Tags").
 		Preload("PreviewCards").
 		Preload("Poll.Votes").
-		Preload("Reblog.Account.AccountStat").
-		Preload("Reblog.Account.User.Role").
 		Preload("Reblog.StatusStat").
 		Preload("Reblog.MediaAttachments").
 		Preload("Reblog.Mentions.Account.AccountStat").
@@ -9022,6 +9087,9 @@ func (s *Server) fetchRemoteMentionAccount(tx *gorm.DB, ref statusMentionRef) (*
 		return nil, nil
 	}
 	account, err := s.upsertRemoteActivityActorDB(tx, actor)
+	if errors.Is(err, errRemoteActivityActorIsLocal) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}

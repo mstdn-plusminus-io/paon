@@ -83,9 +83,7 @@ func (s *Server) publishNotificationIDWithContext(ctx context.Context, id int64)
 		return
 	}
 	var notification models.Notification
-	if err := s.db.WithContext(ctx).
-		Model(&models.Notification{}).
-		Preload("FromAccount.AccountStat").
+	if err := accountRelationSerializerPreloads(s.db.WithContext(ctx).Model(&models.Notification{}), "FromAccount").
 		Where("id = ?", id).
 		First(&notification).Error; err != nil {
 		return

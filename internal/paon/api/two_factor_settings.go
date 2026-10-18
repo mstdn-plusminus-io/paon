@@ -73,9 +73,8 @@ func (s *Server) createSettingsOTPAuthentication(c *echo.Context) error {
 	if err != nil {
 		return redirectToSignIn(c)
 	}
-	if user.OTPRequiredForLogin {
-		return c.Redirect(http.StatusFound, "/settings/two_factor_authentication_methods")
-	}
+	// Rails guards only #show with verify_otp_not_enabled; #create stays reachable for
+	// OTP users so the 2FA methods "Edit" link can re-provision the authenticator app.
 	if handled, err := s.settingsRequireChallenge(c, user, "/settings/otp_authentication", s.webLocale(c, user)); handled || err != nil {
 		return err
 	}

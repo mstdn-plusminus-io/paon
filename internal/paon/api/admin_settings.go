@@ -409,9 +409,8 @@ func adminSiteUploadPreviewDeleteHTML(id int64, imageURL string, locale string) 
 	if id == 0 || imageURL == "" {
 		return ""
 	}
+	// Rails renders this as `link_to ..., data: { method: :delete }` inside the
+	// settings form; a nested <form> would close the outer settings form early.
 	return `<img src="` + html.EscapeString(imageURL) + `" class="fields-group__thumbnail" alt="">
-    <form method="post" action="/admin/site_uploads/` + strconv.FormatInt(id, 10) + `" class="inline-form">
-      <input type="hidden" name="_method" value="delete">
-      <button type="submit" class="link-button link-button--destructive">` + html.EscapeString(adminT(locale, "admin.site_uploads.delete", "Delete")) + `</button>
-    </form>`
+    <a class="link-button link-button--destructive" data-method="delete" href="/admin/site_uploads/` + strconv.FormatInt(id, 10) + `"><i class="fa fa-trash fa-fw"></i> ` + html.EscapeString(adminT(locale, "admin.site_uploads.delete", "Delete uploaded file")) + `</a>`
 }
