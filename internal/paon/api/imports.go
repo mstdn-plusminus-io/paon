@@ -124,12 +124,12 @@ func (s *Server) createSettingsImport(c *echo.Context) error {
 	if s.db == nil {
 		return c.Redirect(http.StatusFound, "/settings/imports?error="+url.QueryEscape(settingsDatabaseUnavailableMessage(locale)))
 	}
-	importType := strings.TrimSpace(c.FormValue("form_import[type]"))
+	importType := strings.TrimSpace(rackFormParamValue(c.Request(), "form_import[type]"))
 	typeValue, ok := importTypeByName[importType]
 	if !ok {
 		return s.renderSettingsImportsError(c, account.ID, user, settingsT(locale, "imports.errors.invalid_type", "Import type is invalid"))
 	}
-	overwrite := strings.EqualFold(c.FormValue("form_import[mode]"), "overwrite")
+	overwrite := settingsImportOverwriteRequested(c.Request())
 	fileHeader, err := c.FormFile("form_import[data]")
 	if err != nil {
 		return s.renderSettingsImportsError(c, account.ID, user, settingsT(locale, "imports.errors.required", "CSV file is required"))
@@ -268,6 +268,29 @@ func (s *Server) renderSettingsImportsError(c *echo.Context, accountID int64, us
 		return err
 	}
 	return c.HTML(http.StatusOK, importsHTML(imports, "", errorText, renderArgs...))
+}
+
+// settingsImportOverwriteRequested reads form_import[mode] the way Rack does:
+// simple_form emits an empty hidden form_import[mode] before the radio buttons,
+// so the checked radio is the last submitted value, not the first.
+func settingsImportOverwriteRequested(req *http.Request) bool {
+	return strings.EqualFold(rackFormParamValue(req, "form_import[mode]"), "overwrite")
+}
+
+// rackFormParamValue mirrors Rack's params for a scalar key on an already
+// parsed request: the last body value wins, and the query string is only used
+// when the body does not contain the key.
+func rackFormParamValue(req *http.Request, key string) string {
+	if req == nil {
+		return ""
+	}
+	if _, ok := req.PostForm[key]; ok {
+		return lastFormValue(req.PostForm, key)
+	}
+	if req.URL == nil {
+		return ""
+	}
+	return lastFormValue(req.URL.Query(), key)
 }
 
 func requestHasNestedFormOrFilePrefix(req *http.Request, prefix string, maxMemory int64) (bool, error) {
