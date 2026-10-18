@@ -59,7 +59,7 @@ func (s *Server) resolveSearchAccountURL(raw string) (*models.Account, error) {
 	}
 	if username := s.localAccountUsernameFromURL(raw); username != "" {
 		var account models.Account
-		err := s.db.Preload("AccountStat").Preload("User.Role").
+		err := accountSerializerPreloads(s.db).
 			Where("lower(username) = ? AND (domain IS NULL OR domain = '')", strings.ToLower(username)).
 			First(&account).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -102,7 +102,7 @@ func resolveSearchAccountKnownFallbackAllowed(err error) bool {
 
 func (s *Server) resolveKnownRemoteAccountFromDB(raw string) (*models.Account, error) {
 	var account models.Account
-	err := s.db.Preload("AccountStat").Preload("User.Role").
+	err := accountSerializerPreloads(s.db).
 		Where("uri = ?", raw).
 		First(&account).Error
 	if err == nil {

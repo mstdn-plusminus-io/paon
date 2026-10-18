@@ -27,9 +27,7 @@ func (s *Server) accountFollowers(c *echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 
-	query := s.db.Model(&models.Follow{}).
-		Preload("Account.AccountStat").
-		Preload("Account.User.Role").
+	query := accountRelationSerializerPreloads(s.db.Model(&models.Follow{}), "Account").
 		Joins("JOIN accounts ON accounts.id = follows.account_id").
 		Where("follows.target_account_id = ?", target.ID)
 	query = applyFollowPagination(c, query, "follows")
@@ -71,9 +69,7 @@ func (s *Server) accountFollowing(c *echo.Context) error {
 		return c.JSON(http.StatusOK, []any{})
 	}
 
-	query := s.db.Model(&models.Follow{}).
-		Preload("TargetAccount.AccountStat").
-		Preload("TargetAccount.User.Role").
+	query := accountRelationSerializerPreloads(s.db.Model(&models.Follow{}), "TargetAccount").
 		Joins("JOIN accounts ON accounts.id = follows.target_account_id").
 		Where("follows.account_id = ?", target.ID)
 	query = applyFollowPagination(c, query, "follows")
