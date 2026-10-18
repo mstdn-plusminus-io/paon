@@ -144,6 +144,24 @@ func (s *Server) meiliReindexPrivateStatusesForAccountsBestEffort(ctx context.Co
 	}
 }
 
+// queueMeiliPrivateStatusReindexBestEffort is the batched form of
+// meiliReindexPrivateStatusesForAccountsBestEffort for paths that change many
+// follows of the same account (account migration): the reindex runs once per
+// account and window in a task, and inline only when it cannot be enqueued.
+func (s *Server) queueMeiliPrivateStatusReindexBestEffort(ctx context.Context, accountIDs ...int64) {
+	if !s.cfg.MeiliEnabled || s.db == nil || len(accountIDs) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	inline := make([]int64, 0, len(accountIDs))
+	for _, accountID := range meiliUniqueInt64s(accountIDs) {
+		if !s.enqueueMeiliPrivateReindexTask(ctx, accountID, now) {
+			inline = append(inline, accountID)
+		}
+	}
+	s.meiliReindexPrivateStatusesForAccountsBestEffort(ctx, inline...)
+}
+
 func (s *Server) meiliReindexPrivateStatusesForAccountBestEffort(ctx context.Context, accountID int64) {
 	lastID := int64(0)
 	for {

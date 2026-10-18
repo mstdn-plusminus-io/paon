@@ -47,6 +47,8 @@ const (
 	asynqTaskRemoveFeaturedTag        = "remove_featured_tag"
 	asynqTaskTagUnmerge               = "tag_unmerge"
 	asynqTaskUnfollowFollow           = "unfollow_follow"
+	asynqTaskMove                     = "move"
+	asynqTaskMeiliPrivateReindex      = "meili:private_reindex"
 	asynqTaskPublishScheduledStatus   = "publish:scheduled_status"
 	asynqTaskPublishAnnouncement      = "publish:announcement"
 	asynqTaskUnpublishAnnouncement    = "unpublish:announcement"
@@ -396,6 +398,12 @@ type asynqUnfollowFollowPayload struct {
 	OldTargetAccountID int64 `json:"old_target_account_id"`
 	NewTargetAccountID int64 `json:"new_target_account_id"`
 	BypassLocked       bool  `json:"bypass_locked,omitempty"`
+}
+
+// asynqMovePayload mirrors MoveWorker.perform(source_account_id, target_account_id).
+type asynqMovePayload struct {
+	SourceAccountID int64 `json:"source_account_id"`
+	TargetAccountID int64 `json:"target_account_id"`
 }
 
 // asynqTriggerWebhookPayload mirrors TriggerWebhookWorker.perform.
@@ -881,6 +889,45 @@ func (s *Server) enqueueUnfollowFollowTask(followerAccountID int64, oldTargetAcc
 	defer cancel()
 	_, err = s.asynqClient.EnqueueContext(ctx, task)
 	return err == nil
+}
+
+// enqueueMoveTask mirrors MoveWorker.perform_async on Rails' default queue.
+func (s *Server) enqueueMoveTask(sourceAccountID int64, targetAccountID int64) bool {
+	if s == nil || s.asynqClient == nil || sourceAccountID == 0 || targetAccountID == 0 {
+		return false
+	}
+	payload, err := json.Marshal(asynqMovePayload{SourceAccountID: sourceAccountID, TargetAccountID: targetAccountID})
+	if err != nil {
+		return false
+	}
+	task := asynq.NewTask(asynqTaskMove, payload, asynq.Queue(s.asynqQueue(asynqQueueDefault)), asynq.MaxRetry(25))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = s.asynqClient.EnqueueContext(ctx, task)
+	return err == nil
+}
+
+// meiliPrivateReindexWindow batches the private-status reindexes requested by an
+// account migration fan-out (one unfollow_follow task per follower): requests in
+// the same window share one task that runs after the window closes, so it sees
+// every follow committed in that window.
+const meiliPrivateReindexWindow = time.Minute
+
+func (s *Server) enqueueMeiliPrivateReindexTask(ctx context.Context, accountID int64, now time.Time) bool {
+	if s == nil || s.asynqClient == nil || accountID == 0 {
+		return false
+	}
+	payload, err := json.Marshal(asynqAccountPayload{AccountID: accountID})
+	if err != nil {
+		return false
+	}
+	window := now.Truncate(meiliPrivateReindexWindow)
+	taskID := "meili_private_reindex:" + strconv.FormatInt(accountID, 10) + ":" + strconv.FormatInt(window.Unix(), 10)
+	task := asynq.NewTask(asynqTaskMeiliPrivateReindex, payload, asynq.Queue(s.asynqQueue(asynqQueuePull)), asynq.MaxRetry(0), asynq.ProcessAt(window.Add(meiliPrivateReindexWindow)), asynq.TaskID(taskID))
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err = s.asynqClient.EnqueueContext(ctx, task)
+	return asynqEnqueueAccepted(err)
 }
 
 // enqueuePublishScheduledStatusTask mirrors PublishScheduledStatusWorker.perform_at.
@@ -1850,6 +1897,8 @@ func (s *Server) newAsynqServeMux() *asynq.ServeMux {
 	mux.HandleFunc(asynqTaskRemoveFeaturedTag, s.handleAsynqRemoveFeaturedTag)
 	mux.HandleFunc(asynqTaskTagUnmerge, s.handleAsynqTagUnmerge)
 	mux.HandleFunc(asynqTaskUnfollowFollow, s.handleAsynqUnfollowFollow)
+	mux.HandleFunc(asynqTaskMove, s.handleAsynqMove)
+	mux.HandleFunc(asynqTaskMeiliPrivateReindex, s.handleAsynqMeiliPrivateReindex)
 	mux.HandleFunc(asynqTaskPublishScheduledStatus, s.handleAsynqPublishScheduledStatus)
 	mux.HandleFunc(asynqTaskPublishAnnouncement, s.handleAsynqPublishAnnouncement)
 	mux.HandleFunc(asynqTaskUnpublishAnnouncement, s.handleAsynqUnpublishAnnouncement)
@@ -2835,6 +2884,34 @@ func (s *Server) handleAsynqUnfollowFollow(ctx context.Context, t *asynq.Task) e
 		return nil
 	}
 	return s.performUnfollowFollowMigration(ctx, p.FollowerAccountID, p.OldTargetAccountID, p.NewTargetAccountID, p.BypassLocked)
+}
+
+// handleAsynqMove mirrors MoveWorker: migrate local relationships (follows,
+// notes, blocks and mutes) from a moved account to its new account. Failures
+// retry only this task; they do not touch the Move's move_in_progress marker.
+func (s *Server) handleAsynqMove(ctx context.Context, t *asynq.Task) error {
+	var p asynqMovePayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("move: %w", err)
+	}
+	if s == nil || s.db == nil || p.SourceAccountID == 0 || p.TargetAccountID == 0 {
+		return nil
+	}
+	return s.performMoveWorker(ctx, p.SourceAccountID, p.TargetAccountID)
+}
+
+// handleAsynqMeiliPrivateReindex reindexes one account's private statuses after
+// its followers changed (see enqueueMeiliPrivateReindexTask).
+func (s *Server) handleAsynqMeiliPrivateReindex(ctx context.Context, t *asynq.Task) error {
+	var p asynqAccountPayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("meili private reindex: %w", err)
+	}
+	if s == nil || s.db == nil || p.AccountID == 0 {
+		return nil
+	}
+	s.meiliReindexPrivateStatusesForAccountsBestEffort(ctx, p.AccountID)
+	return nil
 }
 
 // handleAsynqPublishScheduledStatus mirrors PublishScheduledStatusWorker.
