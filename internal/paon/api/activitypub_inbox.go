@@ -5249,12 +5249,9 @@ func (s *Server) processActivityPubUndoFollowWithTombstone(object activityObject
 	followDeleted := false
 	handled := false
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// Rails undo_follow only looks up @account's own relationship with target_account.
 		var follow models.Follow
-		query := tx.Where("account_id = ? AND target_account_id = ?", actor.ID, target.ID)
-		if object.ID != "" {
-			query = tx.Where("(account_id = ? AND target_account_id = ?) OR uri = ?", actor.ID, target.ID, object.ID)
-		}
-		err := query.First(&follow).Error
+		err := tx.Where("account_id = ? AND target_account_id = ?", actor.ID, target.ID).First(&follow).Error
 		if err == nil {
 			if err := deleteFollow(tx, follow); err != nil {
 				return err
@@ -5268,11 +5265,7 @@ func (s *Server) processActivityPubUndoFollowWithTombstone(object activityObject
 		}
 
 		var request models.FollowRequest
-		reqQuery := tx.Where("account_id = ? AND target_account_id = ?", actor.ID, target.ID)
-		if object.ID != "" {
-			reqQuery = tx.Where("(account_id = ? AND target_account_id = ?) OR uri = ?", actor.ID, target.ID, object.ID)
-		}
-		if err := reqQuery.First(&request).Error; err != nil {
+		if err := tx.Where("account_id = ? AND target_account_id = ?", actor.ID, target.ID).First(&request).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				if !tombstoneOnMiss {
 					return nil
