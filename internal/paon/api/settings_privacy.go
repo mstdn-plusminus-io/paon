@@ -77,7 +77,20 @@ func (s *Server) updateSettingsPrivacy(c *echo.Context) error {
 func (s *Server) renderSettingsPrivacyError(c *echo.Context, account models.Account, user *models.User, errorText string) error {
 	settings := decodeUserSettings(user.Settings.String)
 	locale := s.webLocale(c, user)
-	return c.HTML(http.StatusOK, settingsPrivacyHTMLWithMessages(account, settings, "", errorText, locale, settingsWebTheme(settings)))
+	return c.HTML(http.StatusOK, settingsPrivacyHTMLWithMessages(account, settingsPrivacyRenderSettings(settings, s.settingBoolValue("noindex", false)), "", errorText, locale, settingsWebTheme(settings)))
+}
+
+// settingsPrivacyRenderSettings applies Rails UserSettings `setting :noindex,
+// default: -> { ::Setting.noindex }` for rendering only: a missing or nil user
+// value falls back to the site-wide default. Nothing is persisted.
+func settingsPrivacyRenderSettings(settings map[string]any, noindexDefault bool) map[string]any {
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	if value, ok := settings["noindex"]; !ok || value == nil {
+		settings["noindex"] = noindexDefault
+	}
+	return settings
 }
 
 var errSettingsPrivacyMissingAccountRoot = errors.New("settings privacy account root parameter is missing")

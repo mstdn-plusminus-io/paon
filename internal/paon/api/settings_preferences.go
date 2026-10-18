@@ -39,6 +39,7 @@ func (s *Server) updateSettingsPreferences(c *echo.Context) error {
 			return err
 		}
 	}
+	locale = s.settingsPreferencesSavedLocale(c, *user, userUpdates, locale)
 	return c.Redirect(http.StatusFound, settingsPreferencesRedirectPath(c)+"?notice="+url.QueryEscape(settingsChangeSavedMessage(locale)))
 }
 
@@ -241,8 +242,37 @@ func stringAllowed(value string, allowed []string) bool {
 	return false
 }
 
+// settingsPreferencesSavedLocale mirrors Rails Settings::Preferences::BaseController#update,
+// which sets I18n.locale = current_user.locale before building the saved notice, so the
+// notice is rendered in the newly selected locale.
+func (s *Server) settingsPreferencesSavedLocale(c *echo.Context, user models.User, userUpdates map[string]any, current string) string {
+	value, ok := userUpdates["locale"].(sql.NullString)
+	if !ok {
+		return current
+	}
+	user.Locale = value
+	return s.webLocale(c, &user)
+}
+
+// settingsPathWithoutFormat strips an optional Rails `.:format` suffix (only html is
+// rendered by settings pages) so `/settings/preferences/other.html` is handled like
+// `/settings/preferences/other`.
+func settingsPathWithoutFormat(path string, format string) string {
+	if format = strings.TrimSpace(format); format != "" {
+		suffix := "." + format
+		if len(path) > len(suffix) && strings.EqualFold(path[len(path)-len(suffix):], suffix) {
+			return path[:len(path)-len(suffix)]
+		}
+	}
+	const htmlSuffix = ".html"
+	if len(path) > len(htmlSuffix) && strings.EqualFold(path[len(path)-len(htmlSuffix):], htmlSuffix) {
+		return path[:len(path)-len(htmlSuffix)]
+	}
+	return path
+}
+
 func settingsPreferencesRedirectPath(c *echo.Context) string {
-	path := c.Request().URL.Path
+	path := settingsPathWithoutFormat(c.Request().URL.Path, c.Param("format"))
 	switch path {
 	case "/settings/preferences/notifications", "/settings/preferences/other":
 		return path
