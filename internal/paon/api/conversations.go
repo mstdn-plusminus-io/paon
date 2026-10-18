@@ -129,14 +129,13 @@ func (s *Server) deleteConversation(c *echo.Context) error {
 }
 
 func (s *Server) conversationQuery() *gorm.DB {
-	return s.db.Model(&models.AccountConversation{}).
-		Preload("LastStatus.Account.AccountStat").
+	query := accountRelationSerializerPreloads(s.db.Model(&models.AccountConversation{}), "LastStatus.Account")
+	return accountRelationSerializerPreloads(query, "LastStatus.Reblog.Account").
 		Preload("LastStatus.StatusStat").
 		Preload("LastStatus.MediaAttachments").
 		Preload("LastStatus.Mentions.Account.AccountStat").
 		Preload("LastStatus.Tags").
 		Preload("LastStatus.PreviewCards").
-		Preload("LastStatus.Reblog.Account.AccountStat").
 		Preload("LastStatus.Reblog.StatusStat").
 		Preload("LastStatus.Reblog.MediaAttachments").
 		Preload("LastStatus.Reblog.Mentions.Account.AccountStat").
@@ -169,7 +168,7 @@ func (s *Server) hydrateConversationParticipants(conversations []models.AccountC
 	}
 
 	var accounts []models.Account
-	if err := s.db.Preload("AccountStat").Preload("User.Role").Where("id IN ?", ids).Find(&accounts).Error; err != nil {
+	if err := accountSerializerPreloads(s.db).Where("id IN ?", ids).Find(&accounts).Error; err != nil {
 		return err
 	}
 	byID := map[int64]models.Account{}
@@ -185,7 +184,7 @@ func (s *Server) hydrateConversationParticipants(conversations []models.AccountC
 		}
 		if len(participants) == 0 {
 			var owner models.Account
-			if err := s.db.Preload("AccountStat").Preload("User.Role").Where("id = ?", conversations[i].AccountID).First(&owner).Error; err == nil {
+			if err := accountSerializerPreloads(s.db).Where("id = ?", conversations[i].AccountID).First(&owner).Error; err == nil {
 				participants = append(participants, owner)
 			}
 		}

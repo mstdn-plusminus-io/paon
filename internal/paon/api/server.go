@@ -6169,10 +6169,7 @@ func (s *Server) reblogStatus(c *echo.Context) error {
 	}
 	reblogCreated := false
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		err := tx.Preload("Account.AccountStat").
-			Preload("Account.User.Role").
-			Preload("Reblog.Account.AccountStat").
-			Preload("Reblog.Account.User.Role").
+		err := statusAccountSerializerPreloads(tx).
 			Where("account_id = ? AND reblog_of_id = ? AND deleted_at IS NULL", account.ID, target.ID).
 			First(&reblog).Error
 		if err == nil {
@@ -6242,10 +6239,7 @@ func (s *Server) unreblogStatus(c *echo.Context) error {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	var reblog models.Status
-	if err := s.db.Preload("Account.AccountStat").
-		Preload("Account.User.Role").
-		Preload("Reblog.Account.AccountStat").
-		Preload("Reblog.Account.User.Role").
+	if err := statusAccountSerializerPreloads(s.db).
 		Where("account_id = ? AND reblog_of_id = ? AND deleted_at IS NULL", account.ID, target.ID).
 		First(&reblog).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -6265,10 +6259,7 @@ func (s *Server) unreblogStatus(c *echo.Context) error {
 	}
 	defer releaseDistributionLock()
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		err := tx.Preload("Account.AccountStat").
-			Preload("Account.User.Role").
-			Preload("Reblog.Account.AccountStat").
-			Preload("Reblog.Account.User.Role").
+		err := statusAccountSerializerPreloads(tx).
 			Where("account_id = ? AND reblog_of_id = ? AND deleted_at IS NULL", account.ID, target.ID).
 			First(&reblog).Error
 		if err != nil {
@@ -7330,9 +7321,7 @@ func (s *Server) statusQuery() *gorm.DB {
 	if s.db == nil {
 		return nil
 	}
-	return s.db.Model(&models.Status{}).
-		Preload("Account.AccountStat").
-		Preload("Account.User.Role").
+	return statusAccountSerializerPreloads(s.db.Model(&models.Status{})).
 		Preload("StatusStat").
 		Preload("Application").
 		Preload("MediaAttachments").
@@ -7343,8 +7332,6 @@ func (s *Server) statusQuery() *gorm.DB {
 		Preload("PreviewCards.AuthorAccount.User.Role").
 		Preload("PreviewCardStatuses").
 		Preload("Poll.Votes").
-		Preload("Reblog.Account.AccountStat").
-		Preload("Reblog.Account.User.Role").
 		Preload("Reblog.StatusStat").
 		Preload("Reblog.MediaAttachments").
 		Preload("Reblog.Mentions.Account.AccountStat").

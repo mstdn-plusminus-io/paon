@@ -61,9 +61,7 @@ func (s *Server) followRequests(c *echo.Context) error {
 		return err
 	}
 
-	query := s.db.Model(&models.FollowRequest{}).
-		Preload("Account.AccountStat").
-		Preload("Account.User.Role").
+	query := accountRelationSerializerPreloads(s.db.Model(&models.FollowRequest{}), "Account").
 		Joins("JOIN accounts ON accounts.id = follow_requests.account_id").
 		Where("follow_requests.target_account_id = ? AND accounts.suspended_at IS NULL", account.ID)
 	if maxID := c.QueryParam("max_id"); queryParamValuePresent(c, "max_id") {

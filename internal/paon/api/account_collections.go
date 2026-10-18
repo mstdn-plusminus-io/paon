@@ -71,9 +71,7 @@ func accountCollectionLimit(c *echo.Context) int {
 }
 
 func accountCollectionQuery(c *echo.Context, query *gorm.DB, table string, accountID int64, limitValue int) *gorm.DB {
-	query = query.
-		Preload("TargetAccount.AccountStat").
-		Preload("TargetAccount.User.Role").
+	query = accountRelationSerializerPreloads(query, "TargetAccount").
 		Joins("JOIN accounts ON accounts.id = "+table+".target_account_id").
 		Where(table+".account_id = ? AND accounts.suspended_at IS NULL", accountID)
 	if maxID := c.QueryParam("max_id"); queryParamValuePresent(c, "max_id") {

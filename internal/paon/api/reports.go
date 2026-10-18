@@ -119,7 +119,7 @@ func (s *Server) createReport(c *echo.Context) error {
 		}
 		return err
 	}
-	if err := s.db.Preload("Account").Preload("TargetAccount.AccountStat").Preload("TargetAccount.User.Role").First(&report, report.ID).Error; err != nil {
+	if err := accountRelationSerializerPreloads(s.db.Preload("Account"), "TargetAccount").First(&report, report.ID).Error; err != nil {
 		return err
 	}
 	if err := s.hydrateReportCollectionIDs(&report); err != nil {

@@ -107,7 +107,7 @@ func (s *Server) showAdminAccount(c *echo.Context) error {
 		return err
 	}
 	var account models.Account
-	if err := s.db.Preload("User.Role").Preload("AccountStat").Where("accounts.id = ?", c.Param("id")).First(&account).Error; err != nil {
+	if err := accountSerializerPreloads(s.db).Where("accounts.id = ?", c.Param("id")).First(&account).Error; err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	out, err := s.adminAccountFromModel(account)
@@ -1039,7 +1039,7 @@ func adminAccountAuditAction(account *models.Account, actionType string) (string
 
 func (s *Server) loadAdminAccount(id string) (*models.Account, error) {
 	var account models.Account
-	if err := s.db.Preload("User.Role").Preload("AccountStat").Where("accounts.id = ?", id).First(&account).Error; err != nil {
+	if err := accountSerializerPreloads(s.db).Where("accounts.id = ?", id).First(&account).Error; err != nil {
 		return nil, err
 	}
 	return &account, nil
@@ -1129,11 +1129,9 @@ func rawStringSlice(value any) []string {
 }
 
 func (s *Server) adminAccountQuery(c *echo.Context) *gorm.DB {
-	query := s.db.Model(&models.Account{}).
+	query := accountSerializerPreloads(s.db.Model(&models.Account{})).
 		Select("accounts.*").
-		Joins("LEFT JOIN users ON users.account_id = accounts.id").
-		Preload("User.Role").
-		Preload("AccountStat")
+		Joins("LEFT JOIN users ON users.account_id = accounts.id")
 
 	origin := adminAccountOriginFilter(c)
 	switch origin {
@@ -1325,15 +1323,11 @@ func (s *Server) adminReportQuery(c *echo.Context) *gorm.DB {
 }
 
 func (s *Server) adminReportBaseQuery() *gorm.DB {
-	return s.db.Model(&models.Report{}).
-		Preload("Account.User.Role").
-		Preload("Account.AccountStat").
-		Preload("TargetAccount.User.Role").
-		Preload("TargetAccount.AccountStat").
-		Preload("AssignedAccount.User.Role").
-		Preload("AssignedAccount.AccountStat").
-		Preload("ActionTakenByAccount.User.Role").
-		Preload("ActionTakenByAccount.AccountStat")
+	query := s.db.Model(&models.Report{})
+	for _, relation := range []string{"Account", "TargetAccount", "AssignedAccount", "ActionTakenByAccount"} {
+		query = accountRelationSerializerPreloads(query, relation)
+	}
+	return query
 }
 
 func (s *Server) loadAdminReport(id string) (*models.Report, error) {

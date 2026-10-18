@@ -17,3 +17,7 @@ func accountRelationSerializerPreloads(query *gorm.DB, relation string) *gorm.DB
 		Preload(relation + ".MovedToAccount.AccountStat").
 		Preload(relation + ".MovedToAccount.User.Role")
 }
+
+func statusAccountSerializerPreloads(query *gorm.DB) *gorm.DB {
+	return accountRelationSerializerPreloads(accountRelationSerializerPreloads(query, "Account"), "Reblog.Account")
+}
