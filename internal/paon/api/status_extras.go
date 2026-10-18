@@ -127,8 +127,7 @@ func (s *Server) statusHistory(c *echo.Context) error {
 	}
 
 	var edits []models.StatusEdit
-	if err := s.db.Preload("Account.AccountStat").
-		Preload("Account.User.Role").
+	if err := accountRelationSerializerPreloads(s.db, "Account").
 		Where("status_id = ?", status.ID).
 		Order("id ASC").
 		Find(&edits).Error; err != nil {
@@ -383,9 +382,7 @@ func (s *Server) favouritedBy(c *echo.Context) error {
 		return err
 	}
 
-	query := s.db.Model(&models.Favourite{}).
-		Preload("Account.AccountStat").
-		Preload("Account.User.Role").
+	query := accountRelationSerializerPreloads(s.db.Model(&models.Favourite{}), "Account").
 		Joins("JOIN accounts ON accounts.id = favourites.account_id").
 		Where("favourites.status_id = ? AND accounts.suspended_at IS NULL", c.Param("id"))
 	query = excludeAccountsFromInteractionList(query, current)
@@ -426,9 +423,7 @@ func (s *Server) rebloggedBy(c *echo.Context) error {
 		return err
 	}
 
-	query := s.db.Model(&models.Status{}).
-		Preload("Account.AccountStat").
-		Preload("Account.User.Role").
+	query := accountRelationSerializerPreloads(s.db.Model(&models.Status{}), "Account").
 		Joins("JOIN accounts ON accounts.id = statuses.account_id").
 		Where("statuses.reblog_of_id = ? AND statuses.deleted_at IS NULL AND statuses.visibility IN ? AND accounts.suspended_at IS NULL", c.Param("id"), []int{0, 1})
 	query = excludeAccountsFromInteractionList(query, current)

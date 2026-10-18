@@ -15,10 +15,8 @@ func (s *Server) endorsements(c *echo.Context) error {
 		return err
 	}
 	c.Response().Header().Set("Vary", "Authorization")
-	query := s.db.Model(&models.Account{}).
+	query := accountSerializerPreloads(s.db.Model(&models.Account{})).
 		Joins("JOIN account_pins ON account_pins.target_account_id = accounts.id").
-		Preload("AccountStat").
-		Preload("User.Role").
 		Where("account_pins.account_id = ?", account.ID).
 		Where("accounts.suspended_at IS NULL")
 	unlimited := c.QueryParam("limit") == "0"
@@ -142,12 +140,10 @@ func (s *Server) familiarFollowerTargets(ids []int64) ([]models.Account, error) 
 
 func (s *Server) familiarFollowersForAccount(currentAccountID int64, targetAccountID int64) ([]models.Account, error) {
 	var accounts []models.Account
-	err := s.db.Model(&models.Account{}).
+	err := accountSerializerPreloads(s.db.Model(&models.Account{})).
 		Joins("JOIN follows common ON common.account_id = accounts.id AND common.target_account_id = ?", targetAccountID).
 		Joins("JOIN follows mine ON mine.target_account_id = accounts.id AND mine.account_id = ?", currentAccountID).
 		Joins("JOIN accounts followed_accounts ON followed_accounts.id = mine.target_account_id").
-		Preload("AccountStat").
-		Preload("User.Role").
 		Where("COALESCE(followed_accounts.hide_collections, false) = false").
 		Find(&accounts).Error
 	return accounts, err
