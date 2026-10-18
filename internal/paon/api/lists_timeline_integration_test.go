@@ -22,12 +22,14 @@ import (
 )
 
 func TestListTimelineStatusIDsMatchesJoinQueryIntegration(t *testing.T) {
-	databaseURL := os.Getenv("PAON_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Fatal("PAON_TEST_DATABASE_URL is required for integration tests")
+	databaseURL, redisURL := os.Getenv("PAON_TEST_DATABASE_URL"), os.Getenv("PAON_TEST_REDIS_URL")
+	if databaseURL == "" || redisURL == "" {
+		t.Fatal("PAON_TEST_DATABASE_URL and PAON_TEST_REDIS_URL are required for integration tests")
 	}
 	cfg := config.Config{
 		DatabaseURL:          databaseURL,
+		RedisURL:             redisURL,
+		RedisNamespace:       "lists-timeline-" + randomHex(6),
 		DatabaseMaxOpenConns: 5,
 		DatabaseMaxIdleConns: 2,
 		LocalDomain:          "paon.example",
@@ -117,6 +119,14 @@ func TestListTimelineStatusIDsMatchesJoinQueryIntegration(t *testing.T) {
 					t.Fatalf("listTimelineStatusIDs = %v, want %v", got, want)
 				}
 			})
+		}
+		// Feed regeneration reuses the correlated per-member query.
+		if err := server.populateListFeed(context.Background(), list, sql.NullString{}); err != nil {
+			t.Fatalf("populateListFeed(policy=%d) = %v", policy, err)
+		}
+		size, err := server.redisCommand(context.Background(), "ZCARD", feedRedisKey(cfg.RedisNamespace, "list", list.ID))
+		if count, ok := redisOptionalInt(size, err); !ok || count == 0 {
+			t.Fatalf("populateListFeed(policy=%d) stored %v statuses (err=%v)", policy, size, err)
 		}
 	}
 }

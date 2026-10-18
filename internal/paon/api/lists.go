@@ -308,14 +308,20 @@ func (s *Server) listTimelineStatusIDs(c *echo.Context, list models.List) ([]int
 		order = "list_statuses.id ASC"
 	}
 	statusIDs := []int64{}
-	err := s.db.Raw(`SELECT list_statuses.id
+	err := s.listMemberStatusIDsQuery(s.db, list, memberStatuses, order, limitValue).Scan(&statusIDs).Error
+	return statusIDs, err
+}
+
+// listMemberStatusIDsQuery merges memberStatuses, evaluated for each shown
+// list member, into the first limitValue status IDs in order.
+func (s *Server) listMemberStatusIDsQuery(database *gorm.DB, list models.List, memberStatuses *gorm.DB, order string, limitValue int) *gorm.DB {
+	return database.Raw(`SELECT list_statuses.id
 		FROM list_accounts
 		CROSS JOIN LATERAL (?) list_statuses
 		WHERE list_accounts.list_id = ?
 		  AND (list_accounts.follow_id IS NOT NULL OR list_accounts.account_id = ?)
 		ORDER BY `+order+`
-		LIMIT ?`, memberStatuses, list.ID, list.AccountID, limitValue).Scan(&statusIDs).Error
-	return statusIDs, err
+		LIMIT ?`, memberStatuses, list.ID, list.AccountID, limitValue)
 }
 
 func (s *Server) accountLists(c *echo.Context) error {
