@@ -536,3 +536,25 @@ func TestTranslateStatusRequiresAuthentication(t *testing.T) {
 		t.Fatalf("apiErr = %#v", apiErr)
 	}
 }
+
+func TestTranslateStatusForUserRejectsNonDistributableStatusesLikeRails(t *testing.T) {
+	s := &Server{cfg: config.Config{DeepLAPIKey: "configured"}}
+	c := echo.NewContext(httptest.NewRequest(http.MethodPost, "/api/v1/statuses/1/translate", nil), httptest.NewRecorder(), echo.New())
+	for _, visibility := range []int{2, 3, 4} {
+		_, err := s.translateStatusForUser(c, models.Status{ID: 1, Visibility: visibility, Text: "hello", Language: sql.NullString{String: "en", Valid: true}}, models.User{})
+		if !errors.Is(err, errTranslationNotDistributable) {
+			t.Fatalf("visibility %d err = %v, want errTranslationNotDistributable", visibility, err)
+		}
+		if apiErr := translationAPIError(c, err); !apiErrorStatus(apiErr, http.StatusForbidden) || apiErrorMessage(apiErr) != "This action is not allowed" {
+			t.Fatalf("visibility %d API error = %v, want 403 This action is not allowed", visibility, apiErr)
+		}
+	}
+
+	unconfigured := &Server{}
+	for _, visibility := range []int{0, 1} {
+		_, err := unconfigured.translateStatusForUser(c, models.Status{ID: 1, Visibility: visibility, Text: "hello"}, models.User{})
+		if !errors.Is(err, errTranslationNotConfigured) {
+			t.Fatalf("visibility %d err = %v, want distributable status to reach the configuration check", visibility, err)
+		}
+	}
+}

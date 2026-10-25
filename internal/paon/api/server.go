@@ -4989,13 +4989,16 @@ func (s *Server) statusAncestors(status models.Status, limitValue int, account *
 		)
 		SELECT id
 		FROM search_tree
-		ORDER BY array_length(path, 1) DESC
+		ORDER BY path
 		LIMIT ?
 	`, status.InReplyToID.Int64, limitValue).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	return s.statusesByTreeIDs(treeRowIDs(rows), false, account)
+	// Like Rails ancestor_ids, keep the closest ancestors and list them root first.
+	ids := treeRowIDs(rows)
+	slices.Reverse(ids)
+	return s.statusesByTreeIDs(ids, false, account)
 }
 
 func (s *Server) statusDescendants(status models.Status, limitValue int, depthLimit int, account *models.Account) ([]models.Status, error) {
@@ -6073,6 +6076,16 @@ func (s *Server) toggleStatusJoin(c *echo.Context, table string, create bool, sc
 		if err != nil {
 			return apiError(c, http.StatusNotFound, "Record not found")
 		}
+		if table == "favourites" {
+			// Rails StatusPolicy#favourite? also requires !blocking_author?.
+			blocking, err := s.accountBlocking(account.ID, status.AccountID)
+			if err != nil {
+				return err
+			}
+			if blocking {
+				return apiError(c, http.StatusForbidden, "This action is not allowed")
+			}
+		}
 	} else {
 		status, err = s.findStatusForJoinRemoval(account, c.Param("id"), table)
 		if err != nil {
@@ -6509,8 +6522,10 @@ func emptySearchResult() serializer.Search {
 	}
 }
 
+// visibleSearchStatusQuery applies StatusPolicy#show? and, like Rails
+// StatusesSearchService#filter_results, rejects StatusFilter#filtered? hits.
 func (s *Server) visibleSearchStatusQuery(account *models.Account) *gorm.DB {
-	return s.visibleStatusQuery(account)
+	return applyStatusContextFilterQuery(s.visibleStatusQuery(account), account)
 }
 
 func searchOffsetValue(searchType string, rawOffset string) int {
@@ -6587,7 +6602,7 @@ func (s *Server) visibleStatusQuery(account *models.Account) *gorm.DB {
 				AND search_status_mentions.status_id = statuses.id
 			)
 		)
-	)`, []int{0, 1}, account.ID, account.ID, account.ID, 2, account.ID, []int{3, 4}, account.ID)
+	)`, []int{0, 1}, account.ID, account.ID, account.ID, 2, account.ID, []int{2, 3, 4}, account.ID)
 }
 
 func applyStatusContextFilterQuery(query *gorm.DB, account *models.Account) *gorm.DB {
