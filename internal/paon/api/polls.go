@@ -75,6 +75,9 @@ func (s *Server) votePoll(c *echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, serializer.PollFromModel(s.cfg, poll, account))
 	}
+	if err := s.requirePollVotePermitted(c, account, poll); err != nil {
+		return err
+	}
 	if pollExpiredAt(poll.ExpiresAt, time.Now().UTC()) {
 		return apiError(c, http.StatusUnprocessableEntity, railsPollExpiredMessage)
 	}
@@ -265,6 +268,23 @@ func (s *Server) findVisiblePollForAccount(account *models.Account, id string) (
 		Where("polls.status_id IN (?)", visibleStatusIDs).
 		First(&poll).Error
 	return &poll, err
+}
+
+// requirePollVotePermitted mirrors the block checks in Rails PollPolicy#vote?.
+func (s *Server) requirePollVotePermitted(c *echo.Context, account *models.Account, poll *models.Poll) error {
+	if account == nil || poll == nil || !poll.AccountID.Valid {
+		return nil
+	}
+	for _, pair := range [][2]int64{{account.ID, poll.AccountID.Int64}, {poll.AccountID.Int64, account.ID}} {
+		blocking, err := s.accountBlocking(pair[0], pair[1])
+		if err != nil {
+			return err
+		}
+		if blocking {
+			return apiError(c, http.StatusForbidden, "This action is not allowed")
+		}
+	}
+	return nil
 }
 
 func (s *Server) hydratePollCustomEmojis(poll *models.Poll) error {
