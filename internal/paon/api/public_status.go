@@ -285,17 +285,60 @@ func (s *Server) publicStatusHTMLStatus(c *echo.Context) (*models.Status, error)
 	if err != nil {
 		return nil, apiError(c, http.StatusNotFound, "Record not found")
 	}
-	if !publicStatusPathStatusAllowed(*status, c.Param("username")) {
+	if !publicStatusPathAccountMatches(*status, c.Param("username")) {
 		return nil, apiError(c, http.StatusNotFound, "Record not found")
 	}
 	if err := s.activityPubAccountOwnedGuard(c, &status.Account, false); err != nil {
 		return nil, err
 	}
+	visible, err := s.publicStatusHTMLVisible(c, *status)
+	if err != nil {
+		return nil, err
+	}
+	if !visible {
+		return nil, apiError(c, http.StatusNotFound, "Record not found")
+	}
 	return status, nil
 }
 
+// publicStatusHTMLVisible mirrors Rails StatusPolicy#show? for private,
+// direct, and limited statuses using the signed-in web account.
+func (s *Server) publicStatusHTMLVisible(c *echo.Context, status models.Status) (bool, error) {
+	if status.Visibility <= 1 {
+		return true, nil
+	}
+	// Only viewers recognised by the HTML cache policy may see hidden statuses,
+	// so an authorised response is never marked publicly cacheable.
+	if !requestHasAuthenticationState(c.Request()) {
+		return false, nil
+	}
+	user, _, err := s.currentUserIncludingDisabled(c)
+	if err != nil || user == nil || user.AccountID == 0 {
+		return false, nil
+	}
+	if user.AccountID == status.AccountID {
+		return true, nil
+	}
+	switch status.Visibility {
+	case 2:
+		following, err := s.activityPubAccountFollows(user.AccountID, status.AccountID)
+		if err != nil || following {
+			return following, err
+		}
+		return s.activityPubStatusMentionsAccount(status.ID, user.AccountID)
+	case 3, 4:
+		return s.activityPubStatusMentionsAccount(status.ID, user.AccountID)
+	default:
+		return false, nil
+	}
+}
+
+func publicStatusPathAccountMatches(status models.Status, username string) bool {
+	return status.Account.Local() && status.Account.Username == username
+}
+
 func publicStatusPathStatusAllowed(status models.Status, username string) bool {
-	return status.Visibility <= 1 && status.Account.Local() && status.Account.Username == username
+	return status.Visibility <= 1 && publicStatusPathAccountMatches(status, username)
 }
 
 func (s *Server) publicStatusOriginalRedirectURL(status models.Status) string {

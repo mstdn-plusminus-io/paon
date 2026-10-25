@@ -6329,6 +6329,16 @@ func (s *Server) toggleStatusJoin(c *echo.Context, table string, create bool, sc
 		if err != nil {
 			return apiError(c, http.StatusNotFound, "Record not found")
 		}
+		if table == "favourites" {
+			// Rails StatusPolicy#favourite? also requires !blocking_author?.
+			blocking, err := s.accountBlocking(account.ID, status.AccountID)
+			if err != nil {
+				return err
+			}
+			if blocking {
+				return apiError(c, http.StatusForbidden, "This action is not allowed")
+			}
+		}
 	} else {
 		status, err = s.findStatusForJoinRemoval(account, c.Param("id"), table)
 		if err != nil {
@@ -6857,7 +6867,7 @@ func (s *Server) visibleStatusQuery(account *models.Account) *gorm.DB {
 				AND search_status_mentions.status_id = statuses.id
 			)
 		)
-	)`, []int{0, 1}, account.ID, account.ID, account.ID, 2, account.ID, []int{3, 4}, account.ID)
+	)`, []int{0, 1}, account.ID, account.ID, account.ID, 2, account.ID, []int{2, 3, 4}, account.ID)
 }
 
 func applyStatusContextFilterQuery(query *gorm.DB, account *models.Account) *gorm.DB {
