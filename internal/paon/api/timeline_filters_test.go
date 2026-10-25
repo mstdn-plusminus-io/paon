@@ -294,7 +294,7 @@ func TestAccountStatusesUsesVisibilityGuard(t *testing.T) {
 	}
 	for fn, want := range map[string]string{
 		"accountStatuses":          `query := s.visibleStatusQuery(current).Where("statuses.account_id = ?", target.ID)`,
-		"visibleSearchStatusQuery": `return s.visibleStatusQuery(account)`,
+		"visibleSearchStatusQuery": `return applyStatusContextFilterQuery(s.visibleStatusQuery(account), account)`,
 		"visibleStatusQuery":       `statuses.visibility IN ?`,
 	} {
 		if !functionBodyContains(t, src, fn, want) {
