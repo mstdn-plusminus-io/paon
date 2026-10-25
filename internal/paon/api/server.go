@@ -4989,13 +4989,16 @@ func (s *Server) statusAncestors(status models.Status, limitValue int, account *
 		)
 		SELECT id
 		FROM search_tree
-		ORDER BY array_length(path, 1) DESC
+		ORDER BY path
 		LIMIT ?
 	`, status.InReplyToID.Int64, limitValue).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	return s.statusesByTreeIDs(treeRowIDs(rows), false, account)
+	// Like Rails ancestor_ids, keep the closest ancestors and list them root first.
+	ids := treeRowIDs(rows)
+	slices.Reverse(ids)
+	return s.statusesByTreeIDs(ids, false, account)
 }
 
 func (s *Server) statusDescendants(status models.Status, limitValue int, depthLimit int, account *models.Account) ([]models.Status, error) {
@@ -6519,8 +6522,10 @@ func emptySearchResult() serializer.Search {
 	}
 }
 
+// visibleSearchStatusQuery applies StatusPolicy#show? and, like Rails
+// StatusesSearchService#filter_results, rejects StatusFilter#filtered? hits.
 func (s *Server) visibleSearchStatusQuery(account *models.Account) *gorm.DB {
-	return s.visibleStatusQuery(account)
+	return applyStatusContextFilterQuery(s.visibleStatusQuery(account), account)
 }
 
 func searchOffsetValue(searchType string, rawOffset string) int {
