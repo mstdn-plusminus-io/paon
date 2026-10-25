@@ -26,6 +26,7 @@ import (
 var (
 	errTranslationNotConfigured      = errors.New("translation service is not configured")
 	errTranslationNotPermitted       = errors.New("translation is not permitted")
+	errTranslationNotDistributable   = errors.New("translation of non-distributable status is not allowed")
 	errUnexpectedTranslationResponse = errors.New("unexpected translation service response")
 	errTranslationQuotaExceeded      = errors.New("translation quota exceeded")
 	errTranslationTooManyRequests    = errors.New("translation service rate limited")
@@ -96,6 +97,10 @@ func translationProviderConfigured(value string) bool {
 }
 
 func (s *Server) translateStatusForUser(c *echo.Context, status models.Status, user models.User) (serializer.Translation, error) {
+	// Rails TranslateStatusService#permitted? only translates distributable (public/unlisted) statuses.
+	if status.Visibility != 0 && status.Visibility != 1 {
+		return serializer.Translation{}, errTranslationNotDistributable
+	}
 	if !translationConfigured(s.cfg) {
 		return serializer.Translation{}, errTranslationNotConfigured
 	}
@@ -132,6 +137,8 @@ func (s *Server) translateStatusForUser(c *echo.Context, status models.Status, u
 
 func translationAPIError(c *echo.Context, err error) error {
 	switch {
+	case errors.Is(err, errTranslationNotDistributable):
+		return apiError(c, http.StatusForbidden, "This action is not allowed")
 	case errors.Is(err, errTranslationNotConfigured), errors.Is(err, errTranslationNotPermitted):
 		return apiError(c, http.StatusNotFound, "Record not found")
 	case errors.Is(err, errTranslationQuotaExceeded):
