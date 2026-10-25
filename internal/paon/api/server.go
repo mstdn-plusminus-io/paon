@@ -6533,6 +6533,16 @@ func (s *Server) toggleStatusJoin(c *echo.Context, table string, create bool, sc
 		if err != nil {
 			return apiError(c, http.StatusNotFound, "Record not found")
 		}
+		if table == "favourites" {
+			// Rails StatusPolicy#favourite? also requires !blocking_author?.
+			blocking, err := s.accountBlocking(account.ID, status.AccountID)
+			if err != nil {
+				return err
+			}
+			if blocking {
+				return apiError(c, http.StatusForbidden, "This action is not allowed")
+			}
+		}
 	} else {
 		status, err = s.findStatusForJoinRemoval(account, c.Param("id"), table)
 		if err != nil {

@@ -385,6 +385,17 @@ func accountRemoteDomain(account *models.Account) string {
 	return normalizeDomain(account.Domain.String)
 }
 
+func (s *Server) accountBlocking(accountID int64, targetAccountID int64) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, nil
+	}
+	var count int64
+	err := s.db.Model(&models.Block{}).
+		Where("account_id = ? AND target_account_id = ?", accountID, targetAccountID).
+		Count(&count).Error
+	return count > 0, err
+}
+
 func (s *Server) accountDomainBlocking(accountID int64, domain string) (bool, error) {
 	domain = normalizeDomain(domain)
 	if domain == "" || s == nil || s.db == nil {
