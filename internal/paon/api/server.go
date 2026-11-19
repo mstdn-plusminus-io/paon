@@ -1790,13 +1790,125 @@ func corsAllowHeaders(req *http.Request) string {
 func (s *Server) apiAuthenticationGateMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		path := c.Path()
-		if (path == "/api" || strings.HasPrefix(path, "/api/")) && path != "/api/oembed" {
-			if err := s.requireAuthenticatedAPIIfDisallowed(c); err != nil {
+		if path == "/api" || strings.HasPrefix(path, "/api/") {
+			ensureMultipartFormParsed(c.Request())
+			if path != "/api/oembed" {
+				if err := s.requireAuthenticatedAPIIfDisallowed(c); err != nil {
+					return err
+				}
+			}
+			if err := s.requireAPIUserNotSuspended(c, path); err != nil {
 				return err
 			}
 		}
 		return next(c)
 	}
+}
+
+// ensureMultipartFormParsed parses a multipart body before the gate reads
+// request parameters. requestRawParamValue calls ParseForm, and once
+// Request.Form is set net/http FormValue no longer parses multipart bodies, so
+// handlers would lose multipart fields. Over TCP the rack-attack throttle
+// already parses the form through FormValue first; this keeps the same state
+// when that step is skipped (for example on a unix socket listener).
+func ensureMultipartFormParsed(req *http.Request) {
+	if req == nil || req.Form != nil || req.MultipartForm != nil {
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if err != nil || mediaType != "multipart/form-data" {
+		return
+	}
+	_ = req.ParseMultipartForm(32 << 20)
+}
+
+// requireAPIUserNotSuspended mirrors Rails Api::BaseController#require_not_suspended!,
+// which every Rails API controller runs, /api/oembed included. Only a
+// suspended account is rejected; disabled, unconfirmed, and unapproved users
+// are still left to each handler like Rails. The streaming endpoints were
+// served by the Node streaming server, which rejects suspended accounts on
+// its own, so they keep their existing handling.
+func (s *Server) requireAPIUserNotSuspended(c *echo.Context, path string) error {
+	if path == "/api/v1/streaming" || strings.HasPrefix(path, "/api/v1/streaming/") {
+		return nil
+	}
+	suspended, err := s.apiRequestUserSuspended(c)
+	if err != nil {
+		return err
+	}
+	if suspended {
+		return apiError(c, http.StatusForbidden, "Your login is currently disabled")
+	}
+	return nil
+}
+
+// apiRequestUserSuspended reports whether the request credentials resolve to
+// a user whose account is suspended. Credentials are resolved like
+// currentUserIncludingDisabled (the request token, or the legacy Rails session
+// cookie when no token is present), but with one indexed query and without
+// token tracking or cookie side effects. Credentials that do not resolve to a
+// user are left to the handlers.
+func (s *Server) apiRequestUserSuspended(c *echo.Context) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, nil
+	}
+	var query *gorm.DB
+	if token := requestToken(c); token != "" {
+		query = suspendedTokenOwnerQuery(s.db, token)
+	} else {
+		sessionID, ok := s.railsSessionIDFromCookie(c)
+		if !ok {
+			sessionID, ok = s.railsSessionIDFromEncryptedSession(c)
+		}
+		if !ok || sessionID == "" {
+			return false, nil
+		}
+		query = suspendedSessionOwnerQuery(s.db, sessionID)
+	}
+	var userIDs []int64
+	if err := query.Pluck("users.id", &userIDs).Error; err != nil {
+		return false, err
+	}
+	return len(userIDs) > 0, nil
+}
+
+// suspendedTokenOwnerQuery selects the owner of an unrevoked access token
+// when the owner's account is suspended.
+func suspendedTokenOwnerQuery(db *gorm.DB, token string) *gorm.DB {
+	return db.Table("oauth_access_tokens").
+		Joins("JOIN users ON users.id = oauth_access_tokens.resource_owner_id").
+		Joins("JOIN accounts ON accounts.id = users.account_id").
+		Where("oauth_access_tokens.token = ? AND oauth_access_tokens.revoked_at IS NULL", token).
+		Where("accounts.suspended_at IS NOT NULL").
+		Limit(1)
+}
+
+// suspendedSessionOwnerQuery selects the user of a legacy Rails session
+// activation when the user's account is suspended.
+func suspendedSessionOwnerQuery(db *gorm.DB, sessionID string) *gorm.DB {
+	return db.Table("session_activations").
+		Joins("JOIN users ON users.id = session_activations.user_id").
+		Joins("JOIN accounts ON accounts.id = users.account_id").
+		Where("session_activations.session_id = ?", sessionID).
+		Where("accounts.suspended_at IS NOT NULL").
+		Limit(1)
+}
+
+// userAccountSuspended reports whether the user's account is suspended, the
+// account state Rails Api::BaseController#require_not_suspended! rejects.
+func (s *Server) userAccountSuspended(user models.User) (bool, error) {
+	if account := user.Account; account != nil && account.ID != 0 {
+		return account.SuspendedAt.Valid, nil
+	}
+	if s == nil || s.db == nil || user.AccountID == 0 {
+		return false, nil
+	}
+	var accountIDs []int64
+	err := s.db.Model(&models.Account{}).
+		Where("id = ? AND suspended_at IS NOT NULL", user.AccountID).
+		Limit(1).
+		Pluck("id", &accountIDs).Error
+	return len(accountIDs) > 0, err
 }
 
 func (s *Server) routes() {
