@@ -122,6 +122,9 @@ func TestReportableStatusIDsKeepsTargetAccountScope(t *testing.T) {
 	if !strings.HasPrefix(where, "(statuses.account_id = 9 AND statuses.id IN ") {
 		t.Fatalf("report status WHERE must start with the target account scope: %s", where)
 	}
+	if !strings.Contains(where, "statuses.id IN (1,2)") {
+		t.Fatalf("report status IDs must expand into an IN list: %s", where)
+	}
 	if !strings.Contains(where, "AND (statuses.reblog_of_id IS NULL OR activitypub_outbox_reblog_accounts.domain IS NULL OR NOT EXISTS (") {
 		t.Fatalf("report status WHERE must keep the parenthesized boost exclusion: %s", where)
 	}
