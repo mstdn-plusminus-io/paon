@@ -672,6 +672,14 @@ func (s *Server) requireAdminWriteWithPermissions(c *echo.Context, scopes []stri
 	if err := s.db.Where("id = ? AND disabled = false", accessToken.ResourceOwnerID.Int64).First(&user).Error; err != nil {
 		return nil, apiError(c, http.StatusUnauthorized, "The access token is invalid")
 	}
+	// apiAuthenticationGateMiddleware already rejects suspended users on /api
+	// routes; check again so suspended staff can never run admin writes, such
+	// as lifting their own suspension.
+	if suspended, err := s.userAccountSuspended(user); err != nil {
+		return nil, err
+	} else if suspended {
+		return nil, apiError(c, http.StatusForbidden, "Your login is currently disabled")
+	}
 	if !s.userCanAny(&user, permissions...) {
 		return nil, apiError(c, http.StatusForbidden, "This action is outside the authorized role")
 	}

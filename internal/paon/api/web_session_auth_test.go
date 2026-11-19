@@ -214,6 +214,7 @@ func TestAdminBrowserSessionRequestRequiresNoOAuthToken(t *testing.T) {
 		contentType string
 		body        string
 		authorize   string
+		wsProtocol  string
 		cookie      *http.Cookie
 		want        bool
 	}{
@@ -225,6 +226,10 @@ func TestAdminBrowserSessionRequestRequiresNoOAuthToken(t *testing.T) {
 		{name: "bearer_token query and cookie", method: http.MethodGet, target: "/api/v1/admin/accounts?bearer_token=" + webSessionTestAppToken, cookie: sessionCookie, want: false},
 		{name: "access_token form and cookie", method: http.MethodPost, target: "/api/v1/admin/measures", contentType: "application/x-www-form-urlencoded", body: "access_token=" + webSessionTestAppToken, cookie: sessionCookie, want: false},
 		{name: "bearer_token json and cookie", method: http.MethodPost, target: "/api/v1/admin/measures", contentType: "application/json", body: `{"bearer_token":"` + webSessionTestAppToken + `"}`, cookie: sessionCookie, want: false},
+		// requestToken prefers a Sec-WebSocket-Protocol token over the session
+		// cookie, so the /api suspension gate would check a different credential.
+		{name: "websocket protocol token and cookie", method: http.MethodGet, target: "/api/v1/admin/accounts", wsProtocol: "unrelated-token", cookie: sessionCookie, want: false},
+		{name: "blank websocket protocol and cookie", method: http.MethodGet, target: "/api/v1/admin/accounts", wsProtocol: " , ", cookie: sessionCookie, want: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -234,6 +239,9 @@ func TestAdminBrowserSessionRequestRequiresNoOAuthToken(t *testing.T) {
 			}
 			if test.authorize != "" {
 				req.Header.Set(echo.HeaderAuthorization, test.authorize)
+			}
+			if test.wsProtocol != "" {
+				req.Header.Set("Sec-WebSocket-Protocol", test.wsProtocol)
 			}
 			if test.cookie != nil {
 				req.AddCookie(test.cookie)
