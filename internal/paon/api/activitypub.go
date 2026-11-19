@@ -1085,13 +1085,16 @@ func (s *Server) applyActivityPubOutboxReblogExclusions(query *gorm.DB, signed *
 	query = query.
 		Joins("LEFT JOIN statuses AS activitypub_outbox_reblogs ON activitypub_outbox_reblogs.id = statuses.reblog_of_id").
 		Joins("LEFT JOIN accounts AS activitypub_outbox_reblog_accounts ON activitypub_outbox_reblog_accounts.id = activitypub_outbox_reblogs.account_id").
-		Where(`statuses.reblog_of_id IS NULL
+		// Keep the outer parentheses: GORM only wraps a Where expression that
+		// contains " AND " or " OR " with spaces, so without them this OR group
+		// is ANDed in unwrapped and escapes the caller's account scope.
+		Where(`(statuses.reblog_of_id IS NULL
 			OR activitypub_outbox_reblog_accounts.domain IS NULL
 			OR NOT EXISTS (
 				SELECT 1 FROM account_domain_blocks
 				WHERE account_domain_blocks.account_id = ?
 				AND account_domain_blocks.domain = activitypub_outbox_reblog_accounts.domain
-			)`, signed.ID)
+			))`, signed.ID)
 	return applyFollowCollectionExclusionsByIDExpression(query, signed, "activitypub_outbox_reblog_accounts.id")
 }
 
