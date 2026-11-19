@@ -1428,8 +1428,8 @@ func (s *Server) requireAdminRead(c *echo.Context, scopes ...string) (*models.Us
 
 func (s *Server) requireAdminReadToken(c *echo.Context, scopes ...string) (*models.User, error) {
 	c.Response().Header().Set("Vary", "Authorization")
-	if bearerToken(c) == "" && browserRequestHasAuthenticationCookie(c.Request()) {
-		user, _, err := s.currentUser(c)
+	if adminBrowserSessionRequest(c) {
+		user, _, err := s.currentWebSessionUser(c, false)
 		if err != nil {
 			return nil, apiError(c, http.StatusUnauthorized, "The access token is invalid")
 		}
@@ -1451,7 +1451,7 @@ func (s *Server) requireAdminReadToken(c *echo.Context, scopes ...string) (*mode
 
 func (s *Server) requireAdminReadWithPermissions(c *echo.Context, scopes []string, permissions ...int64) (*models.User, error) {
 	c.Response().Header().Set("Vary", "Authorization")
-	if bearerToken(c) == "" && browserRequestHasAuthenticationCookie(c.Request()) {
+	if adminBrowserSessionRequest(c) {
 		return s.requireAdminBrowserReadWithPermissions(c, permissions...)
 	}
 	accessToken, err := s.accessTokenFromRequest(c)
@@ -1474,7 +1474,7 @@ func (s *Server) requireAdminReadWithPermissions(c *echo.Context, scopes []strin
 func (s *Server) requireAdminBrowserReadWithPermissions(c *echo.Context, permissions ...int64) (*models.User, error) {
 	// Rails admin React components use the signed browser session and CSRF header, not an admin OAuth scope.
 	// Bearer-token clients still follow the normal admin scope checks above.
-	user, token, err := s.currentUser(c)
+	user, token, err := s.currentWebSessionUser(c, false)
 	if err != nil {
 		return nil, apiError(c, http.StatusUnauthorized, "The access token is invalid")
 	}
@@ -1487,6 +1487,18 @@ func (s *Server) requireAdminBrowserReadWithPermissions(c *echo.Context, permiss
 		return nil, apiError(c, http.StatusForbidden, "This action is outside the authorized role")
 	}
 	return user, nil
+}
+
+// adminBrowserSessionRequest reports whether an admin read API request is
+// authorised by the browser session, as Rails allows for the admin React
+// components. Like Rails' authorize_if_got_token!, an OAuth token in the
+// Authorization header or the access_token / bearer_token parameters keeps the
+// request on the scope-checked token path even when session cookies are sent.
+func adminBrowserSessionRequest(c *echo.Context) bool {
+	return bearerToken(c) == "" &&
+		requestRawParamValue(c, "access_token") == "" &&
+		requestRawParamValue(c, "bearer_token") == "" &&
+		browserRequestHasAuthenticationCookie(c.Request())
 }
 
 func tokenHasAnyScope[S ~string](tokenScopes S, required ...string) bool {
