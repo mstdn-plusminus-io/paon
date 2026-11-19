@@ -2382,8 +2382,16 @@ func (s *Server) fetchActivityPubQuoteActorForRequest(actorURI string, requestID
 	if s == nil || s.db == nil || strings.TrimSpace(actorURI) == "" {
 		return false
 	}
+	// process_quote resolves attributedTo through FetchRemoteAccountService,
+	// which honors domain_not_allowed? and check_webfinger! before storing.
+	if disallowed, err := s.remoteActivityDomainNotAllowed(actorURI); err != nil || disallowed {
+		return false
+	}
 	actor, err := s.fetchActivityActor(actorURI)
-	if err != nil || actor.ID == "" {
+	if err != nil || actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+		return false
+	}
+	if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
 		return false
 	}
 	account, err := s.upsertRemoteActivityActorForRequest(actor, requestID)
@@ -4448,6 +4456,17 @@ func (s *Server) fetchActivityPubMentionAccountByHref(tx *gorm.DB, href string) 
 	}
 	if actor.ID == "" {
 		return nil, activityPubEventNotAppliedf("Mention actor %q is missing id", actorURI)
+	}
+	// FetchRemoteAccountService only stores an actor whose WebFinger (its
+	// webfinger property or preferredUsername@host) loops back to it
+	// (check_webfinger!), under the confirmed acct; process_mention suppresses
+	// that failure and skips the mention.
+	if actor.PublicKey.PublicKeyPem == "" {
+		return nil, nil
+	}
+	actor, err = verifyRemoteActivityActorWebFingerResolved(actor)
+	if err != nil {
+		return nil, nil
 	}
 	account, err := s.upsertRemoteActivityActorDB(tx, actor)
 	if errors.Is(err, errRemoteActivityActorIsLocal) {
