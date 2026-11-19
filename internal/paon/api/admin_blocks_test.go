@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"gorm.io/gorm"
 )
 
 func TestCanonicalEmailBlockPayloadPrefersEmailOverHash(t *testing.T) {
@@ -521,6 +524,179 @@ func TestAdminAccountSuspensionRoutesKeepCanonicalEmailBlockSideEffects(t *testi
 	for _, tt := range tests {
 		if !functionBodyContains(t, tt.src, tt.fn, tt.want) {
 			t.Fatalf("%s:%s does not contain %q", tt.file, tt.fn, tt.want)
+		}
+	}
+}
+
+// adminInjectedPathIDs are :id values that GORM v1.30.0 BuildCondition used to
+// emit as raw WHERE SQL when passed straight to First(&row, c.Param("id")).
+var adminInjectedPathIDs = []string{
+	"1 OR 1=1",
+	"1) OR (1=1",
+	"abc",
+	"true",
+	"id",
+	"1=1",
+	"1abc",
+	"1;DELETE FROM ip_blocks",
+	"(SELECT 1 FROM users WHERE encrypted_password LIKE 'a%')",
+	"1 AND pg_sleep(5) IS NULL",
+	"0",
+	"-1",
+	"",
+	"99999999999999999999",
+}
+
+type adminBlockStatementCapture struct {
+	sql  string
+	vars []any
+}
+
+// adminBlockDryRunServer returns a Server on a DryRun database whose auth
+// lookups resolve to an administrator token holder, so the admin block handlers
+// get past requireAdminRead/requireAdminWrite without a real database.
+func adminBlockDryRunServer(t *testing.T) (*Server, *statusMentionSQLCapture, *[]adminBlockStatementCapture) {
+	t.Helper()
+	capture := &statusMentionSQLCapture{}
+	database := statusMentionDryRunDatabase(t, capture)
+	statements := &[]adminBlockStatementCapture{}
+	if err := database.Callback().Query().After("gorm:query").Register("paon_test:admin_block_rows", func(tx *gorm.DB) {
+		switch dest := tx.Statement.Dest.(type) {
+		case *models.OAuthAccessToken:
+			dest.ResourceOwnerID = sql.NullInt64{Int64: 1, Valid: true}
+			dest.Scopes = "admin:read admin:write"
+		case *models.User:
+			dest.ID = 1
+			dest.RoleID = sql.NullInt64{Int64: 3, Valid: true}
+		case *models.UserRole:
+			dest.Permissions = rolePermissionAdministrator
+		}
+		switch tx.Statement.Table {
+		case "domain_allows", "domain_blocks", "email_domain_blocks", "canonical_email_blocks", "ip_blocks":
+			*statements = append(*statements, adminBlockStatementCapture{sql: tx.Statement.SQL.String(), vars: append([]any(nil), tx.Statement.Vars...)})
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return &Server{db: database}, capture, statements
+}
+
+func adminBlockHandlerContext(method string, id string) *echo.Context {
+	req := httptest.NewRequest(method, "/api/v1/admin/blocks", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	req.Header.Set("Content-Type", "application/json")
+	c := echo.NewContext(req, httptest.NewRecorder(), echo.New())
+	c.SetPathValues(echo.PathValues{{Name: "id", Value: id}})
+	return c
+}
+
+func TestAdminBlockHandlersRejectNonIntegerPathIDsBeforeSQL(t *testing.T) {
+	s, capture, statements := adminBlockDryRunServer(t)
+	handlers := []struct {
+		name    string
+		method  string
+		table   string
+		handler func(*echo.Context) error
+	}{
+		{"showAdminDomainAllow", http.MethodGet, "domain_allows", s.showAdminDomainAllow},
+		{"deleteAdminDomainAllow", http.MethodDelete, "domain_allows", s.deleteAdminDomainAllow},
+		{"showAdminDomainBlock", http.MethodGet, "domain_blocks", s.showAdminDomainBlock},
+		{"updateAdminDomainBlock", http.MethodPut, "domain_blocks", s.updateAdminDomainBlock},
+		{"deleteAdminDomainBlock", http.MethodDelete, "domain_blocks", s.deleteAdminDomainBlock},
+		{"showAdminEmailDomainBlock", http.MethodGet, "email_domain_blocks", s.showAdminEmailDomainBlock},
+		{"deleteAdminEmailDomainBlock", http.MethodDelete, "email_domain_blocks", s.deleteAdminEmailDomainBlock},
+		{"showAdminCanonicalEmailBlock", http.MethodGet, "canonical_email_blocks", s.showAdminCanonicalEmailBlock},
+		{"deleteAdminCanonicalEmailBlock", http.MethodDelete, "canonical_email_blocks", s.deleteAdminCanonicalEmailBlock},
+		{"showAdminIPBlock", http.MethodGet, "ip_blocks", s.showAdminIPBlock},
+		{"updateAdminIPBlock", http.MethodPut, "ip_blocks", s.updateAdminIPBlock},
+		{"deleteAdminIPBlock", http.MethodDelete, "ip_blocks", s.deleteAdminIPBlock},
+	}
+	for _, h := range handlers {
+		for _, raw := range adminInjectedPathIDs {
+			capture.queries = nil
+			*statements = nil
+			err := h.handler(adminBlockHandlerContext(h.method, raw))
+			if apiErr, ok := err.(apiHTTPError); !ok || apiErr.status != http.StatusNotFound {
+				t.Fatalf("%s(id=%q) error = %#v, want 404 Record not found", h.name, raw, err)
+			}
+			queries := strings.Join(capture.queries, "\n")
+			if !strings.Contains(queries, `FROM "oauth_access_tokens"`) {
+				t.Fatalf("%s(id=%q) did not reach the admin authorization lookup:\n%s", h.name, raw, queries)
+			}
+			if strings.Contains(queries, `"`+h.table+`"`) || len(*statements) != 0 {
+				t.Fatalf("%s(id=%q) queried %s with a non-integer path id:\n%s", h.name, raw, h.table, queries)
+			}
+		}
+	}
+}
+
+func TestAdminBlockHandlersBindIntegerPathIDs(t *testing.T) {
+	s, capture, statements := adminBlockDryRunServer(t)
+	if err := s.showAdminIPBlock(adminBlockHandlerContext(http.MethodGet, "42")); err != nil {
+		t.Fatal(err)
+	}
+	if len(*statements) != 1 {
+		t.Fatalf("ip block statements = %#v, want one lookup", *statements)
+	}
+	got := (*statements)[0]
+	if got.sql != `SELECT * FROM "ip_blocks" WHERE "ip_blocks"."id" = $1 ORDER BY "ip_blocks"."id" LIMIT $2` {
+		t.Fatalf("ip block lookup SQL = %q", got.sql)
+	}
+	if len(got.vars) != 2 || got.vars[0] != int64(42) {
+		t.Fatalf("ip block lookup vars = %#v, want bound int64 id 42", got.vars)
+	}
+	if queries := strings.Join(capture.queries, "\n"); !strings.Contains(queries, `WHERE "ip_blocks"."id" = 42 ORDER BY`) {
+		t.Fatalf("ip block lookup SQL missing bound primary key:\n%s", queries)
+	}
+}
+
+func TestAdminRecordPathIDParsesOnlyPositiveIntegers(t *testing.T) {
+	for raw, want := range map[string]int64{"42": 42, " 42 ": 42, "+7": 7, "9223372036854775807": 9223372036854775807} {
+		if got, ok := adminRecordPathID(raw); !ok || got != want {
+			t.Fatalf("adminRecordPathID(%q) = %d, %v; want %d", raw, got, ok, want)
+		}
+	}
+	for _, raw := range append([]string{"1.0", "0x1", "1e3", " "}, adminInjectedPathIDs...) {
+		if got, ok := adminRecordPathID(raw); ok {
+			t.Fatalf("adminRecordPathID(%q) = %d, want rejection", raw, got)
+		}
+	}
+
+	capture := &statusMentionSQLCapture{}
+	database := statusMentionDryRunDatabase(t, capture)
+	for _, raw := range adminInjectedPathIDs {
+		var row models.DomainBlock
+		if err := firstAdminRecordByPathID(database, &row, raw); !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("firstAdminRecordByPathID(%q) error = %v, want gorm.ErrRecordNotFound", raw, err)
+		}
+	}
+	if len(capture.queries) != 0 {
+		t.Fatalf("non-integer path ids reached SQL:\n%s", strings.Join(capture.queries, "\n"))
+	}
+}
+
+// GORM treats a non-numeric string passed as an inline condition to First /
+// Take / Last / Find / Delete as raw SQL, so request values must never be
+// passed there directly.
+func TestNoRequestValuesPassedAsGORMInlineConditions(t *testing.T) {
+	pattern := regexp.MustCompile(`\.(First|Take|Last|Find|Delete)\([^;\n]*c\.(Param|QueryParam|FormValue)\(`)
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if pattern.MatchString(line) {
+				t.Fatalf("%s:%d passes a request value as a GORM inline condition: %s", name, i+1, strings.TrimSpace(line))
+			}
 		}
 	}
 }
