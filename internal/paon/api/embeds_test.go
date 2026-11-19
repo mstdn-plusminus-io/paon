@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1002,6 +1004,93 @@ func TestFetchRemoteOEmbedDiscoversAndFetchesJSON(t *testing.T) {
 	}
 	if embed["type"] != "rich" || !strings.Contains(embed["html"].(string), "iframe") {
 		t.Fatalf("embed = %#v", embed)
+	}
+}
+
+// fetchRemoteOEmbedFromTestServer serves a status page that links to a JSON
+// oEmbed endpoint returning oembedBody, and fetches it through the production
+// discovery/parse/validate path. remote.test stays the host name seen by
+// remoteFetchURLAllowed while every connection is routed to the local server.
+func fetchRemoteOEmbedFromTestServer(t *testing.T, oembedBody string) map[string]any {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/statuses/1":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(w, `<html><head><link rel="alternate" type="application/json+oembed" href="/oembed?url=1"></head></html>`)
+		case "/oembed":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, oembedBody)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	previous := activityHTTPClient
+	defer func() { activityHTTPClient = previous }()
+	activityHTTPClient = &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network string, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+		},
+	}}
+
+	embed, err := fetchRemoteOEmbed("http://remote.test/statuses/1")
+	if err != nil {
+		t.Fatalf("fetch remote oembed: %v", err)
+	}
+	return embed
+}
+
+func TestRemoteWebEmbedRejectsNonStringOEmbedHTML(t *testing.T) {
+	for name, body := range map[string]string{
+		"array":        `{"version":"1.0","type":"rich","html":["<script>alert(document.domain)</script>"]}`,
+		"nested array": `{"version":"1.0","type":"rich","html":[["<img src=x onerror=alert(1)>"]]}`,
+		"object":       `{"version":"1.0","type":"rich","html":{"x":"<script>alert(1)</script>"}}`,
+		"number":       `{"version":"1.0","type":"rich","html":1}`,
+		"boolean":      `{"version":"1.0","type":"rich","html":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			embed := fetchRemoteOEmbedFromTestServer(t, body)
+			if sanitizeRemoteWebEmbedHTML(embed) {
+				t.Fatalf("non-string oembed html was accepted for /api/web/embeds: %#v", embed)
+			}
+		})
+	}
+}
+
+func TestRemoteWebEmbedSanitizesStringOEmbedHTML(t *testing.T) {
+	embed := fetchRemoteOEmbedFromTestServer(t, `{"version":"1.0","type":"rich","html":"<iframe src=\"https://remote.test/embed\" onload=\"alert(1)\"></iframe><script>alert(2)</script>"}`)
+	if !sanitizeRemoteWebEmbedHTML(embed) {
+		t.Fatalf("string oembed html was rejected: %#v", embed)
+	}
+	html, ok := embed["html"].(string)
+	if !ok {
+		t.Fatalf("sanitized html = %#v, want string", embed["html"])
+	}
+	lower := strings.ToLower(html)
+	if strings.Contains(lower, "<script") || strings.Contains(lower, "onload") || !strings.Contains(html, `src="https://remote.test/embed"`) {
+		t.Fatalf("sanitized html = %q", html)
+	}
+
+	// Rails Sanitize.fragment(nil) returns "", so a missing html stays a 200 with an empty string.
+	embed = fetchRemoteOEmbedFromTestServer(t, `{"version":"1.0","type":"link"}`)
+	if !sanitizeRemoteWebEmbedHTML(embed) || embed["html"] != "" {
+		t.Fatalf("missing oembed html = %#v, want empty string", embed)
+	}
+}
+
+func TestWebEmbedRejectsUnsanitizableRemoteOEmbedHTML(t *testing.T) {
+	src, err := os.ReadFile("embeds.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := functionBody(t, src, "webEmbed")
+	if !strings.Contains(body, "if !sanitizeRemoteWebEmbedHTML(embed) {\n\t\treturn apiError(c, http.StatusNotFound, \"Record not found\")\n\t}") {
+		t.Fatalf("webEmbed must render 404 when the remote oembed html is not a string:\n%s", body)
+	}
+	if strings.Contains(body, `embed["html"].(string)`) {
+		t.Fatalf("webEmbed must not pass non-string oembed html through unsanitized:\n%s", body)
 	}
 }
 
