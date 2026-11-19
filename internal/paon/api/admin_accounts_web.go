@@ -468,6 +468,19 @@ func (s *Server) applyAdminAccountWebAction(user *models.User, rawID string, act
 		} else if !ok {
 			return echo.NewHTTPError(http.StatusForbidden, "report resolution is not permitted")
 		}
+	case "remove_avatar", "remove_header":
+		// AccountPolicy#remove_avatar? / #remove_header? require role.overrides?(record.user_role).
+		if ok, err := s.adminAccountRoleOverriddenByRailsPolicy(user, account); err != nil {
+			return err
+		} else if !ok {
+			return echo.NewHTTPError(http.StatusForbidden, "account action is not permitted")
+		}
+	case "memorialize":
+		if ok, err := s.adminAccountMemorializePermittedByRailsPolicy(user, account); err != nil {
+			return err
+		} else if !ok {
+			return echo.NewHTTPError(http.StatusForbidden, "account action is not permitted")
+		}
 	}
 	switch actionType {
 	case "enable":
@@ -531,6 +544,17 @@ func (s *Server) applyAdminAccountWebAction(user *models.User, rawID string, act
 	default:
 		return echo.NewHTTPError(http.StatusUnprocessableEntity, "unknown account action")
 	}
+}
+
+// adminAccountMemorializePermittedByRailsPolicy mirrors Admin::AccountsController#memorialize:
+// require_local_account! (a local account with a user) and AccountPolicy#memorialize?
+// (role.overrides?(record.user_role) && !record.instance_actor?). delete_user_data is
+// checked by the route gate.
+func (s *Server) adminAccountMemorializePermittedByRailsPolicy(user *models.User, account *models.Account) (bool, error) {
+	if account == nil || !account.Local() || account.User.ID == 0 || account.ID == -99 {
+		return false, nil
+	}
+	return s.adminAccountRoleOverriddenByRailsPolicy(user, account)
 }
 
 func (s *Server) adminAccountCanDestroyWithRailsPolicy(accountID int64) (bool, error) {
