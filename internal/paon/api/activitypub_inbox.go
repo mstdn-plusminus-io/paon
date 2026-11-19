@@ -61,7 +61,7 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 	// Keep the compacted signature intact until a relayed activity has been
 	// bound to its original actor. Forwarding compatibility is handled only
 	// after authentication, on a separate serialized document.
-	verificationBody := activityPubCompactCollectionBody(body)
+	verificationBody, compacted := activityPubCompactCollectionBody(body)
 	if !json.Valid(verificationBody) {
 		return activityPubEventNotAppliedf("invalid JSON document")
 	}
@@ -94,6 +94,12 @@ func (s *Server) processActivityPubInboxForDeliveredToWithContext(ctx context.Co
 				originalBody = verificationBody
 				payload, err = parseActivityPayload(verificationBody)
 			}
+		} else if !compacted {
+			// Mastodon verifies linked-data signatures only on documents it has
+			// compacted with its own context. An uncompacted document keeps the
+			// sender's @context, whose RDF can differ from the literal keys Paon
+			// processes, so it can never authenticate another actor.
+			err = fmt.Errorf("linked-data signature is missing or the document was not JSON-LD compacted")
 		} else {
 			verifiedActor, err = s.activityPubLinkedDataSignatureActor(verificationBody, payload)
 		}
@@ -175,13 +181,18 @@ func (s *Server) activityPubDeliveredToAccount(target *models.Account, delivered
 	return &deliveredTo, nil
 }
 
-func activityPubCompactCollectionBody(body []byte) []byte {
+// activityPubCompactCollectionBody mirrors Mastodon's ProcessCollectionService:
+// only a document whose literal top-level "signature" is a JSON object is
+// compacted with the full ActivityStreams/security context. The boolean
+// reports whether the returned body is that compacted document; linked-data
+// signatures must only be verified on such documents.
+func activityPubCompactCollectionBody(body []byte) ([]byte, bool) {
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return body
+		return body, false
 	}
-	if signature, ok := raw["signature"].(map[string]any); !ok || signature == nil {
-		return body
+	if _, ok := activityPubLinkedDataSignatureMap(raw); !ok {
+		return body, false
 	}
 	compacted, err := activityPubCompactSignedActivityDocument(raw)
 	if err != nil {
@@ -192,14 +203,14 @@ func activityPubCompactCollectionBody(body []byte) []byte {
 			}
 		}
 		if fallback, marshalErr := json.Marshal(withoutSignature); marshalErr == nil {
-			return fallback
+			return fallback, false
 		}
-		return body
+		return body, false
 	}
 	if compactedBody, err := json.Marshal(compacted); err == nil {
-		return compactedBody
+		return compactedBody, true
 	}
-	return body
+	return body, false
 }
 
 func activityPubFinalizeCollectionBodyForForwarding(originalBody []byte, compactedBody []byte) []byte {
@@ -6012,6 +6023,14 @@ func parseActivityPayload(body []byte) (activityPayload, error) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return activityPayload{}, err
 	}
+	// The linked-data signature is verified and compacted at the document's
+	// top level, so detect it there, before any @graph unwrapping. It covers
+	// the whole graph rather than the node picked from @graph, so such a node
+	// is never authenticated by it.
+	signature := activityLinkedDataSignatureValue(raw)
+	if len(activityJSONLDGraphMaps(raw)) > 0 {
+		signature = activityLinkedDataSignature{}
+	}
 	raw = activityJSONLDGraphActivity(raw)
 	rawObject := activityJSONLDValue(raw, "object")
 	object := parseActivityObject(rawObject)
@@ -6049,7 +6068,7 @@ func parseActivityPayload(body []byte) (activityPayload, error) {
 		ActorPresent:    activityPubJSONLDPresent(rawActor),
 		Content:         activityJSONLDString(raw, "content"),
 		Published:       activityJSONLDString(raw, "published"),
-		Signature:       activityLinkedDataSignatureValue(activityJSONLDValue(raw, "signature")),
+		Signature:       signature,
 		Object:          object,
 		ObjectReference: activityPayloadObjectReference(rawObject),
 		ObjectIDs:       activityPubObjectIDs(rawObject),
@@ -6172,18 +6191,21 @@ func activityRubyInspectValue(value any) string {
 	}
 }
 
-func activityLinkedDataSignatureValue(value any) activityLinkedDataSignature {
-	switch typed := activityJSONLDSingle(value).(type) {
-	case map[string]any:
-		return activityLinkedDataSignature{
-			Type:           activityJSONLDType(typed),
-			Creator:        activityJSONLDValueOrID(activityJSONLDValue(typed, "creator")),
-			Created:        activityJSONLDString(typed, "created"),
-			SignatureValue: activityJSONLDString(typed, "signatureValue"),
-			Present:        true,
-		}
-	default:
+// activityLinkedDataSignatureValue reads the linked-data signature of
+// document. Only a literal top-level "signature" JSON object is present, the
+// same condition used for compaction and verification; see
+// activityPubLinkedDataSignatureMap.
+func activityLinkedDataSignatureValue(document map[string]any) activityLinkedDataSignature {
+	signature, ok := activityPubLinkedDataSignatureMap(document)
+	if !ok {
 		return activityLinkedDataSignature{}
+	}
+	return activityLinkedDataSignature{
+		Type:           activityJSONLDType(signature),
+		Creator:        activityJSONLDValueOrID(activityJSONLDValue(signature, "creator")),
+		Created:        activityJSONLDString(signature, "created"),
+		SignatureValue: activityJSONLDString(signature, "signatureValue"),
+		Present:        true,
 	}
 }
 
