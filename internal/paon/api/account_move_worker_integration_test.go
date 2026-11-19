@@ -247,13 +247,18 @@ func TestAccountMoveWorkerIntegration(t *testing.T) {
 		if err := f.tx.Model(&user).Update("encrypted_password", "").Error; err != nil {
 			t.Fatal(err)
 		}
+		// /settings/migration is a web route: it authenticates the browser
+		// session cookie, which must belong to a session activation.
 		token := "move-worker-" + randomHex(8)
-		f.create(&models.OAuthAccessToken{Token: token, ResourceOwnerID: sql.NullInt64{Int64: user.ID, Valid: true}, Scopes: "read write", CreatedAt: f.now})
+		accessToken := models.OAuthAccessToken{Token: token, ResourceOwnerID: sql.NullInt64{Int64: user.ID, Valid: true}, Scopes: "read write follow push", CreatedAt: f.now}
+		f.create(&accessToken)
+		activation := sessionActivationForRequest(user.ID, accessToken.ID, "", "", f.now)
+		f.create(&activation)
 
 		form := url.Values{"account_migration[acct]": {"bob2"}, "account_migration[current_username]": {"bob"}}
 		req := httptest.NewRequest(http.MethodPost, "/settings/migration", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 		rec := httptest.NewRecorder()
 		if err := f.server.createSettingsMigration(echo.NewContext(req, rec, echo.New())); err != nil {
 			t.Fatal(err)

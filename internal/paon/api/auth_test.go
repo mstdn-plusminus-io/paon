@@ -1721,7 +1721,7 @@ func TestAuthenticatedTokenPathsUseSharedLastUsedTracking(t *testing.T) {
 		want         string
 	}{
 		"server.go": {
-			{functionName: "currentUserByToken", want: `s.trackAccessTokenUse(c, &accessToken)`},
+			{functionName: "currentUserByAccessToken", want: `s.trackAccessTokenUse(c, &accessToken)`},
 		},
 		"web_push_subscriptions.go": {
 			{functionName: "accessTokenFromRequest", want: `s.trackAccessTokenUse(c, &accessToken)`},
