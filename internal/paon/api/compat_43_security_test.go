@@ -252,7 +252,10 @@ func TestMastodon43MaliciousLinkedDataGraphFixturesLoseActorAuthority(t *testing
 				t.Fatal("malicious graph feature was not detected")
 			}
 
-			processedBody := activityPubCompactCollectionBody(body)
+			processedBody, compacted := activityPubCompactCollectionBody(body)
+			if compacted {
+				t.Fatal("graph fallback reported a compacted document")
+			}
 			var processed map[string]any
 			if err := json.Unmarshal(processedBody, &processed); err != nil {
 				t.Fatal(err)

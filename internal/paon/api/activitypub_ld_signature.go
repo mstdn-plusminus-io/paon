@@ -15,6 +15,8 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -44,12 +46,10 @@ func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activi
 	if payload.Signature.SignatureValue == "" {
 		return nil, fmt.Errorf("linked-data signature value is missing")
 	}
-	var document any
-	if err := json.Unmarshal(body, &document); err != nil {
-		return nil, fmt.Errorf("decode linked-data signature document: %w", err)
-	}
-	if activityPubHasUnsupportedSignedJSONLDFeature(document) {
-		return nil, fmt.Errorf("unsupported signed JSON-LD graph feature")
+	// Also rejects @graph, @included and @reverse like
+	// LinkedDataSignature#verify_actor!'s unsupported_jsonld_features? check.
+	if err := activityPubLinkedDataSignatureCoversDocument(body); err != nil {
+		return nil, err
 	}
 	actor, err := s.activityPubLinkedDataSignatureCreatorActor(payload.Signature.Creator)
 	if err != nil {
@@ -91,25 +91,8 @@ func (s *Server) activityPubLinkedDataSignatureActor(body []byte, payload activi
 // to documents using graph-restructuring keywords. JSON-LD canonicalization can
 // otherwise drop or reorder the entry which the inbox later selects.
 func activityPubHasUnsupportedSignedJSONLDFeature(value any) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, child := range typed {
-			switch key {
-			case "@graph", "@included", "@reverse":
-				return true
-			}
-			if activityPubHasUnsupportedSignedJSONLDFeature(child) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if activityPubHasUnsupportedSignedJSONLDFeature(child) {
-				return true
-			}
-		}
-	}
-	return false
+	_, ok := activityPubJSONLDUnsupportedKeyword(value)
+	return ok
 }
 
 func (s *Server) activityPubLinkedDataSignatureCreatorActor(creator string) (*models.Account, error) {
@@ -343,9 +326,12 @@ func activityPubLinkedDataSignatureVerificationStringWithHash(document map[strin
 	}
 	options["@context"] = activityPubIdentityContext
 
+	// Hash everything except the literal signature object, as Mastodon does
+	// with `@json.without('signature')`. Alias keys are not signatures, so they
+	// must stay covered by the signature instead of being silently excluded.
 	unsigned := make(map[string]any, len(document)-1)
 	for key, value := range document {
-		if key != "signature" && !activityPubJSONLDKeyMatchesTerm(key, "signature") {
+		if key != "signature" {
 			unsigned[key] = value
 		}
 	}
@@ -360,9 +346,178 @@ func activityPubLinkedDataSignatureVerificationStringWithHash(document map[strin
 	return signatureValue, optionsHash + documentHash, nil
 }
 
+// activityPubLinkedDataSignatureMap returns the document's linked-data
+// signature. Like Mastodon (`@json['signature'].is_a?(Hash)` in
+// LinkedDataSignature#verify_actor! and ProcessCollectionService), only a
+// literal top-level "signature" JSON object counts, and it is never unwrapped
+// (an {"@list": [...]} object has no signature type). Arrays and IRI/CURIE
+// aliases such as "sec:signature" are not signatures: such documents are never
+// JSON-LD compacted, so verifying them would canonicalize the sender's own
+// @context while Paon reads their literal keys.
 func activityPubLinkedDataSignatureMap(document map[string]any) (map[string]any, bool) {
-	signature, ok := activityJSONLDSingle(activityJSONLDValue(document, "signature")).(map[string]any)
-	return signature, ok
+	signature, ok := document["signature"].(map[string]any)
+	return signature, ok && signature != nil
+}
+
+// activityPubJSONLDLanguageTag mirrors json-gold's validLanguageRegex
+// (ld/rdf_dataset.go): a literal with any other language tag is left out of
+// the canonicalized dataset.
+var activityPubJSONLDLanguageTag = regexp.MustCompile(`^[a-zA-Z]+(-[a-zA-Z0-9]+)*$`)
+
+// activityPubLinkedDataSignatureCoversDocument rejects a compacted document
+// that holds content outside the RDF dataset its linked-data signature covers.
+// json-gold leaves out every node and reference whose @id is a relative IRI
+// (GraphToRDF in ld/rdf_dataset.go, objectToRDF in ld/node.go) and every
+// statement with a malformed http(s) IRI, language tag or datatype
+// (Quad.Valid), so such content keeps a valid signature while Paon still reads
+// it, e.g. a publicKey with a relative @id placed before the signed key.
+// Properties that expand to blank node identifiers (terms no context defines)
+// are never canonicalized either; as in Mastodon they are left alone.
+func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("JSON-LD expansion panic: %v", recovered)
+		}
+	}()
+	var document map[string]any
+	if err := json.Unmarshal(body, &document); err != nil {
+		return fmt.Errorf("decode linked-data signature document: %w", err)
+	}
+	// Mastodon 0786c1e57a (JsonLdHelper#unsupported_jsonld_features?) does not
+	// authenticate a compacted document that holds @graph, @included or
+	// @reverse anywhere: they let the JSON tree a server reads (Paon unwraps a
+	// nested @graph into the object) diverge from the signed default graph.
+	if keyword, ok := activityPubJSONLDUnsupportedKeyword(document); ok {
+		return fmt.Errorf("linked-data signature does not cover the document: %s is not supported", keyword)
+	}
+	unsigned := make(map[string]any, len(document))
+	for key, value := range document {
+		if key != "signature" {
+			unsigned[key] = value
+		}
+	}
+	input, err := activityPubJSONLDSanitize(unsigned)
+	if err != nil {
+		return err
+	}
+	options := ld.NewJsonLdOptions("")
+	// A compacted document only uses Paon's own contexts, which are preloaded.
+	options.DocumentLoader = newActivityPubJSONLDDocumentLoader(true)
+	expanded, err := ld.NewJsonLdProcessor().Expand(input, options)
+	if err != nil {
+		return fmt.Errorf("expand linked-data signature document: %w", err)
+	}
+	if err := activityPubJSONLDUncanonicalizedContent(expanded); err != nil {
+		return fmt.Errorf("linked-data signature does not cover the document: %w", err)
+	}
+	return nil
+}
+
+// activityPubJSONLDUncanonicalizedContent walks an expanded JSON-LD document
+// and reports the first value that RDF conversion would drop.
+func activityPubJSONLDUncanonicalizedContent(value any) error {
+	switch typed := value.(type) {
+	case []any:
+		for _, item := range typed {
+			if err := activityPubJSONLDUncanonicalizedContent(item); err != nil {
+				return err
+			}
+		}
+	case map[string]any:
+		if _, ok := typed["@value"]; ok {
+			if language, ok := typed["@language"].(string); ok && language != "" && !activityPubJSONLDLanguageTag.MatchString(language) {
+				return fmt.Errorf("literal language tag %q is not canonicalized", language)
+			}
+			if datatype, ok := typed["@type"].(string); ok && !activityPubJSONLDValidIRI(datatype) {
+				return fmt.Errorf("literal datatype %q is not canonicalized", datatype)
+			}
+			return nil
+		}
+		for key, item := range typed {
+			switch key {
+			case "@id":
+				id, _ := item.(string)
+				if ld.IsRelativeIri(id) || !activityPubJSONLDValidIRI(id) {
+					return fmt.Errorf("node identifier %q is not canonicalized", id)
+				}
+			case "@type":
+				types, ok := item.([]any)
+				if !ok {
+					types = []any{item}
+				}
+				for _, rawType := range types {
+					if typeIRI, _ := rawType.(string); !activityPubJSONLDValidIRI(typeIRI) {
+						return fmt.Errorf("node type %q is not canonicalized", typeIRI)
+					}
+				}
+			case "@list", "@set":
+				if err := activityPubJSONLDUncanonicalizedContent(item); err != nil {
+					return err
+				}
+			case "@graph", "@included", "@reverse":
+				// Named graphs, included nodes and reverse properties are never
+				// authenticated; see activityPubJSONLDUnsupportedKeyword.
+				return fmt.Errorf("%s is not supported in a linked-data signed document", key)
+			default:
+				if !activityPubJSONLDCanonicalizedProperty(key) {
+					continue
+				}
+				// attributionDomains is not exempt: Mastodon 4.3 publishes it as
+				// bare domains under an @id term, which RDF conversion drops,
+				// and Paon stores it as the account's attribution_domains.
+				if err := activityPubJSONLDUncanonicalizedContent(item); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// activityPubJSONLDUnsupportedKeywords mirrors Mastodon's
+// JsonLdHelper::UNSUPPORTED_JSONLD_KEYWORDS.
+var activityPubJSONLDUnsupportedKeywords = []string{"@graph", "@included", "@reverse"}
+
+// activityPubJSONLDUnsupportedKeyword reports the first unsupported JSON-LD
+// keyword used as a key anywhere in a compacted document, like Mastodon's
+// JsonLdHelper#unsupported_jsonld_features?.
+func activityPubJSONLDUnsupportedKeyword(value any) (string, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if slices.Contains(activityPubJSONLDUnsupportedKeywords, key) {
+				return key, true
+			}
+			if keyword, ok := activityPubJSONLDUnsupportedKeyword(item); ok {
+				return keyword, true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if keyword, ok := activityPubJSONLDUnsupportedKeyword(item); ok {
+				return keyword, true
+			}
+		}
+	}
+	return "", false
+}
+
+// activityPubJSONLDCanonicalizedProperty reports whether RDF conversion keeps
+// statements for property (GraphToRDF in ld/rdf_dataset.go). Other properties
+// are dropped as a whole, like undefined terms.
+func activityPubJSONLDCanonicalizedProperty(property string) bool {
+	return !ld.IsKeyword(property) &&
+		!strings.HasPrefix(property, "_:") &&
+		!ld.IsRelativeIri(property) &&
+		activityPubJSONLDValidIRI(property)
+}
+
+// activityPubJSONLDValidIRI mirrors json-gold's validIRI (ld/rdf_dataset.go).
+func activityPubJSONLDValidIRI(iri string) bool {
+	if strings.HasPrefix(iri, "http://") || strings.HasPrefix(iri, "https://") {
+		return ld.IsURL(iri)
+	}
+	return true
 }
 
 func activityPubJSONLDKeyMatchesTerm(key string, term string) bool {
@@ -528,6 +683,13 @@ func newActivityPubJSONLDDocumentLoader(offline bool) ld.DocumentLoader {
 	misskey := map[string]any{"@context": activityPubMisskeyJSONLDContext()}
 	ostatus := map[string]any{"@context": activityPubOStatusJSONLDContext()}
 	schema := map[string]any{"@context": activityPubSchemaJSONLDContext()}
+	webfinger := map[string]any{"@context": activityPubWebFingerJSONLDContext()}
+	// Mastodon 4.6 documents reference this context; Mastodon preloads it
+	// (config/initializers/json_ld_webfinger.rb) so relayed documents still
+	// compact when the remote context cannot be fetched.
+	for _, uri := range []string{"http://purl.archive.org/socialweb/webfinger", "https://purl.archive.org/socialweb/webfinger"} {
+		loader.AddDocument(uri, webfinger)
+	}
 	for _, uri := range []string{"https://www.w3.org/ns/activitystreams", "http://www.w3.org/ns/activitystreams", "https://www.w3.org/ns/activitystreams/", "http://www.w3.org/ns/activitystreams/", "https://www.w3.org/ns/activitystreams#", "http://www.w3.org/ns/activitystreams#"} {
 		loader.AddDocument(uri, activityStreams)
 	}
@@ -732,6 +894,16 @@ func activityPubOStatusJSONLDContext() map[string]any {
 		"atomUri":          "ostatus:atomUri",
 		"inReplyToAtomUri": "ostatus:inReplyToAtomUri",
 		"conversation":     "ostatus:conversation",
+	}
+}
+
+// activityPubWebFingerJSONLDContext mirrors the term definitions Mastodon
+// preloads for http://purl.archive.org/socialweb/webfinger.
+func activityPubWebFingerJSONLDContext() map[string]any {
+	return map[string]any{
+		"webfinger": map[string]any{"@id": "https://purl.archive.org/socialweb/webfinger#webfinger", "@type": "http://www.w3.org/2001/XMLSchema#string"},
+		"wf":        "https://purl.archive.org/socialweb/webfinger#",
+		"xsd":       "http://www.w3.org/2001/XMLSchema#",
 	}
 }
 
