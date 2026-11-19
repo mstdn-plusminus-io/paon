@@ -370,6 +370,9 @@ func (s *Server) applyRelationshipBatch(ctx context.Context, accountID int64, ta
 	// remove_domains_from_followers mirror Rails RemoveFromFollowersService, which does
 	// NOT enqueue an UnmergeWorker, so they perform no feed cleanup here.
 	unmergeTargets := []int64{}
+	// Form::AccountBatch#follow! keeps following the other accounts when
+	// FollowService raises Mastodon::NotPermittedError and re-raises it afterwards.
+	followNotPermitted := false
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		for _, target := range targets {
 			if target.ID == accountID {
@@ -378,6 +381,10 @@ func (s *Server) applyRelationshipBatch(ctx context.Context, accountID int64, ta
 			switch action {
 			case "follow":
 				delivery, notificationPayload, err := s.createRelationshipFollow(ctx, tx, current, target, time.Now().UTC())
+				if errors.Is(err, errRelationshipFollowNotPermitted) {
+					followNotPermitted = true
+					continue
+				}
 				if err != nil {
 					return err
 				}
@@ -434,8 +441,15 @@ func (s *Server) applyRelationshipBatch(ctx context.Context, accountID int64, ta
 		s.meiliReindexPrivateStatusesForAccountsBestEffort(ctx, accountID)
 	}
 	s.deliverRelationshipBatchDeliveries(deliveries)
+	if followNotPermitted {
+		return errRelationshipFollowNotPermitted
+	}
 	return nil
 }
+
+// errRelationshipFollowNotPermitted is Mastodon::NotPermittedError raised by
+// FollowService#following_not_allowed? for one account of the batch form.
+var errRelationshipFollowNotPermitted = errors.New("relationship follow not permitted")
 
 type relationshipBatchDelivery struct {
 	Kind   string
@@ -467,6 +481,13 @@ func appendFollowRelationshipCacheEffect(effects []followRelationshipCacheEffect
 }
 
 func (s *Server) createRelationshipFollow(ctx context.Context, tx *gorm.DB, current models.Account, target models.Account, now time.Time) (*relationshipBatchDelivery, *asynqLocalNotificationPayload, error) {
+	// FollowService#call checks following_not_allowed? (blocks in either
+	// direction, domain blocks, moved or OStatus targets) before anything else.
+	if disallowed, err := s.followNotAllowedInDB(tx, &current, &target); err != nil {
+		return nil, nil, err
+	} else if disallowed {
+		return nil, nil, errRelationshipFollowNotPermitted
+	}
 	if exists, err := relationshipFollowOrRequestExists(tx, current.ID, target.ID); err != nil || exists {
 		return nil, nil, err
 	}
@@ -475,7 +496,9 @@ func (s *Server) createRelationshipFollow(ctx context.Context, tx *gorm.DB, curr
 	} else if reached {
 		return nil, nil, errors.New(followLimitReachedMessage(limit))
 	}
-	if target.Locked || current.SilencedAt.Valid {
+	// FollowService#request_follow! for locked targets, silenced sources and
+	// remote ActivityPub targets: the remote server must Accept the Follow.
+	if followRequiresRequest(&current, &target) {
 		req := models.FollowRequest{CreatedAt: now, UpdatedAt: now, AccountID: current.ID, TargetAccountID: target.ID, ShowReblogs: true, URI: models.NullSafeString(activityPubGeneratedPayloadURI(s))}
 		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&req)
 		if res.Error != nil || res.RowsAffected == 0 {
