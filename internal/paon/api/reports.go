@@ -548,7 +548,9 @@ func (s *Server) reportableStatusIDs(source models.Account, target models.Accoun
 	}
 	var rows []models.Status
 	query := s.db.Model(&models.Status{}).
-		Where("statuses.account_id = ? AND statuses.id IN ?", target.ID, statusIDs)
+		// models.Int64Array is a driver.Valuer, which GORM binds as one value
+		// ("IN $2", a syntax error); a plain slice expands to "IN ($2,$3)".
+		Where("statuses.account_id = ? AND statuses.id IN ?", target.ID, []int64(statusIDs))
 	if source.ID != target.ID {
 		visible := []int{0, 1}
 		var follows int64
