@@ -68,7 +68,18 @@ func TestPublicStatusHTMLStatusMatchesRailsStatusPolicyIntegration(t *testing.T)
 		user := models.User{AccountID: account.ID, Email: username + "@paon.example", EncryptedPassword: "x", Approved: true, Disabled: username == "disabled_follower", ConfirmedAt: sql.NullTime{Time: now, Valid: true}, CreatedAt: now, UpdatedAt: now}
 		create(&user)
 		tokens[username] = "public-status-" + username + "-" + randomHex(8)
-		create(&models.OAuthAccessToken{Token: tokens[username], ResourceOwnerID: sql.NullInt64{Int64: user.ID, Valid: true}, Scopes: "read write", CreatedAt: now})
+		accessToken := models.OAuthAccessToken{Token: tokens[username], ResourceOwnerID: sql.NullInt64{Int64: user.ID, Valid: true}, Scopes: "read write", CreatedAt: now}
+		create(&accessToken)
+		// The status page is a web route: only a browser session (a token bound
+		// to a session activation) identifies the viewer.
+		activation := sessionActivationForRequest(user.ID, accessToken.ID, "", "", now)
+		create(&activation)
+		if username == "follower" {
+			// An OAuth token without a session activation, as issued to a
+			// third-party application.
+			tokens["follower_app"] = "public-status-follower-app-" + randomHex(8)
+			create(&models.OAuthAccessToken{Token: tokens["follower_app"], ResourceOwnerID: sql.NullInt64{Int64: user.ID, Valid: true}, Scopes: "read write", CreatedAt: now})
+		}
 		accounts[username] = account
 	}
 	alice := accounts["alice"]
@@ -145,11 +156,14 @@ func TestPublicStatusHTMLStatusMatchesRailsStatusPolicyIntegration(t *testing.T)
 				want = want || candidate == viewer
 			}
 			for _, auth := range []string{"bearer", "cookie"} {
+				// Like Rails, the HTML page ignores OAuth bearer tokens, so only
+				// the session cookie may unlock hidden statuses.
+				wantVisible := want && (auth == "cookie" || statuses[statusName].Visibility <= 1)
 				err := request("alice", statusName, viewer, auth)
-				if want && err != nil {
+				if wantVisible && err != nil {
 					t.Fatalf("%s as %q (%s): err = %v, want visible", statusName, viewer, auth, err)
 				}
-				if !want && !apiErrorStatus(err, http.StatusNotFound) {
+				if !wantVisible && !apiErrorStatus(err, http.StatusNotFound) {
 					t.Fatalf("%s as %q (%s): err = %v, want 404", statusName, viewer, auth, err)
 				}
 			}
@@ -170,8 +184,16 @@ func TestPublicStatusHTMLStatusMatchesRailsStatusPolicyIntegration(t *testing.T)
 		}
 	}
 
-	if err := request("follower", "private", "follower", "bearer"); !apiErrorStatus(err, http.StatusNotFound) {
+	if err := request("follower", "private", "follower", "cookie"); !apiErrorStatus(err, http.StatusNotFound) {
 		t.Fatalf("private status under another account path: err = %v, want 404", err)
+	}
+	// A third-party application's token copied into the session cookie is not
+	// a browser session.
+	if err := request("alice", "private", "follower_app", "cookie"); !apiErrorStatus(err, http.StatusNotFound) {
+		t.Fatalf("private status via an application token in the session cookie: err = %v, want 404", err)
+	}
+	if err := request("alice", "private", "follower_app", "bearer"); !apiErrorStatus(err, http.StatusNotFound) {
+		t.Fatalf("private status via an application bearer token: err = %v, want 404", err)
 	}
 	// Tokens the HTML cache policy does not treat as authentication must not
 	// unlock hidden statuses, or the response could be cached publicly.
