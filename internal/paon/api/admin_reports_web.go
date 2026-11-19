@@ -271,6 +271,20 @@ func (s *Server) createAdminReportActionWeb(c *echo.Context) error {
 	if action == "" {
 		return c.Redirect(http.StatusFound, "/admin/reports/"+strconv.FormatInt(report.ID, 10)+"?error="+url.QueryEscape(adminReportUnknownActionMessage(s.webLocale(c, user), c)))
 	}
+	if action == "silence" || action == "suspend" {
+		// Rails runs these through Admin::AccountAction, whose handle_silence! and
+		// handle_suspend! authorize AccountPolicy#silence? / #suspend? (role overrides
+		// and, for suspend, not the instance actor) against the reported account.
+		target, err := s.loadAdminAccount(strconv.FormatInt(report.TargetAccountID, 10))
+		if err != nil {
+			return echo.NewHTTPError(http.StatusNotFound, "account not found")
+		}
+		if ok, err := s.adminAccountActionPermittedByRailsPolicy(user, target, action); err != nil {
+			return err
+		} else if !ok {
+			return echo.NewHTTPError(http.StatusForbidden, "account action is not permitted")
+		}
+	}
 	now := time.Now().UTC()
 	var deletedStatusIDs []int64
 	var sensitiveStatusIDs []int64
