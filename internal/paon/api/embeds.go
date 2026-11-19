@@ -123,10 +123,30 @@ func (s *Server) webEmbed(c *echo.Context) error {
 	if err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
-	if htmlValue, ok := embed["html"].(string); ok {
-		embed["html"] = sanitizeRemoteOEmbedHTML(htmlValue)
+	if !sanitizeRemoteWebEmbedHTML(embed) {
+		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	return c.JSON(http.StatusOK, embed)
+}
+
+// sanitizeRemoteWebEmbedHTML replaces embed["html"] with its sanitized string
+// form, like Rails Sanitize.fragment (nil becomes ""). It reports false when the
+// remote html is not a string (for example a JSON array), so the caller never
+// returns an unsanitized value that the web UI would write into its preview
+// iframe.
+func sanitizeRemoteWebEmbedHTML(embed map[string]any) bool {
+	if embed == nil {
+		return false
+	}
+	switch value := embed["html"].(type) {
+	case string:
+		embed["html"] = sanitizeRemoteOEmbedHTML(value)
+	case nil:
+		embed["html"] = ""
+	default:
+		return false
+	}
+	return true
 }
 
 func (s *Server) statusEmbed(c *echo.Context) error {
