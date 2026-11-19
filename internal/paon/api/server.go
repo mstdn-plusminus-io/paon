@@ -9762,13 +9762,26 @@ func (s *Server) fetchRemoteMentionAccount(tx *gorm.DB, ref statusMentionRef) (*
 	if !ok {
 		return nil, nil
 	}
-	actorURL, err := fetchActivityActorURLFromWebFinger(acct)
+	actorURL, resolvedAcct, err := fetchActivityActorURLAndAcctFromWebFinger(acct)
 	if err != nil {
 		return nil, nil
 	}
 	actor, err := s.fetchActivityActor(actorURL)
-	if err != nil || actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+	if err != nil || actor.ID == "" || actor.PublicKey.PublicKeyPem == "" || actor.ID != actorURL {
 		return nil, nil
+	}
+	// Check the mention before anything is stored: an actor that does not match
+	// the mentioned acct must not be upserted.
+	if !remoteActivityActorMatchesMentionRef(actor, ref) {
+		return nil, nil
+	}
+	// ResolveAccountService hands the self link to FetchRemoteAccountService,
+	// whose check_webfinger! requires preferredUsername@actor host to loop back
+	// to the actor. That is already proven when it is the resolved acct.
+	if !strings.EqualFold(actor.PreferredUsername+"@"+activityPubNormalizedURIHost(actor.ID), resolvedAcct) {
+		if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
+			return nil, nil
+		}
 	}
 	account, err := s.upsertRemoteActivityActorDB(tx, actor)
 	if errors.Is(err, errRemoteActivityActorIsLocal) {
@@ -9795,6 +9808,21 @@ func accountMatchesMentionRef(account *models.Account, ref statusMentionRef) boo
 		return false
 	}
 	return strings.EqualFold(account.Username, ref.Username) && strings.EqualFold(account.Domain.String, ref.Domain)
+}
+
+// remoteActivityActorMatchesMentionRef applies accountMatchesMentionRef to the
+// username and domain upsertRemoteActivityActorDB would store for actor.
+func remoteActivityActorMatchesMentionRef(actor remoteActivityActor, ref statusMentionRef) bool {
+	parsed, err := url.Parse(actor.ID)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	username := railsAccountUsernameValue(firstNonEmpty(actor.PreferredUsername, pathBase(parsed.Path)))
+	domain := normalizeDeliveryStatsHost(parsed.Hostname())
+	if username == "" || domain == "" {
+		return false
+	}
+	return accountMatchesMentionRef(&models.Account{Username: username, Domain: sql.NullString{String: domain, Valid: true}}, ref)
 }
 
 func loadStatusForSnapshot(tx *gorm.DB, id int64) (*models.Status, error) {
