@@ -440,7 +440,7 @@ func (s *Server) browserSecurityMiddleware(next echo.HandlerFunc) echo.HandlerFu
 			}
 		}
 
-		if !browserHTMLResponseCandidate(c.Request()) {
+		if !browserHTMLResponseCandidate(s.cfg, c.Request()) {
 			return next(c)
 		}
 		original := c.Response()
@@ -532,11 +532,13 @@ func (s *Server) browserCSRFTokenValidForAuthentication(c *echo.Context, token s
 	return strings.TrimSpace(token) != "" && browserCSRFTokenValid(c, web.CSRFTokenForSession(token))
 }
 
-func browserHTMLResponseCandidate(req *http.Request) bool {
+func browserHTMLResponseCandidate(cfg config.Config, req *http.Request) bool {
 	if req == nil || req.URL == nil {
 		return false
 	}
-	return !strings.HasPrefix(req.URL.Path, "/api/") && !strings.HasPrefix(req.URL.Path, "/packs/") && !strings.HasPrefix(req.URL.Path, "/assets/")
+	// Files under the public/system mounts are user uploads and remote media;
+	// never rewrite them or inject the viewer's CSRF token into them.
+	return !strings.HasPrefix(req.URL.Path, "/api/") && !strings.HasPrefix(req.URL.Path, "/packs/") && !strings.HasPrefix(req.URL.Path, "/assets/") && !paperclipStaticMountPath(cfg, req.URL.Path)
 }
 
 type browserHTMLResponseWriter struct {

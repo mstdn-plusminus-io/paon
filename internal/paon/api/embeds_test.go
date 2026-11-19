@@ -126,7 +126,7 @@ func TestStaticAssetDirectoriesServeFromAbsolutePublicDir(t *testing.T) {
 			if got := rec.Header().Get("Cache-Control"); got != "public, max-age=2419200, immutable" {
 				t.Fatalf("%s Cache-Control = %q", tc.path, got)
 			}
-			if got := rec.Header().Get("Content-Security-Policy"); got != "default-src 'none'; form-action 'none'" {
+			if got := rec.Header().Get("Content-Security-Policy"); got != "default-src 'none'; form-action 'none'; sandbox" {
 				t.Fatalf("%s Content-Security-Policy = %q", tc.path, got)
 			}
 		} else if got := rec.Header().Get("Cache-Control"); got != "public, max-age=2419200, must-revalidate" {
