@@ -112,8 +112,10 @@ func (s *Server) adminAccountRelationshipsPage(c *echo.Context) error {
 	}, s.webLocale(c, user)))
 }
 
+// Rails Admin::ChangeEmailsController authorizes UserPolicy#change_email?, which
+// requires manage_user_access and role.overrides?(record.role).
 func (s *Server) adminAccountChangeEmailPage(c *echo.Context) error {
-	user, handled, err := s.requireAdminAccountsWebUser(c)
+	user, handled, err := s.requireAdminUserAccessWebUser(c)
 	if handled || err != nil {
 		return err
 	}
@@ -123,12 +125,15 @@ func (s *Server) adminAccountChangeEmailPage(c *echo.Context) error {
 	}
 	if !account.Local() || account.User.ID == 0 {
 		return c.Redirect(http.StatusFound, "/admin/accounts/"+url.PathEscape(c.Param("account_id")))
+	}
+	if handled, err := s.requireAdminUserOverridesTarget(c, user, account.User); handled || err != nil {
+		return err
 	}
 	return c.HTML(http.StatusOK, adminAccountChangeEmailHTML(*account, c.QueryParam("error"), s.webLocale(c, user)))
 }
 
 func (s *Server) updateAdminAccountChangeEmail(c *echo.Context) error {
-	user, handled, err := s.requireAdminAccountsWebUser(c)
+	user, handled, err := s.requireAdminUserAccessWebUser(c)
 	if handled || err != nil {
 		return err
 	}
@@ -138,6 +143,9 @@ func (s *Server) updateAdminAccountChangeEmail(c *echo.Context) error {
 	}
 	if !account.Local() || account.User.ID == 0 {
 		return c.Redirect(http.StatusFound, "/admin/accounts/"+url.PathEscape(c.Param("account_id")))
+	}
+	if handled, err := s.requireAdminUserOverridesTarget(c, user, account.User); handled || err != nil {
+		return err
 	}
 	newEmail, err := adminAccountChangeEmailParams(c)
 	if errors.Is(err, errAdminAccountChangeEmailParamsMissing) {
@@ -185,8 +193,10 @@ func adminAccountChangeEmailParams(c *echo.Context) (string, error) {
 	return strings.TrimSpace(lastFormValue(req.Form, prefix+"[unconfirmed_email]")), nil
 }
 
+// Rails Admin::ResetsController authorizes UserPolicy#reset_password?, which
+// requires manage_user_access and role.overrides?(record.role).
 func (s *Server) resetAdminAccountPasswordWeb(c *echo.Context) error {
-	user, handled, err := s.requireAdminAccountsWebUser(c)
+	user, handled, err := s.requireAdminUserAccessWebUser(c)
 	if handled || err != nil {
 		return err
 	}
@@ -196,6 +206,9 @@ func (s *Server) resetAdminAccountPasswordWeb(c *echo.Context) error {
 	}
 	if account.User.ID == 0 {
 		return c.Redirect(http.StatusFound, "/admin/accounts/"+url.PathEscape(c.Param("account_id")))
+	}
+	if handled, err := s.requireAdminUserOverridesTarget(c, user, account.User); handled || err != nil {
+		return err
 	}
 	token := randomHex(24)
 	randomPasswordHash, err := bcrypt.GenerateFromPassword([]byte(randomHex(32)), bcrypt.DefaultCost)
@@ -244,8 +257,10 @@ func (s *Server) resetAdminAccountPasswordWeb(c *echo.Context) error {
 	return c.Redirect(http.StatusFound, "/admin/accounts/"+url.PathEscape(c.Param("account_id")))
 }
 
+// Rails Admin::ConfirmationsController#create and #resend both authorize
+// UserPolicy#confirm?, which requires manage_user_access and !record.confirmed?.
 func (s *Server) confirmAdminAccountWeb(c *echo.Context) error {
-	user, handled, err := s.requireAdminAccountsWebUser(c)
+	user, handled, err := s.requireAdminUserAccessWebUser(c)
 	if handled || err != nil {
 		return err
 	}
@@ -253,11 +268,31 @@ func (s *Server) confirmAdminAccountWeb(c *echo.Context) error {
 }
 
 func (s *Server) resendAdminAccountConfirmationWeb(c *echo.Context) error {
-	user, handled, err := s.requireAdminAccountsWebUser(c)
+	user, handled, err := s.requireAdminUserAccessWebUser(c)
 	if handled || err != nil {
 		return err
 	}
 	return s.updateAdminAccountConfirmation(c, user, false)
+}
+
+// requireAdminUserOverridesTarget enforces role.overrides?(record.role) from Rails
+// UserPolicy#change_email? and #reset_password?. Callers have already required
+// manage_user_access through requireAdminUserAccessWebUser.
+func (s *Server) requireAdminUserOverridesTarget(c *echo.Context, actor *models.User, target models.User) (bool, error) {
+	ok, err := s.adminUserOverridesTarget(actor, target)
+	if err != nil {
+		return true, err
+	}
+	if ok {
+		return false, nil
+	}
+	return true, s.adminUserAccessForbidden(c, actor)
+}
+
+// adminUserAccessForbidden renders the same 403 page as requireAdminUserAccessWebUser.
+func (s *Server) adminUserAccessForbidden(c *echo.Context, actor *models.User) error {
+	locale := s.webLocale(c, actor)
+	return c.HTML(http.StatusForbidden, authPageHTML(adminT(locale, "admin.accounts.user_access", "User access"), "", adminT(locale, "admin.accounts.user_access_not_permitted", "You are not allowed to manage user access."), "", locale))
 }
 
 func (s *Server) updateAdminAccountConfirmation(c *echo.Context, actor *models.User, confirm bool) error {
@@ -267,6 +302,11 @@ func (s *Server) updateAdminAccountConfirmation(c *echo.Context, actor *models.U
 	}
 	if account.User.ID == 0 {
 		return echo.NewHTTPError(http.StatusNotFound, "user not found")
+	}
+	if confirm && account.User.ConfirmedAt.Valid {
+		// UserPolicy#confirm? rejects confirmed users, so a pending e-mail change
+		// (unconfirmed_email) cannot be discarded through this action.
+		return s.adminUserAccessForbidden(c, actor)
 	}
 	locale := s.webLocale(c, actor)
 	if !confirm && account.User.ConfirmedAt.Valid {
