@@ -27,12 +27,16 @@ func TestMisskeySquareDeleteLinkedDataSignatureVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	compactedBody, compacted := activityPubCompactCollectionBody([]byte(misskeySquareDeleteBody))
+	if !compacted {
+		t.Fatal("Misskey Square Delete with a literal signature object was not compacted")
+	}
 	for _, test := range []struct {
 		name string
 		body []byte
 	}{
 		{name: "original", body: []byte(misskeySquareDeleteBody)},
-		{name: "compacted", body: activityPubCompactCollectionBody([]byte(misskeySquareDeleteBody))},
+		{name: "compacted", body: compactedBody},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload, err := parseActivityPayload(test.body)
