@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
@@ -218,5 +219,92 @@ func TestDroppedStatusMentionsAreExcludedFromActivityPubAudienceAndDelivery(t *t
 	}
 	if !strings.Contains(delivery, removed.InboxURL) {
 		t.Fatalf("ordinary removed mention lost retained ActivityPub delivery access: %s", delivery)
+	}
+}
+
+// The expectations below were checked against Rails Account::MENTION_RE
+// (?<![=/[:word:]])@((USERNAME_RE)(?:@[[:word:]]+([.-]+[[:word:]]+)*)?) on
+// Ruby 3.4, the runtime of the Rails version (.ruby-version 3.4.7).
+func TestStatusMentionRefsIgnoreURLsLikeRailsMentionRE(t *testing.T) {
+	for _, text := range []string{
+		"https://h.example/@eve/1",
+		"https://h.example/@alice@mastodon.social/1",
+		"https://x.example/?u=@bob",
+		"RE: https://h.example/@eve/123",
+		"look\n\nRE: https://h.example/@alice@mastodon.social/109",
+		"foo@bar",
+		"a@b@c",
+		"あ@eve",
+		"０@eve",
+		"Ⅻ@eve",
+		"Ⓐ@eve",
+		"🄰@eve",
+		"‿@eve",
+		"́@eve",
+		"‍@eve",
+	} {
+		if refs := statusMentionRefs(text); len(refs) != 0 {
+			t.Fatalf("statusMentionRefs(%q) = %#v, want no mentions", text, refs)
+		}
+	}
+
+	for text, want := range map[string][]statusMentionRef{
+		"@eve":                                  {{Username: "eve"}},
+		"(@eve)":                                {{Username: "eve"}},
+		"@eve@remote.example hello":             {{Username: "eve", Domain: "remote.example"}},
+		"hello\n@eve@remote.example":            {{Username: "eve", Domain: "remote.example"}},
+		"hello.@eve":                            {{Username: "eve"}},
+		"hello,@eve":                            {{Username: "eve"}},
+		"hello、@eve":                            {{Username: "eve"}},
+		"x@@eve":                                {{Username: "eve"}},
+		"-@eve":                                 {{Username: "eve"}},
+		"²@eve":                                 {{Username: "eve"}},
+		"①@eve":                                 {{Username: "eve"}},
+		"see https://h.example/@eve/1 and @bob": {{Username: "bob"}},
+	} {
+		if got := statusMentionRefs(text); !reflect.DeepEqual(got, want) {
+			t.Fatalf("statusMentionRefs(%q) = %#v, want %#v", text, got, want)
+		}
+	}
+}
+
+func TestStatusMentionRefsIgnoreAppendedQuoteURL(t *testing.T) {
+	server := &Server{cfg: config.Config{Scheme: "https", LocalDomain: "h.example", WebDomain: "h.example"}}
+	local := models.Status{ID: 123, Account: models.Account{ID: 9, Username: "eve"}}
+	remote := models.Status{
+		ID:      456,
+		URL:     sql.NullString{String: "https://mastodon.social/@alice/109", Valid: true},
+		Account: models.Account{ID: 10, Username: "alice", Domain: sql.NullString{String: "mastodon.social", Valid: true}},
+	}
+	for _, quote := range []models.Status{local, remote} {
+		// Mastodon 4.5+ stores quotes as Quote records and only renders the
+		// "RE: <url>" fallback (TextFormatter#add_quote_fallback), but a quoted
+		// status URL can still be typed or pasted into the text.
+		text := "private reply @bob\n\nRE: " + server.quoteStatusURL(quote)
+		want := []statusMentionRef{{Username: "bob"}}
+		if got := statusMentionRefs(text); !reflect.DeepEqual(got, want) {
+			t.Fatalf("statusMentionRefs(%q) = %#v, want only the typed mention %#v", text, got, want)
+		}
+	}
+}
+
+// Onigmo's [[:word:]] for UTF-8 strings is Alphabetic (L, Nl, Other_Alphabetic)
+// plus Mark, Decimal_Number, Connector_Punctuation and Join_Control. This was
+// verified to equal Ruby 3.4's /[[:word:]]/ for every code point at Unicode
+// 15.0.0; the test keeps the hand-written RE2 class in statusMentionPattern in
+// sync with Go's Unicode tables.
+func TestStatusMentionPatternBoundaryMatchesRubyWordClass(t *testing.T) {
+	rubyWord := func(r rune) bool {
+		return unicode.IsLetter(r) || unicode.Is(unicode.Nl, r) || unicode.Is(unicode.Other_Alphabetic, r) ||
+			unicode.IsMark(r) || unicode.Is(unicode.Nd, r) || unicode.Is(unicode.Pc, r) || unicode.Is(unicode.Join_Control, r)
+	}
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		want := !(r == '=' || r == '/' || rubyWord(r))
+		if got := statusMentionPattern.MatchString(string(r) + "@eve"); got != want {
+			t.Fatalf("mention after U+%04X matched = %v, want %v (Rails MENTION_RE boundary)", r, got, want)
+		}
 	}
 }

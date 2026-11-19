@@ -9784,7 +9784,14 @@ func disallowedStatusHashtagsValidationMessage(tags []string) string {
 	return "Validation failed: Text contained the disallowed hashtags: " + strings.Join(tags, ", ")
 }
 
-var statusMentionPattern = regexp.MustCompile(`(^|[^\pL\pN_])@([A-Za-z0-9_]+(?:[.-]+[A-Za-z0-9_]+)*)(?:@([A-Za-z0-9.-]+))?`)
+// statusMentionPattern mirrors the boundary of Rails Account::MENTION_RE,
+// (?<![=/[:word:]]), which keeps "/@user" and "?u=@user" inside URLs (such as
+// a quoted status URL pasted into the text) from becoming mentions. RE2 has no
+// lookbehind, so the boundary is a consumed preceding character that must not
+// be "=", "/" or an Onigmo [[:word:]] character: Unicode L, M, Nd, Nl, Pc,
+// Join_Control (U+200C-U+200D) and the Other_Alphabetic symbols outside those
+// categories (U+24B6-U+24E9, U+1F130-U+1F149, U+1F150-U+1F169, U+1F170-U+1F189).
+var statusMentionPattern = regexp.MustCompile(`(^|[^=/\pL\pM\p{Nd}\p{Nl}\p{Pc}\x{200C}\x{200D}\x{24B6}-\x{24E9}\x{1F130}-\x{1F149}\x{1F150}-\x{1F169}\x{1F170}-\x{1F189}])@([A-Za-z0-9_]+(?:[.-]+[A-Za-z0-9_]+)*)(?:@([A-Za-z0-9.-]+))?`)
 
 type statusMentionSaveResult struct {
 	NotificationIDs      []int64
