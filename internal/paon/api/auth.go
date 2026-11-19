@@ -295,34 +295,11 @@ func (s *Server) omniauthProviderEntry(c *echo.Context) error {
 
 func (s *Server) omniauthCallback(c *echo.Context) error {
 	provider := strings.TrimSpace(c.Param("provider"))
-	authInfo := s.omniauthAuthInfoFromCallback(c, provider)
-	if provider != "" {
-		if provider == "openid_connect" && !s.omniauthCallbackStateValid(c) {
-			return c.Redirect(http.StatusFound, "/auth/sign_in?error="+url.QueryEscape(omniauthUnavailableMessage(provider)))
-		}
-		if authInfo.UID == "" && provider == "cas" && requestRawParamValue(c, "ticket") != "" {
-			resolvedAuth, err := s.casAuthFromCallback(c)
-			if err != nil {
-				return err
-			}
-			authInfo = resolvedAuth
-		}
-		if authInfo.UID == "" && provider == "saml" && requestRawParamValue(c, "SAMLResponse") != "" {
-			resolvedAuth, err := s.samlAuthFromCallback(c)
-			if err != nil {
-				return err
-			}
-			authInfo = resolvedAuth
-		}
-		if authInfo.UID == "" && provider == "openid_connect" && requestRawParamValue(c, "code") != "" {
-			resolvedAuth, err := s.openIDConnectAuthFromCallback(c)
-			if err != nil {
-				return err
-			}
-			authInfo = resolvedAuth
-		}
+	authInfo, err := s.verifiedOmniAuthInfo(c, provider)
+	if err != nil {
+		return err
 	}
-	if authInfo.Provider != "" && authInfo.UID != "" {
+	if provider != "" && authInfo.Provider == provider && strings.TrimSpace(authInfo.UID) != "" {
 		var signedInUser *models.User
 		if current, _, err := s.currentUser(c); err == nil {
 			signedInUser = current
@@ -349,6 +326,25 @@ func (s *Server) omniauthCallback(c *echo.Context) error {
 	return c.Redirect(http.StatusFound, "/auth/sign_in?error="+url.QueryEscape(omniauthUnavailableMessage(c.Param("provider"))))
 }
 
+// verifiedOmniAuthInfo returns identity information only from the verification
+// flow of an enabled provider (CAS ticket validation, a signed SAML response,
+// or an OIDC authorization code bound to the browser's state). Request
+// parameters such as uid, email, or verified are never trusted directly, like
+// Rails, which only reads the strategy-built request.env['omniauth.auth']. An
+// empty result means the callback must be rejected.
+func (s *Server) verifiedOmniAuthInfo(c *echo.Context, provider string) (omniauthAuthInfo, error) {
+	switch {
+	case provider == "cas" && s.cfg.CASEnabled && requestRawParamValue(c, "ticket") != "":
+		return s.casAuthFromCallback(c)
+	case provider == "saml" && s.cfg.SAMLEnabled && requestRawParamValue(c, "SAMLResponse") != "":
+		return s.samlAuthFromCallback(c)
+	case provider == "openid_connect" && s.cfg.OIDCEnabled && s.omniauthCallbackStateValid(c) && requestRawParamValue(c, "code") != "":
+		return s.openIDConnectAuthFromCallback(c)
+	default:
+		return omniauthAuthInfo{}, nil
+	}
+}
+
 func (s *Server) omniauthLogout(c *echo.Context) error {
 	if strings.TrimSpace(c.Param("provider")) == "openid_connect" && s.cfg.OIDCEnabled && strings.TrimSpace(s.cfg.OIDCEndSessionEndpoint) != "" {
 		if location, err := openIDConnectLogoutURL(s.cfg); err == nil {
@@ -373,85 +369,6 @@ func (s *Server) authInvalidSignInMessage(c *echo.Context, user *models.User) st
 
 func (s *Server) authSignedOutMessage(c *echo.Context, user *models.User) string {
 	return settingsT(s.webLocale(c, user), "devise.sessions.signed_out", "Signed out successfully.")
-}
-
-func (s *Server) omniauthAuthInfoFromCallback(c *echo.Context, provider string) omniauthAuthInfo {
-	auth := omniauthAuthInfo{
-		Provider:  provider,
-		UID:       omniauthCallbackUID(c),
-		Email:     omniauthCallbackInfoValue(c, "verified_email", "email"),
-		Name:      omniauthCallbackInfoValue(c, "full_name", "name"),
-		FirstName: omniauthCallbackInfoValue(c, "first_name", "firstname", "given_name"),
-		LastName:  omniauthCallbackInfoValue(c, "last_name", "lastname", "family_name"),
-		Nickname:  omniauthCallbackInfoValue(c, "nickname", "preferred_username"),
-		Image:     omniauthCallbackInfoValue(c, "image", "picture"),
-	}
-	auth.EmailVerified = omniauthCallbackInfoBool(c, "verified", "verified_email", "email_verified") || s.omniauthProviderAssumesVerifiedEmail(provider)
-	if provider == "cas" {
-		auth = applyCASCallbackInfoKeys(c, s.cfg, auth)
-	}
-	return auth
-}
-
-func omniauthCallbackInfoValue(c *echo.Context, keys ...string) string {
-	for _, key := range keys {
-		for _, name := range omniauthCallbackInfoParamNames(key) {
-			if value := strings.TrimSpace(firstNonEmpty(c.QueryParam(name), c.FormValue(name))); value != "" {
-				return value
-			}
-		}
-	}
-	return ""
-}
-
-func omniauthCallbackInfoBool(c *echo.Context, keys ...string) bool {
-	for _, key := range keys {
-		for _, name := range omniauthCallbackInfoParamNames(key) {
-			if value := strings.TrimSpace(firstNonEmpty(c.QueryParam(name), c.FormValue(name))); value != "" && truthy(value) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func omniauthCallbackInfoParamNames(key string) []string {
-	return []string{
-		key,
-		"info[" + key + "]",
-		"omniauth[" + key + "]",
-		"omniauth[info][" + key + "]",
-		"user[" + key + "]",
-	}
-}
-
-func (s *Server) omniauthProviderAssumesVerifiedEmail(provider string) bool {
-	switch provider {
-	case "cas":
-		return s.cfg.CASSecurityAssumeEmailVerified
-	case "openid_connect":
-		return s.cfg.OIDCSecurityAssumeEmailVerified
-	case "saml":
-		return s.cfg.SAMLSecurityAssumeEmailVerified
-	default:
-		return false
-	}
-}
-
-func applyCASCallbackInfoKeys(c *echo.Context, cfg config.Config, auth omniauthAuthInfo) omniauthAuthInfo {
-	if auth.UID == "" {
-		auth.UID = omniauthCallbackInfoValue(c, cfg.CASUIDKey, cfg.CASUIDField, "user")
-	}
-	auth.Email = firstNonEmpty(auth.Email, omniauthCallbackInfoValue(c, cfg.CASEmailKey, "email"))
-	auth.Name = firstNonEmpty(auth.Name, omniauthCallbackInfoValue(c, cfg.CASNameKey, "name"))
-	auth.FirstName = firstNonEmpty(auth.FirstName, omniauthCallbackInfoValue(c, cfg.CASFirstNameKey, "firstname", "first_name"))
-	auth.LastName = firstNonEmpty(auth.LastName, omniauthCallbackInfoValue(c, cfg.CASLastNameKey, "lastname", "last_name"))
-	auth.Nickname = firstNonEmpty(auth.Nickname, omniauthCallbackInfoValue(c, cfg.CASNicknameKey, "nickname"))
-	auth.Location = firstNonEmpty(auth.Location, omniauthCallbackInfoValue(c, cfg.CASLocationKey, "location"))
-	auth.Image = firstNonEmpty(auth.Image, omniauthCallbackInfoValue(c, cfg.CASImageKey, "image"))
-	auth.Phone = firstNonEmpty(auth.Phone, omniauthCallbackInfoValue(c, cfg.CASPhoneKey, "phone"))
-	auth.EmailVerified = auth.EmailVerified || cfg.CASSecurityAssumeEmailVerified
-	return auth
 }
 
 func casLoginURL(cfg config.Config) (string, error) {
@@ -838,21 +755,6 @@ func (s *Server) samlAuthFromCallback(c *echo.Context) (omniauthAuthInfo, error)
 	return samlAuthInfoFromResponse(xmlBytes, s.cfg)
 }
 
-type samlResponse struct {
-	XMLName            xml.Name
-	Status             samlStatus              `xml:"Status"`
-	Assertion          *samlAssertion          `xml:"Assertion"`
-	EncryptedAssertion *samlEncryptedAssertion `xml:"EncryptedAssertion"`
-}
-
-type samlStatus struct {
-	StatusCode samlStatusCode `xml:"StatusCode"`
-}
-
-type samlStatusCode struct {
-	Value string `xml:"Value,attr"`
-}
-
 type samlAssertion struct {
 	Subject             samlSubject              `xml:"Subject"`
 	Conditions          samlConditions           `xml:"Conditions"`
@@ -882,45 +784,18 @@ type samlAttributeValue struct {
 	Value string `xml:",chardata"`
 }
 
-type samlEncryptedAssertion struct{}
-
 func samlAuthInfoFromResponse(xmlBytes []byte, cfg config.Config) (omniauthAuthInfo, error) {
-	xmlText := string(xmlBytes)
-	if strings.Contains(xmlText, "EncryptedAssertion") {
-		decrypted, err := decryptSAMLEncryptedAssertions(xmlBytes, cfg)
-		if err != nil {
-			return omniauthAuthInfo{}, err
-		}
-		xmlBytes = decrypted
-		xmlText = string(xmlBytes)
-	} else if cfg.SAMLSecurityWantAssertionsEncrypted {
-		return omniauthAuthInfo{}, errors.New("SAML encrypted assertions are required by this provider configuration but the response did not include an EncryptedAssertion")
-	}
-	hasSignature := strings.Contains(xmlText, "Signature")
-	if hasSignature {
-		if err := verifySAMLXMLSignature(xmlBytes, cfg); err != nil {
-			return omniauthAuthInfo{}, err
-		}
-	} else if cfg.SAMLSecurityWantAssertionsSigned || strings.TrimSpace(cfg.SAMLIDPCert) != "" || strings.TrimSpace(cfg.SAMLIDPCertFingerprint) != "" || strings.TrimSpace(cfg.SAMLIDPCertFingerprintValidator) != "" {
-		return omniauthAuthInfo{}, errors.New("SAML response is unsigned but this provider configuration requires signature validation")
-	}
-	var response samlResponse
-	if err := xml.NewDecoder(bytes.NewReader(xmlBytes)).Decode(&response); err != nil {
+	assertion, err := verifiedSAMLAssertion(xmlBytes, cfg)
+	if err != nil {
 		return omniauthAuthInfo{}, err
 	}
-	if response.Status.StatusCode.Value != "" && !strings.HasSuffix(response.Status.StatusCode.Value, ":Success") {
-		return omniauthAuthInfo{}, errors.New("SAML response status is not success")
-	}
-	if response.Assertion == nil {
-		return omniauthAuthInfo{}, errors.New("SAML response did not include an assertion")
-	}
-	if err := validateSAMLConditions(response.Assertion.Conditions, cfg, time.Now().UTC()); err != nil {
+	if err := validateSAMLConditions(assertion.Conditions, cfg, time.Now().UTC()); err != nil {
 		return omniauthAuthInfo{}, err
 	}
-	attrs := response.Assertion.attributes()
+	attrs := assertion.attributes()
 	auth := omniauthAuthInfo{
 		Provider:      "saml",
-		UID:           firstNonEmpty(samlAttr(attrs, cfg.SAMLAttributeUID), samlAttr(attrs, cfg.SAMLUIDAttribute), response.Assertion.Subject.NameID),
+		UID:           firstNonEmpty(samlAttr(attrs, cfg.SAMLAttributeUID), samlAttr(attrs, cfg.SAMLUIDAttribute), assertion.Subject.NameID),
 		Email:         samlAttr(attrs, cfg.SAMLAttributeEmail, "email", "mail"),
 		EmailVerified: cfg.SAMLSecurityAssumeEmailVerified || boolClaim(samlAttr(attrs, cfg.SAMLAttributeVerified, cfg.SAMLAttributeVerifiedEmail, "verified", "verified_email", "email_verified")),
 		Name:          samlAttr(attrs, cfg.SAMLAttributeFullName, "full_name", "name", "displayName"),
@@ -936,41 +811,163 @@ func samlAuthInfoFromResponse(xmlBytes []byte, cfg config.Config) (omniauthAuthI
 	return auth, nil
 }
 
-func decryptSAMLEncryptedAssertions(xmlBytes []byte, cfg config.Config) ([]byte, error) {
-	if strings.TrimSpace(cfg.SAMLPrivateKey) == "" {
-		return nil, errors.New("SAML encrypted assertions require SAML_PRIVATE_KEY")
-	}
-	privateKey, err := parseSAMLRSAPrivateKey(cfg.SAMLPrivateKey)
-	if err != nil {
-		return nil, err
+func samlSignatureValidationConfigured(cfg config.Config) bool {
+	return strings.TrimSpace(cfg.SAMLIDPCert) != "" || strings.TrimSpace(cfg.SAMLIDPCertFingerprint) != "" || strings.TrimSpace(cfg.SAMLIDPCertFingerprintValidator) != ""
+}
+
+// verifiedSAMLAssertion validates a SAML Response and returns its only
+// Assertion, decoded from an element whose XML signature was verified: the
+// Assertion itself when it is signed, otherwise the Assertion child of the
+// verified Response. Values are read only from the element returned by the
+// signature validator, so a valid signature on one element cannot vouch for a
+// different, attacker-supplied Assertion (XML Signature Wrapping). Responses
+// are always rejected when no IdP certificate material is configured.
+func verifiedSAMLAssertion(xmlBytes []byte, cfg config.Config) (samlAssertion, error) {
+	if !samlSignatureValidationConfigured(cfg) {
+		return samlAssertion{}, errors.New("SAML responses require SAML_IDP_CERT, SAML_IDP_CERT_FINGERPRINT, or SAML_IDP_CERT_FINGERPRINT_VALIDATOR for signature validation")
 	}
 	doc := etree.NewDocument()
 	if err := doc.ReadFromBytes(xmlBytes); err != nil {
-		return nil, err
+		return samlAssertion{}, err
 	}
 	root := doc.Root()
-	encryptedAssertions := samlElementsByTag(root, "EncryptedAssertion")
-	if len(encryptedAssertions) == 0 {
-		return xmlBytes, nil
+	if root == nil {
+		return samlAssertion{}, errors.New("SAML response XML is empty")
 	}
-	for _, encryptedAssertion := range encryptedAssertions {
+	if root.Tag != "Response" {
+		return samlAssertion{}, errors.New("SAML response root element is not a Response")
+	}
+	if status := samlResponseStatusCode(root); status != "" && !strings.HasSuffix(status, ":Success") {
+		return samlAssertion{}, errors.New("SAML response status is not success")
+	}
+	assertionEl, err := samlSingleAssertionElement(root)
+	if err != nil {
+		return samlAssertion{}, err
+	}
+	encrypted := assertionEl.Tag == "EncryptedAssertion"
+
+	// The Response signature covers the EncryptedAssertion as sent, so it must be
+	// checked before decryption.
+	var verifiedResponse *etree.Element
+	if hasXMLSignature(root) {
+		verified, err := verifySAMLXMLElementSignature(root, cfg)
+		if err != nil {
+			return samlAssertion{}, err
+		}
+		if _, err := samlSingleAssertionElement(verified); err != nil {
+			return samlAssertion{}, err
+		}
+		verifiedResponse = verified
+	}
+
+	if encrypted {
+		if err := decryptSAMLEncryptedAssertions(root, cfg); err != nil {
+			return samlAssertion{}, err
+		}
+	} else if cfg.SAMLSecurityWantAssertionsEncrypted {
+		return samlAssertion{}, errors.New("SAML encrypted assertions are required by this provider configuration but the response did not include an EncryptedAssertion")
+	}
+	assertionEl, err = samlSingleDecryptedAssertionElement(root)
+	if err != nil {
+		return samlAssertion{}, err
+	}
+	if hasXMLSignature(assertionEl) {
+		verified, err := verifySAMLXMLElementSignature(assertionEl, cfg)
+		if err != nil {
+			return samlAssertion{}, err
+		}
+		return decodeSAMLAssertionElement(verified)
+	}
+	if verifiedResponse == nil {
+		return samlAssertion{}, errors.New("SAML response is unsigned; a valid Response or Assertion signature is required")
+	}
+	if encrypted {
+		if err := decryptSAMLEncryptedAssertions(verifiedResponse, cfg); err != nil {
+			return samlAssertion{}, err
+		}
+	}
+	assertionEl, err = samlSingleDecryptedAssertionElement(verifiedResponse)
+	if err != nil {
+		return samlAssertion{}, err
+	}
+	return decodeSAMLAssertionElement(assertionEl)
+}
+
+func samlResponseStatusCode(response *etree.Element) string {
+	for _, status := range response.ChildElements() {
+		if status.Tag != "Status" {
+			continue
+		}
+		for _, code := range status.ChildElements() {
+			if code.Tag == "StatusCode" {
+				return strings.TrimSpace(code.SelectAttrValue("Value", ""))
+			}
+		}
+	}
+	return ""
+}
+
+// samlSingleAssertionElement returns the only Assertion or EncryptedAssertion in
+// a SAML Response. Like ruby-saml, any other number of assertions anywhere in the
+// document is rejected, and the assertion must be a direct child of the Response.
+func samlSingleAssertionElement(response *etree.Element) (*etree.Element, error) {
+	candidates := append(samlElementsByTag(response, "Assertion"), samlElementsByTag(response, "EncryptedAssertion")...)
+	if len(candidates) != 1 {
+		return nil, errors.New("SAML response must contain exactly one Assertion")
+	}
+	if candidates[0].Parent() != response {
+		return nil, errors.New("SAML response Assertion must be a direct child of the Response")
+	}
+	return candidates[0], nil
+}
+
+func samlSingleDecryptedAssertionElement(response *etree.Element) (*etree.Element, error) {
+	assertion, err := samlSingleAssertionElement(response)
+	if err != nil {
+		return nil, err
+	}
+	if assertion.Tag != "Assertion" {
+		return nil, errors.New("SAML response did not include an assertion")
+	}
+	return assertion, nil
+}
+
+func decodeSAMLAssertionElement(el *etree.Element) (samlAssertion, error) {
+	doc := etree.NewDocument()
+	doc.SetRoot(samlElementWithInheritedNamespaces(el))
+	data, err := doc.WriteToBytes()
+	if err != nil {
+		return samlAssertion{}, err
+	}
+	var assertion samlAssertion
+	if err := xml.Unmarshal(data, &assertion); err != nil {
+		return samlAssertion{}, err
+	}
+	return assertion, nil
+}
+
+func decryptSAMLEncryptedAssertions(root *etree.Element, cfg config.Config) error {
+	if strings.TrimSpace(cfg.SAMLPrivateKey) == "" {
+		return errors.New("SAML encrypted assertions require SAML_PRIVATE_KEY")
+	}
+	privateKey, err := parseSAMLRSAPrivateKey(cfg.SAMLPrivateKey)
+	if err != nil {
+		return err
+	}
+	for _, encryptedAssertion := range samlElementsByTag(root, "EncryptedAssertion") {
 		parent := encryptedAssertion.Parent()
 		if parent == nil {
-			return nil, errors.New("SAML EncryptedAssertion has no parent element")
+			return errors.New("SAML EncryptedAssertion has no parent element")
 		}
 		assertion, err := decryptSAMLEncryptedAssertion(root, encryptedAssertion, privateKey)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		index := encryptedAssertion.Index()
 		parent.RemoveChild(encryptedAssertion)
 		parent.InsertChildAt(index, assertion)
 	}
-	out, err := doc.WriteToBytes()
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+	return nil
 }
 
 func decryptSAMLEncryptedAssertion(root, encryptedAssertion *etree.Element, privateKey *rsa.PrivateKey) (*etree.Element, error) {
@@ -1170,45 +1167,15 @@ func samlCipherValue(el *etree.Element) ([]byte, error) {
 	return out, nil
 }
 
-func verifySAMLXMLSignature(xmlBytes []byte, cfg config.Config) error {
-	doc := etree.NewDocument()
-	if err := doc.ReadFromBytes(xmlBytes); err != nil {
-		return err
-	}
-	root := doc.Root()
-	if root == nil {
-		return errors.New("SAML response XML is empty")
-	}
-	if strings.TrimSpace(cfg.SAMLIDPCert) == "" && strings.TrimSpace(cfg.SAMLIDPCertFingerprint) == "" && strings.TrimSpace(cfg.SAMLIDPCertFingerprintValidator) == "" {
-		return errors.New("SAML signed responses require SAML_IDP_CERT, SAML_IDP_CERT_FINGERPRINT, or SAML_IDP_CERT_FINGERPRINT_VALIDATOR")
-	}
-	var verified bool
-	if hasXMLSignature(root) {
-		if err := verifySAMLXMLElementSignature(root, cfg); err != nil {
-			return err
-		}
-		verified = true
-	}
-	for _, assertion := range samlAssertionElements(root) {
-		if !hasXMLSignature(assertion) {
-			continue
-		}
-		if err := verifySAMLXMLElementSignature(assertion, cfg); err != nil {
-			return err
-		}
-		verified = true
-	}
-	if !verified {
-		return errors.New("SAML signed response did not include a verifiable Response or Assertion signature")
-	}
-	return nil
-}
-
-func verifySAMLXMLElementSignature(el *etree.Element, cfg config.Config) error {
+// verifySAMLXMLElementSignature validates the enveloped signature of el and
+// returns the element produced by the validator: a copy of el, with the
+// signature removed, whose canonical form is covered by the verified digest.
+// Callers must read values from the returned element, not from el.
+func verifySAMLXMLElementSignature(el *etree.Element, cfg config.Config) (*etree.Element, error) {
 	validationEl := samlElementWithInheritedNamespaces(el)
 	roots, err := samlSignatureTrustedCertificates(validationEl, cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ctx := dsig.NewDefaultValidationContext(&dsig.MemoryX509CertificateStore{Roots: roots})
 	for _, attr := range []string{"ID", "Id", "id"} {
@@ -1217,10 +1184,14 @@ func verifySAMLXMLElementSignature(el *etree.Element, cfg config.Config) error {
 			break
 		}
 	}
-	if _, err := ctx.Validate(validationEl); err != nil {
-		return fmt.Errorf("SAML XML signature validation failed: %w", err)
+	verified, err := ctx.Validate(validationEl)
+	if err != nil {
+		return nil, fmt.Errorf("SAML XML signature validation failed: %w", err)
 	}
-	return nil
+	if verified == nil || verified.Tag != el.Tag {
+		return nil, errors.New("SAML XML signature validation did not return the signed element")
+	}
+	return verified, nil
 }
 
 func samlElementWithInheritedNamespaces(el *etree.Element) *etree.Element {
@@ -1435,10 +1406,6 @@ func hasXMLSignature(el *etree.Element) bool {
 		}
 	}
 	return false
-}
-
-func samlAssertionElements(root *etree.Element) []*etree.Element {
-	return samlElementsByTag(root, "Assertion")
 }
 
 func samlFirstElementByTag(root *etree.Element, tag string) *etree.Element {
@@ -2173,27 +2140,6 @@ func openIDConnectClaimString(claims map[string]any, field string) string {
 	default:
 		return ""
 	}
-}
-
-func omniauthCallbackUID(c *echo.Context) string {
-	return firstNonEmpty(
-		c.QueryParam("uid"),
-		c.FormValue("uid"),
-		c.FormValue("omniauth[uid]"),
-		c.FormValue("user[uid]"),
-		normalizeOmniAuthUIDArray([]any{map[string]any{
-			"uid":  c.FormValue("uid[0][uid]"),
-			"user": c.FormValue("uid[0][user]"),
-		}}),
-		normalizeOmniAuthUIDArray([]any{map[string]any{
-			"uid":  c.FormValue("omniauth[uid][0][uid]"),
-			"user": c.FormValue("omniauth[uid][0][user]"),
-		}}),
-		normalizeOmniAuthUIDArray([]any{map[string]any{
-			"uid":  c.FormValue("user[uid][0][uid]"),
-			"user": c.FormValue("user[uid][0][user]"),
-		}}),
-	)
 }
 
 func normalizeOmniAuthUIDArray(values []any) string {

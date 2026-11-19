@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
@@ -14,9 +15,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -24,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -34,6 +38,7 @@ import (
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
 	dsig "github.com/russellhaering/goxmldsig"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -686,22 +691,30 @@ func TestCASAuthInfoFromServiceResponseFallsBackToUserAsUID(t *testing.T) {
 	}
 }
 
-func TestGenericOmniAuthCallbackInfoParsesRailsLikeInfoFields(t *testing.T) {
-	cfg := config.Config{CASSecurityAssumeEmailVerified: true, CASEmailKey: "mail", CASNameKey: "displayName", CASUIDKey: "uid", CASLocationKey: "office", CASPhoneKey: "telephoneNumber"}
-	req := httptest.NewRequest(http.MethodPost, "/auth/auth/cas/callback", strings.NewReader("omniauth%5Binfo%5D%5Bmail%5D=alice%40example.test&omniauth%5Binfo%5D%5BdisplayName%5D=Alice+Example&omniauth%5Binfo%5D%5Buid%5D=alice-id&omniauth%5Binfo%5D%5Boffice%5D=Tokyo&omniauth%5Binfo%5D%5BtelephoneNumber%5D=%2B81-3-1234-5678"))
+func TestOmniAuthCallbackIgnoresRequestSuppliedCASInfoFields(t *testing.T) {
+	oldClient := casHTTPClient
+	t.Cleanup(func() { casHTTPClient = oldClient })
+	casHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("CAS validation must not run without a ticket: %s", req.URL)
+		return nil, nil
+	})}
+	cfg := config.Config{CASEnabled: true, CASValidateURL: "https://cas.example.test/serviceValidate", CASSecurityAssumeEmailVerified: true, CASEmailKey: "mail", CASNameKey: "displayName", CASUIDKey: "uid", CASLocationKey: "office", CASPhoneKey: "telephoneNumber"}
+	req := httptest.NewRequest(http.MethodPost, "/auth/auth/cas/callback?user=alice", strings.NewReader("omniauth%5Binfo%5D%5Bmail%5D=alice%40example.test&omniauth%5Binfo%5D%5BdisplayName%5D=Alice+Example&omniauth%5Binfo%5D%5Buid%5D=alice-id&omniauth%5Binfo%5D%5Boffice%5D=Tokyo&omniauth%5Binfo%5D%5BtelephoneNumber%5D=%2B81-3-1234-5678&uid=alice-id"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	c := echo.NewContext(req, rec, echo.New())
-	authInfo := (&Server{cfg: cfg}).omniauthAuthInfoFromCallback(c, "cas")
-	if authInfo.UID != "alice-id" || authInfo.Email != "alice@example.test" || authInfo.Name != "Alice Example" || authInfo.Location != "Tokyo" || authInfo.Phone != "+81-3-1234-5678" || !authInfo.EmailVerified {
-		t.Fatalf("authInfo=%#v", authInfo)
+	authInfo, err := (&Server{cfg: cfg}).verifiedOmniAuthInfo(c, "cas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authInfo != (omniauthAuthInfo{}) {
+		t.Fatalf("request parameters must not populate CAS auth info: %#v", authInfo)
 	}
 }
 
-func TestSAMLCallbackBuildsOmniAuthInfoFromUnsignedResponseWhenAllowed(t *testing.T) {
-	responseXML := `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+const testSAMLAttributeResponseXML = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="response-id" Version="2.0">
   <samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"></samlp:StatusCode></samlp:Status>
-  <saml:Assertion>
+  <saml:Assertion ID="assertion-id">
     <saml:Subject><saml:NameID>nameid@example.test</saml:NameID></saml:Subject>
     <saml:AttributeStatement>
       <saml:Attribute Name="uid"><saml:AttributeValue>alice-id</saml:AttributeValue></saml:Attribute>
@@ -713,8 +726,11 @@ func TestSAMLCallbackBuildsOmniAuthInfoFromUnsignedResponseWhenAllowed(t *testin
     </saml:AttributeStatement>
   </saml:Assertion>
 </samlp:Response>`
-	cfg := config.Config{
+
+func testSAMLAttributeConfig(certPEM []byte) config.Config {
+	return config.Config{
 		SAMLEnabled:                true,
+		SAMLIDPCert:                string(certPEM),
 		SAMLAttributeUID:           "uid",
 		SAMLAttributeEmail:         "mail",
 		SAMLAttributeFullName:      "displayName",
@@ -723,33 +739,181 @@ func TestSAMLCallbackBuildsOmniAuthInfoFromUnsignedResponseWhenAllowed(t *testin
 		SAMLAttributeVerified:      "verified",
 		SAMLAttributeVerifiedEmail: "verified_email",
 	}
-	req := httptest.NewRequest(http.MethodPost, "/auth/auth/saml/callback", strings.NewReader("SAMLResponse="+url.QueryEscape(base64.StdEncoding.EncodeToString([]byte(responseXML)))))
+}
+
+func samlCallbackContextForTest(t *testing.T, responseXML []byte) *echo.Context {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/auth/auth/saml/callback", strings.NewReader("SAMLResponse="+url.QueryEscape(base64.StdEncoding.EncodeToString(responseXML))))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	c := echo.NewContext(req, rec, echo.New())
-	authInfo, err := (&Server{cfg: cfg}).samlAuthFromCallback(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if authInfo.Provider != "saml" || authInfo.UID != "alice-id" || authInfo.Email != "alice@example.test" || !authInfo.EmailVerified || authInfo.Name != "Alice Example" || authInfo.FirstName != "Alice" || authInfo.LastName != "Example" {
-		t.Fatalf("authInfo=%#v", authInfo)
+	return echo.NewContext(req, httptest.NewRecorder(), echo.New())
+}
+
+func TestSAMLCallbackBuildsOmniAuthInfoFromSignedResponse(t *testing.T) {
+	key, cert, certPEM := testSAMLSigningCertificate(t)
+	cfg := testSAMLAttributeConfig(certPEM)
+	for name, signedXML := range map[string][]byte{
+		"response signed":                       signSAMLResponseForTest(t, testSAMLAttributeResponseXML, key, cert),
+		"response signed with exclusive c14n":   signSAMLResponseWithCanonicalizerForTest(t, testSAMLAttributeResponseXML, key, cert, dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList("")),
+		"assertion signed":                      signSAMLAssertionForTest(t, testSAMLAttributeResponseXML, key, cert),
+		"response and assertion signed":         signSAMLResponseForTest(t, string(signSAMLAssertionForTest(t, testSAMLAttributeResponseXML, key, cert)), key, cert),
+		"response and assertion signed (exc14)": signSAMLResponseWithCanonicalizerForTest(t, string(signSAMLAssertionForTest(t, testSAMLAttributeResponseXML, key, cert)), key, cert, dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList("")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			authInfo, err := (&Server{cfg: cfg}).samlAuthFromCallback(samlCallbackContextForTest(t, signedXML))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if authInfo.Provider != "saml" || authInfo.UID != "alice-id" || authInfo.Email != "alice@example.test" || !authInfo.EmailVerified || authInfo.Name != "Alice Example" || authInfo.FirstName != "Alice" || authInfo.LastName != "Example" {
+				t.Fatalf("authInfo=%#v", authInfo)
+			}
+		})
 	}
 }
 
-func TestSAMLCallbackRejectsExpiredUnsignedAssertion(t *testing.T) {
+func TestSAMLCallbackRejectsUnsignedResponseWithoutIDPCertificate(t *testing.T) {
+	cfg := testSAMLAttributeConfig(nil)
+	if _, err := (&Server{cfg: cfg}).samlAuthFromCallback(samlCallbackContextForTest(t, []byte(testSAMLAttributeResponseXML))); err == nil || !strings.Contains(err.Error(), "SAML_IDP_CERT") {
+		t.Fatalf("expected unsigned response rejection without IdP certificate, got %v", err)
+	}
+	if _, err := samlAuthInfoFromResponse([]byte(`<Response><Assertion><Subject><NameID>alice</NameID></Subject></Assertion></Response>`), cfg); err == nil || !strings.Contains(err.Error(), "SAML_IDP_CERT") {
+		t.Fatalf("expected minimal unsigned response rejection without IdP certificate, got %v", err)
+	}
+	key, cert, _ := testSAMLSigningCertificate(t)
+	signedXML := signSAMLResponseForTest(t, testSAMLAttributeResponseXML, key, cert)
+	if _, err := samlAuthInfoFromResponse(signedXML, cfg); err == nil || !strings.Contains(err.Error(), "SAML_IDP_CERT") {
+		t.Fatalf("expected signed response rejection without configured IdP certificate, got %v", err)
+	}
+}
+
+func TestSAMLCallbackRejectsUnsignedResponseWithIDPCertificate(t *testing.T) {
+	_, _, certPEM := testSAMLSigningCertificate(t)
+	cfg := testSAMLAttributeConfig(certPEM)
+	if _, err := (&Server{cfg: cfg}).samlAuthFromCallback(samlCallbackContextForTest(t, []byte(testSAMLAttributeResponseXML))); err == nil || !strings.Contains(err.Error(), "unsigned") {
+		t.Fatalf("expected unsigned response rejection, got %v", err)
+	}
+	// The attribute value mentions "Signature", which used to decide whether a
+	// response was checked at all.
+	mentionsSignature := strings.Replace(testSAMLAttributeResponseXML, "Alice Example", "Signature", 1)
+	if _, err := samlAuthInfoFromResponse([]byte(mentionsSignature), cfg); err == nil || !strings.Contains(err.Error(), "unsigned") {
+		t.Fatalf("expected unsigned response rejection regardless of text content, got %v", err)
+	}
+}
+
+func TestSAMLCallbackRejectsExpiredSignedAssertion(t *testing.T) {
+	key, cert, certPEM := testSAMLSigningCertificate(t)
 	responseXML := `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
   <samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"></samlp:StatusCode></samlp:Status>
-  <saml:Assertion>
+  <saml:Assertion ID="assertion-id">
     <saml:Subject><saml:NameID>nameid@example.test</saml:NameID></saml:Subject>
     <saml:Conditions NotOnOrAfter="2000-01-01T00:00:00Z"></saml:Conditions>
   </saml:Assertion>
 </samlp:Response>`
-	req := httptest.NewRequest(http.MethodPost, "/auth/auth/saml/callback", strings.NewReader("SAMLResponse="+url.QueryEscape(base64.StdEncoding.EncodeToString([]byte(responseXML)))))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	c := echo.NewContext(req, httptest.NewRecorder(), echo.New())
-	_, err := (&Server{cfg: config.Config{SAMLEnabled: true, SAMLAllowedClockDrift: "30"}}).samlAuthFromCallback(c)
+	signedXML := signSAMLAssertionForTest(t, responseXML, key, cert)
+	_, err := (&Server{cfg: config.Config{SAMLEnabled: true, SAMLIDPCert: string(certPEM), SAMLAllowedClockDrift: "30"}}).samlAuthFromCallback(samlCallbackContextForTest(t, signedXML))
 	if err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expected expired assertion rejection, got %v", err)
+	}
+}
+
+func TestSAMLCallbackReadsCommentSplitNameIDFromSignedContent(t *testing.T) {
+	key, cert, certPEM := testSAMLSigningCertificate(t)
+	responseXML := `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="response-id">
+  <saml:Assertion ID="assertion-id">
+    <saml:Subject><saml:NameID>victim@example.test.attacker.test</saml:NameID></saml:Subject>
+  </saml:Assertion>
+</samlp:Response>`
+	cfg := config.Config{SAMLEnabled: true, SAMLIDPCert: string(certPEM)}
+	for name, signedXML := range map[string][]byte{
+		"response signed (exc c14n)": signSAMLResponseWithCanonicalizerForTest(t, responseXML, key, cert, dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList("")),
+		"assertion signed":           signSAMLAssertionForTest(t, responseXML, key, cert),
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Comments are excluded from the signed canonical form, so splitting the
+			// NameID keeps the signature valid; the full signed value must be used.
+			injected := bytes.Replace(signedXML, []byte("victim@example.test.attacker.test"), []byte("victim@example.test<!---->.attacker.test"), 1)
+			authInfo, err := samlAuthInfoFromResponse(injected, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if authInfo.UID != "victim@example.test.attacker.test" {
+				t.Fatalf("UID = %q, want the complete signed NameID", authInfo.UID)
+			}
+		})
+	}
+}
+
+func TestSAMLCallbackRejectsSignatureWrapping(t *testing.T) {
+	key, cert, certPEM := testSAMLSigningCertificate(t)
+	cfg := config.Config{SAMLEnabled: true, SAMLIDPCert: string(certPEM), SAMLAttributeUID: "uid", SAMLAttributeEmail: "mail"}
+	// The attacker owns a legitimately signed Assertion for their own IdP
+	// account. Exclusive canonicalization keeps its signature valid wherever it
+	// is moved, as with real IdPs.
+	signedAssertionXML := signStandaloneSAMLAssertionForTest(t, `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="legit-assertion">
+    <saml:Subject><saml:NameID>mallory@example.test</saml:NameID></saml:Subject>
+    <saml:AttributeStatement>
+      <saml:Attribute Name="uid"><saml:AttributeValue>mallory-id</saml:AttributeValue></saml:Attribute>
+    </saml:AttributeStatement>
+  </saml:Assertion>`, key, cert)
+	const responseOpen = `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">`
+	legitSigned := []byte(responseOpen + signedAssertionXML + `</samlp:Response>`)
+	if authInfo, err := samlAuthInfoFromResponse(legitSigned, cfg); err != nil || authInfo.UID != "mallory-id" {
+		t.Fatalf("legitimate signed assertion: authInfo=%#v err=%v", authInfo, err)
+	}
+	forgedAssertion := `<saml:Assertion ID="forged-assertion">
+    <saml:Subject><saml:NameID>admin@example.test</saml:NameID></saml:Subject>
+    <saml:AttributeStatement>
+      <saml:Attribute Name="uid"><saml:AttributeValue>admin-id</saml:AttributeValue></saml:Attribute>
+    </saml:AttributeStatement>`
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	encryptedForged := encryptedSAMLResponseForTest(t, `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Subject><saml:NameID>admin@example.test</saml:NameID></saml:Subject><saml:AttributeStatement><saml:Attribute Name="uid"><saml:AttributeValue>admin-id</saml:AttributeValue></saml:Attribute></saml:AttributeStatement></saml:Assertion>`, &privateKey.PublicKey)
+	encryptedWrapped := bytes.Replace(encryptedForged, []byte("</samlp:Response>"), []byte(`<samlp:Extensions>`+signedAssertionXML+`</samlp:Extensions></samlp:Response>`), 1)
+	encryptedCfg := cfg
+	encryptedCfg.SAMLPrivateKey = string(privateKeyPEM)
+
+	for _, test := range []struct {
+		name string
+		xml  string
+		cfg  config.Config
+	}{
+		{
+			name: "signed assertion nested inside forged assertion",
+			xml:  responseOpen + forgedAssertion + `<saml:Advice>` + signedAssertionXML + `</saml:Advice></saml:Assertion></samlp:Response>`,
+			cfg:  cfg,
+		},
+		{
+			name: "signed assertion moved to extensions",
+			xml:  responseOpen + `<samlp:Extensions>` + signedAssertionXML + `</samlp:Extensions>` + forgedAssertion + `</saml:Assertion></samlp:Response>`,
+			cfg:  cfg,
+		},
+		{
+			name: "forged assertion after signed assertion",
+			xml:  responseOpen + signedAssertionXML + forgedAssertion + `</saml:Assertion></samlp:Response>`,
+			cfg:  cfg,
+		},
+		{
+			name: "signed assertion not a direct child",
+			xml:  responseOpen + `<samlp:Extensions>` + signedAssertionXML + `</samlp:Extensions></samlp:Response>`,
+			cfg:  cfg,
+		},
+		{
+			name: "signed assertion next to forged encrypted assertion",
+			xml:  string(encryptedWrapped),
+			cfg:  encryptedCfg,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			authInfo, err := samlAuthInfoFromResponse([]byte(test.xml), test.cfg)
+			if err == nil {
+				t.Fatalf("expected signature wrapping rejection, got authInfo=%#v", authInfo)
+			}
+			if authInfo.UID != "" {
+				t.Fatalf("rejected response leaked auth info: %#v", authInfo)
+			}
+		})
 	}
 }
 
@@ -786,33 +950,46 @@ func TestSAMLCallbackDecryptsEncryptedAssertionWithPrivateKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertionXML := `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+	signingKey, signingCert, certPEM := testSAMLSigningCertificate(t)
+	assertionXML := `<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="encrypted-assertion-id">
   <saml:Subject><saml:NameID>nameid@example.test</saml:NameID></saml:Subject>
   <saml:AttributeStatement>
     <saml:Attribute Name="uid"><saml:AttributeValue>alice-id</saml:AttributeValue></saml:Attribute>
     <saml:Attribute Name="mail"><saml:AttributeValue>alice@example.test</saml:AttributeValue></saml:Attribute>
   </saml:AttributeStatement>
 </saml:Assertion>`
-	responseXML := encryptedSAMLResponseForTest(t, assertionXML, &privateKey.PublicKey)
+	signedAssertionXML := signStandaloneSAMLAssertionForTest(t, assertionXML, signingKey, signingCert)
 	privateKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
-	cfg := config.Config{SAMLEnabled: true, SAMLPrivateKey: string(privateKeyPEM), SAMLSecurityWantAssertionsEncrypted: true, SAMLAttributeUID: "uid", SAMLAttributeEmail: "mail"}
-	authInfo, err := samlAuthInfoFromResponse(responseXML, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if authInfo.UID != "alice-id" || authInfo.Email != "alice@example.test" {
-		t.Fatalf("authInfo=%#v", authInfo)
-	}
-	referencedKeyResponseXML := encryptedSAMLResponseWithRetrievalMethodForTest(t, assertionXML, &privateKey.PublicKey)
-	authInfo, err = samlAuthInfoFromResponse(referencedKeyResponseXML, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if authInfo.UID != "alice-id" || authInfo.Email != "alice@example.test" {
-		t.Fatalf("authInfo=%#v", authInfo)
+	cfg := config.Config{SAMLEnabled: true, SAMLIDPCert: string(certPEM), SAMLPrivateKey: string(privateKeyPEM), SAMLSecurityWantAssertionsEncrypted: true, SAMLAttributeUID: "uid", SAMLAttributeEmail: "mail"}
+	responseXML := encryptedSAMLResponseForTest(t, signedAssertionXML, &privateKey.PublicKey)
+	for name, encryptedXML := range map[string][]byte{
+		"signed assertion":                           responseXML,
+		"signed assertion with referenced key":       encryptedSAMLResponseWithRetrievalMethodForTest(t, signedAssertionXML, &privateKey.PublicKey),
+		"signed response with unsigned assertion":    signSAMLResponseForTest(t, string(encryptedSAMLResponseForTest(t, assertionXML, &privateKey.PublicKey)), signingKey, signingCert),
+		"signed response with signed assertion":      signSAMLResponseForTest(t, string(responseXML), signingKey, signingCert),
+		"signed response (exc c14n), referenced key": signSAMLResponseWithCanonicalizerForTest(t, string(encryptedSAMLResponseWithRetrievalMethodForTest(t, assertionXML, &privateKey.PublicKey)), signingKey, signingCert, dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList("")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			authInfo, err := samlAuthInfoFromResponse(encryptedXML, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if authInfo.UID != "alice-id" || authInfo.Email != "alice@example.test" {
+				t.Fatalf("authInfo=%#v", authInfo)
+			}
+		})
 	}
 
-	if _, err := samlAuthInfoFromResponse(responseXML, config.Config{SAMLEnabled: true, SAMLSecurityWantAssertionsEncrypted: true}); err == nil || !strings.Contains(err.Error(), "SAML_PRIVATE_KEY") {
+	unsignedEncrypted := encryptedSAMLResponseForTest(t, assertionXML, &privateKey.PublicKey)
+	if _, err := samlAuthInfoFromResponse(unsignedEncrypted, cfg); err == nil || !strings.Contains(err.Error(), "unsigned") {
+		t.Fatalf("expected unsigned encrypted assertion rejection, got %v", err)
+	}
+	noCertCfg := cfg
+	noCertCfg.SAMLIDPCert = ""
+	if _, err := samlAuthInfoFromResponse(unsignedEncrypted, noCertCfg); err == nil || !strings.Contains(err.Error(), "SAML_IDP_CERT") {
+		t.Fatalf("expected encrypted assertion rejection without IdP certificate, got %v", err)
+	}
+	if _, err := samlAuthInfoFromResponse(responseXML, config.Config{SAMLEnabled: true, SAMLIDPCert: string(certPEM), SAMLSecurityWantAssertionsEncrypted: true}); err == nil || !strings.Contains(err.Error(), "SAML_PRIVATE_KEY") {
 		t.Fatalf("expected missing private key rejection, got %v", err)
 	}
 	unsignedResponse := []byte(`<Response><Assertion><Subject><NameID>alice</NameID></Subject></Assertion></Response>`)
@@ -835,8 +1012,8 @@ func TestSAMLCallbackRejectsUnsignedOrUnverifiableSignedResponses(t *testing.T) 
 	req = httptest.NewRequest(http.MethodPost, "/auth/auth/saml/callback", strings.NewReader("SAMLResponse="+url.QueryEscape(unsignedResponse)))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	c = echo.NewContext(req, httptest.NewRecorder(), echo.New())
-	if _, err := (&Server{cfg: config.Config{SAMLEnabled: true, SAMLSecurityWantAssertionsSigned: true}}).samlAuthFromCallback(c); err == nil || !strings.Contains(err.Error(), "unsigned") {
-		t.Fatalf("expected signed-required config rejection, got %v", err)
+	if _, err := (&Server{cfg: config.Config{SAMLEnabled: true, SAMLSecurityWantAssertionsSigned: true}}).samlAuthFromCallback(c); err == nil || !strings.Contains(err.Error(), "SAML_IDP_CERT") {
+		t.Fatalf("expected signed-required config without IdP certificate rejection, got %v", err)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/auth/auth/saml/callback", strings.NewReader("SAMLResponse="+url.QueryEscape(unsignedResponse)))
@@ -874,6 +1051,11 @@ func testSAMLSigningCertificate(t *testing.T) (*rsa.PrivateKey, *x509.Certificat
 
 func signSAMLResponseForTest(t *testing.T, responseXML string, key *rsa.PrivateKey, cert *x509.Certificate) []byte {
 	t.Helper()
+	return signSAMLResponseWithCanonicalizerForTest(t, responseXML, key, cert, nil)
+}
+
+func signSAMLResponseWithCanonicalizerForTest(t *testing.T, responseXML string, key *rsa.PrivateKey, cert *x509.Certificate, canonicalizer dsig.Canonicalizer) []byte {
+	t.Helper()
 	doc := etree.NewDocument()
 	if err := doc.ReadFromString(responseXML); err != nil {
 		t.Fatal(err)
@@ -883,6 +1065,9 @@ func signSAMLResponseForTest(t *testing.T, responseXML string, key *rsa.PrivateK
 		t.Fatal(err)
 	}
 	ctx.IdAttribute = "ID"
+	if canonicalizer != nil {
+		ctx.Canonicalizer = canonicalizer
+	}
 	signedRoot, err := ctx.SignEnveloped(doc.Root())
 	if err != nil {
 		t.Fatal(err)
@@ -918,6 +1103,33 @@ func signSAMLAssertionForTest(t *testing.T, responseXML string, key *rsa.Private
 	parent.RemoveChild(assertion)
 	parent.AddChild(signedAssertion)
 	out, err := doc.WriteToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// signStandaloneSAMLAssertionForTest signs an Assertion before it is encrypted.
+// IdPs use exclusive canonicalization so the signature stays valid once the
+// decrypted Assertion is placed back under the Response.
+func signStandaloneSAMLAssertionForTest(t *testing.T, assertionXML string, key *rsa.PrivateKey, cert *x509.Certificate) string {
+	t.Helper()
+	doc := etree.NewDocument()
+	if err := doc.ReadFromString(assertionXML); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := dsig.NewSigningContext(key, [][]byte{cert.Raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx.IdAttribute = "ID"
+	ctx.Canonicalizer = dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList("")
+	signed, err := ctx.SignEnveloped(doc.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.SetRoot(signed)
+	out, err := doc.WriteToString()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1029,31 +1241,157 @@ func TestOmniAuthSignedInResourceOverridesIdentityUserLikeRails(t *testing.T) {
 	}
 }
 
-func TestOmniAuthCallbackUIDAcceptsRailsLikeCallbackForms(t *testing.T) {
+// omniauthNoDatabaseConnector fails every connection attempt and records it, so
+// tests can prove that a rejected callback never looks up or creates identities.
+type omniauthNoDatabaseConnector struct{ used *atomic.Bool }
+
+func (c omniauthNoDatabaseConnector) Connect(context.Context) (driver.Conn, error) {
+	c.used.Store(true)
+	return nil, errors.New("omniauth callback test: database must not be used")
+}
+
+func (c omniauthNoDatabaseConnector) Driver() driver.Driver { return omniauthNoDatabaseDriver(c) }
+
+type omniauthNoDatabaseDriver struct{ used *atomic.Bool }
+
+func (d omniauthNoDatabaseDriver) Open(string) (driver.Conn, error) {
+	d.used.Store(true)
+	return nil, errors.New("omniauth callback test: database must not be used")
+}
+
+func omniauthNoDatabaseForTest(t *testing.T) (*gorm.DB, *atomic.Bool) {
+	t.Helper()
+	used := &atomic.Bool{}
+	sqlDB := sql.OpenDB(omniauthNoDatabaseConnector{used: used})
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	database, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{DisableAutomaticPing: true, SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return database, used
+}
+
+func assertOmniAuthCallbackRejected(t *testing.T, rec *httptest.ResponseRecorder, provider string) {
+	t.Helper()
+	wantLocation := "/auth/sign_in?error=" + url.QueryEscape(omniauthUnavailableMessage(provider))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != wantLocation {
+		t.Fatalf("redirect = %d %q, want 302 %q", rec.Code, rec.Header().Get("Location"), wantLocation)
+	}
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == sessionCookieName && cookie.Value != "" {
+			t.Fatalf("rejected callback set a session cookie: %#v", cookie)
+		}
+	}
+}
+
+func TestOmniAuthCallbackRejectsRequestSuppliedIdentity(t *testing.T) {
+	const secret = "test-secret"
+	_, _, certPEM := testSAMLSigningCertificate(t)
+	unsignedSAMLResponse := base64.StdEncoding.EncodeToString([]byte(`<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Assertion><saml:Subject><saml:NameID>admin</saml:NameID></saml:Subject><saml:AttributeStatement><saml:Attribute Name="email_verified"><saml:AttributeValue>true</saml:AttributeValue></saml:Attribute></saml:AttributeStatement></saml:Assertion></samlp:Response>`))
+	allEnabled := config.Config{
+		SecretKeyBase:  secret,
+		CASEnabled:     true,
+		CASValidateURL: "https://cas.example.test/serviceValidate",
+		SAMLEnabled:    true,
+		SAMLIDPCert:    string(certPEM),
+		OIDCEnabled:    true,
+	}
 	for _, test := range []struct {
-		name   string
-		target string
-		body   string
-		want   string
+		name      string
+		provider  string
+		method    string
+		target    string
+		body      string
+		cfg       config.Config
+		oidcState string
 	}{
-		{name: "query", target: "/auth/auth/openid_connect/callback?uid=alice", want: "alice"},
-		{name: "top-level form", target: "/auth/auth/openid_connect/callback", body: "uid=bob", want: "bob"},
-		{name: "omniauth form", target: "/auth/auth/openid_connect/callback", body: "omniauth%5Buid%5D=carol", want: "carol"},
-		{name: "user form", target: "/auth/auth/openid_connect/callback", body: "user%5Buid%5D=dave", want: "dave"},
-		{name: "EOLE SSO top-level uid array", target: "/auth/auth/openid_connect/callback", body: "uid%5B0%5D%5Buid%5D=eole-uid", want: "eole-uid"},
-		{name: "EOLE SSO top-level user array fallback", target: "/auth/auth/openid_connect/callback", body: "uid%5B0%5D%5Buser%5D=eole-user", want: "eole-user"},
-		{name: "EOLE SSO omniauth uid array", target: "/auth/auth/openid_connect/callback", body: "omniauth%5Buid%5D%5B0%5D%5Buid%5D=eole-omniauth-uid", want: "eole-omniauth-uid"},
-		{name: "EOLE SSO user uid array fallback", target: "/auth/auth/openid_connect/callback", body: "user%5Buid%5D%5B0%5D%5Buser%5D=eole-user-fallback", want: "eole-user-fallback"},
+		{name: "unknown provider query", provider: "x", method: http.MethodGet, target: "/auth/auth/x/callback?uid=a&email=a%40example.com&verified=1", cfg: config.Config{SecretKeyBase: secret}},
+		{name: "unknown provider with all SSO enabled", provider: "x", method: http.MethodGet, target: "/auth/auth/x/callback?uid=a&email=a%40example.com&verified=1", cfg: allEnabled},
+		{name: "disabled cas uid", provider: "cas", method: http.MethodGet, target: "/auth/auth/cas/callback?uid=a", cfg: config.Config{SecretKeyBase: secret}},
+		{name: "enabled cas uid", provider: "cas", method: http.MethodGet, target: "/auth/auth/cas/callback?uid=a&user=a", cfg: allEnabled},
+		{name: "disabled saml uid", provider: "saml", method: http.MethodGet, target: "/auth/auth/saml/callback?uid=a", cfg: config.Config{SecretKeyBase: secret}},
+		{name: "enabled saml uid", provider: "saml", method: http.MethodGet, target: "/auth/auth/saml/callback?uid=a", cfg: allEnabled},
+		{name: "disabled saml unsigned response", provider: "saml", method: http.MethodPost, target: "/auth/auth/saml/callback", body: "SAMLResponse=" + url.QueryEscape(unsignedSAMLResponse), cfg: config.Config{SecretKeyBase: secret}},
+		{name: "disabled saml unsigned response query", provider: "saml", method: http.MethodGet, target: "/auth/auth/saml/callback?SAMLResponse=" + url.QueryEscape(unsignedSAMLResponse), cfg: config.Config{SecretKeyBase: secret}},
+		{name: "oidc form uid with valid state", provider: "openid_connect", method: http.MethodPost, target: "/auth/auth/openid_connect/callback", body: "state=server&uid=bob", cfg: allEnabled, oidcState: "server"},
+		{name: "oidc omniauth uid with valid state", provider: "openid_connect", method: http.MethodPost, target: "/auth/auth/openid_connect/callback?state=server", body: "omniauth%5Buid%5D=carol&verified=1", cfg: allEnabled, oidcState: "server"},
+		{name: "user uid form", provider: "x", method: http.MethodPost, target: "/auth/auth/x/callback", body: "user%5Buid%5D=dave", cfg: allEnabled},
+		{name: "EOLE SSO uid array", provider: "x", method: http.MethodPost, target: "/auth/auth/x/callback", body: "uid%5B0%5D%5Buid%5D=eole-uid&omniauth%5Buid%5D%5B0%5D%5Buser%5D=eole-user", cfg: allEnabled},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			body := strings.NewReader(test.body)
-			req := httptest.NewRequest(http.MethodPost, test.target, body)
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			database, used := omniauthNoDatabaseForTest(t)
+			server := &Server{cfg: test.cfg, db: database}
+			req := httptest.NewRequest(test.method, test.target, strings.NewReader(test.body))
+			if test.body != "" {
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			}
+			if test.oidcState != "" {
+				setupRecorder := httptest.NewRecorder()
+				setupContext := echo.NewContext(httptest.NewRequest(http.MethodGet, "/auth/auth/openid_connect", nil), setupRecorder, echo.New())
+				if err := server.setBrowserOIDCState(setupContext, test.oidcState, ""); err != nil {
+					t.Fatal(err)
+				}
+				req.AddCookie(cookiesByName(setupRecorder.Result().Cookies())[browserSessionCookieName])
+			}
 			rec := httptest.NewRecorder()
 			c := echo.NewContext(req, rec, echo.New())
-			if got := omniauthCallbackUID(c); got != test.want {
-				t.Fatalf("omniauthCallbackUID() = %q, want %q", got, test.want)
+			c.SetPathValues(echo.PathValues{{Name: "provider", Value: test.provider}})
+			if err := server.omniauthCallback(c); err != nil {
+				t.Fatalf("omniauthCallback returned error: %v", err)
 			}
+			assertOmniAuthCallbackRejected(t, rec, test.provider)
+			if used.Load() {
+				t.Fatal("rejected callback queried the database for an identity")
+			}
+		})
+	}
+}
+
+func TestOmniAuthCallbackRejectsUnsignedSAMLResponseWithoutIDPCertificate(t *testing.T) {
+	database, used := omniauthNoDatabaseForTest(t)
+	server := &Server{cfg: config.Config{SAMLEnabled: true}, db: database}
+	unsignedSAMLResponse := base64.StdEncoding.EncodeToString([]byte(`<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Assertion><saml:Subject><saml:NameID>admin</saml:NameID></saml:Subject></saml:Assertion></samlp:Response>`))
+	req := httptest.NewRequest(http.MethodPost, "/auth/auth/saml/callback", strings.NewReader("SAMLResponse="+url.QueryEscape(unsignedSAMLResponse)))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	c := echo.NewContext(req, rec, echo.New())
+	c.SetPathValues(echo.PathValues{{Name: "provider", Value: "saml"}})
+	if err := server.omniauthCallback(c); err == nil || !strings.Contains(err.Error(), "SAML_IDP_CERT") {
+		t.Fatalf("expected unsigned SAML response rejection without IdP certificate, got %v", err)
+	}
+	if cookie := cookiesByName(rec.Result().Cookies())[sessionCookieName]; cookie != nil {
+		t.Fatalf("rejected SAML response set a session cookie: %#v", cookie)
+	}
+	if used.Load() {
+		t.Fatal("rejected SAML response queried the database for an identity")
+	}
+}
+
+func TestOmniAuthCallbackRouteRejectsRequestSuppliedIdentity(t *testing.T) {
+	s, err := NewServer(config.Config{Title: "Paon", LocalDomain: "example.com"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsignedSAMLResponse := base64.StdEncoding.EncodeToString([]byte(`<Response><Assertion><Subject><NameID>admin</NameID></Subject></Assertion></Response>`))
+	for _, test := range []struct {
+		provider string
+		method   string
+		target   string
+		body     string
+	}{
+		{provider: "x", method: http.MethodGet, target: "/auth/auth/x/callback?uid=a&email=a%40example.com&verified=1"},
+		{provider: "cas", method: http.MethodGet, target: "/auth/auth/cas/callback?uid=a"},
+		{provider: "saml", method: http.MethodGet, target: "/auth/auth/saml/callback?uid=a"},
+		{provider: "saml", method: http.MethodPost, target: "/auth/auth/saml/callback", body: "SAMLResponse=" + url.QueryEscape(unsignedSAMLResponse)},
+	} {
+		t.Run(test.method+" "+test.target, func(t *testing.T) {
+			req := httptest.NewRequest(test.method, test.target, strings.NewReader(test.body))
+			if test.body != "" {
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			}
+			rec := httptest.NewRecorder()
+			s.echo.ServeHTTP(rec, req)
+			assertOmniAuthCallbackRejected(t, rec, test.provider)
 		})
 	}
 }
