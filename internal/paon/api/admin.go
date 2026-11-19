@@ -1447,6 +1447,9 @@ func (s *Server) requireAdminReadToken(c *echo.Context, scopes ...string) (*mode
 		if err != nil {
 			return nil, apiError(c, http.StatusUnauthorized, "The access token is invalid")
 		}
+		if err := s.rejectSuspendedAdminUser(c, *user); err != nil {
+			return nil, err
+		}
 		return user, nil
 	}
 	accessToken, err := s.accessTokenFromRequest(c)
@@ -1459,6 +1462,9 @@ func (s *Server) requireAdminReadToken(c *echo.Context, scopes ...string) (*mode
 	var user models.User
 	if err := s.db.Where("id = ? AND disabled = false", accessToken.ResourceOwnerID.Int64).First(&user).Error; err != nil {
 		return nil, apiError(c, http.StatusUnauthorized, "The access token is invalid")
+	}
+	if err := s.rejectSuspendedAdminUser(c, user); err != nil {
+		return nil, err
 	}
 	return &user, nil
 }
@@ -1479,6 +1485,9 @@ func (s *Server) requireAdminReadWithPermissions(c *echo.Context, scopes []strin
 	if err := s.db.Where("id = ? AND disabled = false", accessToken.ResourceOwnerID.Int64).First(&user).Error; err != nil {
 		return nil, apiError(c, http.StatusUnauthorized, "The access token is invalid")
 	}
+	if err := s.rejectSuspendedAdminUser(c, user); err != nil {
+		return nil, err
+	}
 	if !s.userCanAny(&user, permissions...) {
 		return nil, apiError(c, http.StatusForbidden, "This action is outside the authorized role")
 	}
@@ -1491,6 +1500,9 @@ func (s *Server) requireAdminBrowserReadWithPermissions(c *echo.Context, permiss
 	user, token, err := s.currentWebSessionUser(c, false)
 	if err != nil {
 		return nil, apiError(c, http.StatusUnauthorized, "The access token is invalid")
+	}
+	if err := s.rejectSuspendedAdminUser(c, *user); err != nil {
+		return nil, err
 	}
 	if c.Request().Method != http.MethodGet && c.Request().Method != http.MethodHead && c.Request().Method != http.MethodOptions {
 		if !s.browserCSRFTokenValidForAuthentication(c, token) {
@@ -1508,11 +1520,29 @@ func (s *Server) requireAdminBrowserReadWithPermissions(c *echo.Context, permiss
 // components. Like Rails' authorize_if_got_token!, an OAuth token in the
 // Authorization header or the access_token / bearer_token parameters keeps the
 // request on the scope-checked token path even when session cookies are sent.
+// A Sec-WebSocket-Protocol token does the same: requestToken prefers it over the
+// session cookie, so the /api gate and this branch must see the same credential.
 func adminBrowserSessionRequest(c *echo.Context) bool {
 	return bearerToken(c) == "" &&
 		requestRawParamValue(c, "access_token") == "" &&
 		requestRawParamValue(c, "bearer_token") == "" &&
+		webSocketProtocolToken(c.Request().Header.Get("Sec-WebSocket-Protocol")) == "" &&
 		browserRequestHasAuthenticationCookie(c.Request())
+}
+
+// rejectSuspendedAdminUser mirrors Rails Api::BaseController#require_not_suspended!
+// for the admin API gates. apiAuthenticationGateMiddleware already rejects
+// suspended users on /api routes; checking again here keeps suspended staff out
+// of admin data whichever credential the request resolves through.
+func (s *Server) rejectSuspendedAdminUser(c *echo.Context, user models.User) error {
+	suspended, err := s.userAccountSuspended(user)
+	if err != nil {
+		return err
+	}
+	if suspended {
+		return apiError(c, http.StatusForbidden, "Your login is currently disabled")
+	}
+	return nil
 }
 
 func tokenHasAnyScope[S ~string](tokenScopes S, required ...string) bool {
