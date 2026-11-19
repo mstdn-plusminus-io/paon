@@ -997,6 +997,25 @@ func (s *Server) fetchAndStoreActivityActorForKeyID(keyID string) (*models.Accou
 	if actor.PublicKey.ID != "" && actor.PublicKey.ID != keyID && actor.PublicKey.Owner != keyID && actor.PublicKey.Owner != actor.ID {
 		return nil, fmt.Errorf("public key not found")
 	}
+	// FetchRemoteKeyService#find_actor returns an already known actor as is.
+	// A key document never replaces the stored key or inboxes of an existing
+	// account; key rotation goes through refreshKnownActivityPubActorOnlyKey,
+	// which refetches account.URI and checks its id.
+	var existing models.Account
+	err = s.db.Preload("AccountStat").Where("uri = ?", actor.ID).First(&existing).Error
+	if err == nil {
+		return &existing, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	// FetchRemoteActorService#call checks domain_not_allowed? on the actor URI.
+	if disallowed, err := s.remoteActivityDomainNotAllowed(actor.ID); err != nil || disallowed {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errActivitySignatureDomainNotAllowed
+	}
 	if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
 		return nil, err
 	}
@@ -1107,16 +1126,22 @@ func (s *Server) fetchActivityActorForPublicKeyDocument(keyID string) (remoteAct
 	if err != nil {
 		return remoteActivityActor{}, err
 	}
-	resource, err = s.fetchActivityCanonicalPublicKeyResource(resource)
+	resource, canonicalURI, err := s.fetchActivityCanonicalPublicKeyResource(resource)
 	if err != nil {
 		return remoteActivityActor{}, err
 	}
-	if actor, err := s.parseRemoteActivityActor(resource.body); err == nil {
+	// FetchRemoteKeyService#find_actor(@json['id']): the actor must be the
+	// canonical document itself, not an @graph member claiming another id.
+	if actor, err := s.parseRemoteActivityActor(resource.body); err == nil && actor.ID == canonicalURI {
 		return s.fetchActivityActorPublicKey(actor), nil
 	}
 	key, err := parseRemoteActivityPublicKey(resource.body)
 	if err != nil {
 		return remoteActivityActor{}, err
+	}
+	// confirmed_owner? compares the owner's publicKey with the canonical @json['id'].
+	if key.ID != canonicalURI {
+		return remoteActivityActor{}, fmt.Errorf("public key not found")
 	}
 	actor, err := s.fetchActivityActor(activityRawNonBlank(key.OwnerRaw, key.Owner))
 	if err != nil {
@@ -1148,16 +1173,19 @@ func fetchActivityActorForPublicKeyDocument(keyID string) (remoteActivityActor, 
 	if err != nil {
 		return remoteActivityActor{}, err
 	}
-	resource, err = fetchActivityCanonicalPublicKeyResource(resource)
+	resource, canonicalURI, err := fetchActivityCanonicalPublicKeyResource(resource)
 	if err != nil {
 		return remoteActivityActor{}, err
 	}
-	if actor, err := parseRemoteActivityActor(resource.body); err == nil {
+	if actor, err := parseRemoteActivityActor(resource.body); err == nil && actor.ID == canonicalURI {
 		return fetchActivityActorPublicKey(actor), nil
 	}
 	key, err := parseRemoteActivityPublicKey(resource.body)
 	if err != nil {
 		return remoteActivityActor{}, err
+	}
+	if key.ID != canonicalURI {
+		return remoteActivityActor{}, fmt.Errorf("public key not found")
 	}
 	actor, err := fetchActivityActor(activityRawNonBlank(key.OwnerRaw, key.Owner))
 	if err != nil {
@@ -1184,20 +1212,44 @@ func fetchActivityActorForPublicKeyDocument(keyID string) (remoteActivityActor, 
 	return actor, nil
 }
 
-func (s *Server) fetchActivityCanonicalPublicKeyResource(resource fetchedActivityResource) (fetchedActivityResource, error) {
+func (s *Server) fetchActivityCanonicalPublicKeyResource(resource fetchedActivityResource) (fetchedActivityResource, string, error) {
 	canonicalURI, err := activityCanonicalPublicKeyResourceURI(resource.body)
 	if err != nil {
-		return fetchedActivityResource{}, err
+		return fetchedActivityResource{}, "", err
 	}
-	return s.fetchActivityResourceWithRepresentative(canonicalURI)
+	canonical, err := s.fetchActivityResourceWithRepresentative(canonicalURI)
+	if err != nil {
+		return fetchedActivityResource{}, "", err
+	}
+	if !activityCanonicalPublicKeyResourceIDMatches(canonical.body, canonicalURI) {
+		return fetchedActivityResource{}, "", fmt.Errorf("public key not found")
+	}
+	return canonical, canonicalURI, nil
 }
 
-func fetchActivityCanonicalPublicKeyResource(resource fetchedActivityResource) (fetchedActivityResource, error) {
+func fetchActivityCanonicalPublicKeyResource(resource fetchedActivityResource) (fetchedActivityResource, string, error) {
 	canonicalURI, err := activityCanonicalPublicKeyResourceURI(resource.body)
 	if err != nil {
-		return fetchedActivityResource{}, err
+		return fetchedActivityResource{}, "", err
 	}
-	return fetchActivityResourceWithMetadata(canonicalURI)
+	canonical, err := fetchActivityResourceWithMetadata(canonicalURI)
+	if err != nil {
+		return fetchedActivityResource{}, "", err
+	}
+	if !activityCanonicalPublicKeyResourceIDMatches(canonical.body, canonicalURI) {
+		return fetchedActivityResource{}, "", fmt.Errorf("public key not found")
+	}
+	return canonical, canonicalURI, nil
+}
+
+// activityCanonicalPublicKeyResourceIDMatches is the json['id'] == uri check
+// JsonLdHelper#fetch_resource(uri, false) applies to the refetched document.
+func activityCanonicalPublicKeyResourceIDMatches(body []byte, canonicalURI string) bool {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return false
+	}
+	return activityJSONLDID(raw) == canonicalURI
 }
 
 func activityCanonicalPublicKeyResourceURI(body []byte) (string, error) {
