@@ -340,6 +340,9 @@ func (s *Server) listTimelineStatusIDs(c *echo.Context, list models.List) ([]int
 // listMemberStatusIDsQuery merges memberStatuses, evaluated for each shown
 // list member, into the first limitValue status IDs in order.
 func (s *Server) listMemberStatusIDsQuery(database *gorm.DB, list models.List, memberStatuses *gorm.DB, order string, limitValue int) *gorm.DB {
+	// Members still waiting on a follow request have no follow_id; like Rails
+	// lists_for_local_distribution, only accepted follows and the owner's own
+	// account feed the list, so pending members' private statuses stay hidden.
 	return database.Raw(`SELECT list_statuses.id
 		FROM list_accounts
 		CROSS JOIN LATERAL (?) list_statuses
