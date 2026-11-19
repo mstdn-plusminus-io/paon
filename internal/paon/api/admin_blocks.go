@@ -106,7 +106,7 @@ func (s *Server) showAdminDomainAllow(c *echo.Context) error {
 		return err
 	}
 	var row models.DomainAllow
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	return c.JSON(http.StatusOK, serializer.AdminDomainAllowFromModel(row))
@@ -154,7 +154,7 @@ func (s *Server) deleteAdminDomainAllow(c *echo.Context) error {
 		return err
 	}
 	var row models.DomainAllow
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	if err := s.applyAdminDomainUnallowEffects(s.db, row.Domain); err != nil {
@@ -197,7 +197,7 @@ func (s *Server) showAdminDomainBlock(c *echo.Context) error {
 		return err
 	}
 	var row models.DomainBlock
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	return c.JSON(http.StatusOK, serializer.AdminDomainBlockFromModel(row))
@@ -259,7 +259,7 @@ func (s *Server) updateAdminDomainBlock(c *echo.Context) error {
 		return err
 	}
 	var row models.DomainBlock
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	payload, err := parseAdminDomainBlockPayload(c)
@@ -307,7 +307,7 @@ func (s *Server) deleteAdminDomainBlock(c *echo.Context) error {
 		return err
 	}
 	var row models.DomainBlock
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	if err := s.applyAdminDomainUnblockEffects(s.db, row); err != nil {
@@ -350,7 +350,7 @@ func (s *Server) showAdminEmailDomainBlock(c *echo.Context) error {
 		return err
 	}
 	var row models.EmailDomainBlock
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	return c.JSON(http.StatusOK, s.adminEmailDomainBlockFromModel(c, row))
@@ -426,7 +426,7 @@ func (s *Server) deleteAdminEmailDomainBlock(c *echo.Context) error {
 		return err
 	}
 	var row models.EmailDomainBlock
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	if err := s.db.Where("id = ? OR parent_id = ?", row.ID, row.ID).Delete(&models.EmailDomainBlock{}).Error; err != nil {
@@ -459,7 +459,7 @@ func (s *Server) showAdminCanonicalEmailBlock(c *echo.Context) error {
 		return err
 	}
 	var row models.CanonicalEmailBlock
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	return c.JSON(http.StatusOK, serializer.AdminCanonicalEmailBlockFromModel(row))
@@ -516,7 +516,7 @@ func (s *Server) deleteAdminCanonicalEmailBlock(c *echo.Context) error {
 		return err
 	}
 	var row models.CanonicalEmailBlock
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	if err := s.db.Delete(&models.CanonicalEmailBlock{}, row.ID).Error; err != nil {
@@ -553,7 +553,7 @@ func (s *Server) showAdminIPBlock(c *echo.Context) error {
 		return err
 	}
 	var row models.IPBlock
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	return c.JSON(http.StatusOK, serializer.AdminIPBlockFromModel(row))
@@ -597,7 +597,7 @@ func (s *Server) updateAdminIPBlock(c *echo.Context) error {
 		return err
 	}
 	var row models.IPBlock
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	payload, err := parseAdminIPBlockPayload(c)
@@ -642,7 +642,7 @@ func (s *Server) deleteAdminIPBlock(c *echo.Context) error {
 		return err
 	}
 	var row models.IPBlock
-	if err := s.db.First(&row, c.Param("id")).Error; err != nil {
+	if err := firstAdminRecordByPathID(s.db, &row, c.Param("id")); err != nil {
 		return apiError(c, http.StatusNotFound, "Record not found")
 	}
 	if err := s.db.Delete(&models.IPBlock{}, row.ID).Error; err != nil {
@@ -887,7 +887,30 @@ func setLinkForRows[T any](c *echo.Context, rows []T, id func(T) int64, limitVal
 	c.Response().Header().Set("Link", paginationLinkWithAllowedParams(c, id(rows[0]), id(rows[len(rows)-1]), "min_id", len(rows) == limitValue, true, adminLimitPaginationParams))
 }
 
-func deleteByID[T any](db *gorm.DB, id string) error {
+// adminRecordPathID parses a record id taken from a request path. GORM treats a
+// non-numeric string passed as an inline condition (First(&row, raw)) as raw
+// SQL, so path ids must be converted to integers before reaching the query
+// builder. Values that are not positive integers report false, which callers
+// render as Rails' RecordNotFound (404).
+func adminRecordPathID(raw string) (int64, bool) {
+	id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+// firstAdminRecordByPathID loads dest by its integer primary key parsed from a
+// request path id. Invalid ids return gorm.ErrRecordNotFound without querying.
+func firstAdminRecordByPathID(db *gorm.DB, dest any, rawID string) error {
+	id, ok := adminRecordPathID(rawID)
+	if !ok {
+		return gorm.ErrRecordNotFound
+	}
+	return db.First(dest, id).Error
+}
+
+func deleteByID[T any](db *gorm.DB, id int64) error {
 	result := db.Delete(new(T), id)
 	if result.Error != nil {
 		return result.Error
