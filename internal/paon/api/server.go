@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -829,7 +830,7 @@ func staticFileServerHeadersMiddleware(cfg config.Config) echo.MiddlewareFunc {
 				header.Set("Cache-Control", "public, max-age=604800, must-revalidate")
 			case railsPaperclipStaticPath(cfg, path):
 				header.Set("Cache-Control", "public, max-age=2419200, immutable")
-				header.Set("Content-Security-Policy", "default-src 'none'; form-action 'none'")
+				header.Set("Content-Security-Policy", paperclipStaticContentSecurityPolicy)
 			default:
 				header.Set("Cache-Control", "public, max-age=2419200, must-revalidate")
 			}
@@ -880,6 +881,142 @@ func railsPaperclipStaticPath(cfg config.Config, path string) bool {
 	}
 	root = "/" + strings.Trim(root, "/")
 	return path == root || strings.HasPrefix(path, root+"/")
+}
+
+// paperclipStaticContentSecurityPolicy is sent with every response of the
+// public/system mounts. Files there are written from local uploads and from
+// federated remote media, so they must never run script or submit forms in
+// the instance origin, even when a stored file is rendered as a document.
+const paperclipStaticContentSecurityPolicy = "default-src 'none'; form-action 'none'; sandbox"
+
+// paperclipInlineMediaContentTypes lists the file extensions that the
+// public/system mounts serve inline, with the Content-Type used when the
+// system MIME table has no entry for the extension. These are the extensions
+// Rails stores for attachments: MediaAttachment images, videos and audio,
+// image-only avatars, headers, custom emojis, preview cards and site uploads,
+// preview card provider icons (.ico) and account backup archives (.zip).
+var paperclipInlineMediaContentTypes = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".jpe":  "image/jpeg",
+	".jfif": "image/jpeg",
+	".png":  "image/png",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".avif": "image/avif",
+	".heic": "image/heic",
+	".heif": "image/heif",
+	".ico":  "image/vnd.microsoft.icon",
+	".mp4":  "video/mp4",
+	".m4v":  "video/mp4",
+	".mov":  "video/quicktime",
+	".webm": "video/webm",
+	".ogv":  "video/ogg",
+	".ogg":  "audio/ogg",
+	".oga":  "audio/ogg",
+	".opus": "audio/ogg",
+	".mp3":  "audio/mpeg",
+	".wav":  "audio/wav",
+	".flac": "audio/flac",
+	".aac":  "audio/aac",
+	".m4a":  "audio/mp4",
+	".3gp":  "video/3gpp",
+	".wma":  "audio/x-ms-wma",
+	".zip":  "application/zip",
+}
+
+// paperclipSiteUploadsPrefix is the public/system directory of SiteUpload
+// files (Paperclip's :class/:attachment/:id_partition layout).
+const paperclipSiteUploadsPrefix = "site_uploads/"
+
+// paperclipSiteUploadPath reports whether the StaticFS wildcard resolves to a
+// file under site_uploads/. It decodes and cleans the wildcard first, like
+// echo's StaticDirectoryHandler does before opening the file, so encoded dot
+// segments cannot point a site_uploads/ prefix at another directory.
+func paperclipSiteUploadPath(wildcard string) bool {
+	unescaped, err := url.PathUnescape(wildcard)
+	if err != nil {
+		return false
+	}
+	cleaned := path.Clean("/" + unescaped)
+	return strings.HasPrefix(cleaned, "/"+paperclipSiteUploadsPrefix)
+}
+
+// paperclipStaticMountPrefixes returns the URL prefixes, each ending with a
+// slash, that serve the public/system directory. echo registers
+// StaticFS(prefix) as prefix+"*", so the trailing slash keeps "/system" from
+// also matching paths such as "/systemcache/...".
+func paperclipStaticMountPrefixes(cfg config.Config) []string {
+	prefixes := []string{"/system/"}
+	rootURL := strings.TrimRight(strings.TrimSpace(cfg.PaperclipRootURL), "/")
+	if rootURL == "" || strings.HasPrefix(rootURL, "http://") || strings.HasPrefix(rootURL, "https://") {
+		return prefixes
+	}
+	if custom := "/" + strings.Trim(rootURL, "/") + "/"; custom != "/system/" {
+		prefixes = append(prefixes, custom)
+	}
+	return prefixes
+}
+
+func paperclipStaticMountPath(cfg config.Config, requestPath string) bool {
+	for _, prefix := range paperclipStaticMountPrefixes(cfg) {
+		if strings.HasPrefix(requestPath, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// paperclipInlineContentType returns the Content-Type for serving the file
+// named by the StaticFS wildcard inline, or false when the file must be
+// downloaded instead. Only the final path element is inspected; dot segments
+// and trailing slashes (directory index pages) never match the allowlist.
+func paperclipInlineContentType(wildcard string) (string, bool) {
+	name := wildcard[strings.LastIndex(wildcard, "/")+1:]
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext == ".svg" && paperclipSiteUploadPath(wildcard) {
+		// Rails SiteUpload accepts any image/* upload, so instances may keep an
+		// SVG mascot or thumbnail. Only staff can write site uploads, and the
+		// sandboxing CSP above keeps scripts in such a file from running.
+		return "image/svg+xml", true
+	}
+	fallback, ok := paperclipInlineMediaContentTypes[ext]
+	if !ok {
+		return "", false
+	}
+	if contentType := mime.TypeByExtension(ext); contentType != "" {
+		return contentType, true
+	}
+	return fallback, true
+}
+
+// paperclipStaticFileHeadersMiddleware is attached to the public/system
+// StaticFS routes themselves, so the hardening applies to every request that
+// reaches those mounts regardless of URL prefix checks in global middleware.
+// net/http's ServeContent keeps a Content-Type that is already set, so files
+// outside the media allowlist (.html, .svg, .xml, ...) are served as
+// application/octet-stream attachments instead of being typed by extension or
+// by content sniffing.
+func paperclipStaticFileHeadersMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		header := c.Response().Header()
+		header.Set("Content-Security-Policy", paperclipStaticContentSecurityPolicy)
+		header.Set("X-Content-Type-Options", "nosniff")
+		if contentType, ok := paperclipInlineContentType(c.Param("*")); ok {
+			header.Set("Content-Type", contentType)
+		} else {
+			header.Set("Content-Type", "application/octet-stream")
+			header.Set("Content-Disposition", "attachment")
+		}
+		err := next(c)
+		if err != nil {
+			// Nothing was served (e.g. a missing file); let the error handler
+			// pick the Content-Type of its own response body.
+			header.Del("Content-Type")
+			header.Del("Content-Disposition")
+		}
+		return err
+	}
 }
 
 func railsRemoteInteractionHelperCSP(cfg config.Config) string {
@@ -1584,13 +1721,125 @@ func corsAllowHeaders(req *http.Request) string {
 func (s *Server) apiAuthenticationGateMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		path := c.Path()
-		if (path == "/api" || strings.HasPrefix(path, "/api/")) && path != "/api/oembed" {
-			if err := s.requireAuthenticatedAPIIfDisallowed(c); err != nil {
+		if path == "/api" || strings.HasPrefix(path, "/api/") {
+			ensureMultipartFormParsed(c.Request())
+			if path != "/api/oembed" {
+				if err := s.requireAuthenticatedAPIIfDisallowed(c); err != nil {
+					return err
+				}
+			}
+			if err := s.requireAPIUserNotSuspended(c, path); err != nil {
 				return err
 			}
 		}
 		return next(c)
 	}
+}
+
+// ensureMultipartFormParsed parses a multipart body before the gate reads
+// request parameters. requestRawParamValue calls ParseForm, and once
+// Request.Form is set net/http FormValue no longer parses multipart bodies, so
+// handlers would lose multipart fields. Over TCP the rack-attack throttle
+// already parses the form through FormValue first; this keeps the same state
+// when that step is skipped (for example on a unix socket listener).
+func ensureMultipartFormParsed(req *http.Request) {
+	if req == nil || req.Form != nil || req.MultipartForm != nil {
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
+	if err != nil || mediaType != "multipart/form-data" {
+		return
+	}
+	_ = req.ParseMultipartForm(32 << 20)
+}
+
+// requireAPIUserNotSuspended mirrors Rails Api::BaseController#require_not_suspended!,
+// which every Rails API controller runs, /api/oembed included. Only a
+// suspended account is rejected; disabled, unconfirmed, and unapproved users
+// are still left to each handler like Rails. The streaming endpoints were
+// served by the Node streaming server, which rejects suspended accounts on
+// its own, so they keep their existing handling.
+func (s *Server) requireAPIUserNotSuspended(c *echo.Context, path string) error {
+	if path == "/api/v1/streaming" || strings.HasPrefix(path, "/api/v1/streaming/") {
+		return nil
+	}
+	suspended, err := s.apiRequestUserSuspended(c)
+	if err != nil {
+		return err
+	}
+	if suspended {
+		return apiError(c, http.StatusForbidden, "Your login is currently disabled")
+	}
+	return nil
+}
+
+// apiRequestUserSuspended reports whether the request credentials resolve to
+// a user whose account is suspended. Credentials are resolved like
+// currentUserIncludingDisabled (the request token, or the legacy Rails session
+// cookie when no token is present), but with one indexed query and without
+// token tracking or cookie side effects. Credentials that do not resolve to a
+// user are left to the handlers.
+func (s *Server) apiRequestUserSuspended(c *echo.Context) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, nil
+	}
+	var query *gorm.DB
+	if token := requestToken(c); token != "" {
+		query = suspendedTokenOwnerQuery(s.db, token)
+	} else {
+		sessionID, ok := s.railsSessionIDFromCookie(c)
+		if !ok {
+			sessionID, ok = s.railsSessionIDFromEncryptedSession(c)
+		}
+		if !ok || sessionID == "" {
+			return false, nil
+		}
+		query = suspendedSessionOwnerQuery(s.db, sessionID)
+	}
+	var userIDs []int64
+	if err := query.Pluck("users.id", &userIDs).Error; err != nil {
+		return false, err
+	}
+	return len(userIDs) > 0, nil
+}
+
+// suspendedTokenOwnerQuery selects the owner of an unrevoked access token
+// when the owner's account is suspended.
+func suspendedTokenOwnerQuery(db *gorm.DB, token string) *gorm.DB {
+	return db.Table("oauth_access_tokens").
+		Joins("JOIN users ON users.id = oauth_access_tokens.resource_owner_id").
+		Joins("JOIN accounts ON accounts.id = users.account_id").
+		Where("oauth_access_tokens.token = ? AND oauth_access_tokens.revoked_at IS NULL", token).
+		Where("accounts.suspended_at IS NOT NULL").
+		Limit(1)
+}
+
+// suspendedSessionOwnerQuery selects the user of a legacy Rails session
+// activation when the user's account is suspended.
+func suspendedSessionOwnerQuery(db *gorm.DB, sessionID string) *gorm.DB {
+	return db.Table("session_activations").
+		Joins("JOIN users ON users.id = session_activations.user_id").
+		Joins("JOIN accounts ON accounts.id = users.account_id").
+		Where("session_activations.session_id = ?", sessionID).
+		Where("accounts.suspended_at IS NOT NULL").
+		Limit(1)
+}
+
+// userAccountSuspended reports whether the user's account is suspended, the
+// account state Rails Api::BaseController#require_not_suspended! rejects.
+func (s *Server) userAccountSuspended(user models.User) (bool, error) {
+	if account := user.Account; account != nil && account.ID != 0 {
+		return account.SuspendedAt.Valid, nil
+	}
+	if s == nil || s.db == nil || user.AccountID == 0 {
+		return false, nil
+	}
+	var accountIDs []int64
+	err := s.db.Model(&models.Account{}).
+		Where("id = ? AND suspended_at IS NOT NULL", user.AccountID).
+		Limit(1).
+		Pluck("id", &accountIDs).Error
+	return len(accountIDs) > 0, err
 }
 
 func (s *Server) routes() {
@@ -1775,9 +2024,8 @@ func (s *Server) routes() {
 	e.StaticFS("/assets", os.DirFS(filepath.Join(s.cfg.PublicDir, "assets")))
 	e.StaticFS("/emoji", os.DirFS(filepath.Join(s.cfg.PublicDir, "emoji")))
 	systemFS := os.DirFS(s.cfg.SystemAssetPath())
-	e.StaticFS("/system", systemFS)
-	if rootURL := strings.TrimRight(strings.TrimSpace(s.cfg.PaperclipRootURL), "/"); rootURL != "" && rootURL != "/system" && !strings.HasPrefix(rootURL, "http://") && !strings.HasPrefix(rootURL, "https://") {
-		e.StaticFS("/"+strings.Trim(rootURL, "/"), systemFS)
+	for _, prefix := range paperclipStaticMountPrefixes(s.cfg) {
+		e.StaticFS(prefix, systemFS, paperclipStaticFileHeadersMiddleware)
 	}
 	e.StaticFS("/avatars", os.DirFS(filepath.Join(s.cfg.PublicDir, "avatars")))
 	e.StaticFS("/headers", os.DirFS(filepath.Join(s.cfg.PublicDir, "headers")))
@@ -7232,8 +7480,48 @@ func (s *Server) currentUserIncludingDisabled(c *echo.Context) (*models.User, st
 	return s.currentUserByToken(c, true)
 }
 
+// currentUserByToken resolves the requesting user. Only REST API routes accept
+// OAuth access tokens; every other route is a web route that Rails
+// authenticates with the Devise session alone, so it is delegated to
+// currentWebSessionUser.
 func (s *Server) currentUserByToken(c *echo.Context, includeDisabled bool) (*models.User, string, error) {
-	token := requestToken(c)
+	if !apiAuthenticationRoute(c) {
+		return s.currentWebSessionUser(c, includeDisabled)
+	}
+	return s.currentUserByAccessToken(c, requestToken(c), includeDisabled, false)
+}
+
+// currentWebSessionUser resolves the user of the browser session. It ignores
+// OAuth tokens sent in the Authorization header, the access_token and
+// bearer_token parameters, or Sec-WebSocket-Protocol, and accepts only the
+// paon_session cookie (or the legacy Rails session cookies). Clients can write
+// any Cookie header, so the cookie token must also belong to a session
+// activation; an OAuth token issued to an application is never a web session.
+func (s *Server) currentWebSessionUser(c *echo.Context, includeDisabled bool) (*models.User, string, error) {
+	return s.currentUserByAccessToken(c, sessionToken(c), includeDisabled, true)
+}
+
+// webSessionActivationCondition limits an oauth_access_tokens lookup to tokens
+// issued for a browser session (session_activations.access_token_id).
+const webSessionActivationCondition = "EXISTS (SELECT 1 FROM session_activations WHERE session_activations.access_token_id = oauth_access_tokens.id AND session_activations.user_id = oauth_access_tokens.resource_owner_id)"
+
+// apiAuthenticationRoute reports whether the request is served by a REST API
+// route (/api or /api/*). It uses the matched route path, falling back to the
+// request path when no route matched.
+func apiAuthenticationRoute(c *echo.Context) bool {
+	if c == nil {
+		return false
+	}
+	path := c.Path()
+	if path == "" {
+		if req := c.Request(); req != nil && req.URL != nil {
+			path = req.URL.Path
+		}
+	}
+	return path == "/api" || strings.HasPrefix(path, "/api/")
+}
+
+func (s *Server) currentUserByAccessToken(c *echo.Context, token string, includeDisabled bool, requireSessionActivation bool) (*models.User, string, error) {
 	if token == "" || s.db == nil {
 		if user, railsToken, err := s.currentUserByRailsSession(c, includeDisabled); err == nil {
 			if err := s.setSessionCookie(c, railsToken); err != nil {
@@ -7244,7 +7532,11 @@ func (s *Server) currentUserByToken(c *echo.Context, includeDisabled bool) (*mod
 		return nil, "", errors.New("missing token")
 	}
 	var accessToken models.OAuthAccessToken
-	err := s.db.Where("token = ? AND revoked_at IS NULL", token).First(&accessToken).Error
+	tokenQuery := s.db.Where("token = ? AND revoked_at IS NULL", token)
+	if requireSessionActivation {
+		tokenQuery = tokenQuery.Where(webSessionActivationCondition)
+	}
+	err := tokenQuery.First(&accessToken).Error
 	if err != nil {
 		return nil, "", errors.New("invalid token")
 	}
@@ -9012,7 +9304,14 @@ func disallowedStatusHashtagsValidationMessage(tags []string) string {
 	return "Validation failed: Text contained the disallowed hashtags: " + strings.Join(tags, ", ")
 }
 
-var statusMentionPattern = regexp.MustCompile(`(^|[^\pL\pN_])@([A-Za-z0-9_]+(?:[.-]+[A-Za-z0-9_]+)*)(?:@([A-Za-z0-9.-]+))?`)
+// statusMentionPattern mirrors the boundary of Rails Account::MENTION_RE,
+// (?<![=/[:word:]]), which keeps "/@user" and "?u=@user" inside URLs (including
+// the "RE: <url>" appended to quotes) from becoming mentions. RE2 has no
+// lookbehind, so the boundary is a consumed preceding character that must not
+// be "=", "/" or an Onigmo [[:word:]] character: Unicode L, M, Nd, Nl, Pc,
+// Join_Control (U+200C-U+200D) and the Other_Alphabetic symbols outside those
+// categories (U+24B6-U+24E9, U+1F130-U+1F149, U+1F150-U+1F169, U+1F170-U+1F189).
+var statusMentionPattern = regexp.MustCompile(`(^|[^=/\pL\pM\p{Nd}\p{Nl}\p{Pc}\x{200C}\x{200D}\x{24B6}-\x{24E9}\x{1F130}-\x{1F149}\x{1F150}-\x{1F169}\x{1F170}-\x{1F189}])@([A-Za-z0-9_]+(?:[.-]+[A-Za-z0-9_]+)*)(?:@([A-Za-z0-9.-]+))?`)
 
 type statusMentionSaveResult struct {
 	NotificationIDs      []int64
@@ -9412,13 +9711,26 @@ func (s *Server) fetchRemoteMentionAccount(tx *gorm.DB, ref statusMentionRef) (*
 	if !ok {
 		return nil, nil
 	}
-	actorURL, err := fetchActivityActorURLFromWebFinger(acct)
+	actorURL, resolvedAcct, err := fetchActivityActorURLAndAcctFromWebFinger(acct)
 	if err != nil {
 		return nil, nil
 	}
 	actor, err := s.fetchActivityActor(actorURL)
-	if err != nil || actor.ID == "" || actor.PublicKey.PublicKeyPem == "" {
+	if err != nil || actor.ID == "" || actor.PublicKey.PublicKeyPem == "" || actor.ID != actorURL {
 		return nil, nil
+	}
+	// Check the mention before anything is stored: an actor that does not match
+	// the mentioned acct must not be upserted.
+	if !remoteActivityActorMatchesMentionRef(actor, ref) {
+		return nil, nil
+	}
+	// ResolveAccountService hands the self link to FetchRemoteAccountService,
+	// whose check_webfinger! requires preferredUsername@actor host to loop back
+	// to the actor. That is already proven when it is the resolved acct.
+	if !strings.EqualFold(actor.PreferredUsername+"@"+activityPubNormalizedURIHost(actor.ID), resolvedAcct) {
+		if err := verifyRemoteActivityActorWebFinger(actor); err != nil {
+			return nil, nil
+		}
 	}
 	account, err := s.upsertRemoteActivityActorDB(tx, actor)
 	if errors.Is(err, errRemoteActivityActorIsLocal) {
@@ -9445,6 +9757,21 @@ func accountMatchesMentionRef(account *models.Account, ref statusMentionRef) boo
 		return false
 	}
 	return strings.EqualFold(account.Username, ref.Username) && strings.EqualFold(account.Domain.String, ref.Domain)
+}
+
+// remoteActivityActorMatchesMentionRef applies accountMatchesMentionRef to the
+// username and domain upsertRemoteActivityActorDB would store for actor.
+func remoteActivityActorMatchesMentionRef(actor remoteActivityActor, ref statusMentionRef) bool {
+	parsed, err := url.Parse(actor.ID)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	username := railsAccountUsernameValue(firstNonEmpty(actor.PreferredUsername, pathBase(parsed.Path)))
+	domain := normalizeDeliveryStatsHost(parsed.Hostname())
+	if username == "" || domain == "" {
+		return false
+	}
+	return accountMatchesMentionRef(&models.Account{Username: username, Domain: sql.NullString{String: domain, Valid: true}}, ref)
 }
 
 func loadStatusForSnapshot(tx *gorm.DB, id int64) (*models.Status, error) {

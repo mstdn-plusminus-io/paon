@@ -77,6 +77,9 @@ func (s *Server) editAdminRolePage(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
+	if handled, err := s.requireAdminRoleUpdatePermitted(c, user, role); handled || err != nil {
+		return err
+	}
 	return c.HTML(http.StatusOK, adminRoleFormHTML(role, false, c.QueryParam("error"), s.webLocale(c, user)))
 }
 
@@ -120,6 +123,9 @@ func (s *Server) updateAdminRole(c *echo.Context) error {
 	}
 	current, err := s.findAdminRole(c.Param("id"))
 	if err != nil {
+		return err
+	}
+	if handled, err := s.requireAdminRoleUpdatePermitted(c, user, current); handled || err != nil {
 		return err
 	}
 	role, errText, err := s.adminRoleFromRequest(c, current, false, user)
@@ -309,6 +315,35 @@ func (s *Server) adminRoleFromRequest(c *echo.Context, current models.UserRole, 
 		return role, "Position must be lower than your current role", nil
 	}
 	return role, "", nil
+}
+
+// adminRoleUpdatePermittedByRailsPolicy mirrors UserRolePolicy#update?:
+// role.overrides?(record) || role.id == record.id, where a user without a role acts
+// with UserRole.everyone (id -99). manage_roles is checked by requireAdminRolesWebUser.
+func (s *Server) adminRoleUpdatePermittedByRailsPolicy(actor *models.User, target models.UserRole) (bool, error) {
+	if actor == nil {
+		return false, nil
+	}
+	actorRoleID := int64(-99)
+	if actor.RoleID.Valid {
+		actorRoleID = actor.RoleID.Int64
+	}
+	if actorRoleID == target.ID {
+		return true, nil
+	}
+	return s.adminRoleOverridesTarget(actor, target)
+}
+
+func (s *Server) requireAdminRoleUpdatePermitted(c *echo.Context, actor *models.User, target models.UserRole) (bool, error) {
+	ok, err := s.adminRoleUpdatePermittedByRailsPolicy(actor, target)
+	if err != nil {
+		return true, err
+	}
+	if ok {
+		return false, nil
+	}
+	locale := s.webLocale(c, actor)
+	return true, c.HTML(http.StatusForbidden, authPageHTML(adminT(locale, "admin.roles.title", "Roles"), "", adminT(locale, "admin.roles.not_permitted", "You are not allowed to manage roles."), "", locale))
 }
 
 func (s *Server) adminRoleOverridesTarget(actor *models.User, target models.UserRole) (bool, error) {

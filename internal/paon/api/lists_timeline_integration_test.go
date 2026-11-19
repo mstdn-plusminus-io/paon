@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -72,6 +73,16 @@ func TestListTimelineStatusIDsMatchesJoinQueryIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// List members are accepted follows of the owner, as listAccountRow records them.
+	memberFollowIDs := map[int64]int64{}
+	for _, memberID := range accountIDs[1:4] {
+		follow := models.Follow{AccountID: accountIDs[0], TargetAccountID: memberID, ShowReblogs: true, CreatedAt: now, UpdatedAt: now}
+		if err := database.Create(&follow).Error; err != nil {
+			t.Fatal(err)
+		}
+		memberFollowIDs[memberID] = follow.ID
+	}
+
 	server := &Server{cfg: cfg, db: database}
 	for _, policy := range []int{0, 1, 2} {
 		list := models.List{AccountID: accountIDs[0], Title: fmt.Sprintf("policy %d", policy), RepliesPolicy: policy, CreatedAt: now, UpdatedAt: now}
@@ -79,7 +90,7 @@ func TestListTimelineStatusIDsMatchesJoinQueryIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, memberID := range accountIDs[1:4] {
-			if err := database.Create(&models.ListAccount{ListID: list.ID, AccountID: memberID}).Error; err != nil {
+			if err := database.Create(&models.ListAccount{ListID: list.ID, AccountID: memberID, FollowID: sql.NullInt64{Int64: memberFollowIDs[memberID], Valid: true}}).Error; err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -114,6 +125,7 @@ func listTimelineJoinReferenceIDs(t *testing.T, server *Server, c *echo.Context,
 		Select("statuses.id").
 		Joins("JOIN list_accounts ON list_accounts.account_id = statuses.account_id").
 		Where("list_accounts.list_id = ?", list.ID).
+		Where("(list_accounts.follow_id IS NOT NULL OR list_accounts.account_id = ?)", list.AccountID).
 		Where("statuses.deleted_at IS NULL").
 		Where("statuses.visibility IN ?", []int{0, 1, 2})
 	switch list.RepliesPolicy {

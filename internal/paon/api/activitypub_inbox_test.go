@@ -99,7 +99,10 @@ func TestActivityPubPeerTubeViewIsAcceptedWithoutApplyingState(t *testing.T) {
 		}
 	}`)
 
-	verificationBody := activityPubCompactCollectionBody(body)
+	verificationBody, compacted := activityPubCompactCollectionBody(body)
+	if !compacted {
+		t.Fatal("PeerTube View with a literal signature object was not compacted")
+	}
 	payload, err := parseActivityPayload(verificationBody)
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +188,10 @@ func TestActivityPubRelayLinkedDataSignatureSurvivesUntilForwardingFinalization(
 		t.Fatal(err)
 	}
 
-	verificationBody := activityPubCompactCollectionBody(originalBody)
+	verificationBody, compacted := activityPubCompactCollectionBody(originalBody)
+	if !compacted {
+		t.Fatal("signed Misskey activity was not compacted before actor verification")
+	}
 	verificationPayload, err := parseActivityPayload(verificationBody)
 	if err != nil {
 		t.Fatal(err)

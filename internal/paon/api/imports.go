@@ -679,6 +679,7 @@ func (s *Server) processRelationshipImportRow(ctx context.Context, bulkImport mo
 	var targetID int64
 	var hideNotifications bool
 	var notificationPayloads []asynqLocalNotificationPayload
+	var deliveries []relationshipBatchDelivery
 	imported := false
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		target, err := s.findOrResolveImportAccountTx(tx, fmt.Sprint(values["acct"]))
@@ -690,11 +691,13 @@ func (s *Server) processRelationshipImportRow(ctx context.Context, bulkImport mo
 		}
 		hideNotifications = importType == "muting" && importBool(values, "hide_notifications", true)
 		notificationPayload := (*asynqLocalNotificationPayload)(nil)
-		imported, notificationPayload, err = s.applyRelationshipImportRow(tx, bulkImport.AccountID, target, importType, values, now)
+		delivery := (*relationshipBatchDelivery)(nil)
+		imported, notificationPayload, delivery, err = s.applyRelationshipImportRow(tx, bulkImport.AccountID, target, importType, values, now)
 		if err != nil {
 			return err
 		}
 		notificationPayloads = appendRelationshipBatchNotificationPayload(notificationPayloads, notificationPayload)
+		deliveries = appendRelationshipBatchDelivery(deliveries, delivery)
 		targetID = target.ID
 		if imported {
 			if err := tx.Where("id = ?", row.ID).Delete(&models.BulkImportRow{}).Error; err != nil {
@@ -720,6 +723,7 @@ func (s *Server) processRelationshipImportRow(ctx context.Context, bulkImport mo
 		_ = s.clearHomeFeedCacheContext(context.Background(), bulkImport.AccountID)
 		s.invalidateFollowRelationshipCaches(context.Background(), models.Account{ID: bulkImport.AccountID}, targetID)
 		s.meiliReindexPrivateStatusesForAccountsBestEffort(context.Background(), targetID)
+		s.deliverRelationshipBatchDeliveries(deliveries)
 	case "blocking":
 		s.clearAfterBlockFeedCaches(context.Background(), bulkImport.AccountID, targetID)
 		s.invalidateBlockRelationshipCaches(context.Background(), bulkImport.AccountID, targetID)
@@ -752,6 +756,7 @@ func (s *Server) processLegacyImportRelationship(ctx context.Context, accountID 
 	var targetID int64
 	var hideNotifications bool
 	var notificationPayloads []asynqLocalNotificationPayload
+	var deliveries []relationshipBatchDelivery
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		target, err := s.findOrResolveImportAccountTx(tx, targetAccountURI)
 		if err != nil {
@@ -764,8 +769,9 @@ func (s *Server) processLegacyImportRelationship(ctx context.Context, accountID 
 		switch relationship {
 		case "follow":
 			values := legacyImportRelationshipOptions(options, "following")
-			_, notificationPayload, err := s.applyRelationshipImportRow(tx, accountID, target, "following", values, now)
+			_, notificationPayload, delivery, err := s.applyRelationshipImportRow(tx, accountID, target, "following", values, now)
 			notificationPayloads = appendRelationshipBatchNotificationPayload(notificationPayloads, notificationPayload)
+			deliveries = appendRelationshipBatchDelivery(deliveries, delivery)
 			return err
 		case "unfollow":
 			if err := deleteFollowEdge(tx, accountID, target.ID); err != nil {
@@ -773,14 +779,14 @@ func (s *Server) processLegacyImportRelationship(ctx context.Context, accountID 
 			}
 			return deleteFollowRequestEdge(tx, accountID, target.ID)
 		case "block":
-			_, _, err := s.applyRelationshipImportRow(tx, accountID, target, "blocking", nil, now)
+			_, _, _, err := s.applyRelationshipImportRow(tx, accountID, target, "blocking", nil, now)
 			return err
 		case "unblock":
 			return tx.Where("account_id = ? AND target_account_id = ?", accountID, target.ID).Delete(&models.Block{}).Error
 		case "mute":
 			values := legacyImportRelationshipOptions(options, "muting")
 			hideNotifications = importBool(values, "hide_notifications", true)
-			_, _, err := s.applyRelationshipImportRow(tx, accountID, target, "muting", values, now)
+			_, _, _, err := s.applyRelationshipImportRow(tx, accountID, target, "muting", values, now)
 			return err
 		case "unmute":
 			return tx.Where("account_id = ? AND target_account_id = ?", accountID, target.ID).Delete(&models.Mute{}).Error
@@ -804,6 +810,7 @@ func (s *Server) processLegacyImportRelationship(ctx context.Context, accountID 
 		_ = s.clearHomeFeedCacheContext(context.Background(), accountID)
 		s.invalidateFollowRelationshipCaches(context.Background(), account, targetID)
 		s.meiliReindexPrivateStatusesForAccountsBestEffort(context.Background(), targetID)
+		s.deliverRelationshipBatchDeliveries(deliveries)
 	case "unfollow":
 		s.invalidateFollowRelationshipCaches(context.Background(), account, targetID)
 		s.unmergeAfterUnfollowBestEffort(context.Background(), targetID, account)
@@ -931,6 +938,7 @@ func (s *Server) processListImportRow(ctx context.Context, bulkImport models.Bul
 	var affectedFollowTargetID int64
 	var affectedListID int64
 	var notificationPayloads []asynqLocalNotificationPayload
+	var deliveries []relationshipBatchDelivery
 	imported := false
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		target, err := s.findOrResolveImportAccountTx(tx, acct)
@@ -944,13 +952,28 @@ func (s *Server) processListImportRow(ctx context.Context, bulkImport models.Bul
 		if err != nil {
 			return err
 		}
-		item, err := listAccountRow(tx, *list, target.ID)
-		if errors.Is(err, gorm.ErrRecordNotFound) && target.ID != bulkImport.AccountID {
-			followed, notificationPayload, err := s.applyRelationshipImportRow(tx, bulkImport.AccountID, target, "following", map[string]any{"show_reblogs": true, "notify": false}, now)
+		if target.ID != bulkImport.AccountID {
+			// BulkImportRowService calls FollowService for every other account
+			// before adding it to the list, so a follow that is not allowed fails
+			// the row even when a follow or follow request already exists.
+			_, disallowed, err := s.relationshipImportFollowNotAllowed(tx, bulkImport.AccountID, target)
 			if err != nil {
 				return err
 			}
+			if disallowed {
+				return s.progressBulkImportTx(tx, bulkImport.ID, 1, 0, now)
+			}
+		}
+		item, err := listAccountRow(tx, *list, target.ID)
+		if errors.Is(err, gorm.ErrRecordNotFound) && target.ID != bulkImport.AccountID {
+			// followErr must not shadow err: the listAccountRow result below has to
+			// reach the outer check, or a newly followed account is never listed.
+			followed, notificationPayload, delivery, followErr := s.applyRelationshipImportRow(tx, bulkImport.AccountID, target, "following", map[string]any{"show_reblogs": true, "notify": false}, now)
+			if followErr != nil {
+				return followErr
+			}
 			notificationPayloads = appendRelationshipBatchNotificationPayload(notificationPayloads, notificationPayload)
+			deliveries = appendRelationshipBatchDelivery(deliveries, delivery)
 			if followed {
 				affectedFollowTargetID = target.ID
 			}
@@ -984,6 +1007,7 @@ func (s *Server) processListImportRow(ctx context.Context, bulkImport models.Bul
 		_ = s.clearHomeFeedCacheContext(context.Background(), bulkImport.AccountID)
 		s.invalidateFollowRelationshipCaches(context.Background(), models.Account{ID: bulkImport.AccountID}, affectedFollowTargetID)
 		s.meiliReindexPrivateStatusesForAccountsBestEffort(context.Background(), affectedFollowTargetID)
+		s.deliverRelationshipBatchDeliveries(deliveries)
 	}
 	return nil
 }
@@ -1480,70 +1504,117 @@ func accountMatchesImportAcct(account *models.Account, acct string) bool {
 	return strings.EqualFold(account.Username, username) && strings.EqualFold(account.Domain.String, domain)
 }
 
-func (s *Server) applyRelationshipImportRow(tx *gorm.DB, accountID int64, target *models.Account, importType string, values map[string]any, now time.Time) (bool, *asynqLocalNotificationPayload, error) {
+// applyRelationshipImportRow applies one relationship row inside tx. For
+// "following" it mirrors FollowService#call: a row whose follow is not allowed
+// fails, and the returned delivery (a Follow for a remote follow request) must
+// be sent by the caller after tx commits.
+func (s *Server) applyRelationshipImportRow(tx *gorm.DB, accountID int64, target *models.Account, importType string, values map[string]any, now time.Time) (bool, *asynqLocalNotificationPayload, *relationshipBatchDelivery, error) {
 	switch importType {
 	case "following":
+		source, disallowed, err := s.relationshipImportFollowNotAllowed(tx, accountID, target)
+		if err != nil {
+			return false, nil, nil, err
+		}
+		if disallowed {
+			return false, nil, nil, nil
+		}
 		showReblogs := importBool(values, "show_reblogs", true)
 		notify := importBool(values, "notify", false)
 		languages := importStringArray(values["languages"])
 		needsCreate, limit, err := s.relationshipImportFollowCreateAllowed(tx, accountID, target.ID)
 		if err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
 		if !needsCreate {
-			if target.Locked {
-				return true, nil, nil
+			// FollowService#change_follow_options! / #change_follow_request_options!:
+			// an existing follow or pending request only takes the row's options and
+			// a pending request is never turned into a follow without approval.
+			// Like Account#follow! / #request_follow!, an option the row leaves
+			// out (a CSV without that column) keeps its current value.
+			updates := importFollowOptionUpdates(values, now)
+			if updates == nil {
+				return true, nil, nil, nil
 			}
-		} else if limit > 0 {
-			return false, nil, errors.New(followLimitReachedMessage(limit))
+			if err := tx.Model(&models.Follow{}).Where("account_id = ? AND target_account_id = ?", accountID, target.ID).Updates(updates).Error; err != nil {
+				return false, nil, nil, err
+			}
+			if err := tx.Model(&models.FollowRequest{}).Where("account_id = ? AND target_account_id = ?", accountID, target.ID).Updates(updates).Error; err != nil {
+				return false, nil, nil, err
+			}
+			return true, nil, nil, nil
 		}
-		if target.Locked {
+		if limit > 0 {
+			return false, nil, nil, errors.New(followLimitReachedMessage(limit))
+		}
+		if followRequiresRequest(source, target) {
 			req := models.FollowRequest{CreatedAt: now, UpdatedAt: now, AccountID: accountID, TargetAccountID: target.ID, ShowReblogs: showReblogs, Notify: notify, Languages: models.StringArray(languages), URI: models.NullSafeString(activityPubGeneratedPayloadURI(s))}
 			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&req)
 			if res.Error != nil {
-				return false, nil, res.Error
+				return false, nil, nil, res.Error
 			}
 			if res.RowsAffected == 0 {
-				return true, nil, nil
+				return true, nil, nil, nil
 			}
-			return true, &asynqLocalNotificationPayload{ReceiverAccountID: target.ID, FromAccountID: accountID, ActivityID: req.ID, ActivityType: "FollowRequest", Type: "follow_request"}, nil
+			var delivery *relationshipBatchDelivery
+			if !target.Local() {
+				delivery = &relationshipBatchDelivery{Kind: "follow", Local: *source, Remote: *target, ID: req.ID, URI: string(req.URI)}
+			}
+			return true, &asynqLocalNotificationPayload{ReceiverAccountID: target.ID, FromAccountID: accountID, ActivityID: req.ID, ActivityType: "FollowRequest", Type: "follow_request"}, delivery, nil
 		}
 		follow := models.Follow{CreatedAt: now, UpdatedAt: now, AccountID: accountID, TargetAccountID: target.ID, ShowReblogs: showReblogs, Notify: notify, Languages: models.StringArray(languages), URI: models.NullSafeString(activityPubGeneratedPayloadURI(s))}
 		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&follow)
 		if res.Error != nil {
-			return false, nil, res.Error
+			return false, nil, nil, res.Error
 		}
 		if res.RowsAffected == 0 {
-			return true, nil, tx.Model(&models.Follow{}).Where("account_id = ? AND target_account_id = ?", accountID, target.ID).Updates(map[string]any{"show_reblogs": showReblogs, "notify": notify, "languages": models.StringArray(languages), "updated_at": now}).Error
+			return true, nil, nil, tx.Model(&models.Follow{}).Where("account_id = ? AND target_account_id = ?", accountID, target.ID).Updates(map[string]any{"show_reblogs": showReblogs, "notify": notify, "languages": models.StringArray(languages), "updated_at": now}).Error
 		}
 		if err := incrementAccountStatCounter(tx, accountID, accountStatCounterFollowing, 1); err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
 		if err := incrementAccountStatCounter(tx, target.ID, accountStatCounterFollowers, 1); err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
-		return true, &asynqLocalNotificationPayload{ReceiverAccountID: target.ID, FromAccountID: accountID, ActivityID: follow.ID, ActivityType: "Follow", Type: "follow"}, nil
+		return true, &asynqLocalNotificationPayload{ReceiverAccountID: target.ID, FromAccountID: accountID, ActivityID: follow.ID, ActivityType: "Follow", Type: "follow"}, nil, nil
 	case "blocking":
 		if _, err := s.createAccountBlock(tx, accountID, target.ID, now); err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
 		if err := afterBlockServiceCleanup(tx, accountID, target.ID); err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
-		return true, nil, nil
+		return true, nil, nil, nil
 	case "muting":
 		hideNotifications := importBool(values, "hide_notifications", true)
 		if err := upsertAccountMute(tx, accountID, target.ID, hideNotifications, now); err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
 		if hideNotifications {
 			if err := afterBlockServiceCleanup(tx, accountID, target.ID); err != nil {
-				return false, nil, err
+				return false, nil, nil, err
 			}
 		}
-		return true, nil, nil
+		return true, nil, nil, nil
 	}
-	return false, nil, nil
+	return false, nil, nil, nil
+}
+
+// relationshipImportFollowNotAllowed loads the importing account on tx and
+// applies FollowService#following_not_allowed? to target. A missing importing
+// account is reported as not allowed so that the row fails.
+func (s *Server) relationshipImportFollowNotAllowed(tx *gorm.DB, accountID int64, target *models.Account) (*models.Account, bool, error) {
+	var source models.Account
+	if err := tx.Where("id = ?", accountID).First(&source).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	disallowed, err := s.followNotAllowedInDB(tx, &source, target)
+	if err != nil {
+		return nil, false, err
+	}
+	return &source, disallowed, nil
 }
 
 func (s *Server) relationshipImportFollowCreateAllowed(tx *gorm.DB, accountID int64, targetAccountID int64) (bool, int64, error) {
@@ -1679,6 +1750,27 @@ func domainBlockImportDomains(rows []models.BulkImportRow) ([]string, []int64) {
 		}
 	}
 	return domains, successfulRowIDs
+}
+
+// importFollowOptionUpdates returns the follow options a relationship row sets
+// for an existing follow or follow request, or nil when it sets none. Rows
+// keep an option key only when the CSV has that column.
+func importFollowOptionUpdates(values map[string]any, now time.Time) map[string]any {
+	updates := map[string]any{}
+	if value, ok := values["show_reblogs"]; ok && value != nil {
+		updates["show_reblogs"] = importBool(values, "show_reblogs", true)
+	}
+	if value, ok := values["notify"]; ok && value != nil {
+		updates["notify"] = importBool(values, "notify", false)
+	}
+	if value, ok := values["languages"]; ok && value != nil {
+		updates["languages"] = models.StringArray(importStringArray(value))
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	updates["updated_at"] = now
+	return updates
 }
 
 func importBool(values map[string]any, key string, fallback bool) bool {

@@ -130,8 +130,15 @@ func TestActivityPubLinkedDataSignatureWithW3CActorContext(t *testing.T) {
 			if err := verifyActivityPubLinkedDataSignatureWithError(body, publicKey); err != nil {
 				t.Fatalf("original W3C-context signature: %v", err)
 			}
-			if err := verifyActivityPubLinkedDataSignatureWithError(activityPubCompactCollectionBody(body), publicKey); err != nil {
+			compactedBody, compacted := activityPubCompactCollectionBody(body)
+			if !compacted {
+				t.Fatal("W3C-context signed document was not compacted")
+			}
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
 				t.Fatalf("compacted W3C-context signature: %v", err)
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+				t.Fatalf("compacted W3C-context document coverage: %v", err)
 			}
 			actor["additionalPublicKeys"] = actorURI + "#tampered-key"
 			tampered, err := json.Marshal(document)
