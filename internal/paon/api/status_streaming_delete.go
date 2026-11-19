@@ -451,6 +451,7 @@ func (s *Server) statusListStreamingChannels(ctx context.Context, database *gorm
 		Joins("JOIN users ON users.account_id = lists.account_id").
 		Joins("JOIN list_accounts ON list_accounts.list_id = lists.id").
 		Where("list_accounts.account_id = ?", accountID).
+		Where("(list_accounts.follow_id IS NOT NULL OR lists.account_id = ?)", accountID).
 		Pluck("lists.id", &listIDs).Error
 	channels := make([]string, 0, len(listIDs))
 	for _, id := range listIDs {
