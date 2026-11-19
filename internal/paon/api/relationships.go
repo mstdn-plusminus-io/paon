@@ -351,6 +351,18 @@ func (s *Server) markHomeFeedAsPartial(ctx context.Context, accountID int64) {
 }
 
 func (s *Server) followNotAllowed(source *models.Account, target *models.Account) (bool, error) {
+	var database *gorm.DB
+	if s != nil {
+		database = s.db
+	}
+	return s.followNotAllowedInDB(database, source, target)
+}
+
+// followNotAllowedInDB is FollowService#following_not_allowed? read through
+// database, so callers that already hold a transaction (bulk imports, the
+// relationships batch form) check it on that transaction instead of waiting for
+// a second pooled connection.
+func (s *Server) followNotAllowedInDB(database *gorm.DB, source *models.Account, target *models.Account) (bool, error) {
 	if source == nil || target == nil {
 		return true, nil
 	}
@@ -359,20 +371,20 @@ func (s *Server) followNotAllowed(source *models.Account, target *models.Account
 	}
 	domain := accountRemoteDomain(target)
 	if domain != "" {
-		disallowed, err := s.domainNotAllowed(domain)
+		disallowed, err := s.domainNotAllowedInDB(database, domain)
 		if err != nil || disallowed {
 			return disallowed, err
 		}
-		blocked, err := s.accountDomainBlocking(source.ID, domain)
+		blocked, err := accountDomainBlockingInDB(database, source.ID, domain)
 		if err != nil || blocked {
 			return blocked, err
 		}
 	}
-	if s == nil || s.db == nil {
+	if s == nil || database == nil {
 		return false, nil
 	}
 	var count int64
-	err := s.db.Model(&models.Block{}).
+	err := database.Model(&models.Block{}).
 		Where("(account_id = ? AND target_account_id = ?) OR (account_id = ? AND target_account_id = ?)", target.ID, source.ID, source.ID, target.ID).
 		Count(&count).Error
 	return count > 0, err
@@ -397,29 +409,43 @@ func (s *Server) accountBlocking(accountID int64, targetAccountID int64) (bool, 
 }
 
 func (s *Server) accountDomainBlocking(accountID int64, domain string) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	return accountDomainBlockingInDB(s.db, accountID, domain)
+}
+
+func accountDomainBlockingInDB(database *gorm.DB, accountID int64, domain string) (bool, error) {
 	domain = normalizeDomain(domain)
-	if domain == "" || s == nil || s.db == nil {
+	if domain == "" || database == nil {
 		return false, nil
 	}
 	var count int64
-	err := s.db.Model(&models.AccountDomainBlock{}).
+	err := database.Model(&models.AccountDomainBlock{}).
 		Where("account_id = ? AND lower(domain) = ?", accountID, domain).
 		Count(&count).Error
 	return count > 0, err
 }
 
 func (s *Server) domainNotAllowed(domain string) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	return s.domainNotAllowedInDB(s.db, domain)
+}
+
+func (s *Server) domainNotAllowedInDB(database *gorm.DB, domain string) (bool, error) {
 	domain = normalizeDomain(domain)
-	if domain == "" || s == nil || s.db == nil {
+	if domain == "" || s == nil || database == nil {
 		return false, nil
 	}
 	var count int64
 	if s.cfg.LimitedFederationMode {
-		err := s.db.Model(&models.DomainAllow{}).Where("lower(domain) = ?", domain).Count(&count).Error
+		err := database.Model(&models.DomainAllow{}).Where("lower(domain) = ?", domain).Count(&count).Error
 		return count == 0, err
 	}
 	var block models.DomainBlock
-	err := s.db.Where("lower(domain) IN ?", domainControlVariants(domain)).
+	err := database.Where("lower(domain) IN ?", domainControlVariants(domain)).
 		Order("char_length(domain) DESC").
 		Limit(1).
 		First(&block).Error
