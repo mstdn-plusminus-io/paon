@@ -1036,7 +1036,11 @@ func activityPubStatusForwardable(status models.Status, body []byte) bool {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return false
 	}
-	return activityJSONLDValuePresent(activityJSONLDValue(raw, "signature"))
+	// Use the inbox's linked-data signature condition: only a literal
+	// top-level "signature" object was compacted and verified. Never forward a
+	// document whose signature is an array or an alias key.
+	signature, ok := activityPubLinkedDataSignatureMap(raw)
+	return ok && len(signature) > 0
 }
 
 func activityJSONLDValuePresent(value any) bool {

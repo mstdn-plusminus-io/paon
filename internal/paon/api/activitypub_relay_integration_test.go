@@ -158,8 +158,9 @@ func TestRelayedMisskeyActivityAuthenticatesBeforeForwardingFinalization(t *test
 		if err := json.Unmarshal(queued, &workerJob); err != nil {
 			t.Fatal(err)
 		}
+		compactedWorkerBody, _ := activityPubCompactCollectionBody(workerJob.Body)
 		if details.Original.BodySHA256 != activityPubDiagnosticSHA256(workerJob.Body) ||
-			details.Verification.BodySHA256 != activityPubDiagnosticSHA256(activityPubCompactCollectionBody(workerJob.Body)) ||
+			details.Verification.BodySHA256 != activityPubDiagnosticSHA256(compactedWorkerBody) ||
 			details.Verification.BodySHA256 == details.Original.BodySHA256 {
 			t.Fatalf("worker lost distinct original and compacted verification evidence: %+v", details)
 		}

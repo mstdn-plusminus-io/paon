@@ -99,7 +99,16 @@ func TestActivityPubPeerTubeNotificationsAreAcceptedWithoutApplyingState(t *test
 				if err != nil {
 					t.Fatal(err)
 				}
-				payload, err := parseActivityPayload(activityPubCompactCollectionBody(body))
+				compactedBody, compacted := activityPubCompactCollectionBody(body)
+				if compacted != signed {
+					t.Errorf("signature=%t: compacted=%t", signed, compacted)
+				}
+				if signed {
+					if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+						t.Errorf("compacted document coverage: %v", err)
+					}
+				}
+				payload, err := parseActivityPayload(compactedBody)
 				if err != nil {
 					t.Fatal(err)
 				}
