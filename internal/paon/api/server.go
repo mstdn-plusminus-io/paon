@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -898,7 +899,7 @@ func staticFileServerHeadersMiddleware(cfg config.Config) echo.MiddlewareFunc {
 				header.Set("Cache-Control", "public, max-age=604800, must-revalidate")
 			case railsPaperclipStaticPath(cfg, path):
 				header.Set("Cache-Control", "public, max-age=2419200, immutable")
-				header.Set("Content-Security-Policy", "default-src 'none'; form-action 'none'")
+				header.Set("Content-Security-Policy", paperclipStaticContentSecurityPolicy)
 			default:
 				header.Set("Cache-Control", "public, max-age=2419200, must-revalidate")
 			}
@@ -949,6 +950,142 @@ func railsPaperclipStaticPath(cfg config.Config, path string) bool {
 	}
 	root = "/" + strings.Trim(root, "/")
 	return path == root || strings.HasPrefix(path, root+"/")
+}
+
+// paperclipStaticContentSecurityPolicy is sent with every response of the
+// public/system mounts. Files there are written from local uploads and from
+// federated remote media, so they must never run script or submit forms in
+// the instance origin, even when a stored file is rendered as a document.
+const paperclipStaticContentSecurityPolicy = "default-src 'none'; form-action 'none'; sandbox"
+
+// paperclipInlineMediaContentTypes lists the file extensions that the
+// public/system mounts serve inline, with the Content-Type used when the
+// system MIME table has no entry for the extension. These are the extensions
+// Rails stores for attachments: MediaAttachment images, videos and audio,
+// image-only avatars, headers, custom emojis, preview cards and site uploads,
+// preview card provider icons (.ico) and account backup archives (.zip).
+var paperclipInlineMediaContentTypes = map[string]string{
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".jpe":  "image/jpeg",
+	".jfif": "image/jpeg",
+	".png":  "image/png",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".avif": "image/avif",
+	".heic": "image/heic",
+	".heif": "image/heif",
+	".ico":  "image/vnd.microsoft.icon",
+	".mp4":  "video/mp4",
+	".m4v":  "video/mp4",
+	".mov":  "video/quicktime",
+	".webm": "video/webm",
+	".ogv":  "video/ogg",
+	".ogg":  "audio/ogg",
+	".oga":  "audio/ogg",
+	".opus": "audio/ogg",
+	".mp3":  "audio/mpeg",
+	".wav":  "audio/wav",
+	".flac": "audio/flac",
+	".aac":  "audio/aac",
+	".m4a":  "audio/mp4",
+	".3gp":  "video/3gpp",
+	".wma":  "audio/x-ms-wma",
+	".zip":  "application/zip",
+}
+
+// paperclipSiteUploadsPrefix is the public/system directory of SiteUpload
+// files (Paperclip's :class/:attachment/:id_partition layout).
+const paperclipSiteUploadsPrefix = "site_uploads/"
+
+// paperclipSiteUploadPath reports whether the StaticFS wildcard resolves to a
+// file under site_uploads/. It decodes and cleans the wildcard first, like
+// echo's StaticDirectoryHandler does before opening the file, so encoded dot
+// segments cannot point a site_uploads/ prefix at another directory.
+func paperclipSiteUploadPath(wildcard string) bool {
+	unescaped, err := url.PathUnescape(wildcard)
+	if err != nil {
+		return false
+	}
+	cleaned := path.Clean("/" + unescaped)
+	return strings.HasPrefix(cleaned, "/"+paperclipSiteUploadsPrefix)
+}
+
+// paperclipStaticMountPrefixes returns the URL prefixes, each ending with a
+// slash, that serve the public/system directory. echo registers
+// StaticFS(prefix) as prefix+"*", so the trailing slash keeps "/system" from
+// also matching paths such as "/systemcache/...".
+func paperclipStaticMountPrefixes(cfg config.Config) []string {
+	prefixes := []string{"/system/"}
+	rootURL := strings.TrimRight(strings.TrimSpace(cfg.PaperclipRootURL), "/")
+	if rootURL == "" || strings.HasPrefix(rootURL, "http://") || strings.HasPrefix(rootURL, "https://") {
+		return prefixes
+	}
+	if custom := "/" + strings.Trim(rootURL, "/") + "/"; custom != "/system/" {
+		prefixes = append(prefixes, custom)
+	}
+	return prefixes
+}
+
+func paperclipStaticMountPath(cfg config.Config, requestPath string) bool {
+	for _, prefix := range paperclipStaticMountPrefixes(cfg) {
+		if strings.HasPrefix(requestPath, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// paperclipInlineContentType returns the Content-Type for serving the file
+// named by the StaticFS wildcard inline, or false when the file must be
+// downloaded instead. Only the final path element is inspected; dot segments
+// and trailing slashes (directory index pages) never match the allowlist.
+func paperclipInlineContentType(wildcard string) (string, bool) {
+	name := wildcard[strings.LastIndex(wildcard, "/")+1:]
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext == ".svg" && paperclipSiteUploadPath(wildcard) {
+		// Rails SiteUpload accepts any image/* upload, so instances may keep an
+		// SVG mascot or thumbnail. Only staff can write site uploads, and the
+		// sandboxing CSP above keeps scripts in such a file from running.
+		return "image/svg+xml", true
+	}
+	fallback, ok := paperclipInlineMediaContentTypes[ext]
+	if !ok {
+		return "", false
+	}
+	if contentType := mime.TypeByExtension(ext); contentType != "" {
+		return contentType, true
+	}
+	return fallback, true
+}
+
+// paperclipStaticFileHeadersMiddleware is attached to the public/system
+// StaticFS routes themselves, so the hardening applies to every request that
+// reaches those mounts regardless of URL prefix checks in global middleware.
+// net/http's ServeContent keeps a Content-Type that is already set, so files
+// outside the media allowlist (.html, .svg, .xml, ...) are served as
+// application/octet-stream attachments instead of being typed by extension or
+// by content sniffing.
+func paperclipStaticFileHeadersMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		header := c.Response().Header()
+		header.Set("Content-Security-Policy", paperclipStaticContentSecurityPolicy)
+		header.Set("X-Content-Type-Options", "nosniff")
+		if contentType, ok := paperclipInlineContentType(c.Param("*")); ok {
+			header.Set("Content-Type", contentType)
+		} else {
+			header.Set("Content-Type", "application/octet-stream")
+			header.Set("Content-Disposition", "attachment")
+		}
+		err := next(c)
+		if err != nil {
+			// Nothing was served (e.g. a missing file); let the error handler
+			// pick the Content-Type of its own response body.
+			header.Del("Content-Type")
+			header.Del("Content-Disposition")
+		}
+		return err
+	}
 }
 
 func railsRemoteInteractionHelperCSP(cfg config.Config) string {
@@ -1857,9 +1994,8 @@ func (s *Server) routes() {
 	e.StaticFS("/assets", os.DirFS(filepath.Join(s.cfg.PublicDir, "assets")))
 	e.StaticFS("/emoji", os.DirFS(filepath.Join(s.cfg.PublicDir, "emoji")))
 	systemFS := os.DirFS(s.cfg.SystemAssetPath())
-	e.StaticFS("/system", systemFS)
-	if rootURL := strings.TrimRight(strings.TrimSpace(s.cfg.PaperclipRootURL), "/"); rootURL != "" && rootURL != "/system" && !strings.HasPrefix(rootURL, "http://") && !strings.HasPrefix(rootURL, "https://") {
-		e.StaticFS("/"+strings.Trim(rootURL, "/"), systemFS)
+	for _, prefix := range paperclipStaticMountPrefixes(s.cfg) {
+		e.StaticFS(prefix, systemFS, paperclipStaticFileHeadersMiddleware)
 	}
 	e.StaticFS("/avatars", os.DirFS(filepath.Join(s.cfg.PublicDir, "avatars")))
 	e.StaticFS("/headers", os.DirFS(filepath.Join(s.cfg.PublicDir, "headers")))
