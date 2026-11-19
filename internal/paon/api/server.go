@@ -7395,8 +7395,48 @@ func (s *Server) currentUserIncludingDisabled(c *echo.Context) (*models.User, st
 	return s.currentUserByToken(c, true)
 }
 
+// currentUserByToken resolves the requesting user. Only REST API routes accept
+// OAuth access tokens; every other route is a web route that Rails
+// authenticates with the Devise session alone, so it is delegated to
+// currentWebSessionUser.
 func (s *Server) currentUserByToken(c *echo.Context, includeDisabled bool) (*models.User, string, error) {
-	token := requestToken(c)
+	if !apiAuthenticationRoute(c) {
+		return s.currentWebSessionUser(c, includeDisabled)
+	}
+	return s.currentUserByAccessToken(c, requestToken(c), includeDisabled, false)
+}
+
+// currentWebSessionUser resolves the user of the browser session. It ignores
+// OAuth tokens sent in the Authorization header, the access_token and
+// bearer_token parameters, or Sec-WebSocket-Protocol, and accepts only the
+// paon_session cookie (or the legacy Rails session cookies). Clients can write
+// any Cookie header, so the cookie token must also belong to a session
+// activation; an OAuth token issued to an application is never a web session.
+func (s *Server) currentWebSessionUser(c *echo.Context, includeDisabled bool) (*models.User, string, error) {
+	return s.currentUserByAccessToken(c, sessionToken(c), includeDisabled, true)
+}
+
+// webSessionActivationCondition limits an oauth_access_tokens lookup to tokens
+// issued for a browser session (session_activations.access_token_id).
+const webSessionActivationCondition = "EXISTS (SELECT 1 FROM session_activations WHERE session_activations.access_token_id = oauth_access_tokens.id AND session_activations.user_id = oauth_access_tokens.resource_owner_id)"
+
+// apiAuthenticationRoute reports whether the request is served by a REST API
+// route (/api or /api/*). It uses the matched route path, falling back to the
+// request path when no route matched.
+func apiAuthenticationRoute(c *echo.Context) bool {
+	if c == nil {
+		return false
+	}
+	path := c.Path()
+	if path == "" {
+		if req := c.Request(); req != nil && req.URL != nil {
+			path = req.URL.Path
+		}
+	}
+	return path == "/api" || strings.HasPrefix(path, "/api/")
+}
+
+func (s *Server) currentUserByAccessToken(c *echo.Context, token string, includeDisabled bool, requireSessionActivation bool) (*models.User, string, error) {
 	if token == "" || s.db == nil {
 		if user, railsToken, err := s.currentUserByRailsSession(c, includeDisabled); err == nil {
 			if err := s.setSessionCookie(c, railsToken); err != nil {
@@ -7407,7 +7447,11 @@ func (s *Server) currentUserByToken(c *echo.Context, includeDisabled bool) (*mod
 		return nil, "", errors.New("missing token")
 	}
 	var accessToken models.OAuthAccessToken
-	err := s.db.Where("token = ? AND revoked_at IS NULL", token).First(&accessToken).Error
+	tokenQuery := s.db.Where("token = ? AND revoked_at IS NULL", token)
+	if requireSessionActivation {
+		tokenQuery = tokenQuery.Where(webSessionActivationCondition)
+	}
+	err := tokenQuery.First(&accessToken).Error
 	if err != nil {
 		return nil, "", errors.New("invalid token")
 	}
