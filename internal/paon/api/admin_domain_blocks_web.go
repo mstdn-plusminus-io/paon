@@ -153,8 +153,9 @@ func (s *Server) updateAdminDomainBlockWeb(c *echo.Context) error {
 	if err := s.db.Model(&models.DomainBlock{}).Where("id = ?", block.ID).Updates(adminDomainBlockUpdates(form)).Error; err != nil {
 		return err
 	}
+	blockID := block.ID
 	block = models.DomainBlock{}
-	if err := s.db.First(&block, c.Param("id")).Error; err != nil {
+	if err := s.db.First(&block, blockID).Error; err != nil {
 		return err
 	}
 	if err := logAdminAction(s.db, user.AccountID, "update", domainBlockAuditLogTarget(block), time.Now().UTC()); err != nil {
