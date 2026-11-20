@@ -683,6 +683,12 @@ func (s *Server) applyPreviewCardAuthorAttribution(ctx context.Context, fetched 
 	if webfingerLocalHostRaw(domain, s.cfg.LocalDomain, s.cfg.WebDomain, s.cfg.AlternateDomains) {
 		query = query.Where("domain IS NULL")
 	} else {
+		// ResolveAccountService returns nil for a domain_not_allowed? acct before
+		// looking up or fetching the account, so a page cannot attribute itself
+		// to (or make this server fetch) an actor of a blocked domain.
+		if disallowed, err := s.domainNotAllowed(domain); err != nil || disallowed {
+			return
+		}
 		query = query.Where("lower(domain) = ?", strings.ToLower(domain))
 	}
 	var account models.Account
