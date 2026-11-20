@@ -679,16 +679,26 @@ func (s *Server) applyPreviewCardAuthorAttribution(ctx context.Context, fetched 
 		return
 	}
 	username, _, _ := strings.Cut(acct, "@")
+	local := webfingerLocalHostRaw(domain, s.cfg.LocalDomain, s.cfg.WebDomain, s.cfg.AlternateDomains)
+	// FetchLinkCardService resolves the creator through ResolveAccountService,
+	// which returns nil before any lookup when domain_not_allowed? rejects the
+	// creator's domain (a suspended domain, or one outside the allowlist in
+	// limited federation mode).
+	if !local {
+		if disallowed, err := s.domainNotAllowed(domain); err != nil || disallowed {
+			return
+		}
+	}
 	query := s.db.WithContext(ctx).Where("lower(username) = ?", strings.ToLower(username))
-	if webfingerLocalHostRaw(domain, s.cfg.LocalDomain, s.cfg.WebDomain, s.cfg.AlternateDomains) {
+	if local {
 		query = query.Where("domain IS NULL")
 	} else {
 		query = query.Where("lower(domain) = ?", strings.ToLower(domain))
 	}
 	var account models.Account
 	err := query.First(&account).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) && !webfingerLocalHostRaw(domain, s.cfg.LocalDomain, s.cfg.WebDomain, s.cfg.AlternateDomains) {
-		resolved, resolveErr := s.fetchAndStoreActivityActorForAcct(acct)
+	if errors.Is(err, gorm.ErrRecordNotFound) && !local {
+		resolved, resolveErr := s.resolvePreviewCardCreatorAccount(acct)
 		if resolveErr != nil || resolved == nil {
 			return
 		}
@@ -701,6 +711,26 @@ func (s *Server) applyPreviewCardAuthorAttribution(ctx context.Context, fetched 
 		return
 	}
 	fetched.card.AuthorAccountID = sql.NullInt64{Int64: account.ID, Valid: account.ID > 0}
+}
+
+// resolvePreviewCardCreatorAccount fetches and stores an unknown creator like
+// ResolveAccountService#call. WebFinger may redirect to another acct, so
+// domain_not_allowed? is checked again on the confirmed domain and, as
+// FetchRemoteActorService#call does, on the actor URI before the actor is
+// fetched or stored. It returns nil, nil for a disallowed domain.
+func (s *Server) resolvePreviewCardCreatorAccount(acct string) (*models.Account, error) {
+	actorURL, resolvedAcct, err := fetchActivityActorURLAndAcctFromWebFinger(acct)
+	if err != nil {
+		return nil, err
+	}
+	_, resolvedDomain, _ := strings.Cut(resolvedAcct, "@")
+	if disallowed, err := s.domainNotAllowed(resolvedDomain); err != nil || disallowed {
+		return nil, err
+	}
+	if disallowed, err := s.remoteActivityDomainNotAllowed(actorURL); err != nil || disallowed {
+		return nil, err
+	}
+	return s.fetchAndStoreActivityActorForWebFingerDB(s.db, actorURL, resolvedAcct)
 }
 
 func previewCardNormalizedDomain(rawURL string) string {
