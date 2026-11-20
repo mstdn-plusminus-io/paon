@@ -1536,6 +1536,107 @@ func TestLinkedDataSignatureRejectsRelayedMovedToForgery(t *testing.T) {
 	}
 }
 
+// json-gold compacts a blank node property such as "_:@type" or "_:@id" to
+// that keyword, while compaction with Paon's context writes @type and @id as
+// "type" and "id". Re-expansion processes "@type" before "type", and an array
+// "type" replaces it, so a type injected next to a multi-typed node leaves the
+// signed RDF; an injected blank node identifier names the same blank node.
+// Paon reads both keys (activityJSONLDTypes, activityJSONLDID), so such a
+// document is never authenticated.
+func TestLinkedDataSignatureRejectsUncompactedKeywords(t *testing.T) {
+	multiTypedNote := func(string) map[string]any {
+		payload := linkedDataNoteCreatePayload("")
+		payload["@context"] = append(payload["@context"].([]any), map[string]any{"Hashtag": "as:Hashtag"})
+		object := payload["object"].(map[string]any)
+		object["type"] = []any{"Note", "https://example.org/ns#Thing"}
+		object["tag"] = []any{
+			map[string]any{"type": "Mention", "href": "https://origin.example/users/bob", "name": "@bob@origin.example"},
+			map[string]any{"type": []any{"Hashtag", "https://example.org/ns#Thing"}, "href": "https://origin.example/tags/signed", "name": "#signed"},
+		}
+		return payload
+	}
+	for _, test := range []struct {
+		name   string
+		inject func(object map[string]any)
+		reads  func(object activityObject) bool
+	}{
+		{
+			name:   "object type",
+			inject: func(object map[string]any) { object["_:@type"] = "Question" },
+			reads:  func(object activityObject) bool { return activityObjectHasType(object, "Question") },
+		},
+		{
+			name: "tag type",
+			inject: func(object map[string]any) {
+				object["tag"].([]any)[1].(map[string]any)["_:@type"] = "Emoji"
+			},
+			reads: func(object activityObject) bool {
+				return len(object.Tags) == 2 && activityTagHasType(object.Tags[1], "Emoji")
+			},
+		},
+		{
+			name: "blank node identifier",
+			inject: func(object map[string]any) {
+				object["tag"].([]any)[0].(map[string]any)["_:@id"] = "_:forged"
+			},
+			reads: func(object activityObject) bool {
+				return len(object.Tags) == 2 && object.Tags[0].ID == "_:forged"
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, multiTypedNote)
+			test.inject(document["object"].(map[string]any))
+			body := marshalLinkedDataTestDocument(t, document)
+			compactedBody, compacted := activityPubCompactCollectionBody(body)
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("injection changed the signed RDF: %v", err)
+			}
+			payload, err := parseActivityPayload(compactedBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !payload.Signature.Present || !test.reads(payload.Object) {
+				t.Fatalf("compacted payload does not carry the injected content: %s", compactedBody)
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err == nil || !strings.Contains(err.Error(), "does not cover the document") {
+				t.Fatalf("coverage error = %v, want rejection of the uncompacted keyword", err)
+			}
+			// Rejection must happen before signature creator lookup touches the
+			// database; reaching it here would panic on the zero-value handle.
+			server := &Server{db: &gorm.DB{}}
+			err = server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, linkedDataForgeryRelay(), nil, 0)
+			if !errors.Is(err, errActivityPubEventNotApplied) || !strings.Contains(err.Error(), "linked-data signature does not cover the document") {
+				t.Fatalf("relayed activity error = %v, want rejection of the uncompacted keyword", err)
+			}
+		})
+	}
+
+	t.Run("signed multi-typed note", func(t *testing.T) {
+		document, publicKey := signedLinkedDataFixture(t, multiTypedNote)
+		compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+		if !compacted {
+			t.Fatal("document with a literal signature object was not compacted")
+		}
+		if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+			t.Fatalf("compacted signature: %v", err)
+		}
+		if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+			t.Fatalf("signed document was rejected: %v", err)
+		}
+		payload, err := parseActivityPayload(compactedBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if object := payload.Object; !activityObjectHasType(object, "Note") || activityObjectHasType(object, "Question") || len(object.Tags) != 2 || !activityTagHasType(object.Tags[1], "Hashtag") || activityTagHasType(object.Tags[1], "Emoji") {
+			t.Fatalf("signed multi-typed note = %s", compactedBody)
+		}
+	})
+}
+
 // Mastodon 4.6 documents reference the WebFinger context, which Mastodon
 // preloads; Paon preloads it too so relayed documents compact offline.
 func TestLinkedDataSignatureCompactsMastodonWebFingerContext(t *testing.T) {

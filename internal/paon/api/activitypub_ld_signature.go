@@ -403,6 +403,15 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 		if key != "@context" && activityPubJSONLDHasEmbeddedContext(value) {
 			return fmt.Errorf("linked-data signature does not cover the document: embedded @context")
 		}
+		// The same holds for every other keyword key that compaction never
+		// writes, e.g. "@type" from "_:@type": re-expansion lets an array
+		// "type" replace it, so injected types leave the canonicalized RDF
+		// while activityJSONLDTypes still reads them.
+		if key != "@context" {
+			if keyword, ok := activityPubJSONLDUncompactedKeyword(map[string]any{key: value}); ok {
+				return fmt.Errorf("linked-data signature does not cover the document: %s is not a compacted keyword", keyword)
+			}
+		}
 		unsigned[key] = value
 	}
 	input, err := activityPubJSONLDSanitize(unsigned)
@@ -420,6 +429,37 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 		return fmt.Errorf("linked-data signature does not cover the document: %w", err)
 	}
 	return nil
+}
+
+// activityPubJSONLDCompactedKeywords are the only keyword keys, apart from the
+// top-level @context, that compacting with Paon's context writes: value
+// objects and list objects keep these, while the context aliases @id and @type
+// to "id" and "type". Any other keyword key comes from a blank node property
+// such as "_:@type", which json-gold compacts against the ActivityStreams
+// "@vocab": "_:" to that keyword.
+var activityPubJSONLDCompactedKeywords = []string{"@value", "@language", "@direction", "@index", "@list"}
+
+// activityPubJSONLDUncompactedKeyword reports the first keyword key of value
+// that compaction with Paon's context never writes.
+func activityPubJSONLDUncompactedKeyword(value any) (string, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if ld.IsKeyword(key) && !slices.Contains(activityPubJSONLDCompactedKeywords, key) {
+				return key, true
+			}
+			if keyword, ok := activityPubJSONLDUncompactedKeyword(child); ok {
+				return keyword, true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if keyword, ok := activityPubJSONLDUncompactedKeyword(child); ok {
+				return keyword, true
+			}
+		}
+	}
+	return "", false
 }
 
 // activityPubJSONLDHasEmbeddedContext reports whether value, part of a
