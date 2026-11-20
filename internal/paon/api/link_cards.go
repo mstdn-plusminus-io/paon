@@ -694,7 +694,7 @@ func (s *Server) applyPreviewCardAuthorAttribution(ctx context.Context, fetched 
 	var account models.Account
 	err := query.First(&account).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) && !webfingerLocalHostRaw(domain, s.cfg.LocalDomain, s.cfg.WebDomain, s.cfg.AlternateDomains) {
-		resolved, resolveErr := s.fetchAndStoreActivityActorForAcct(acct)
+		resolved, resolveErr := s.resolvePreviewCardCreatorAccount(acct)
 		if resolveErr != nil || resolved == nil {
 			return
 		}
@@ -707,6 +707,26 @@ func (s *Server) applyPreviewCardAuthorAttribution(ctx context.Context, fetched 
 		return
 	}
 	fetched.card.AuthorAccountID = sql.NullInt64{Int64: account.ID, Valid: account.ID > 0}
+}
+
+// resolvePreviewCardCreatorAccount fetches and stores an unknown creator like
+// ResolveAccountService#call. WebFinger may redirect to another acct, so
+// domain_not_allowed? is checked again on the confirmed domain and, as
+// FetchRemoteActorService#call does, on the actor URI before the actor is
+// fetched or stored. It returns nil, nil for a disallowed domain.
+func (s *Server) resolvePreviewCardCreatorAccount(acct string) (*models.Account, error) {
+	actorURL, resolvedAcct, err := fetchActivityActorURLAndAcctFromWebFinger(acct)
+	if err != nil {
+		return nil, err
+	}
+	_, resolvedDomain, _ := strings.Cut(resolvedAcct, "@")
+	if disallowed, err := s.domainNotAllowed(resolvedDomain); err != nil || disallowed {
+		return nil, err
+	}
+	if disallowed, err := s.remoteActivityDomainNotAllowed(actorURL); err != nil || disallowed {
+		return nil, err
+	}
+	return s.fetchAndStoreActivityActorForWebFingerDB(s.db, actorURL, resolvedAcct)
 }
 
 func previewCardNormalizedDomain(rawURL string) string {

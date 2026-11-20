@@ -94,3 +94,66 @@ func TestPreviewCardAuthorAttributionSkipsDisallowedDomains(t *testing.T) {
 		})
 	}
 }
+
+// An unknown creator is resolved like ResolveAccountService#call, which checks
+// domain_not_allowed? again on the acct WebFinger confirms, and
+// FetchRemoteActorService#call, which checks it on the actor URI, before the
+// actor is fetched or stored.
+func TestPreviewCardCreatorResolutionRechecksDomainAfterWebFinger(t *testing.T) {
+	const blockedActor = "https://blocked.example/users/alice"
+	const allowedActor = "https://allowed.example/users/alice"
+	suspend := models.DomainBlock{ID: 1, Domain: "blocked.example", Severity: sql.NullInt64{Int64: int64(domainBlockSeverityCode("suspend")), Valid: true}, CreatedAt: time.Now().UTC()}
+	newServer := func(t *testing.T) *Server {
+		return &Server{
+			cfg: config.Config{Scheme: "https", LocalDomain: "local.example", WebDomain: "local.example"},
+			// No account is known, so the creator goes through remote resolution.
+			db: newPreviewCardAuthorFakeDB(t, nil, map[string]models.DomainBlock{"blocked.example": suspend}),
+		}
+	}
+	for _, test := range []struct {
+		name      string
+		responses map[string]string
+	}{
+		{
+			name: "WebFinger redirect to a suspended domain",
+			responses: map[string]string{
+				actorTrustWebFingerURL("alice@allowed.example"): actorTrustWebFinger("alice@blocked.example", blockedActor),
+				actorTrustWebFingerURL("alice@blocked.example"): actorTrustWebFinger("alice@blocked.example", blockedActor),
+				blockedActor: actorTrustActor(blockedActor, "alice", "https://blocked.example/inbox", "KEY"),
+			},
+		},
+		{
+			name: "self link on a suspended domain",
+			responses: map[string]string{
+				actorTrustWebFingerURL("alice@allowed.example"): actorTrustWebFinger("alice@allowed.example", blockedActor),
+				blockedActor: actorTrustActor(blockedActor, "alice", "https://blocked.example/inbox", "KEY"),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := actorTrustMockRemote(t, test.responses)
+			fetched := &fetchedPreviewCard{card: models.PreviewCard{URL: "https://news.example/article"}, creator: "@alice@allowed.example"}
+			newServer(t).applyPreviewCardAuthorAttribution(context.Background(), fetched)
+			if requests.contains(blockedActor) {
+				t.Fatalf("requests = %v, the actor of a suspended domain must not be fetched", requests.list())
+			}
+			if fetched.card.AuthorAccountID.Valid {
+				t.Fatalf("author account = %#v, want no attribution", fetched.card.AuthorAccountID)
+			}
+		})
+	}
+
+	t.Run("creator on an allowed domain is still resolved", func(t *testing.T) {
+		// The actor has no public key, so resolution stops right after the fetch
+		// that proves the domain checks let it through.
+		requests := actorTrustMockRemote(t, map[string]string{
+			actorTrustWebFingerURL("alice@allowed.example"): actorTrustWebFinger("alice@allowed.example", allowedActor),
+			allowedActor: actorTrustActor(allowedActor, "alice", "https://allowed.example/inbox", ""),
+		})
+		fetched := &fetchedPreviewCard{card: models.PreviewCard{URL: "https://news.example/article"}, creator: "@alice@allowed.example"}
+		newServer(t).applyPreviewCardAuthorAttribution(context.Background(), fetched)
+		if !requests.contains(allowedActor) {
+			t.Fatalf("requests = %v, want the allowed actor fetched", requests.list())
+		}
+	})
+}
