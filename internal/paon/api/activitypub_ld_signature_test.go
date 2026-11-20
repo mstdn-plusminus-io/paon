@@ -1075,6 +1075,188 @@ func TestLinkedDataSignatureReadsOnlySignedProfileSettings(t *testing.T) {
 	}
 }
 
+// Mastodon v4.6.6 defines the FEP-7aa9 terms (canFeature, topic,
+// featuredObject, featureAuthorization and the featured collection types) in
+// ContextHelper#full_context, so it reads the signed values and never a blank
+// node property such as "_:canFeature". RDF conversion drops such a property,
+// and with it nested content that yields no statements (here a node with a
+// relative @id or a literal with an invalid language tag), so the signature
+// does not cover it. Paon must read only the signed values too.
+func TestLinkedDataSignatureReadsOnlySignedFeaturedCollectionTerms(t *testing.T) {
+	// The interaction_policies and featured_collections context extensions of
+	// Mastodon v4.6.6.
+	withFeaturedCollectionsContext := func(payload map[string]any) map[string]any {
+		payload["@context"] = append(payload["@context"].([]any), map[string]any{
+			"Hashtag":              "as:Hashtag",
+			"gts":                  "https://gotosocial.org/ns#",
+			"interactionPolicy":    map[string]any{"@id": "gts:interactionPolicy", "@type": "@id"},
+			"canFeature":           map[string]any{"@id": "https://w3id.org/fep/7aa9#canFeature", "@type": "@id"},
+			"automaticApproval":    map[string]any{"@id": "gts:automaticApproval", "@type": "@id"},
+			"manualApproval":       map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
+			"FeaturedCollection":   "https://w3id.org/fep/7aa9#FeaturedCollection",
+			"FeaturedItem":         "https://w3id.org/fep/7aa9#FeaturedItem",
+			"FeatureRequest":       "https://w3id.org/fep/7aa9#FeatureRequest",
+			"FeatureAuthorization": "https://w3id.org/fep/7aa9#FeatureAuthorization",
+			"topic":                map[string]any{"@id": "https://w3id.org/fep/7aa9#topic", "@type": "@id"},
+			"featuredObject":       map[string]any{"@id": "https://w3id.org/fep/7aa9#featuredObject", "@type": "@id"},
+			"featureAuthorization": map[string]any{"@id": "https://w3id.org/fep/7aa9#featureAuthorization", "@type": "@id"},
+		})
+		return payload
+	}
+	victim := models.Account{URI: linkedDataForgeryVictimURI, FollowersURL: linkedDataForgeryVictimURI + "/followers"}
+	collectionURI := linkedDataForgeryVictimURI + "/collections/1"
+	signedFeaturedObject := "https://origin.example/users/bob"
+	signedFeatureAuthorization := "https://origin.example/users/bob/feature_authorizations/1"
+	// An Update(Person) whose signed policy lets followers feature the actor.
+	policyPerson := func(publicKeyPEM string) map[string]any {
+		payload := withFeaturedCollectionsContext(linkedDataPersonUpdatePayload(publicKeyPEM))
+		payload["object"].(map[string]any)["interactionPolicy"] = map[string]any{
+			"canFeature": map[string]any{"automaticApproval": []any{victim.FollowersURL}},
+		}
+		return payload
+	}
+	addFeaturedItem := func(string) map[string]any {
+		return withFeaturedCollectionsContext(map[string]any{
+			"@context": []any{"https://www.w3.org/ns/activitystreams", activityPubSecurityContext},
+			"id":       collectionURI + "/items/1#add",
+			"type":     "Add",
+			"actor":    linkedDataForgeryVictimURI,
+			"target":   collectionURI,
+			"object": map[string]any{
+				"id":                   collectionURI + "/items/1",
+				"type":                 "FeaturedItem",
+				"featuredObject":       signedFeaturedObject,
+				"featureAuthorization": signedFeatureAuthorization,
+			},
+		})
+	}
+	updateFeaturedCollection := func(string) map[string]any {
+		return withFeaturedCollectionsContext(map[string]any{
+			"@context": []any{"https://www.w3.org/ns/activitystreams", activityPubSecurityContext},
+			"id":       collectionURI + "#updates/1",
+			"type":     "Update",
+			"actor":    linkedDataForgeryVictimURI,
+			"to":       []any{activityPubPublicIRI},
+			"object": map[string]any{
+				"id":           collectionURI,
+				"type":         "FeaturedCollection",
+				"name":         "signed",
+				"attributedTo": linkedDataForgeryVictimURI,
+				"topic":        map[string]any{"type": "Hashtag", "href": "https://origin.example/tags/signed", "name": "#signed"},
+			},
+		})
+	}
+	featurePolicy := func(object activityObject) int {
+		return activityPubFeaturePolicyBitmap(object.InteractionPolicy, victim)
+	}
+	featuredObject := func(object activityObject) string { return object.FeaturedObject }
+	featureAuthorization := func(object activityObject) string { return object.FeatureAuthorization }
+	topicName := func(object activityObject) string {
+		topic, _ := activityJSONLDSingle(activityJSONLDValue(object.Raw, "topic")).(map[string]any)
+		return activityJSONLDString(topic, "name")
+	}
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		inject  func(object map[string]any)
+		read    func(object activityObject) any
+		want    any
+	}{
+		{
+			name:    "signed canFeature",
+			payload: policyPerson,
+			read:    func(object activityObject) any { return featurePolicy(object) },
+			want:    featurePolicyFollowers << 16,
+		},
+		{
+			name:    "blank node canFeature with a relative node",
+			payload: policyPerson,
+			inject: func(object map[string]any) {
+				object["interactionPolicy"].(map[string]any)["_:canFeature"] = map[string]any{"id": "forged-policy", "automaticApproval": []any{activityPubPublicIRI}}
+			},
+			read: func(object activityObject) any { return featurePolicy(object) },
+			want: featurePolicyFollowers << 16,
+		},
+		{
+			name:    "blank node canFeature with an uncanonicalized literal",
+			payload: policyPerson,
+			inject: func(object map[string]any) {
+				object["interactionPolicy"].(map[string]any)["_:canFeature"] = map[string]any{"automaticApproval": map[string]any{"@value": activityPubPublicIRI, "@language": "x_y"}}
+			},
+			read: func(object activityObject) any { return featurePolicy(object) },
+			want: featurePolicyFollowers << 16,
+		},
+		{
+			name:    "signed featuredObject",
+			payload: addFeaturedItem,
+			read:    func(object activityObject) any { return featuredObject(object) },
+			want:    signedFeaturedObject,
+		},
+		{
+			name:    "blank node featuredObject",
+			payload: addFeaturedItem,
+			inject: func(object map[string]any) {
+				object["_:featuredObject"] = "https://attacker.example/users/mallory"
+			},
+			read: func(object activityObject) any { return featuredObject(object) },
+			want: signedFeaturedObject,
+		},
+		{
+			name:    "blank node featureAuthorization",
+			payload: addFeaturedItem,
+			inject: func(object map[string]any) {
+				object["_:featureAuthorization"] = "https://attacker.example/feature_authorizations/1"
+			},
+			read: func(object activityObject) any { return featureAuthorization(object) },
+			want: signedFeatureAuthorization,
+		},
+		{
+			name:    "signed topic",
+			payload: updateFeaturedCollection,
+			read:    func(object activityObject) any { return topicName(object) },
+			want:    "#signed",
+		},
+		{
+			name:    "blank node topic with a relative node",
+			payload: updateFeaturedCollection,
+			inject: func(object map[string]any) {
+				object["_:topic"] = map[string]any{"id": "forged-topic", "type": "Hashtag", "name": "#forged"}
+			},
+			read: func(object activityObject) any { return topicName(object) },
+			want: "#signed",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			if test.inject != nil {
+				test.inject(document["object"].(map[string]any))
+			}
+			compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			// The injected values are outside the signed RDF.
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("compacted signature: %v", err)
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+				if test.inject == nil {
+					t.Fatalf("signed document was rejected: %v", err)
+				}
+				// Rejecting the document also keeps the injected values out.
+				return
+			}
+			payload, err := parseActivityPayload(compactedBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := test.read(payload.Object); got != test.want {
+				t.Fatalf("read %#v, want only the signed %#v", got, test.want)
+			}
+		})
+	}
+}
+
 // Mastodon 4.6 documents reference the WebFinger context, which Mastodon
 // preloads; Paon preloads it too so relayed documents compact offline.
 func TestLinkedDataSignatureCompactsMastodonWebFingerContext(t *testing.T) {

@@ -631,10 +631,12 @@ func activityPubFullJSONLDContext() []any {
 // A key Paon reads from them must be a term of that context: otherwise the
 // ActivityStreams "@vocab": "_:" compacts an unsigned blank node property such
 // as "_:attributionDomains" (an undefined term) to that key. Like Mastodon
-// v4.6.6 (ContextHelper#full_context), attributionDomains and the
-// profile_settings terms (showFeatured, showMedia, showRepliesInMedia) are
-// defined so that such a property keeps its "_:" key and is never read, while
-// the signed toot: values compact to the keys Paon reads.
+// v4.6.6 (ContextHelper#full_context), attributionDomains, the
+// profile_settings terms (showFeatured, showMedia, showRepliesInMedia) and the
+// FEP-7aa9 terms (canFeature, topic, featuredObject, featureAuthorization and
+// the featured collection types) are defined so that such a property keeps its
+// "_:" key and is never read, while the signed values compact to the keys Paon
+// reads.
 func activityPubFullJSONLDContextExtensions() map[string]any {
 	extensions := map[string]any{
 		"manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
@@ -675,6 +677,14 @@ func activityPubFullJSONLDContextExtensions() map[string]any {
 		"manualApproval":            map[string]any{"@id": "gts:manualApproval", "@type": "@id"},
 		"interactingObject":         map[string]any{"@id": "gts:interactingObject", "@type": "@id"},
 		"interactionTarget":         map[string]any{"@id": "gts:interactionTarget", "@type": "@id"},
+		"canFeature":                map[string]any{"@id": "https://w3id.org/fep/7aa9#canFeature", "@type": "@id"},
+		"FeaturedCollection":        "https://w3id.org/fep/7aa9#FeaturedCollection",
+		"FeaturedItem":              "https://w3id.org/fep/7aa9#FeaturedItem",
+		"FeatureRequest":            "https://w3id.org/fep/7aa9#FeatureRequest",
+		"FeatureAuthorization":      "https://w3id.org/fep/7aa9#FeatureAuthorization",
+		"topic":                     map[string]any{"@id": "https://w3id.org/fep/7aa9#topic", "@type": "@id"},
+		"featuredObject":            map[string]any{"@id": "https://w3id.org/fep/7aa9#featuredObject", "@type": "@id"},
+		"featureAuthorization":      map[string]any{"@id": "https://w3id.org/fep/7aa9#featureAuthorization", "@type": "@id"},
 		"quoteUrl":                  "as:quoteUrl",
 		"quoteAuthorization":        map[string]any{"@id": "fep:quoteAuthorization", "@type": "@id"},
 		"QuoteAuthorization":        "fep:QuoteAuthorization",
