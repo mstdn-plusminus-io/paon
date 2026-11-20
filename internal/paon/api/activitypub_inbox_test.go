@@ -909,6 +909,36 @@ func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUrl":[],"_misskey_quote":"https://remote.test/notes/q"}`,
 			want:   "https://remote.test/notes/q",
 		},
+		// A term is read from its own key and then from its other IRIs, so an
+		// empty array under an earlier key must not hide a later one.
+		{
+			name:   "quoteUri next to the toot quoteUri",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUri":[],"toot:quoteUri":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "expanded quoteUri next to the expanded toot quoteUri",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","http://fedibird.com/ns#quoteUri":[],"http://joinmastodon.org/ns#quoteUri":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "quoteUrl next to the toot quoteUrl",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUrl":[],"toot:quoteUrl":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		// quoteUri and quoteUrl are also read from FEP-044f's quote, behind
+		// their own terms; quote itself is read first, so these two rows read
+		// it either way.
+		{
+			name:   "quoteUri and quoteUrl next to quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUri":[],"quoteUrl":[],"quote":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "expanded quoteUri and quoteUrl next to the expanded quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","http://joinmastodon.org/ns#quoteUri":[],"https://www.w3.org/ns/activitystreams#quoteUrl":[],"https://w3id.org/fep/044f#quote":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := activityPubQuoteURL(parse(t, test.object)); got != test.want {
@@ -924,6 +954,26 @@ func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 			}
 		})
 	}
+	// FEP-044f's quote itself also looks past an empty array to its IRI: it
+	// stays a FEP-044f quote rather than a legacy one.
+	t.Run("quote next to the expanded quote", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":[],"https://w3id.org/fep/044f#quote":"https://remote.test/statuses/q"}`)
+		if !object.QuoteSet || object.Quote != "https://remote.test/statuses/q" || object.QuoteRaw != "https://remote.test/statuses/q" {
+			t.Fatalf("quote = %q raw = %q set = %v, want the FEP-044f quote", object.Quote, object.QuoteRaw, object.QuoteSet)
+		}
+	})
+	t.Run("quote next to an expanded embedded quote", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":[],"https://w3id.org/fep/044f#quote":{"id":"https://remote.test/statuses/q","type":"Note","content":"q"}}`)
+		if object.QuotedObject == nil || object.QuotedObject.ID != "https://remote.test/statuses/q" || object.Quote != "https://remote.test/statuses/q" {
+			t.Fatalf("quoted object = %#v quote = %q, want the embedded FEP-044f quote", object.QuotedObject, object.Quote)
+		}
+	})
+	t.Run("quote next to an expanded deleted quote", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":[],"https://w3id.org/fep/044f#quote":{"type":"Tombstone"}}`)
+		if !object.QuoteSet || !object.QuoteDeleted {
+			t.Fatalf("quote set = %v deleted = %v, want a deleted FEP-044f quote", object.QuoteSet, object.QuoteDeleted)
+		}
+	})
 }
 
 // A suspended literal typed xsd:boolean is read by its lexical form; other
