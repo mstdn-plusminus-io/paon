@@ -583,8 +583,9 @@ func activityPubJSONLDUncanonicalizedContent(value any) error {
 // description below a dropped property while the node stays referenced where
 // Paon reads it (hiding an actor's key or a mention), split one description
 // over several node objects (hiding an actor's suspension or locked flag from
-// the object Paon reads, or shifting poll tallies between options), or put a
-// bare reference in front of the description of the same node. Paon, like
+// the object Paon reads, or shifting poll tallies between options), put a
+// bare reference in front of the description of the same node, or decorate a
+// reference with entries that produce no statement. Paon, like
 // Mastodon, reads values by their position in the compacted JSON tree, not
 // from the merged graph. Such a document is not authenticated when
 //
@@ -594,7 +595,12 @@ func activityPubJSONLDUncanonicalizedContent(value any) error {
 //     an IRI by node objects with different statements (identical copies,
 //     e.g. an embedded actor repeated as attributedTo, are kept);
 //   - one property holds both a bare reference to an @id and a description of
-//     it.
+//     it;
+//   - a reference outside dropped properties carries entries that produce no
+//     statement (@index, undefined terms or empty arrays). The compacted
+//     reference then stays a map instead of the IRI string readers such as
+//     a mention's href, an attachment url or an avatar url expect, so Paon
+//     would drop the signed value.
 func activityPubJSONLDUnsignedPlacement(expanded []any) error {
 	placement := activityPubJSONLDPlacement{
 		descriptions: map[string]string{},
@@ -606,7 +612,7 @@ func activityPubJSONLDUnsignedPlacement(expanded []any) error {
 		if !ok {
 			continue
 		}
-		if err := placement.walkNode(node, false); err != nil {
+		if err := placement.walkNode(node, false, true); err != nil {
 			return err
 		}
 	}
@@ -632,8 +638,9 @@ type activityPubJSONLDPlacement struct {
 }
 
 // walkNode records an expanded node object; dropped tells whether a property
-// it is part of is left out of the RDF dataset.
-func (p *activityPubJSONLDPlacement) walkNode(node map[string]any, dropped bool) error {
+// it is part of is left out of the RDF dataset, and root whether it is a
+// top-level node of the document.
+func (p *activityPubJSONLDPlacement) walkNode(node map[string]any, dropped bool, root bool) error {
 	if id, ok := node["@id"].(string); ok {
 		described := activityPubJSONLDNodeHasStatements(node)
 		switch {
@@ -641,6 +648,9 @@ func (p *activityPubJSONLDPlacement) walkNode(node map[string]any, dropped bool)
 			p.placed[id] = true
 		case described:
 			p.parked[id] = true
+		}
+		if !described && !dropped && !root && len(node) > 1 {
+			return fmt.Errorf("reference %q carries entries the signature does not cover", id)
 		}
 		if described {
 			statements := activityPubJSONLDNodeStatements(node)
@@ -679,7 +689,7 @@ func (p *activityPubJSONLDPlacement) walkValue(value any, dropped bool) error {
 			items, _ := list.([]any)
 			return p.walkValues(items, dropped)
 		}
-		return p.walkNode(typed, dropped)
+		return p.walkNode(typed, dropped, false)
 	}
 	return nil
 }

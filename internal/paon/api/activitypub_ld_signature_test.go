@@ -2426,6 +2426,63 @@ func TestLinkedDataSignatureAcceptsRepeatedAndReferencedNodes(t *testing.T) {
 			},
 			reads: func(p activityPayload) bool { return p.Object.Type == "Video" && p.Object.AttributedTo == victim },
 		},
+		{
+			name: "Create(Note) with empty tag, attachment and replies arrays",
+			payload: func(publicKeyPEM string) map[string]any {
+				document := linkedDataPlacementNotePayload(publicKeyPEM)
+				status := document["object"].(map[string]any)
+				status["tag"] = []any{}
+				status["attachment"] = []any{}
+				status["replies"] = map[string]any{
+					"id": victim + "/statuses/3/replies", "type": "Collection",
+					"first": map[string]any{"type": "CollectionPage", "partOf": victim + "/statuses/3/replies", "items": []any{}},
+				}
+				return document
+			},
+			reads: func(p activityPayload) bool {
+				return len(p.Object.Tags) == 0 && len(p.Object.Attachments) == 0 && p.Object.Replies.ID == victim+"/statuses/3/replies"
+			},
+		},
+		{
+			name:    "Announce of a status reference",
+			payload: linkedDataPlacementAnnouncePayload,
+			reads: func(p activityPayload) bool {
+				return p.ObjectReference && p.Object.ID == "https://other.example/statuses/1"
+			},
+		},
+		{
+			name: "Announce of an embedded status",
+			payload: func(publicKeyPEM string) map[string]any {
+				document := linkedDataPlacementAnnouncePayload(publicKeyPEM)
+				document["object"] = map[string]any{
+					"id": "https://other.example/statuses/1", "type": "Note", "attributedTo": "https://other.example/users/carol",
+					"content": "boosted", "to": []any{activityPubPublicIRI},
+				}
+				return document
+			},
+			reads: func(p activityPayload) bool {
+				return p.Object.ID == "https://other.example/statuses/1" && p.Object.AttributedTo == "https://other.example/users/carol"
+			},
+		},
+		{
+			name: "Undo of an embedded Announce",
+			payload: func(publicKeyPEM string) map[string]any {
+				announce := linkedDataPlacementAnnouncePayload(publicKeyPEM)
+				delete(announce, "@context")
+				return map[string]any{
+					"@context": linkedDataPlacementContext(), "id": victim + "/statuses/6/activity#undo", "type": "Undo", "actor": victim,
+					"to": []any{activityPubPublicIRI}, "object": announce,
+				}
+			},
+			reads: func(p activityPayload) bool {
+				return p.Object.ID == victim+"/statuses/6/activity" && p.Object.ObjectID == "https://other.example/statuses/1"
+			},
+		},
+		{
+			name:    "Move to another account",
+			payload: linkedDataPlacementMovePayload,
+			reads:   func(p activityPayload) bool { return p.Target == "https://new.example/users/alice" },
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			document, publicKey := signedLinkedDataFixture(t, test.payload)
@@ -2447,6 +2504,134 @@ func TestLinkedDataSignatureAcceptsRepeatedAndReferencedNodes(t *testing.T) {
 			if !test.reads(payload) {
 				t.Fatalf("payload does not carry the signed values: %s", compactedBody)
 			}
+		})
+	}
+}
+
+// linkedDataPlacementAnnouncePayload is the victim's signed boost of a remote
+// status.
+func linkedDataPlacementAnnouncePayload(string) map[string]any {
+	return map[string]any{
+		"@context":  linkedDataPlacementContext(),
+		"id":        linkedDataForgeryVictimURI + "/statuses/6/activity",
+		"type":      "Announce",
+		"actor":     linkedDataForgeryVictimURI,
+		"published": "2020-01-03T00:00:00Z",
+		"to":        []any{activityPubPublicIRI},
+		"cc":        []any{"https://other.example/users/carol", linkedDataForgeryVictimURI + "/followers"},
+		"object":    "https://other.example/statuses/1",
+	}
+}
+
+// linkedDataPlacementMovePayload is the victim's signed migration to another
+// account.
+func linkedDataPlacementMovePayload(string) map[string]any {
+	return map[string]any{
+		"@context": linkedDataPlacementContext(),
+		"id":       linkedDataForgeryVictimURI + "#moves/1",
+		"type":     "Move",
+		"actor":    linkedDataForgeryVictimURI,
+		"object":   linkedDataForgeryVictimURI,
+		"target":   "https://new.example/users/alice",
+	}
+}
+
+// A reference whose node object also holds entries that produce no
+// statement (an undefined term, @index or an empty array) keeps the signed
+// RDF, but compacts to a map instead of the IRI string Paon reads, so the
+// mention, media or avatar it names would be dropped. Such documents are
+// never authenticated, also where the decoration does not change what Paon
+// reads today.
+func TestLinkedDataSignatureRejectsDecoratedReferences(t *testing.T) {
+	const bob = "https://paon.example/users/bob"
+	object := func(document map[string]any) map[string]any { return document["object"].(map[string]any) }
+	decorated := func(id string) string {
+		return `reference "` + id + `" carries entries the signature does not cover`
+	}
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		forge   func(document map[string]any)
+		forged  func(payload activityPayload) bool
+		want    string
+	}{
+		{
+			name:    "mention href with an undefined term",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				object(document)["tag"].([]any)[0].(map[string]any)["href"] = map[string]any{"id": bob, "zz": 1}
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+			want:   decorated(bob),
+		},
+		{
+			name:    "mention href with an index",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				object(document)["tag"].([]any)[0].(map[string]any)["href"] = map[string]any{"@id": bob, "@index": "i"}
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+			want:   decorated(bob),
+		},
+		{
+			name:    "mention href with an empty array",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				object(document)["tag"].([]any)[0].(map[string]any)["href"] = map[string]any{"id": bob, "name": []any{}}
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+			want:   decorated(bob),
+		},
+		{
+			name:    "attachment url with an undefined term",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				attachment := object(document)["attachment"].([]any)[0].(map[string]any)
+				attachment["url"] = map[string]any{"id": attachment["url"], "zz": 1}
+			},
+			forged: func(p activityPayload) bool { return len(p.Object.Attachments) == 0 },
+			want:   decorated("https://files.origin.example/media/1.png"),
+		},
+		{
+			name:    "avatar url with an undefined term",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				icon := object(document)["icon"].(map[string]any)
+				icon["url"] = map[string]any{"id": icon["url"], "zz": 1}
+			},
+			forged: func(p activityPayload) bool { return p.Object.AvatarRemoteURL == "" },
+			want:   decorated("https://files.origin.example/avatar.png"),
+		},
+		{
+			name:    "boosted status with an undefined term",
+			payload: linkedDataPlacementAnnouncePayload,
+			forge: func(document map[string]any) {
+				document["object"] = map[string]any{"id": document["object"], "zz": 1}
+			},
+			forged: func(p activityPayload) bool { return !p.ObjectReference },
+			want:   decorated("https://other.example/statuses/1"),
+		},
+		{
+			name:    "reply target with an undefined term",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				object(document)["inReplyTo"] = map[string]any{"id": object(document)["inReplyTo"], "zz": 1}
+			},
+			want: decorated("https://other.example/statuses/1"),
+		},
+		{
+			name:    "migration target with an undefined term",
+			payload: linkedDataPlacementMovePayload,
+			forge: func(document map[string]any) {
+				document["target"] = map[string]any{"id": document["target"], "zz": 1}
+			},
+			want: decorated("https://new.example/users/alice"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			test.forge(document)
+			assertLinkedDataForgeryRejected(t, document, publicKey, test.forged, test.want)
 		})
 	}
 }
