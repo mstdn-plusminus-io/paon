@@ -477,10 +477,9 @@ func activityPubJSONLDUncanonicalizedContent(value any) error {
 					continue
 				}
 				if key == activityPubMastodonAttributionDomainsIRI {
-					// Mastodon 4.3.0 to 4.5.10 publish attributionDomains as bare
-					// domains under an @id term, so RDF conversion drops them.
-					// Mastodon 4.6 ignores such values, and Paon never reads this
-					// property, so it cannot carry content Paon would trust.
+					if err := activityPubJSONLDUncanonicalizedAttributionDomains(item); err != nil {
+						return err
+					}
 					continue
 				}
 				if err := activityPubJSONLDUncanonicalizedContent(item); err != nil {
@@ -495,6 +494,33 @@ func activityPubJSONLDUncanonicalizedContent(value any) error {
 // activityPubMastodonAttributionDomainsIRI is the expanded form of the
 // attributionDomains term in Mastodon's toot namespace.
 const activityPubMastodonAttributionDomainsIRI = "http://joinmastodon.org/ns#attributionDomains"
+
+// activityPubJSONLDUncanonicalizedAttributionDomains checks the expanded
+// attributionDomains values. Mastodon 4.3.0 to 4.4.17 and 4.5.0 to 4.5.10
+// publish them as bare domains under an @id term, so RDF conversion drops
+// those node references. Like Mastodon v4.5.15
+// (ProcessAccountService#set_immediate_attributes!, grep(String)), Paon never
+// reads such references (activityLimitedStringList), so they are skipped.
+// Paon does read literal values, including expanded {"@value": ...} objects,
+// stores them and trusts them for link card author attribution, so those must
+// stay covered by the signature like any other content.
+func activityPubJSONLDUncanonicalizedAttributionDomains(value any) error {
+	items, ok := value.([]any)
+	if !ok {
+		items = []any{value}
+	}
+	for _, item := range items {
+		if node, ok := item.(map[string]any); ok {
+			if _, reference := node["@id"]; reference {
+				continue
+			}
+		}
+		if err := activityPubJSONLDUncanonicalizedContent(item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // activityPubJSONLDCanonicalizedProperty reports whether RDF conversion keeps
 // statements for property (GraphToRDF in ld/rdf_dataset.go). Other properties
