@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/piprate/json-gold/ld"
 	"gorm.io/gorm"
 )
 
@@ -1923,7 +1925,9 @@ func TestLinkedDataSignatureRejectsRelocatedNodeDescriptions(t *testing.T) {
 			forged: func(p activityPayload) bool {
 				return len(p.To) == 0 && len(p.CC) == 0 && len(p.Object.To) == 0 && len(p.Object.CC) == 0
 			},
-			want: differentStatements(activity),
+			// Descriptions are compared once their nested nodes are, so the
+			// status is named before the activity that holds it.
+			want: differentStatements(note),
 		},
 		{
 			name:    "audience of an activity whose object has none parked below an undefined term",
@@ -2045,7 +2049,9 @@ func TestLinkedDataSignatureRejectsRelocatedNodeDescriptions(t *testing.T) {
 				object(document)["oneOf"] = []any{yes(), yes(), options[1]}
 			},
 			forged: func(p activityPayload) bool { return !slices.Equal(poll(p).Options, models.StringArray{"yes", "no"}) },
-			want:   blankDescribedTwice("_:yes"),
+			// The repeated replies collection is compared before the option
+			// that holds it.
+			want: blankDescribedTwice("_:yes-replies"),
 		},
 		{
 			name:    "poll option replies split over a labelled blank node",
@@ -2546,6 +2552,167 @@ func TestLinkedDataSignatureRejectsDecoratedReferences(t *testing.T) {
 			document, publicKey := signedLinkedDataFixture(t, test.payload)
 			test.forge(document)
 			assertLinkedDataForgeryRejected(t, document, publicKey, test.forged, test.want)
+		})
+	}
+}
+
+// linkedDataPlacementChain returns depth nested attachment descriptions, each
+// with its own identifier.
+func linkedDataPlacementChain(depth int) map[string]any {
+	var chain map[string]any
+	for level := depth; level >= 1; level-- {
+		node := map[string]any{
+			"id":      fmt.Sprintf("%s/statuses/7/parts/%d", linkedDataForgeryVictimURI, level),
+			"type":    "Note",
+			"content": fmt.Sprintf("<p>part %d</p>", level),
+		}
+		if chain != nil {
+			node["attachment"] = chain
+		}
+		chain = node
+	}
+	return chain
+}
+
+// linkedDataPlacementChainPayload returns the victim's status that embeds
+// copies of one chain of depth nested descriptions as its attachments.
+func linkedDataPlacementChainPayload(depth int, copies int) func(string) map[string]any {
+	return func(string) map[string]any {
+		attachments := make([]any, 0, copies)
+		for range copies {
+			attachments = append(attachments, linkedDataPlacementChain(depth))
+		}
+		return map[string]any{
+			"@context": linkedDataPlacementContext(),
+			"id":       linkedDataForgeryVictimURI + "/statuses/7/activity",
+			"type":     "Create",
+			"actor":    linkedDataForgeryVictimURI,
+			"to":       []any{activityPubPublicIRI},
+			"object": map[string]any{
+				"id":           linkedDataForgeryVictimURI + "/statuses/7",
+				"type":         "Note",
+				"attributedTo": linkedDataForgeryVictimURI,
+				"content":      "<p>nested</p>",
+				"to":           []any{activityPubPublicIRI},
+				"attachment":   attachments,
+			},
+		}
+	}
+}
+
+// The coverage check runs on every relayed document before its signature
+// creator is resolved, whoever signed it. Comparing repeated descriptions of
+// an identifier must therefore not serialize a nested description again for
+// every node object it is nested in: that made the walk quadratic in the
+// nesting depth, so a few deeply nested documents of some hundred kilobytes
+// held a worker for minutes and gigabytes of memory before being rejected.
+func TestLinkedDataSignaturePlacementWalkIsLinearInNesting(t *testing.T) {
+	const depth = 500
+	for _, copies := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d copies of the chain", copies), func(t *testing.T) {
+			input, err := activityPubJSONLDSanitize(linkedDataPlacementChainPayload(depth, copies)(""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := ld.NewJsonLdOptions("")
+			options.DocumentLoader = newActivityPubJSONLDDocumentLoader(true)
+			expanded, err := ld.NewJsonLdProcessor().Expand(input, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			err = activityPubJSONLDUnsignedPlacement(expanded)
+			runtime.ReadMemStats(&after)
+			if err != nil {
+				t.Fatalf("nested descriptions were rejected: %v", err)
+			}
+			// The walk allocates about 5 KiB per node object; the quadratic
+			// walk allocated over 500 KiB per node object at this depth.
+			nodes := uint64(copies * depth)
+			if allocated, budget := after.TotalAlloc-before.TotalAlloc, nodes*16<<10; allocated > budget {
+				t.Fatalf("placement walk allocated %d bytes for %d nested node objects, want at most %d", allocated, nodes, budget)
+			}
+		})
+	}
+}
+
+// Repeated descriptions of an identifier are compared by everything RDF
+// conversion keeps of them, however deeply the difference is nested.
+func TestLinkedDataSignatureComparesNestedRepeatedDescriptions(t *testing.T) {
+	const (
+		depth     = 30
+		replyTo   = "https://other.example/statuses/1"
+		different = "is described more than once with different statements"
+	)
+	bottom := func(document map[string]any, chain int) map[string]any {
+		node := document["object"].(map[string]any)["attachment"].([]any)[chain].(map[string]any)
+		for {
+			next, ok := node["attachment"].(map[string]any)
+			if !ok {
+				return node
+			}
+			node = next
+		}
+	}
+	payload := func(publicKeyPEM string) map[string]any {
+		document := linkedDataPlacementChainPayload(depth, 2)(publicKeyPEM)
+		for chain := range 2 {
+			bottom(document, chain)["inReplyTo"] = replyTo
+		}
+		return document
+	}
+	for _, test := range []struct {
+		name  string
+		forge func(document map[string]any)
+		want  string
+	}{
+		{name: "identical copies"},
+		{
+			name:  "copies differing in an index",
+			forge: func(document map[string]any) { bottom(document, 1)["@index"] = "relay" },
+		},
+		{
+			name:  "copies differing in an undefined term",
+			forge: func(document map[string]any) { bottom(document, 1)["zz"] = "relay" },
+		},
+		{
+			name:  "copies differing in an empty array",
+			forge: func(document map[string]any) { bottom(document, 1)["name"] = []any{} },
+		},
+		{
+			name:  "copy without a nested statement",
+			forge: func(document map[string]any) { delete(bottom(document, 1), "content") },
+			want:  different,
+		},
+		{
+			name: "decorated reference in a nested copy",
+			forge: func(document map[string]any) {
+				bottom(document, 1)["inReplyTo"] = map[string]any{"id": replyTo, "zz": 1}
+			},
+			want: `reference "` + replyTo + `" carries entries the signature does not cover`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, payload)
+			if test.forge != nil {
+				test.forge(document)
+			}
+			compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("relayed copy changed the signed RDF: %v", err)
+			}
+			err := activityPubLinkedDataSignatureCoversDocument(compactedBody)
+			switch {
+			case test.want == "" && err != nil:
+				t.Fatalf("signed document was rejected: %v", err)
+			case test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)):
+				t.Fatalf("coverage error = %v, want %q", err, test.want)
+			}
 		})
 	}
 }

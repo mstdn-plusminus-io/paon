@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	"net/url"
@@ -588,7 +589,7 @@ func activityPubJSONLDUnsignedPlacement(expanded []any) error {
 		if !ok {
 			continue
 		}
-		if err := placement.walkNode(node, false, true); err != nil {
+		if _, err := placement.walkNode(node, false, true); err != nil {
 			return err
 		}
 	}
@@ -603,8 +604,8 @@ func activityPubJSONLDUnsignedPlacement(expanded []any) error {
 // activityPubJSONLDPlacement records where an expanded document describes
 // and references node identifiers.
 type activityPubJSONLDPlacement struct {
-	// descriptions holds the statements of each described identifier
-	// (activityPubJSONLDNodeStatements).
+	// descriptions holds the statements digest of each described identifier
+	// (activityPubJSONLDStatementsDigest).
 	descriptions map[string]string
 	// parked holds identifiers described below a dropped property.
 	parked map[string]bool
@@ -613,12 +614,16 @@ type activityPubJSONLDPlacement struct {
 	placed map[string]bool
 }
 
-// walkNode records an expanded node object; dropped tells whether a property
-// it is part of is left out of the RDF dataset, and root whether it is a
-// top-level node of the document.
-func (p *activityPubJSONLDPlacement) walkNode(node map[string]any, dropped bool, root bool) error {
-	if id, ok := node["@id"].(string); ok {
-		described := activityPubJSONLDNodeHasStatements(node)
+// walkNode records an expanded node object and returns its statements digest
+// (activityPubJSONLDStatementsDigest); dropped tells whether a property it is
+// part of is left out of the RDF dataset, and root whether it is a top-level
+// node of the document. The digest is built from the digests the walk returns
+// for the node's values, so every node object of the document is digested
+// once, however deeply it is nested.
+func (p *activityPubJSONLDPlacement) walkNode(node map[string]any, dropped bool, root bool) (string, error) {
+	id, identified := node["@id"].(string)
+	described := identified && activityPubJSONLDNodeHasStatements(node)
+	if identified {
 		switch {
 		case !dropped:
 			p.placed[id] = true
@@ -626,52 +631,77 @@ func (p *activityPubJSONLDPlacement) walkNode(node map[string]any, dropped bool,
 			p.parked[id] = true
 		}
 		if !described && !dropped && !root && len(node) > 1 {
-			return fmt.Errorf("reference %q carries entries the signature does not cover", id)
-		}
-		if described {
-			statements := activityPubJSONLDNodeStatements(node)
-			if previous, ok := p.descriptions[id]; ok {
-				if strings.HasPrefix(id, "_:") {
-					return fmt.Errorf("blank node %q is described more than once", id)
-				}
-				if previous != statements {
-					return fmt.Errorf("node %q is described more than once with different statements", id)
-				}
-			}
-			p.descriptions[id] = statements
+			return "", fmt.Errorf("reference %q carries entries the signature does not cover", id)
 		}
 	}
+	entries := make(map[string]string, len(node))
 	for key, value := range node {
+		kept := activityPubJSONLDStatementEntry(key, value)
 		if ld.IsKeyword(key) {
+			if kept {
+				entries[key] = activityPubJSONLDStatementsDigest(value)
+			}
 			continue
 		}
-		if err := p.walkValue(value, dropped || !activityPubJSONLDSignedProperty(key)); err != nil {
-			return err
+		digest, err := p.walkValue(value, dropped || !activityPubJSONLDSignedProperty(key))
+		if err != nil {
+			return "", err
+		}
+		if kept {
+			entries[key] = digest
 		}
 	}
-	return nil
+	digest := activityPubJSONLDMapDigest(entries)
+	if described {
+		if previous, ok := p.descriptions[id]; ok {
+			if strings.HasPrefix(id, "_:") {
+				return "", fmt.Errorf("blank node %q is described more than once", id)
+			}
+			if previous != digest {
+				return "", fmt.Errorf("node %q is described more than once with different statements", id)
+			}
+		}
+		p.descriptions[id] = digest
+	}
+	return digest, nil
 }
 
-// walkValue records the node objects of an expanded property value.
-func (p *activityPubJSONLDPlacement) walkValue(value any, dropped bool) error {
+// walkValue records the node objects of an expanded property value and
+// returns its statements digest (activityPubJSONLDStatementsDigest).
+func (p *activityPubJSONLDPlacement) walkValue(value any, dropped bool) (string, error) {
 	switch typed := value.(type) {
 	case []any:
 		return p.walkValues(typed, dropped)
 	case map[string]any:
 		if _, ok := typed["@value"]; ok {
-			return nil
+			return activityPubJSONLDStatementsDigest(typed), nil
 		}
 		if list, ok := typed["@list"]; ok {
-			items, _ := list.([]any)
-			return p.walkValues(items, dropped)
+			items, isArray := list.([]any)
+			listDigest, err := p.walkValues(items, dropped)
+			if err != nil {
+				return "", err
+			}
+			entries := make(map[string]string, len(typed))
+			for key, item := range typed {
+				switch {
+				case !activityPubJSONLDStatementEntry(key, item):
+				case key == "@list" && isArray:
+					entries[key] = listDigest
+				default:
+					entries[key] = activityPubJSONLDStatementsDigest(item)
+				}
+			}
+			return activityPubJSONLDMapDigest(entries), nil
 		}
 		return p.walkNode(typed, dropped, false)
 	}
-	return nil
+	return activityPubJSONLDStatementsDigest(value), nil
 }
 
-// walkValues records the values of one expanded property or list.
-func (p *activityPubJSONLDPlacement) walkValues(values []any, dropped bool) error {
+// walkValues records the values of one expanded property or list and returns
+// their statements digest (activityPubJSONLDStatementsDigest).
+func (p *activityPubJSONLDPlacement) walkValues(values []any, dropped bool) (string, error) {
 	descriptions := map[string]bool{}
 	references := map[string]bool{}
 	for _, value := range values {
@@ -692,15 +722,18 @@ func (p *activityPubJSONLDPlacement) walkValues(values []any, dropped bool) erro
 	}
 	for id := range descriptions {
 		if references[id] {
-			return fmt.Errorf("node %q is both referenced and described in one property", id)
+			return "", fmt.Errorf("node %q is both referenced and described in one property", id)
 		}
 	}
-	for _, value := range values {
-		if err := p.walkValue(value, dropped); err != nil {
-			return err
+	digests := make([]string, len(values))
+	for index, value := range values {
+		digest, err := p.walkValue(value, dropped)
+		if err != nil {
+			return "", err
 		}
+		digests[index] = digest
 	}
-	return nil
+	return activityPubJSONLDArrayDigest(digests), nil
 }
 
 // activityPubJSONLDNodeHasStatements reports whether RDF conversion produces a
@@ -718,36 +751,72 @@ func activityPubJSONLDNodeHasStatements(node map[string]any) bool {
 	return false
 }
 
-// activityPubJSONLDNodeStatements serializes an expanded node object for
-// comparing descriptions of the same identifier, leaving out the entries RDF
-// conversion drops: @index, dropped properties and empty arrays.
-func activityPubJSONLDNodeStatements(node map[string]any) string {
-	var statements func(value any) any
-	statements = func(value any) any {
-		switch typed := value.(type) {
-		case map[string]any:
-			out := make(map[string]any, len(typed))
-			for key, item := range typed {
-				if key == "@index" || (!ld.IsKeyword(key) && !activityPubJSONLDSignedProperty(key)) {
-					continue
-				}
-				if items, ok := item.([]any); ok && len(items) == 0 {
-					continue
-				}
-				out[key] = statements(item)
-			}
-			return out
-		case []any:
-			out := make([]any, 0, len(typed))
-			for _, item := range typed {
-				out = append(out, statements(item))
-			}
-			return out
-		}
-		return value
+// activityPubJSONLDStatementEntry reports whether an entry of an expanded map
+// takes part in comparing descriptions of the same identifier. RDF conversion
+// drops @index, dropped properties and empty arrays.
+func activityPubJSONLDStatementEntry(key string, value any) bool {
+	if key == "@index" || (!ld.IsKeyword(key) && !activityPubJSONLDSignedProperty(key)) {
+		return false
 	}
-	encoded, _ := json.Marshal(statements(node))
-	return string(encoded)
+	items, ok := value.([]any)
+	return !ok || len(items) > 0
+}
+
+// activityPubJSONLDStatementsDigest identifies an expanded value for comparing
+// descriptions of the same identifier: two values have the same digest
+// exactly when they are equal once every map in them leaves out the entries
+// RDF conversion drops (activityPubJSONLDStatementEntry). A scalar is
+// identified by its JSON encoding, and a map or an array by a SHA-256 digest
+// over the digests of its entries (activityPubJSONLDMapDigest,
+// activityPubJSONLDArrayDigest), so no value is serialized again for every
+// map or array it is nested in.
+func activityPubJSONLDStatementsDigest(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		entries := make(map[string]string, len(typed))
+		for key, item := range typed {
+			if activityPubJSONLDStatementEntry(key, item) {
+				entries[key] = activityPubJSONLDStatementsDigest(item)
+			}
+		}
+		return activityPubJSONLDMapDigest(entries)
+	case []any:
+		digests := make([]string, len(typed))
+		for index, item := range typed {
+			digests[index] = activityPubJSONLDStatementsDigest(item)
+		}
+		return activityPubJSONLDArrayDigest(digests)
+	}
+	encoded, _ := json.Marshal(value)
+	return "s" + string(encoded)
+}
+
+// activityPubJSONLDMapDigest returns the statements digest of a map from the
+// digests of its kept entries. Each entry is hashed as its JSON-encoded key,
+// ":", its digest and ",": a digest is a fixed-length hash after "m" or "a",
+// or a JSON scalar after "s", which never contains a "," outside a quoted
+// string, so different maps never hash the same input.
+func activityPubJSONLDMapDigest(entries map[string]string) string {
+	hash := sha256.New()
+	for _, key := range slices.Sorted(maps.Keys(entries)) {
+		encoded, _ := json.Marshal(key)
+		hash.Write(encoded)
+		hash.Write([]byte{':'})
+		io.WriteString(hash, entries[key])
+		hash.Write([]byte{','})
+	}
+	return "m" + string(hash.Sum(nil))
+}
+
+// activityPubJSONLDArrayDigest returns the statements digest of an array from
+// the digests of its items, in order (see activityPubJSONLDMapDigest).
+func activityPubJSONLDArrayDigest(digests []string) string {
+	hash := sha256.New()
+	for _, digest := range digests {
+		io.WriteString(hash, digest)
+		hash.Write([]byte{','})
+	}
+	return "a" + string(hash.Sum(nil))
 }
 
 // activityPubJSONLDSignedProperty reports whether
