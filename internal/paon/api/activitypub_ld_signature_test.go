@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
@@ -1864,6 +1865,144 @@ func TestLinkedDataSignatureRejectsCompactedBlankNodeKeywords(t *testing.T) {
 	}
 }
 
+// linkedDataKeywordQuestionPayload is a signed poll open until 2030, which a
+// relay must not be able to close.
+func linkedDataKeywordQuestionPayload(string) map[string]any {
+	payload := linkedDataNoteCreatePayload("")
+	object := payload["object"].(map[string]any)
+	object["type"] = "Question"
+	object["endTime"] = "2030-01-01T00:00:00Z"
+	object["oneOf"] = []any{
+		map[string]any{"type": "Note", "name": "yes", "replies": map[string]any{"type": "Collection", "totalItems": 0}},
+		map[string]any{"type": "Note", "name": "no", "replies": map[string]any{"type": "Collection", "totalItems": 0}},
+	}
+	return payload
+}
+
+// json-gold also compacts a blank node property "_:@language" to the bare
+// "@language". Re-expanding a map that has "@language" but no "@value" turns
+// it into null (step 11 of the expansion algorithm), so it leaves neither the
+// canonicalized RDF nor the expanded document the coverage check walks, while
+// Paon still reads the map. Placed in front of a signed value it hides that
+// value from readers that take the first entry, and as a whole value it reads
+// as true for properties such as suspended or closed. Compacting a document
+// json-gold can canonicalize with Paon's context writes "@language" and
+// "@direction" only inside value objects, so such a document is never
+// authenticated.
+func TestLinkedDataSignatureRejectsCompactedLanguageOnlyMaps(t *testing.T) {
+	const (
+		as   = "https://www.w3.org/ns/activitystreams#"
+		toot = "http://joinmastodon.org/ns#"
+	)
+	language := func() map[string]any { return map[string]any{"_:@language": "en"} }
+	object := func(document map[string]any) map[string]any { return document["object"].(map[string]any) }
+	hide := func(keys ...string) func(document map[string]any) {
+		return func(document map[string]any) {
+			target := object(document)
+			for _, key := range keys {
+				target[key] = []any{language(), target[key]}
+			}
+		}
+	}
+	pollCheckedAt := time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		forge   func(document map[string]any)
+		forged  func(payload activityPayload) bool
+	}{
+		{
+			name:    "suspends the actor",
+			payload: linkedDataKeywordPersonPayload,
+			forge: func(document map[string]any) {
+				object(document)[toot+"suspended"] = language()
+			},
+			forged: func(p activityPayload) bool { return p.Object.Suspended },
+		},
+		{
+			name:    "hides the actor key",
+			payload: linkedDataKeywordPersonPayload,
+			forge:   hide("publicKey"),
+			forged:  func(p activityPayload) bool { return p.Object.PublicKey == "" },
+		},
+		{
+			name:    "hides sensitive and the content warning",
+			payload: linkedDataKeywordNotePayload,
+			forge:   hide("sensitive", "summary"),
+			forged:  func(p activityPayload) bool { return !p.Object.Sensitive && p.Object.Summary == "" },
+		},
+		{
+			name:    "closes an open poll",
+			payload: linkedDataKeywordQuestionPayload,
+			forge: func(document map[string]any) {
+				object(document)[as+"closed"] = language()
+			},
+			forged: func(p activityPayload) bool {
+				return p.Object.Type == "Question" && activityPollExpiresAt(p.Object, pollCheckedAt).Time.Equal(pollCheckedAt)
+			},
+		},
+		{
+			name:    "hides the shared inbox with a dropped keyword-like key",
+			payload: linkedDataKeywordPersonPayload,
+			forge: func(document map[string]any) {
+				endpoints := object(document)["endpoints"].(map[string]any)
+				endpoints["sharedInbox"] = []any{map[string]any{"_:@language": "en", "_:@unknown": "x"}, endpoints["sharedInbox"]}
+			},
+			forged: func(p activityPayload) bool { return p.Object.SharedInbox == "" },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			test.forge(document)
+			body := marshalLinkedDataTestDocument(t, document)
+			compactedBody, compacted := activityPubCompactCollectionBody(body)
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("forgery changed the signed RDF: %v", err)
+			}
+			payload, err := parseActivityPayload(compactedBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !payload.Signature.Present || payload.Actor != linkedDataForgeryVictimURI || !test.forged(payload) {
+				t.Fatalf("compacted payload does not show the forgery: %s", compactedBody)
+			}
+			err = activityPubLinkedDataSignatureCoversDocument(compactedBody)
+			if err == nil || !strings.Contains(err.Error(), "linked-data signature does not cover the document: embedded @language") {
+				t.Fatalf("coverage error = %v, want rejection of the embedded @language", err)
+			}
+			// Rejection must happen before signature creator lookup touches the
+			// database; reaching it here would panic on the zero-value handle.
+			server := &Server{db: &gorm.DB{}}
+			err = server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, linkedDataForgeryRelay(), nil, 0)
+			if !errors.Is(err, errActivityPubEventNotApplied) || !strings.Contains(err.Error(), "linked-data signature does not cover the document") {
+				t.Fatalf("relayed activity error = %v, want rejection before creator lookup", err)
+			}
+		})
+	}
+	// A map with "@direction" but no "@value" is not nulled, so it changes the
+	// signed RDF, but compaction never writes one either.
+	t.Run("@direction outside a value object", func(t *testing.T) {
+		body := marshalLinkedDataTestDocument(t, map[string]any{
+			"@context": activityPubFullJSONLDContext(),
+			"id":       linkedDataForgeryVictimURI + "#updates/1",
+			"type":     "Update",
+			"actor":    linkedDataForgeryVictimURI,
+			"object": map[string]any{
+				"id":        linkedDataForgeryVictimURI,
+				"type":      "Person",
+				"suspended": map[string]any{"@direction": "rtl"},
+			},
+		})
+		err := activityPubLinkedDataSignatureCoversDocument(body)
+		if err == nil || !strings.Contains(err.Error(), "linked-data signature does not cover the document: embedded @direction") {
+			t.Fatalf("coverage error = %v, want rejection of the embedded @direction", err)
+		}
+	})
+}
+
 // Compacting with Paon's context keeps the keywords of value objects, list
 // objects and indexes below the top level, and removes a sender's own @nest
 // aliases and embedded contexts. Such signed documents are still
@@ -1876,6 +2015,7 @@ func TestLinkedDataSignatureAcceptsCompactedValueKeywords(t *testing.T) {
 			object := document["object"].(map[string]any)
 			object[ext+"rating"] = map[string]any{"@value": "5", "@type": "http://www.w3.org/2001/XMLSchema#integer"}
 			object[ext+"note"] = map[string]any{"@value": "メモ", "@language": "ja"}
+			object[ext+"label"] = map[string]any{"@value": "שלום", "@direction": "rtl"}
 			object[ext+"steps"] = map[string]any{"@list": []any{"one", "two"}}
 			object[ext+"indexed"] = map[string]any{"@value": "first", "@index": "a"}
 			return document
@@ -1922,13 +2062,13 @@ func TestLinkedDataSignatureAcceptsCompactedValueKeywords(t *testing.T) {
 		{
 			name:     "Create(Note) with value, list and index objects",
 			payload:  withExtensions(linkedDataKeywordNotePayload),
-			keywords: []string{"@value", "@language", "@list", "@index"},
+			keywords: []string{"@value", "@language", "@direction", "@list", "@index"},
 			reads:    readsNote,
 		},
 		{
 			name:     "Update(Person) with value, list and index objects",
 			payload:  withExtensions(linkedDataKeywordPersonPayload),
-			keywords: []string{"@value", "@language", "@list", "@index"},
+			keywords: []string{"@value", "@language", "@direction", "@list", "@index"},
 			reads: func(t *testing.T, payload activityPayload) {
 				t.Helper()
 				if payload.Object.PublicKey == "" || payload.Object.SharedInbox != "https://origin.example/inbox" {
