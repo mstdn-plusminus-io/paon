@@ -1540,9 +1540,12 @@ func TestLinkedDataSignatureRejectsRelayedMovedToForgery(t *testing.T) {
 // that keyword, while compaction with Paon's context writes @type and @id as
 // "type" and "id". Re-expansion processes "@type" before "type", and an array
 // "type" replaces it, so a type injected next to a multi-typed node leaves the
-// signed RDF; an injected blank node identifier names the same blank node.
-// Paon reads both keys (activityJSONLDTypes, activityJSONLDID), so such a
-// document is never authenticated.
+// signed RDF while activityJSONLDTypes still reads it. Such a document is
+// never authenticated. "@id" is rejected only as a side effect of rejecting
+// every keyword that compaction never writes; it does not protect blank node
+// labels. Canonicalization relabels blank nodes, so no signature covers a
+// label, and a plain "id": "_:forged" on the same tag still authenticates, as
+// it does in Mastodon (JsonLdHelper#canonicalize).
 func TestLinkedDataSignatureRejectsUncompactedKeywords(t *testing.T) {
 	multiTypedNote := func(string) map[string]any {
 		payload := linkedDataNoteCreatePayload("")
