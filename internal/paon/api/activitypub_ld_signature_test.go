@@ -1565,3 +1565,642 @@ func TestLinkedDataSignatureCompactsMastodonWebFingerContext(t *testing.T) {
 		t.Fatalf("signed document was rejected: %v", err)
 	}
 }
+
+// linkedDataPlacementContext is the context of a Mastodon full_context sender
+// that also defines Paon's extension terms, so every property of the
+// placement fixtures below is signed.
+func linkedDataPlacementContext() []any {
+	return []any{"https://www.w3.org/ns/activitystreams", activityPubSecurityContext, activityPubFullJSONLDContextExtensions()}
+}
+
+// linkedDataPlacementPersonPayload is the victim's signed Update(Person) of a
+// locked, suspended account that moved, which a relay must not be able to
+// unlock, unsuspend, unmove or strip of its key and followers collection.
+func linkedDataPlacementPersonPayload(publicKeyPEM string) map[string]any {
+	return map[string]any{
+		"@context": linkedDataPlacementContext(),
+		"id":       linkedDataForgeryVictimURI + "#updates/1",
+		"type":     "Update",
+		"actor":    linkedDataForgeryVictimURI,
+		"to":       []any{activityPubPublicIRI},
+		"object": map[string]any{
+			"id":                        linkedDataForgeryVictimURI,
+			"type":                      "Person",
+			"preferredUsername":         "alice",
+			"inbox":                     linkedDataForgeryVictimURI + "/inbox",
+			"followers":                 linkedDataForgeryVictimURI + "/followers",
+			"manuallyApprovesFollowers": true,
+			"suspended":                 true,
+			"movedTo":                   "https://new.example/users/alice",
+			"alsoKnownAs":               []any{"https://new.example/users/alice"},
+			"icon":                      map[string]any{"type": "Image", "mediaType": "image/png", "url": "https://files.origin.example/avatar.png"},
+			"publicKey": map[string]any{
+				"id":           linkedDataForgeryVictimURI + "#main-key",
+				"owner":        linkedDataForgeryVictimURI,
+				"publicKeyPem": publicKeyPEM,
+			},
+		},
+	}
+}
+
+// linkedDataPlacementNotePayload is the victim's signed public reply with a
+// content warning, a mention, a hashtag and a described attachment.
+func linkedDataPlacementNotePayload(string) map[string]any {
+	followers := linkedDataForgeryVictimURI + "/followers"
+	return map[string]any{
+		"@context": linkedDataPlacementContext(),
+		"id":       linkedDataForgeryVictimURI + "/statuses/3/activity",
+		"type":     "Create",
+		"actor":    linkedDataForgeryVictimURI,
+		"to":       []any{activityPubPublicIRI},
+		"cc":       []any{followers},
+		"object": map[string]any{
+			"id":           linkedDataForgeryVictimURI + "/statuses/3",
+			"type":         "Note",
+			"attributedTo": linkedDataForgeryVictimURI,
+			"summary":      "CW",
+			"sensitive":    true,
+			"content":      "<p>signed</p>",
+			"inReplyTo":    "https://other.example/statuses/1",
+			"to":           []any{activityPubPublicIRI},
+			"cc":           []any{followers},
+			"tag": []any{
+				map[string]any{"type": "Mention", "href": "https://paon.example/users/bob", "name": "@bob@paon.example"},
+				map[string]any{"type": "Hashtag", "href": "https://origin.example/tags/paon", "name": "#paon"},
+			},
+			"attachment": []any{map[string]any{"type": "Document", "mediaType": "image/png", "url": "https://files.origin.example/media/1.png", "name": "alt"}},
+		},
+	}
+}
+
+// linkedDataPlacementQuestionPayload is the victim's signed poll, open until
+// 2030, with two votes for "yes" and one for "no".
+func linkedDataPlacementQuestionPayload(string) map[string]any {
+	return map[string]any{
+		"@context": linkedDataPlacementContext(),
+		"id":       linkedDataForgeryVictimURI + "/statuses/5/activity",
+		"type":     "Create",
+		"actor":    linkedDataForgeryVictimURI,
+		"to":       []any{activityPubPublicIRI},
+		"object": map[string]any{
+			"id":           linkedDataForgeryVictimURI + "/statuses/5",
+			"type":         "Question",
+			"attributedTo": linkedDataForgeryVictimURI,
+			"content":      "<p>poll</p>",
+			"to":           []any{activityPubPublicIRI},
+			"endTime":      "2030-01-01T00:00:00Z",
+			"votersCount":  3,
+			"oneOf": []any{
+				map[string]any{"type": "Note", "name": "yes", "replies": map[string]any{"type": "Collection", "totalItems": 2}},
+				map[string]any{"type": "Note", "name": "no", "replies": map[string]any{"type": "Collection", "totalItems": 1}},
+			},
+		},
+	}
+}
+
+// assertLinkedDataForgeryRejected checks that forging the signed document kept
+// its signed RDF, that Paon reads the forgery from the compacted document
+// (forged may be nil when it does not change what Paon reads), and that the
+// coverage check rejects the document with want before a relayed copy reaches
+// the signature creator lookup.
+func assertLinkedDataForgeryRejected(t *testing.T, document map[string]any, publicKey *rsa.PublicKey, forged func(payload activityPayload) bool, want string) {
+	t.Helper()
+	body := marshalLinkedDataTestDocument(t, document)
+	compactedBody, compacted := activityPubCompactCollectionBody(body)
+	if !compacted {
+		t.Fatal("document with a literal signature object was not compacted")
+	}
+	if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+		t.Fatalf("forgery changed the signed RDF: %v", err)
+	}
+	payload, err := parseActivityPayload(compactedBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Signature.Present || payload.Actor != linkedDataForgeryVictimURI || (forged != nil && !forged(payload)) {
+		t.Fatalf("compacted payload does not show the forgery: %s", compactedBody)
+	}
+	err = activityPubLinkedDataSignatureCoversDocument(compactedBody)
+	if err == nil || !strings.Contains(err.Error(), "linked-data signature does not cover the document: "+want) {
+		t.Fatalf("coverage error = %v, want %q", err, want)
+	}
+	// Rejection must happen before signature creator lookup touches the
+	// database; reaching it here would panic on the zero-value handle.
+	server := &Server{db: &gorm.DB{}}
+	err = server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, linkedDataForgeryRelay(), nil, 0)
+	if !errors.Is(err, errActivityPubEventNotApplied) || !strings.Contains(err.Error(), "linked-data signature does not cover the document") {
+		t.Fatalf("relayed activity error = %v, want rejection before creator lookup", err)
+	}
+}
+
+// linkedDataPlacementHasMention reports whether Paon reads the signed mention
+// of bob from the payload.
+func linkedDataPlacementHasMention(payload activityPayload) bool {
+	for _, tag := range payload.Object.Tags {
+		if tag.Type == "Mention" && tag.Href == "https://paon.example/users/bob" {
+			return true
+		}
+	}
+	return false
+}
+
+// RDF conversion merges node objects with the same @id and keeps the
+// statements of a node object below a property it drops (an undefined term
+// expands to a blank node property). A relay can therefore move or split the
+// victim's signed node descriptions, or put a reference in front of one,
+// without changing the signed RDF, while Paon reads the compacted JSON by
+// position and loses the moved values. Such documents are never
+// authenticated.
+func TestLinkedDataSignatureRejectsRelocatedNodeDescriptions(t *testing.T) {
+	victim := linkedDataForgeryVictimURI
+	note := victim + "/statuses/3"
+	activity := note + "/activity"
+	question := victim + "/statuses/5"
+	key := victim + "#main-key"
+	object := func(document map[string]any) map[string]any { return document["object"].(map[string]any) }
+	park := func(document map[string]any, node any) {
+		parked, _ := document["zzpark"].([]any)
+		document["zzpark"] = append(parked, node)
+	}
+	pollCheckedAt := time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
+	poll := func(payload activityPayload) models.Poll {
+		parsed, _ := activityPollFromObject(payload.Object, 1, 1, pollCheckedAt)
+		return parsed
+	}
+	noteWithoutObjectAudience := func(publicKeyPEM string) map[string]any {
+		document := linkedDataPlacementNotePayload(publicKeyPEM)
+		delete(object(document), "to")
+		delete(object(document), "cc")
+		return document
+	}
+	differentStatements := func(id string) string {
+		return `node "` + id + `" is described more than once with different statements`
+	}
+	blankDescribedTwice := func(id string) string {
+		return `blank node "` + id + `" is described more than once`
+	}
+	describedBelowDropped := func(id string) string {
+		return `node "` + id + `" is described below a property the signature does not cover`
+	}
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		forge   func(document map[string]any)
+		forged  func(payload activityPayload) bool
+		want    string
+	}{
+		{
+			name:    "suspension parked below an undefined term",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				park(document, map[string]any{"id": victim, "suspended": object(document)["suspended"]})
+				delete(object(document), "suspended")
+			},
+			forged: func(p activityPayload) bool { return !p.Object.Suspended },
+			want:   differentStatements(victim),
+		},
+		{
+			name:    "locked flag moved into the actor",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				document["actor"] = map[string]any{"id": victim, "manuallyApprovesFollowers": object(document)["manuallyApprovesFollowers"]}
+				delete(object(document), "manuallyApprovesFollowers")
+			},
+			forged: func(p activityPayload) bool { return !p.Object.Locked },
+			want:   differentStatements(victim),
+		},
+		{
+			name:    "followers collection moved into the actor",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				document["actor"] = map[string]any{"id": victim, "followers": object(document)["followers"]}
+				delete(object(document), "followers")
+			},
+			forged: func(p activityPayload) bool { return p.Object.Followers == "" },
+			want:   differentStatements(victim),
+		},
+		{
+			name:    "account migration parked below an undefined term",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				park(document, map[string]any{"id": victim, "movedTo": person["movedTo"], "alsoKnownAs": person["alsoKnownAs"]})
+				delete(person, "movedTo")
+				delete(person, "alsoKnownAs")
+			},
+			forged: func(p activityPayload) bool { return p.Object.MovedTo == nil && p.Object.AlsoKnownAs == nil },
+			want:   differentStatements(victim),
+		},
+		{
+			name:    "key split off the actor into a second object",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				split := map[string]any{"id": victim, "publicKey": person["publicKey"]}
+				delete(person, "publicKey")
+				document["object"] = []any{person, split}
+			},
+			forged: func(p activityPayload) bool { return p.Object.PublicKey == "" },
+			want:   differentStatements(victim),
+		},
+		{
+			name:    "audience of the activity and the object parked below an undefined term",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				status := object(document)
+				park(document, map[string]any{"id": activity, "to": document["to"], "cc": document["cc"]})
+				park(document, map[string]any{"id": note, "to": status["to"], "cc": status["cc"]})
+				for _, node := range []map[string]any{document, status} {
+					delete(node, "to")
+					delete(node, "cc")
+				}
+			},
+			forged: func(p activityPayload) bool {
+				return len(p.To) == 0 && len(p.CC) == 0 && len(p.Object.To) == 0 && len(p.Object.CC) == 0
+			},
+			want: differentStatements(activity),
+		},
+		{
+			name:    "audience of an activity whose object has none parked below an undefined term",
+			payload: noteWithoutObjectAudience,
+			forge: func(document map[string]any) {
+				park(document, map[string]any{"id": activity, "to": document["to"], "cc": document["cc"]})
+				delete(document, "to")
+				delete(document, "cc")
+			},
+			forged: func(p activityPayload) bool { return len(p.To) == 0 && len(p.CC) == 0 && !p.Object.ToSet },
+			want:   differentStatements(activity),
+		},
+		{
+			name:    "content warning and tags parked below nested undefined terms",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				status := object(document)
+				status["zzinner"] = map[string]any{"zzdeeper": []any{map[string]any{"id": note, "summary": status["summary"], "sensitive": status["sensitive"], "tag": status["tag"]}}}
+				delete(status, "summary")
+				delete(status, "sensitive")
+				delete(status, "tag")
+			},
+			forged: func(p activityPayload) bool {
+				return !p.Object.Sensitive && p.Object.Summary == "" && len(p.Object.Tags) == 0
+			},
+			want: differentStatements(note),
+		},
+		{
+			name:    "reply target split off the object",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				status := object(document)
+				split := map[string]any{"id": note, "inReplyTo": status["inReplyTo"]}
+				delete(status, "inReplyTo")
+				document["object"] = []any{status, split}
+			},
+			forged: func(p activityPayload) bool { return p.Object.InReplyTo == "" },
+			want:   differentStatements(note),
+		},
+		{
+			name:    "mention split over a labelled blank node",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				tags := object(document)["tag"].([]any)
+				mention := tags[0].(map[string]any)
+				tags[0] = map[string]any{"id": "_:m", "type": mention["type"], "name": mention["name"]}
+				object(document)["tag"] = append(tags, map[string]any{"id": "_:m", "href": mention["href"]})
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+			want:   blankDescribedTwice("_:m"),
+		},
+		{
+			name:    "mention moved into a list below an undefined term",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				tags := object(document)["tag"].([]any)
+				mention := tags[0].(map[string]any)
+				mention["id"] = "_:m"
+				tags[0] = "_:m"
+				document["zzpark"] = map[string]any{"@list": []any{mention}}
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+			want:   describedBelowDropped("_:m"),
+		},
+		{
+			name:    "attachment description split over a labelled blank node",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				attachment := object(document)["attachment"].([]any)[0].(map[string]any)
+				attachment["id"] = "_:a"
+				name := attachment["name"]
+				delete(attachment, "name")
+				object(document)["attachment"] = []any{attachment, map[string]any{"id": "_:a", "name": name}}
+			},
+			forged: func(p activityPayload) bool {
+				return len(p.Object.Attachments) == 1 && p.Object.Attachments[0].Name == ""
+			},
+			want: blankDescribedTwice("_:a"),
+		},
+		{
+			name:    "poll option split so that the tallies shift",
+			payload: linkedDataPlacementQuestionPayload,
+			forge: func(document map[string]any) {
+				options := object(document)["oneOf"].([]any)
+				yes, no := options[0].(map[string]any), options[1].(map[string]any)
+				object(document)["oneOf"] = []any{
+					map[string]any{"id": "_:no", "replies": no["replies"]},
+					map[string]any{"id": "_:yes", "type": "Note", "name": "yes", "replies": yes["replies"]},
+					map[string]any{"id": "_:no", "type": "Note", "name": "no"},
+				}
+			},
+			forged: func(p activityPayload) bool { return !slices.Equal(poll(p).CachedTallies, models.Int64Array{2, 1}) },
+			want:   blankDescribedTwice("_:no"),
+		},
+		{
+			name:    "poll option repeated with the same label",
+			payload: linkedDataPlacementQuestionPayload,
+			forge: func(document map[string]any) {
+				options := object(document)["oneOf"].([]any)
+				yes := func() map[string]any {
+					return map[string]any{"id": "_:yes", "type": "Note", "name": "yes", "replies": map[string]any{"id": "_:yes-replies", "type": "Collection", "totalItems": 2}}
+				}
+				object(document)["oneOf"] = []any{yes(), yes(), options[1]}
+			},
+			forged: func(p activityPayload) bool { return !slices.Equal(poll(p).Options, models.StringArray{"yes", "no"}) },
+			want:   blankDescribedTwice("_:yes"),
+		},
+		{
+			name:    "poll option replies split over a labelled blank node",
+			payload: linkedDataPlacementQuestionPayload,
+			forge: func(document map[string]any) {
+				yes := object(document)["oneOf"].([]any)[0].(map[string]any)
+				replies := yes["replies"].(map[string]any)
+				yes["replies"] = []any{map[string]any{"id": "_:r", "type": replies["type"]}, map[string]any{"id": "_:r", "totalItems": replies["totalItems"]}}
+			},
+			forged: func(p activityPayload) bool { return !slices.Equal(poll(p).CachedTallies, models.Int64Array{2, 1}) },
+			want:   blankDescribedTwice("_:r"),
+		},
+		{
+			name:    "poll end time and voters parked below an undefined term",
+			payload: linkedDataPlacementQuestionPayload,
+			forge: func(document map[string]any) {
+				status := object(document)
+				park(document, map[string]any{"id": question, "endTime": status["endTime"], "votersCount": status["votersCount"]})
+				delete(status, "endTime")
+				delete(status, "votersCount")
+			},
+			forged: func(p activityPayload) bool { return !poll(p).ExpiresAt.Valid && !poll(p).VotersCount.Valid },
+			want:   differentStatements(question),
+		},
+		{
+			name:    "key reference in front of its description",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				person["publicKey"] = []any{key, person["publicKey"]}
+			},
+			forged: func(p activityPayload) bool { return p.Object.PublicKey == "" },
+			want:   `node "` + key + `" is both referenced and described in one property`,
+		},
+		{
+			name:    "key reference with its description parked below an undefined term",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				park(document, person["publicKey"])
+				person["publicKey"] = key
+			},
+			forged: func(p activityPayload) bool { return p.Object.PublicKey == "" },
+			want:   describedBelowDropped(key),
+		},
+		{
+			name:    "key reference with its description below a blank node of an undefined term",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				document["zzpark"] = map[string]any{"zzinner": person["publicKey"]}
+				person["publicKey"] = key
+			},
+			forged: func(p activityPayload) bool { return p.Object.PublicKey == "" },
+			want:   describedBelowDropped(key),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			test.forge(document)
+			assertLinkedDataForgeryRejected(t, document, publicKey, test.forged, test.want)
+		})
+	}
+}
+
+// Signed documents that describe a node more than once with the same
+// statements, reference a node they describe elsewhere, or carry empty arrays
+// keep their linked-data authority, and Paon reads their signed values.
+func TestLinkedDataSignatureAcceptsRepeatedAndReferencedNodes(t *testing.T) {
+	victim := linkedDataForgeryVictimURI
+	bob := "https://paon.example/users/bob"
+	misskeyContext := []any{"https://www.w3.org/ns/activitystreams", activityPubSecurityContext, map[string]any{
+		"Key": "sec:Key", "manuallyApprovesFollowers": "as:manuallyApprovesFollowers", "sensitive": "as:sensitive", "Hashtag": "as:Hashtag", "quoteUrl": "as:quoteUrl",
+		"toot": "http://joinmastodon.org/ns#", "Emoji": "toot:Emoji", "featured": "toot:featured", "discoverable": "toot:discoverable", "suspended": "toot:suspended",
+		"schema": "http://schema.org#", "PropertyValue": "schema:PropertyValue", "value": "schema:value", "misskey": "https://misskey-hub.net/ns#",
+		"_misskey_content": "misskey:_misskey_content", "_misskey_quote": "misskey:_misskey_quote", "_misskey_reaction": "misskey:_misskey_reaction",
+		"_misskey_summary": "misskey:_misskey_summary", "isCat": "misskey:isCat", "vcard": "http://www.w3.org/2006/vcard/ns#",
+	}}
+	actorObject := func() map[string]any {
+		return map[string]any{
+			"type": "Person", "id": victim, "preferredUsername": "alice", "name": "Alice", "inbox": victim + "/inbox",
+			"url": "https://origin.example/@alice", "icon": map[string]any{"type": "Image", "url": "https://files.origin.example/a.png"},
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		reads   func(payload activityPayload) bool
+	}{
+		{
+			name:    "Update(Person) with every signed actor property",
+			payload: linkedDataPlacementPersonPayload,
+			reads: func(p activityPayload) bool {
+				return p.Object.Suspended && p.Object.Locked && p.Object.PublicKey != "" && p.Object.Followers == victim+"/followers" &&
+					activityPubObjectID(p.Object.MovedTo) == "https://new.example/users/alice"
+			},
+		},
+		{
+			name:    "Create(Note) with a content warning, tags and an attachment",
+			payload: linkedDataPlacementNotePayload,
+			reads: func(p activityPayload) bool {
+				return p.Object.Sensitive && p.Object.Summary == "CW" && linkedDataPlacementHasMention(p) &&
+					len(p.Object.Attachments) == 1 && p.Object.Attachments[0].Name == "alt" && p.Object.InReplyTo == "https://other.example/statuses/1"
+			},
+		},
+		{
+			name:    "Create(Question) with tallies",
+			payload: linkedDataPlacementQuestionPayload,
+			reads: func(p activityPayload) bool {
+				poll, ok := activityPollFromObject(p.Object, 1, 1, time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC))
+				return ok && slices.Equal(poll.CachedTallies, models.Int64Array{2, 1}) && poll.ExpiresAt.Valid
+			},
+		},
+		{
+			name: "embedded actor repeated as attributedTo",
+			payload: func(string) map[string]any {
+				return map[string]any{
+					"@context": linkedDataPlacementContext(), "id": victim + "/item/1/activity", "type": "Create", "actor": actorObject(),
+					"to": []any{activityPubPublicIRI}, "cc": []any{victim + "/followers"},
+					"object": map[string]any{"id": victim + "/item/1", "type": "Note", "attributedTo": actorObject(), "content": "x", "to": []any{activityPubPublicIRI}, "cc": []any{victim + "/followers"}},
+				}
+			},
+			reads: func(p activityPayload) bool { return p.Object.AttributedTo == victim },
+		},
+		{
+			name: "identical emoji tags",
+			payload: func(string) map[string]any {
+				emoji := func() map[string]any {
+					return map[string]any{"id": "https://origin.example/emojis/1", "type": "Emoji", "name": ":paon:", "updated": "2020-01-01T00:00:00Z"}
+				}
+				return map[string]any{
+					"@context": linkedDataPlacementContext(), "id": victim + "/statuses/21/activity", "type": "Create", "actor": victim, "to": []any{activityPubPublicIRI},
+					"object": map[string]any{"id": victim + "/statuses/21", "type": "Note", "attributedTo": victim, "content": ":paon: :paon:", "to": []any{activityPubPublicIRI}, "tag": []any{emoji(), emoji()}},
+				}
+			},
+			reads: func(p activityPayload) bool { return len(p.Object.Tags) == 2 && p.Object.Tags[1].Name == ":paon:" },
+		},
+		{
+			name: "Mastodon direct message with an empty cc",
+			payload: func(string) map[string]any {
+				return map[string]any{
+					"@context": linkedDataPlacementContext(), "id": victim + "/statuses/20/activity", "type": "Create", "actor": victim,
+					"to": []any{bob}, "cc": []any{},
+					"object": map[string]any{
+						"id": victim + "/statuses/20", "type": "Note", "attributedTo": victim, "content": "dm", "to": []any{bob}, "cc": []any{},
+						"tag": []any{map[string]any{"type": "Mention", "href": bob, "name": "@bob@paon.example"}},
+					},
+				}
+			},
+			reads: func(p activityPayload) bool {
+				return slices.Equal(p.Object.To, []string{bob}) && len(p.Object.CC) == 0 && linkedDataPlacementHasMention(p)
+			},
+		},
+		{
+			name: "Lemmy page",
+			payload: func(string) map[string]any {
+				return map[string]any{
+					"@context": []any{"https://www.w3.org/ns/activitystreams", activityPubSecurityContext, map[string]any{
+						"lemmy": "https://join-lemmy.org/ns#", "litepub": "http://litepub.social/ns#", "pt": "https://joinpeertube.org/ns#", "sc": "http://schema.org/",
+						"ChatMessage": "litepub:ChatMessage", "commentsEnabled": "pt:commentsEnabled", "sensitive": "as:sensitive", "matrixUserId": "lemmy:matrixUserId",
+						"postingRestrictedToMods": "lemmy:postingRestrictedToMods", "removeData": "lemmy:removeData", "stickied": "lemmy:stickied",
+						"moderators": map[string]any{"@type": "@id", "@id": "lemmy:moderators"}, "expires": "as:endTime", "distinguished": "lemmy:distinguished",
+						"language": "sc:inLanguage", "identifier": "sc:identifier",
+					}},
+					"id": victim + "/activities/create/1", "type": "Create", "actor": victim, "to": []any{"https://origin.example/c/x", activityPubPublicIRI}, "cc": []any{}, "audience": "https://origin.example/c/x",
+					"object": map[string]any{
+						"type": "Page", "id": victim + "/post/1", "attributedTo": victim, "to": []any{"https://origin.example/c/x", activityPubPublicIRI}, "name": "title",
+						"cc": []any{}, "mediaType": "text/html", "attachment": []any{map[string]any{"href": "https://link.example/", "type": "Link"}},
+						"commentsEnabled": true, "sensitive": false, "published": "2026-01-01T00:00:00Z",
+						"language": map[string]any{"identifier": "en", "name": "English"}, "audience": "https://origin.example/c/x",
+					},
+				}
+			},
+			reads: func(p activityPayload) bool { return p.Object.Type == "Page" && p.Object.Name == "title" },
+		},
+		{
+			name: "Misskey note with a quote and a mention",
+			payload: func(string) map[string]any {
+				return map[string]any{
+					"@context": misskeyContext, "id": victim + "/notes/a1/activity", "type": "Create", "actor": victim,
+					"published": "2026-01-01T00:00:00.000Z", "to": []any{activityPubPublicIRI}, "cc": []any{victim + "/followers"},
+					"object": map[string]any{
+						"id": victim + "/notes/a1", "type": "Note", "attributedTo": victim, "content": "<p>hello @bob</p>",
+						"_misskey_content": "hello @bob@paon.example", "source": map[string]any{"content": "hello @bob@paon.example", "mediaType": "text/x.misskeymarkdown"},
+						"_misskey_quote": "https://other.example/notes/q1", "quoteUrl": "https://other.example/notes/q1", "quoteUri": "https://other.example/notes/q1",
+						"published": "2026-01-01T00:00:00.000Z", "to": []any{activityPubPublicIRI}, "cc": []any{victim + "/followers"}, "inReplyTo": nil,
+						"attachment": []any{map[string]any{"type": "Document", "mediaType": "image/webp", "url": "https://files.origin.example/a.webp", "name": nil, "sensitive": true}},
+						"sensitive":  false,
+						"tag": []any{
+							map[string]any{"id": "https://origin.example/emojis/blobcat", "type": "Emoji", "name": ":blobcat:", "updated": "2026-01-01T00:00:00.000Z", "icon": map[string]any{"type": "Image", "mediaType": "image/png", "url": "https://files.origin.example/blobcat.png"}},
+							map[string]any{"type": "Mention", "href": bob, "name": "@bob@paon.example"},
+						},
+						"_misskey_reaction": nil,
+					},
+				}
+			},
+			reads: func(p activityPayload) bool {
+				return activityPubQuoteURL(p.Object) == "https://other.example/notes/q1" && linkedDataPlacementHasMention(p) && len(p.Object.Attachments) == 1
+			},
+		},
+		{
+			name: "Misskey Update(Person)",
+			payload: func(publicKeyPEM string) map[string]any {
+				return map[string]any{
+					"@context": misskeyContext, "id": victim + "#update/1", "type": "Update", "actor": victim, "to": []any{activityPubPublicIRI},
+					"object": map[string]any{
+						"type": "Person", "id": victim, "inbox": victim + "/inbox", "outbox": victim + "/outbox", "followers": victim + "/followers", "following": victim + "/following",
+						"featured": victim + "/collections/featured", "sharedInbox": "https://origin.example/inbox", "endpoints": map[string]any{"sharedInbox": "https://origin.example/inbox"},
+						"url": "https://origin.example/@alice", "preferredUsername": "alice", "name": "Alice", "summary": "<p>bio</p>", "_misskey_summary": "bio",
+						"icon":  map[string]any{"type": "Image", "url": "https://files.origin.example/avatar.webp", "sensitive": false, "name": nil},
+						"image": map[string]any{"type": "Image", "url": "https://files.origin.example/banner.webp", "sensitive": false, "name": nil},
+						"tag":   []any{}, "manuallyApprovesFollowers": false, "discoverable": true,
+						"publicKey":  map[string]any{"id": victim + "#main-key", "type": "Key", "owner": victim, "publicKeyPem": publicKeyPEM},
+						"isCat":      true,
+						"attachment": []any{map[string]any{"type": "PropertyValue", "name": "Web", "value": "<a href=\"https://alice.example\">https://alice.example</a>"}},
+						"vcard:bday": "2000-01-01", "alsoKnownAs": []any{"https://old.example/users/alice"},
+					},
+				}
+			},
+			reads: func(p activityPayload) bool {
+				return p.Object.PublicKey != "" && p.Object.AvatarRemoteURL == "https://files.origin.example/avatar.webp" && p.Object.SharedInbox == "https://origin.example/inbox"
+			},
+		},
+		{
+			name: "PeerTube video attributed to its account and channel",
+			payload: func(string) map[string]any {
+				return map[string]any{
+					"@context": []any{"https://www.w3.org/ns/activitystreams", activityPubSecurityContext, map[string]any{"RsaSignature2017": "https://w3id.org/security#RsaSignature2017"}, map[string]any{
+						"pt": "https://joinpeertube.org/ns#", "sc": "http://schema.org/", "Hashtag": "as:Hashtag", "uuid": "sc:identifier", "category": "sc:category", "licence": "sc:license",
+						"sensitive": "as:sensitive", "language": "sc:inLanguage", "identifier": "sc:identifier",
+						"views": map[string]any{"@type": "sc:Number", "@id": "pt:views"}, "state": map[string]any{"@type": "sc:Number", "@id": "pt:state"},
+						"commentsEnabled": map[string]any{"@type": "sc:Boolean", "@id": "pt:commentsEnabled"},
+						"likes":           map[string]any{"@id": "as:likes", "@type": "@id"}, "shares": map[string]any{"@id": "as:shares", "@type": "@id"},
+						"comments": map[string]any{"@id": "as:comments", "@type": "@id"}, "subtitleLanguage": "sc:subtitleLanguage",
+					}},
+					"id": victim + "/videos/watch/1/activity", "type": "Create", "actor": victim, "to": []any{activityPubPublicIRI}, "cc": []any{victim + "/followers"},
+					"object": map[string]any{
+						"type": "Video", "id": victim + "/videos/watch/1", "name": "A video", "duration": "PT60S", "uuid": "11111111-2222-3333-4444-555555555555",
+						"tag":      []any{map[string]any{"type": "Hashtag", "name": "#music"}},
+						"category": map[string]any{"identifier": "1", "name": "Music"}, "licence": map[string]any{"identifier": "1", "name": "Attribution"},
+						"language": map[string]any{"identifier": "en", "name": "English"}, "views": 10, "sensitive": false, "state": 1, "commentsEnabled": true,
+						"published": "2026-01-01T00:00:00.000Z", "mediaType": "text/markdown", "content": "description", "subtitleLanguage": []any{},
+						"icon": []any{map[string]any{"type": "Image", "url": "https://files.origin.example/thumb.jpg", "mediaType": "image/jpeg", "width": 280, "height": 157}},
+						"url": []any{
+							map[string]any{"type": "Link", "mediaType": "text/html", "href": victim + "/videos/watch/1"},
+							map[string]any{"type": "Link", "mediaType": "video/mp4", "href": "https://files.origin.example/1-720.mp4", "height": 720},
+						},
+						"likes": victim + "/videos/watch/1/likes", "shares": victim + "/videos/watch/1/announces", "comments": victim + "/videos/watch/1/comments",
+						"attributedTo": []any{map[string]any{"type": "Person", "id": victim}, map[string]any{"type": "Group", "id": "https://origin.example/video-channels/c"}},
+						"to":           []any{activityPubPublicIRI}, "cc": []any{victim + "/followers"},
+					},
+				}
+			},
+			reads: func(p activityPayload) bool { return p.Object.Type == "Video" && p.Object.AttributedTo == victim },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			body := marshalLinkedDataTestDocument(t, document)
+			compactedBody, compacted := activityPubCompactCollectionBody(body)
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("compacted signature: %v", err)
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+				t.Fatalf("signed document was rejected: %v", err)
+			}
+			payload, err := parseActivityPayload(activityPubFinalizeCollectionBodyForForwarding(body, compactedBody))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !test.reads(payload) {
+				t.Fatalf("payload does not carry the signed values: %s", compactedBody)
+			}
+		})
+	}
+}
