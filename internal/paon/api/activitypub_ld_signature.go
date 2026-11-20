@@ -456,9 +456,20 @@ var activityPubJSONLDCompactedKeywords = []string{"@value", "@language", "@direc
 // value behind it.
 var activityPubJSONLDValueObjectKeywords = []string{"@language", "@direction"}
 
+// activityPubJSONLDKeywordLike matches the keys of the keyword form that
+// JSON-LD 1.1 reserves without defining them ("@" followed by letters,
+// json-gold's ignoredKeywordPattern). Expansion drops them like undefined
+// terms, but json-gold also compacts a blank node property such as
+// "_:@unknown" to "@unknown", and that key is dropped when the compacted
+// document is re-expanded: the node object holding it looks bare to
+// activityPubJSONLDUnsignedPlacement while Paon reads a map, e.g. a decorated
+// mention href, avatar url or attachment url Paon would drop.
+var activityPubJSONLDKeywordLike = regexp.MustCompile(`^@[a-zA-Z]+$`)
+
 // activityPubJSONLDEmbeddedKeyword returns a JSON-LD keyword entry of value,
 // part of a compacted document below its top level, that compacting with
-// Paon's context does not write there.
+// Paon's context does not write there, also one of the keyword form that
+// JSON-LD does not define (activityPubJSONLDKeywordLike).
 func activityPubJSONLDEmbeddedKeyword(value any) (string, bool) {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -470,7 +481,7 @@ func activityPubJSONLDEmbeddedKeyword(value any) (string, bool) {
 			}
 		}
 		for key, child := range typed {
-			if ld.IsKeyword(key) && !slices.Contains(activityPubJSONLDCompactedKeywords, key) {
+			if (ld.IsKeyword(key) || activityPubJSONLDKeywordLike.MatchString(key)) && !slices.Contains(activityPubJSONLDCompactedKeywords, key) {
 				return key, true
 			}
 			if keyword, ok := activityPubJSONLDEmbeddedKeyword(child); ok {
