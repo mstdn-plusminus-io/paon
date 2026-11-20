@@ -2572,10 +2572,12 @@ func TestLinkedDataSignatureRejectsDecoratedReferences(t *testing.T) {
 // conversation does not join an empty one.
 func TestLinkedDataSignatureEmptyPresenceArraysKeepSignedReads(t *testing.T) {
 	const (
-		as      = "https://www.w3.org/ns/activitystreams#"
-		fep     = "https://w3id.org/fep/044f#"
-		misskey = "https://misskey-hub.net/ns#"
-		ostatus = "http://ostatus.org#"
+		as       = "https://www.w3.org/ns/activitystreams#"
+		fedibird = "http://fedibird.com/ns#"
+		fep      = "https://w3id.org/fep/044f#"
+		misskey  = "https://misskey-hub.net/ns#"
+		ostatus  = "http://ostatus.org#"
+		toot     = "http://joinmastodon.org/ns#"
 	)
 	pollCheckedAt := time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
 	readsPoll := func(p activityPayload) string {
@@ -2601,16 +2603,20 @@ func TestLinkedDataSignatureEmptyPresenceArraysKeepSignedReads(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		payload func(publicKeyPEM string) map[string]any
-		key     string
+		keys    []string
 		reads   func(payload activityPayload) string
 	}{
-		{name: "closed on an open poll", payload: linkedDataPlacementQuestionPayload, key: as + "closed", reads: readsPoll},
-		{name: "anyOf on a single-choice poll", payload: linkedDataPlacementQuestionPayload, key: as + "anyOf", reads: readsPoll},
-		{name: "quote in front of _misskey_quote", payload: noteWith("_misskey_quote", "https://other.example/notes/q"), key: fep + "quote", reads: readsQuote},
-		{name: "_misskey_quote in front of quoteUrl", payload: noteWith("quoteUrl", "https://other.example/statuses/q"), key: misskey + "_misskey_quote", reads: readsQuote},
-		{name: "_misskey_quote in front of quoteUri", payload: noteWith("quoteUri", "https://other.example/statuses/q"), key: misskey + "_misskey_quote", reads: readsQuote},
-		{name: "quoteUrl in front of quoteUri", payload: noteWith("quoteUri", "https://other.example/statuses/q"), key: as + "quoteUrl", reads: readsQuote},
-		{name: "conversation on a status without one", payload: linkedDataPlacementNotePayload, key: ostatus + "conversation", reads: readsConversation},
+		{name: "closed on an open poll", payload: linkedDataPlacementQuestionPayload, keys: []string{as + "closed"}, reads: readsPoll},
+		{name: "anyOf on a single-choice poll", payload: linkedDataPlacementQuestionPayload, keys: []string{as + "anyOf"}, reads: readsPoll},
+		{name: "quote in front of _misskey_quote", payload: noteWith("_misskey_quote", "https://other.example/notes/q"), keys: []string{fep + "quote"}, reads: readsQuote},
+		{name: "_misskey_quote in front of quoteUrl", payload: noteWith("quoteUrl", "https://other.example/statuses/q"), keys: []string{misskey + "_misskey_quote"}, reads: readsQuote},
+		{name: "_misskey_quote in front of quoteUri", payload: noteWith("quoteUri", "https://other.example/statuses/q"), keys: []string{misskey + "_misskey_quote"}, reads: readsQuote},
+		{name: "quoteUrl in front of quoteUri", payload: noteWith("quoteUri", "https://other.example/statuses/q"), keys: []string{as + "quoteUrl"}, reads: readsQuote},
+		// quoteUri and quoteUrl are also read from their other IRIs, such as
+		// those in Mastodon's namespace, behind their own terms.
+		{name: "quoteUri in front of toot:quoteUri", payload: noteWith(toot+"quoteUri", "https://other.example/statuses/q"), keys: []string{fedibird + "quoteUri"}, reads: readsQuote},
+		{name: "quoteUrl in front of toot:quoteUrl", payload: noteWith(toot+"quoteUrl", "https://other.example/statuses/q"), keys: []string{as + "quoteUrl"}, reads: readsQuote},
+		{name: "conversation on a status without one", payload: linkedDataPlacementNotePayload, keys: []string{ostatus + "conversation"}, reads: readsConversation},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			document, publicKey := signedLinkedDataFixture(t, test.payload)
@@ -2633,12 +2639,16 @@ func TestLinkedDataSignatureEmptyPresenceArraysKeepSignedReads(t *testing.T) {
 				return payload, compactedBody
 			}
 			signed, _ := parse(marshalLinkedDataTestDocument(t, document))
-			document["object"].(map[string]any)[test.key] = []any{}
+			for _, key := range test.keys {
+				document["object"].(map[string]any)[key] = []any{}
+			}
 			relayed, compactedBody := parse(marshalLinkedDataTestDocument(t, document))
 			// Compaction keeps the empty array under the term or its compact IRI.
-			_, term, _ := strings.Cut(test.key, "#")
-			if !strings.Contains(string(compactedBody), term+`":[]`) {
-				t.Fatalf("compacted document does not keep the empty %s: %s", term, compactedBody)
+			for _, key := range test.keys {
+				_, term, _ := strings.Cut(key, "#")
+				if !strings.Contains(string(compactedBody), term+`":[]`) {
+					t.Fatalf("compacted document does not keep the empty %s: %s", term, compactedBody)
+				}
 			}
 			if got, want := test.reads(relayed), test.reads(signed); got != want {
 				t.Fatalf("relayed copy reads %s, want the signed %s", got, want)

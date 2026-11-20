@@ -871,11 +871,14 @@ func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 	})
 	// Like Mastodon 4.5 (StatusParser#quote_uri), the quote target is read
 	// from quote, _misskey_quote, quoteUrl and quoteUri in that order, so an
-	// empty array of an earlier term must not hide a later one.
+	// empty array of an earlier term must not hide a later one. fep tells
+	// whether FEP-044f's quote is present, which makes the quote a non-legacy
+	// one.
 	for _, test := range []struct {
 		name   string
 		object string
 		want   string
+		fep    bool
 	}{
 		{
 			name:   "quote next to _misskey_quote",
@@ -897,10 +900,28 @@ func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUrl":[],"quoteUri":"https://remote.test/statuses/q"}`,
 			want:   "https://remote.test/statuses/q",
 		},
+		// Each term is also read from its other IRIs, behind its own key.
+		{
+			name:   "quote next to the expanded quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":[],"https://w3id.org/fep/044f#quote":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+			fep:    true,
+		},
+		{
+			name:   "quoteUrl next to the expanded quoteUrl",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUrl":[],"https://www.w3.org/ns/activitystreams#quoteUrl":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "quoteUri next to toot:quoteUri",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUri":[],"toot:quoteUri":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := activityPubQuoteURL(parse(t, test.object)); got != test.want {
-				t.Fatalf("quote URL = %q, want %q", got, test.want)
+			object := parse(t, test.object)
+			if got := activityPubQuoteURL(object); got != test.want || object.QuoteSet != test.fep {
+				t.Fatalf("quote URL = %q fep = %v, want %q fep = %v", got, object.QuoteSet, test.want, test.fep)
 			}
 		})
 	}
