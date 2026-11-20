@@ -821,6 +821,12 @@ const activityPubMastodonAttributionDomainsIRI = "http://joinmastodon.org/ns#att
 // those node references. Like Mastodon v4.5.15
 // (ProcessAccountService#set_immediate_attributes!, grep(String)), Paon never
 // reads such references (activityLimitedStringList), so they are skipped.
+// Only a bare reference, a node object with nothing but its @id, is skipped:
+// RDF conversion drops every statement of a node with a relative or invalid
+// @id but keeps the statements of the node objects below it, so a relay could
+// move a signed node description below such a node, leave only a reference
+// where Paon reads it, and keep the signed RDF. Any other node object is
+// checked like any other content, which rejects such an @id.
 // Paon does read literal values, including expanded {"@value": ...} objects,
 // stores them and trusts them for link card author attribution, so those must
 // stay covered by the signature like any other content.
@@ -831,7 +837,7 @@ func activityPubJSONLDUncanonicalizedAttributionDomains(value any) error {
 	}
 	for _, item := range items {
 		if node, ok := item.(map[string]any); ok {
-			if _, reference := node["@id"]; reference {
+			if _, reference := node["@id"]; reference && len(node) == 1 {
 				continue
 			}
 		}

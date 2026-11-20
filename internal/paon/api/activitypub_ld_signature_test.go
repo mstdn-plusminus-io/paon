@@ -1991,6 +1991,166 @@ func TestLinkedDataSignatureRejectsRelocatedNodeDescriptions(t *testing.T) {
 	}
 }
 
+// RDF conversion also drops every statement whose subject is a relative or
+// invalid IRI, while it keeps the statements of the node objects below that
+// subject. Mastodon 4.3.0 to 4.4.17 and 4.5.0 to 4.5.10 publish
+// attributionDomains as bare node references with such relative IRIs, so the
+// coverage check skips them. A relay must not be able to give such a node
+// statements and move the victim's signed node description below it, leaving
+// only a reference where Paon reads the value: the node is checked like any
+// other content, and the document is not authenticated. The bare references
+// of those Mastodon releases stay accepted.
+func TestLinkedDataSignatureRejectsDescriptionsBelowAttributionDomainsNodes(t *testing.T) {
+	key := linkedDataForgeryVictimURI + "#main-key"
+	const avatar = "https://files.origin.example/avatar.png"
+	const media = "https://files.origin.example/media/1.png"
+	object := func(document map[string]any) map[string]any { return document["object"].(map[string]any) }
+	// below appends to the attributionDomains of holder a node with identifier
+	// id that holds node under property.
+	below := func(holder map[string]any, id string, property string, node any) {
+		domains, _ := holder["attributionDomains"].([]any)
+		holder["attributionDomains"] = append(domains, map[string]any{"id": id, property: node})
+	}
+	// mentionBelow leaves a blank node reference to the signed mention in its
+	// tags and moves the description below the node id of holder.
+	mentionBelow := func(holder func(document map[string]any) map[string]any, id string) func(document map[string]any) {
+		return func(document map[string]any) {
+			tags := object(document)["tag"].([]any)
+			mention := tags[0].(map[string]any)
+			mention["id"] = "_:m"
+			tags[0] = map[string]any{"id": "_:m"}
+			below(holder(document), id, "tag", mention)
+		}
+	}
+	notCanonicalized := func(id string) string {
+		return `node identifier "` + id + `" is not canonicalized`
+	}
+	pollCheckedAt := time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		forge   func(document map[string]any)
+		forged  func(payload activityPayload) bool
+		want    string
+	}{
+		{
+			name:    "mention below a relative node of the object",
+			payload: linkedDataPlacementNotePayload,
+			forge:   mentionBelow(object, "example.com"),
+			forged:  func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+			want:    notCanonicalized("example.com"),
+		},
+		{
+			name:    "mention below a relative node of the activity",
+			payload: linkedDataPlacementNotePayload,
+			forge:   mentionBelow(func(document map[string]any) map[string]any { return document }, "example.com"),
+			forged:  func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+			want:    notCanonicalized("example.com"),
+		},
+		{
+			name:    "mention below a node with an invalid absolute IRI",
+			payload: linkedDataPlacementNotePayload,
+			forge:   mentionBelow(object, "http://exa mple.invalid/x"),
+			forged:  func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+			want:    notCanonicalized("http://exa mple.invalid/x"),
+		},
+		{
+			name:    "attachment below a relative node",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				attachments := object(document)["attachment"].([]any)
+				attachment := attachments[0].(map[string]any)
+				attachment["id"] = "_:a"
+				attachments[0] = map[string]any{"id": "_:a"}
+				below(object(document), "example.com", "attachment", attachment)
+			},
+			forged: func(p activityPayload) bool {
+				return !slices.ContainsFunc(p.Object.Attachments, func(attachment activityAttachment) bool { return attachment.URL == media })
+			},
+			want: notCanonicalized("example.com"),
+		},
+		{
+			name:    "poll options below relative nodes",
+			payload: linkedDataPlacementQuestionPayload,
+			forge: func(document map[string]any) {
+				question := object(document)
+				options := question["oneOf"].([]any)
+				references := make([]any, 0, len(options))
+				for i, raw := range options {
+					option := raw.(map[string]any)
+					option["id"] = fmt.Sprintf("_:o%d", i)
+					references = append(references, map[string]any{"id": option["id"]})
+					below(question, fmt.Sprintf("example%d.com", i), "attachment", option)
+				}
+				question["oneOf"] = references
+			},
+			forged: func(p activityPayload) bool {
+				parsed, _ := activityPollFromObject(p.Object, 1, 1, pollCheckedAt)
+				return !slices.Equal(parsed.Options, models.StringArray{"yes", "no"})
+			},
+			want: notCanonicalized("example0.com"),
+		},
+		{
+			name:    "key below a relative node",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				below(person, "example.com", "attachment", person["publicKey"])
+				person["publicKey"] = key
+			},
+			forged: func(p activityPayload) bool { return p.Object.PublicKey == "" },
+			want:   notCanonicalized("example.com"),
+		},
+		{
+			name:    "avatar below a relative node",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				icon := person["icon"].(map[string]any)
+				icon["id"] = "_:i"
+				person["icon"] = map[string]any{"id": "_:i"}
+				below(person, "example.com", "attachment", icon)
+			},
+			forged: func(p activityPayload) bool { return p.Object.AvatarRemoteURL != avatar },
+			want:   notCanonicalized("example.com"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			test.forge(document)
+			assertLinkedDataForgeryRejected(t, document, publicKey, test.forged, test.want)
+		})
+	}
+
+	t.Run("signed bare references", func(t *testing.T) {
+		document, publicKey := signedLinkedDataFixture(t, func(publicKeyPEM string) map[string]any {
+			document := linkedDataPlacementPersonPayload(publicKeyPEM)
+			object(document)["attributionDomains"] = []any{map[string]any{"id": "origin.example"}, map[string]any{"id": "news.example"}}
+			return document
+		})
+		compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+		if !compacted {
+			t.Fatal("document with a literal signature object was not compacted")
+		}
+		if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+			t.Fatalf("compacted signature: %v", err)
+		}
+		if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+			t.Fatalf("signed attributionDomains references were rejected: %v", err)
+		}
+		payload, err := parseActivityPayload(compactedBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if payload.Object.PublicKey == "" || payload.Object.AvatarRemoteURL != avatar {
+			t.Fatalf("signed key or avatar was not read: %s", compactedBody)
+		}
+		if domains := activityLimitedStringList(payload.Object.AttributionDomains, 256); len(domains) != 0 {
+			t.Fatalf("attributionDomains node references were read as %#v", domains)
+		}
+	})
+}
+
 // Signed documents that describe a node more than once with the same
 // statements, reference a node they describe elsewhere, or carry empty arrays
 // keep their linked-data authority, and Paon reads their signed values.
