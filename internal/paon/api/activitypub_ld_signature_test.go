@@ -1072,6 +1072,62 @@ func TestLinkedDataSignatureRejectsEmbeddedContext(t *testing.T) {
 	})
 }
 
+// linkedDataVictimServer returns a server whose database returns the victim,
+// holding publicKeyPEM, for every account lookup, such as the one for the
+// linked-data signature creator.
+func linkedDataVictimServer(t *testing.T, publicKeyPEM string) *Server {
+	t.Helper()
+	victim := models.Account{
+		ID:        21,
+		Username:  "alice",
+		Domain:    sql.NullString{String: "origin.example", Valid: true},
+		URI:       linkedDataForgeryVictimURI,
+		PublicKey: publicKeyPEM,
+	}
+	database, err := gorm.Open(postgres.New(postgres.Config{
+		DSN: "host=127.0.0.1 port=1 user=paon dbname=paon sslmode=disable",
+	}), &gorm.Config{DryRun: true, DisableAutomaticPing: true, SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Callback().Query().Replace("gorm:query", func(tx *gorm.DB) {
+		if destination, ok := tx.Statement.Dest.(*models.Account); ok {
+			*destination = victim
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return &Server{cfg: config.Config{Scheme: "https", LocalDomain: "paon.example", WebDomain: "paon.example"}, db: database}
+}
+
+// authenticateRelayedLinkedDataDocument follows
+// processActivityPubInboxForDeliveredToWithContext for an activity relayed by
+// another actor: it returns the actor the linked-data signature authenticates
+// and the payload Paon would process.
+func authenticateRelayedLinkedDataDocument(t *testing.T, server *Server, publicKey *rsa.PublicKey, body []byte) (string, activityPayload, error) {
+	t.Helper()
+	verificationBody, compacted := activityPubCompactCollectionBody(body)
+	if !compacted {
+		t.Fatal("document with a literal signature object was not compacted")
+	}
+	if err := verifyActivityPubLinkedDataSignatureWithError(verificationBody, publicKey); err != nil {
+		t.Fatalf("compacted signature: %v", err)
+	}
+	payload, err := parseActivityPayload(verificationBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processed, err := parseActivityPayload(activityPubFinalizeCollectionBodyForForwarding(body, verificationBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor, err := server.activityPubLinkedDataSignatureActor(verificationBody, payload)
+	if actor == nil {
+		return "", processed, err
+	}
+	return actor.URI, processed, err
+}
+
 // A relay adds its own movedTo to the victim's linked-data signed
 // Update(Person), together with a "_:@context" that compaction turns into an
 // embedded context nulling movedTo. This follows the inbox end to end: the
@@ -1111,53 +1167,10 @@ func TestLinkedDataSignatureEmbeddedContextCannotForgeMovedTo(t *testing.T) {
 	})}
 
 	document, publicKey := signedLinkedDataFixture(t, linkedDataPersonUpdatePayload)
-	victim := models.Account{
-		ID:        21,
-		Username:  "alice",
-		Domain:    sql.NullString{String: "origin.example", Valid: true},
-		URI:       linkedDataForgeryVictimURI,
-		PublicKey: document["object"].(map[string]any)["publicKey"].(map[string]any)["publicKeyPem"].(string),
-	}
-	// The signature creator lookup finds the victim with the signing key.
-	database, err := gorm.Open(postgres.New(postgres.Config{
-		DSN: "host=127.0.0.1 port=1 user=paon dbname=paon sslmode=disable",
-	}), &gorm.Config{DryRun: true, DisableAutomaticPing: true, SkipDefaultTransaction: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := database.Callback().Query().Replace("gorm:query", func(tx *gorm.DB) {
-		if destination, ok := tx.Statement.Dest.(*models.Account); ok {
-			*destination = victim
-		}
-	}); err != nil {
-		t.Fatal(err)
-	}
-	server := &Server{cfg: config.Config{Scheme: "https", LocalDomain: "paon.example", WebDomain: "paon.example"}, db: database}
-	// authenticate follows processActivityPubInboxForDeliveredToWithContext for
-	// an activity relayed by another actor: it returns the actor the linked-data
-	// signature authenticates and the payload Paon would process.
+	server := linkedDataVictimServer(t, document["object"].(map[string]any)["publicKey"].(map[string]any)["publicKeyPem"].(string))
 	authenticate := func(t *testing.T, body []byte) (string, activityPayload, error) {
 		t.Helper()
-		verificationBody, compacted := activityPubCompactCollectionBody(body)
-		if !compacted {
-			t.Fatal("document with a literal signature object was not compacted")
-		}
-		if err := verifyActivityPubLinkedDataSignatureWithError(verificationBody, publicKey); err != nil {
-			t.Fatalf("compacted signature: %v", err)
-		}
-		payload, err := parseActivityPayload(verificationBody)
-		if err != nil {
-			t.Fatal(err)
-		}
-		processed, err := parseActivityPayload(activityPubFinalizeCollectionBodyForForwarding(body, verificationBody))
-		if err != nil {
-			t.Fatal(err)
-		}
-		actor, err := server.activityPubLinkedDataSignatureActor(verificationBody, payload)
-		if actor == nil {
-			return "", processed, err
-		}
-		return actor.URI, processed, err
+		return authenticateRelayedLinkedDataDocument(t, server, publicKey, body)
 	}
 
 	t.Run("signed document", func(t *testing.T) {
@@ -1185,6 +1198,142 @@ func TestLinkedDataSignatureEmbeddedContextCannotForgeMovedTo(t *testing.T) {
 		}
 		if actor != "" || err == nil || !strings.Contains(err.Error(), "linked-data signature does not cover the document: embedded @context") {
 			t.Fatalf("authenticated actor = %q, %v; want rejection of the embedded @context", actor, err)
+		}
+	})
+}
+
+// json-gold compacts "_:@nest" and "_:@set" to the keywords "@nest" and "@set"
+// just like "_:@context". Re-expansion merges an @nest object into its node
+// and unwraps an @set object, so a relay can move signed properties under
+// them: the canonicalized RDF, and with it the victim's signature, stays the
+// same, but Paon reads the compacted JSON and no longer sees those properties,
+// such as a content warning, a mention or an account's aliases. Such a
+// document is never authenticated. @nest and @set of the original document
+// are still fine: compaction removes them.
+func TestLinkedDataSignatureRejectsEmbeddedNestAndSet(t *testing.T) {
+	const mentioned = "https://paon.example/users/carol"
+	const alias = "https://old.example/users/alice"
+	note := func(publicKeyPEM string) map[string]any {
+		payload := linkedDataNoteCreatePayload(publicKeyPEM)
+		payload["@context"] = append(payload["@context"].([]any), map[string]any{"sensitive": "as:sensitive"})
+		object := payload["object"].(map[string]any)
+		object["summary"] = "CW: spoiler"
+		object["sensitive"] = true
+		object["tag"] = []any{map[string]any{"type": "Mention", "href": mentioned, "name": "@carol@paon.example"}}
+		return payload
+	}
+	person := func(publicKeyPEM string) map[string]any {
+		payload := linkedDataPersonUpdatePayload(publicKeyPEM)
+		payload["@context"] = append(payload["@context"].([]any), map[string]any{
+			"alsoKnownAs":               map[string]any{"@id": "as:alsoKnownAs", "@type": "@id"},
+			"manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
+		})
+		object := payload["object"].(map[string]any)
+		object["alsoKnownAs"] = []any{alias}
+		object["manuallyApprovesFollowers"] = true
+		return payload
+	}
+	hasContentWarning := func(payload activityPayload) bool {
+		return payload.Object.Summary == "CW: spoiler" && payload.Object.Sensitive
+	}
+	mentions := func(payload activityPayload) bool {
+		return slices.ContainsFunc(payload.Object.Tags, func(tag activityTag) bool {
+			return tag.Type == "Mention" && tag.Href == mentioned
+		})
+	}
+	hasAliasAndLock := func(payload activityPayload) bool {
+		return slices.Contains(activityLimitedValueOrIDList(payload.Object.AlsoKnownAs, 256), alias) && payload.Object.Locked
+	}
+	isPublic := func(payload activityPayload) bool {
+		return slices.Contains(payload.To, activityPubPublicIRI)
+	}
+	moveIntoNest := func(keys ...string) func(node map[string]any) {
+		return func(node map[string]any) {
+			nested := map[string]any{}
+			for _, key := range keys {
+				nested[key] = node[key]
+				delete(node, key)
+			}
+			node["_:@nest"] = nested
+		}
+	}
+	wrapTag := func(keyword string) func(object map[string]any) {
+		return func(object map[string]any) {
+			object["tag"] = []any{map[string]any{"_:" + keyword: object["tag"]}}
+		}
+	}
+	inObject := func(edit func(object map[string]any)) func(document map[string]any) {
+		return func(document map[string]any) {
+			edit(document["object"].(map[string]any))
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		reads   func(payload activityPayload) bool
+		hide    func(document map[string]any)
+	}{
+		{name: "content warning moved into @nest", payload: note, reads: hasContentWarning, hide: inObject(moveIntoNest("summary", "sensitive"))},
+		{name: "mention wrapped in @set", payload: note, reads: mentions, hide: inObject(wrapTag("@set"))},
+		{name: "mention wrapped in @nest", payload: note, reads: mentions, hide: inObject(wrapTag("@nest"))},
+		{name: "alias and lock moved into @nest", payload: person, reads: hasAliasAndLock, hide: inObject(moveIntoNest("alsoKnownAs", "manuallyApprovesFollowers"))},
+		{name: "audience moved into a top-level @nest", payload: person, reads: isPublic, hide: moveIntoNest("to")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var publicKeyPEM string
+			document, publicKey := signedLinkedDataFixture(t, func(pem string) map[string]any {
+				publicKeyPEM = pem
+				return test.payload(pem)
+			})
+			server := linkedDataVictimServer(t, publicKeyPEM)
+
+			actor, processed, err := authenticateRelayedLinkedDataDocument(t, server, publicKey, marshalLinkedDataTestDocument(t, document))
+			if err != nil || actor != linkedDataForgeryVictimURI {
+				t.Fatalf("signed document: authenticated actor = %q, %v; want the victim", actor, err)
+			}
+			if !test.reads(processed) {
+				t.Fatal("signed document: processed payload does not carry the signed content")
+			}
+
+			forged := cloneLinkedDataTestDocument(t, document)
+			test.hide(forged)
+			body := marshalLinkedDataTestDocument(t, forged)
+			// The victim's signature still verifies, but the payload Paon would
+			// process has lost the signed content.
+			actor, processed, err = authenticateRelayedLinkedDataDocument(t, server, publicKey, body)
+			if test.reads(processed) {
+				t.Fatal("forged document: processed payload still carries the signed content")
+			}
+			if actor != "" || err == nil || !strings.Contains(err.Error(), "linked-data signature does not cover the document: embedded @nest or @set") {
+				t.Fatalf("forged document: authenticated actor = %q, %v; want rejection of the embedded @nest or @set", actor, err)
+			}
+			// Rejection must happen before signature creator lookup touches the
+			// database; reaching it here would panic on the zero-value handle.
+			err = (&Server{db: &gorm.DB{}}).processActivityPubInboxForDeliveredToWithContext(t.Context(), body, linkedDataForgeryRelay(), nil, 0)
+			if !errors.Is(err, errActivityPubEventNotApplied) || !strings.Contains(err.Error(), "linked-data signature does not cover the document") {
+				t.Fatalf("relayed activity error = %v, want rejection of the embedded @nest or @set", err)
+			}
+		})
+	}
+
+	t.Run("@nest and @set of the original document", func(t *testing.T) {
+		var publicKeyPEM string
+		document, publicKey := signedLinkedDataFixture(t, func(pem string) map[string]any {
+			publicKeyPEM = pem
+			payload := note(pem)
+			object := payload["object"].(map[string]any)
+			moveIntoNest("summary", "sensitive")(object)
+			object["@nest"] = object["_:@nest"]
+			delete(object, "_:@nest")
+			object["tag"] = []any{map[string]any{"@set": object["tag"]}}
+			return payload
+		})
+		actor, processed, err := authenticateRelayedLinkedDataDocument(t, linkedDataVictimServer(t, publicKeyPEM), publicKey, marshalLinkedDataTestDocument(t, document))
+		if err != nil || actor != linkedDataForgeryVictimURI {
+			t.Fatalf("authenticated actor = %q, %v; want the victim", actor, err)
+		}
+		if !hasContentWarning(processed) || !mentions(processed) {
+			t.Fatalf("processed payload lost the signed content: summary=%q sensitive=%v tags=%#v", processed.Object.Summary, processed.Object.Sensitive, processed.Object.Tags)
 		}
 	})
 }

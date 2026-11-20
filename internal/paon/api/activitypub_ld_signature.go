@@ -425,6 +425,15 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 		if key != "@context" && activityPubJSONLDHasEmbeddedContext(value) {
 			return fmt.Errorf("linked-data signature does not cover the document: embedded @context")
 		}
+		// "_:@nest" and "_:@set" compact to keywords the same way. Re-expansion
+		// merges an "@nest" object into its node and unwraps a {"@set": ...}
+		// object, so signed properties moved under them keep the canonicalized
+		// RDF unchanged while Paon, which reads the compacted JSON literally,
+		// no longer sees them. Compacting with Paon's context never writes
+		// either keyword, at the top level or below it.
+		if key == "@nest" || key == "@set" || (key != "@context" && activityPubJSONLDHasNestOrSet(value)) {
+			return fmt.Errorf("linked-data signature does not cover the document: embedded @nest or @set")
+		}
 		unsigned[key] = value
 	}
 	input, err := activityPubJSONLDSanitize(unsigned)
@@ -457,6 +466,26 @@ func activityPubJSONLDHasEmbeddedContext(value any) bool {
 	case []any:
 		for _, child := range typed {
 			if activityPubJSONLDHasEmbeddedContext(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// activityPubJSONLDHasNestOrSet reports whether value, part of a compacted
+// document, holds an "@nest" or "@set" entry.
+func activityPubJSONLDHasNestOrSet(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if key == "@nest" || key == "@set" || activityPubJSONLDHasNestOrSet(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if activityPubJSONLDHasNestOrSet(child) {
 				return true
 			}
 		}
