@@ -925,6 +925,20 @@ func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 			}
 		})
 	}
+	// The deleted and the inlined FEP-044f quote are read from the value the
+	// lookup finds, also behind an empty quote.
+	t.Run("deleted quote next to the expanded quote", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":[],"https://w3id.org/fep/044f#quote":{"id":"https://remote.test/statuses/q","type":"Tombstone"}}`)
+		if !object.QuoteSet || !object.QuoteDeleted {
+			t.Fatalf("quote set = %v deleted = %v, want a deleted FEP-044f quote", object.QuoteSet, object.QuoteDeleted)
+		}
+	})
+	t.Run("inlined quote next to the expanded quote", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":[],"https://w3id.org/fep/044f#quote":{"id":"https://remote.test/statuses/q","type":"Note","content":"quoted","attributedTo":"https://remote.test/users/carol"}}`)
+		if !object.QuoteSet || object.QuotedObject == nil || object.QuotedObject.ID != "https://remote.test/statuses/q" {
+			t.Fatalf("quote set = %v inlined quote = %#v, want the inlined FEP-044f quote", object.QuoteSet, object.QuotedObject)
+		}
+	})
 	// A lone empty quote term is no quote; an empty quote also keeps the
 	// status a legacy quote candidate like a document without quote.
 	for _, term := range []string{"quote", "_misskey_quote", "quoteUrl", "quoteUri"} {
