@@ -487,6 +487,14 @@ func (s *Server) faspResolveAccountURI(uri string) (*models.Account, bool, error
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, false, err
 	}
+	// Fasp::AccountSearchWorker and Fasp::FollowRecommendationWorker resolve
+	// unknown URIs with ActivityPub::FetchRemoteActorService, which returns nil
+	// when domain_not_allowed?(uri): suspended domains, or every domain outside
+	// the allowlist in limited federation mode. resolveSearchRemoteAccountURL
+	// requires the fetched actor id to equal uri, so this host is the actor's.
+	if disallowed, err := s.remoteActivityDomainNotAllowed(uri); err != nil || disallowed {
+		return nil, false, err
+	}
 	account, err := s.resolveSearchRemoteAccountURL(uri)
 	if err != nil || account == nil {
 		return nil, false, err
