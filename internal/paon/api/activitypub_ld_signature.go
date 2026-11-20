@@ -367,7 +367,9 @@ var activityPubJSONLDLanguageTag = regexp.MustCompile(`^[a-zA-Z]+(-[a-zA-Z0-9]+)
 // (Quad.Valid), so such content keeps a valid signature while Paon still reads
 // it, e.g. a publicKey with a relative @id placed before the signed key.
 // Properties that expand to blank node identifiers (terms no context defines)
-// are never canonicalized either; as in Mastodon they are left alone.
+// are never canonicalized either; as in Mastodon they are left alone. That is
+// only safe while compaction keeps them under their "_:" keys; see
+// activityPubFullJSONLDContextExtensions.
 func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -624,6 +626,13 @@ func activityPubFullJSONLDContext() []any {
 	}
 }
 
+// activityPubFullJSONLDContextExtensions holds the extension terms of the
+// context signed documents are compacted with (activityPubFullJSONLDContext).
+// A key Paon reads from them must be a term of that context: otherwise the
+// ActivityStreams "@vocab": "_:" compacts an unsigned blank node property such
+// as "_:attributionDomains" (an undefined term) to that key. Like Mastodon
+// v4.6.6 (ContextHelper#full_context), attributionDomains is defined so that
+// such a property stays "_:attributionDomains" and is never read.
 func activityPubFullJSONLDContextExtensions() map[string]any {
 	extensions := map[string]any{
 		"manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
@@ -648,6 +657,7 @@ func activityPubFullJSONLDContextExtensions() map[string]any {
 		"indexable":                 "toot:indexable",
 		"memorial":                  "toot:memorial",
 		"suspended":                 "toot:suspended",
+		"attributionDomains":        map[string]any{"@id": "toot:attributionDomains", "@container": "@set"},
 		"fep":                       "https://w3id.org/fep/044f#",
 		"quote":                     map[string]any{"@id": "fep:quote", "@type": "@id"},
 		"fedibird":                  "http://fedibird.com/ns#",

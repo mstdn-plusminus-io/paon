@@ -898,6 +898,92 @@ func TestLinkedDataSignatureAcceptsMastodonAttributionDomains(t *testing.T) {
 	}
 }
 
+// A property that expands to the blank node identifier "_:attributionDomains"
+// (an undefined term under the ActivityStreams "@vocab": "_:", or that key
+// itself) is dropped by RDF conversion, so the signature does not cover it.
+// Mastodon v4.6.6 compacts with a context that defines attributionDomains
+// (ContextHelper#full_context), so such a property stays "_:attributionDomains"
+// and ProcessAccountService never reads it. Paon must not read it either, nor
+// any other attributionDomains value outside the signed RDF.
+func TestLinkedDataSignatureIgnoresBlankNodeAttributionDomains(t *testing.T) {
+	mastodonPerson := func(definition map[string]any, domains ...any) func(publicKeyPEM string) map[string]any {
+		return func(publicKeyPEM string) map[string]any {
+			payload := linkedDataPersonUpdatePayload(publicKeyPEM)
+			payload["@context"] = append(payload["@context"].([]any), map[string]any{
+				"toot":               "http://joinmastodon.org/ns#",
+				"attributionDomains": definition,
+			})
+			payload["object"].(map[string]any)["attributionDomains"] = domains
+			return payload
+		}
+	}
+	// Mastodon 4.4.18 and later publish literal domains in a set.
+	literalDomains := mastodonPerson(map[string]any{"@id": "toot:attributionDomains", "@container": "@set"}, "origin.example")
+	// Earlier Mastodon 4.3 and 4.4 releases publish them as node references,
+	// which nobody reads.
+	referencedDomains := mastodonPerson(map[string]any{"@id": "toot:attributionDomains", "@type": "@id"}, "origin.example")
+	undefinedTerm := func(object map[string]any) {
+		object["attributionDomains"] = []any{"attacker.example"}
+	}
+	undefinedTermValueObject := func(object map[string]any) {
+		object["attributionDomains"] = []any{map[string]any{"@value": "attacker.example"}}
+	}
+	blankNodeProperty := func(object map[string]any) {
+		object["_:attributionDomains"] = []any{"attacker.example"}
+	}
+	blankNodeValueObject := func(object map[string]any) {
+		object["_:attributionDomains"] = []any{map[string]any{"@value": "attacker.example"}}
+	}
+	// A relative node reference is dropped by RDF conversion too; it is
+	// skipped by the coverage check because Paon never reads references.
+	relativeReference := func(object map[string]any) {
+		object["attributionDomains"] = []any{"origin.example", map[string]any{"id": "attacker.example"}}
+	}
+	uncanonicalizedLiteral := func(object map[string]any) {
+		object["attributionDomains"] = []any{"origin.example", map[string]any{"@value": "attacker.example", "@language": "x_y"}}
+	}
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		inject  func(object map[string]any)
+		want    []string
+	}{
+		{name: "undefined term", payload: linkedDataPersonUpdatePayload, inject: undefinedTerm},
+		{name: "undefined term value object", payload: linkedDataPersonUpdatePayload, inject: undefinedTermValueObject},
+		{name: "blank node property", payload: linkedDataPersonUpdatePayload, inject: blankNodeProperty},
+		{name: "blank node value object", payload: linkedDataPersonUpdatePayload, inject: blankNodeValueObject},
+		{name: "blank node property next to signed literals", payload: literalDomains, inject: blankNodeProperty, want: []string{"origin.example"}},
+		{name: "blank node value object next to signed literals", payload: literalDomains, inject: blankNodeValueObject, want: []string{"origin.example"}},
+		{name: "blank node property next to signed references", payload: referencedDomains, inject: blankNodeProperty},
+		{name: "relative reference next to signed literals", payload: literalDomains, inject: relativeReference, want: []string{"origin.example"}},
+		{name: "uncanonicalized literal next to signed literals", payload: literalDomains, inject: uncanonicalizedLiteral, want: []string{"origin.example"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			test.inject(document["object"].(map[string]any))
+			compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			// The injected value is outside the signed RDF.
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("injection changed the signed RDF: %v", err)
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+				// Rejecting the document also keeps the injected value out.
+				return
+			}
+			payload, err := parseActivityPayload(compactedBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if domains := activityLimitedStringList(payload.Object.AttributionDomains, 256); !slices.Equal(domains, test.want) {
+				t.Fatalf("attributionDomains = %#v, want only the signed %#v", domains, test.want)
+			}
+		})
+	}
+}
+
 // Mastodon 4.6 documents reference the WebFinger context, which Mastodon
 // preloads; Paon preloads it too so relayed documents compact offline.
 func TestLinkedDataSignatureCompactsMastodonWebFingerContext(t *testing.T) {
