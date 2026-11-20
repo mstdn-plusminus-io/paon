@@ -620,13 +620,14 @@ func activityPubJSONLDUncanonicalizedAttributionDomains(value any) error {
 //   - one property holds both a bare reference to an @id and a description of
 //     it;
 //   - a reference outside dropped properties carries entries that produce no
-//     statement (@index, undefined terms or empty arrays). The compacted
-//     reference then stays a map instead of the IRI string readers such as
-//     a mention's href, an attachment url or an avatar url expect, so Paon
-//     would drop the signed value. A node object whose @id RDF conversion
-//     drops (a relative attributionDomains domain) produces no statement
-//     either, so it must be bare too; otherwise a relay could move signed
-//     descriptions below it.
+//     statement (@index, undefined terms, empty arrays or relative
+//     attributionDomains domains, whose statements RDF conversion drops).
+//     The compacted reference then stays a map instead of the IRI string
+//     readers such as a mention's href, an attachment url or an avatar url
+//     expect, so Paon would drop the signed value. A node object whose @id
+//     RDF conversion drops (a relative attributionDomains domain) produces
+//     no statement either, so it must be bare too; otherwise a relay could
+//     move signed descriptions below it.
 func activityPubJSONLDUnsignedPlacement(expanded []any) error {
 	placement := activityPubJSONLDPlacement{
 		descriptions: map[string][sha256.Size]byte{},
@@ -767,7 +768,10 @@ func (p *activityPubJSONLDPlacement) walkValues(values []any, dropped bool) erro
 // (activityPubJSONLDUncanonicalizedAttributionDomains), and it must stay a
 // bare reference there: the node objects nested in it keep their own
 // statements, so a description moved below it would leave the signed RDF as
-// it was while Paon no longer read it where it is referenced.
+// it was while Paon no longer read it where it is referenced. For the same
+// reason a value that is such a node object produces no statement: a
+// reference holding only relative attributionDomains domains is still a
+// reference, which compacts to a map in place of the IRI string Paon reads.
 func activityPubJSONLDNodeHasStatements(node map[string]any) bool {
 	if id, ok := node["@id"].(string); ok && !activityPubJSONLDCanonicalizedNodeID(id) {
 		return false
@@ -776,7 +780,16 @@ func activityPubJSONLDNodeHasStatements(node map[string]any) bool {
 		if key != "@type" && !activityPubJSONLDCanonicalizedProperty(key) {
 			continue
 		}
-		if items, ok := value.([]any); !ok || len(items) > 0 {
+		items, ok := value.([]any)
+		if !ok {
+			items = []any{value}
+		}
+		for _, item := range items {
+			if object, ok := item.(map[string]any); ok {
+				if id, ok := object["@id"].(string); ok && !activityPubJSONLDCanonicalizedNodeID(id) {
+					continue
+				}
+			}
 			return true
 		}
 	}
