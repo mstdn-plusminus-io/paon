@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -2545,6 +2546,82 @@ func TestLinkedDataSignatureRejectsDecoratedReferences(t *testing.T) {
 			document, publicKey := signedLinkedDataFixture(t, test.payload)
 			test.forge(document)
 			assertLinkedDataForgeryRejected(t, document, publicKey, test.forged, test.want)
+		})
+	}
+}
+
+// An empty array produces no RDF statement, so a relay can add one to a
+// signed document without invalidating its linked-data signature. The terms
+// Paon reads by their presence treat it as absent, so the relayed copy reads
+// like the signed document: an open poll stays open, a single-choice poll
+// keeps its options, a quote keeps its target and a status without a
+// conversation does not join an empty one.
+func TestLinkedDataSignatureEmptyPresenceArraysKeepSignedReads(t *testing.T) {
+	const (
+		as      = "https://www.w3.org/ns/activitystreams#"
+		toot    = "http://joinmastodon.org/ns#"
+		ostatus = "http://ostatus.org#"
+	)
+	pollCheckedAt := time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
+	readsPoll := func(p activityPayload) string {
+		poll, ok := activityPollFromObject(p.Object, 1, 1, pollCheckedAt)
+		return fmt.Sprintf("poll=%v options=%v multiple=%v tallies=%v expires=%v", ok, poll.Options, poll.Multiple, poll.CachedTallies, poll.ExpiresAt)
+	}
+	readsQuote := func(p activityPayload) string { return activityPubQuoteURL(p.Object) }
+	readsConversation := func(p activityPayload) string {
+		return fmt.Sprintf("conversation=%q set=%v", p.Object.Conversation, p.Object.ConversationSet)
+	}
+	noteWith := func(key, value string) func(publicKeyPEM string) map[string]any {
+		return func(publicKeyPEM string) map[string]any {
+			document := linkedDataPlacementNotePayload(publicKeyPEM)
+			document["object"].(map[string]any)[key] = value
+			return document
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		key     string
+		reads   func(payload activityPayload) string
+	}{
+		{name: "closed on an open poll", payload: linkedDataPlacementQuestionPayload, key: as + "closed", reads: readsPoll},
+		{name: "anyOf on a single-choice poll", payload: linkedDataPlacementQuestionPayload, key: as + "anyOf", reads: readsPoll},
+		{name: "quoteUri in front of _misskey_quote", payload: noteWith("_misskey_quote", "https://other.example/notes/q"), key: toot + "quoteUri", reads: readsQuote},
+		{name: "quoteUri in front of quoteUrl", payload: noteWith("quoteUrl", "https://other.example/statuses/q"), key: toot + "quoteUri", reads: readsQuote},
+		{name: "quoteUrl in front of _misskey_quote", payload: noteWith("_misskey_quote", "https://other.example/notes/q"), key: as + "quoteUrl", reads: readsQuote},
+		{name: "conversation on a status without one", payload: linkedDataPlacementNotePayload, key: ostatus + "conversation", reads: readsConversation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			parse := func(body []byte) (activityPayload, []byte) {
+				t.Helper()
+				compactedBody, compacted := activityPubCompactCollectionBody(body)
+				if !compacted {
+					t.Fatal("document with a literal signature object was not compacted")
+				}
+				if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+					t.Fatalf("compacted signature: %v", err)
+				}
+				if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+					t.Fatalf("signed document was rejected: %v", err)
+				}
+				payload, err := parseActivityPayload(activityPubFinalizeCollectionBodyForForwarding(body, compactedBody))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return payload, compactedBody
+			}
+			signed, _ := parse(marshalLinkedDataTestDocument(t, document))
+			document["object"].(map[string]any)[test.key] = []any{}
+			relayed, compactedBody := parse(marshalLinkedDataTestDocument(t, document))
+			// Compaction keeps the empty array under the term or its compact IRI.
+			_, term, _ := strings.Cut(test.key, "#")
+			if !strings.Contains(string(compactedBody), term+`":[]`) {
+				t.Fatalf("compacted document does not keep the empty %s: %s", term, compactedBody)
+			}
+			if got, want := test.reads(relayed), test.reads(signed); got != want {
+				t.Fatalf("relayed copy reads %s, want the signed %s", got, want)
+			}
 		})
 	}
 }
