@@ -979,7 +979,10 @@ func (s *Server) processListImportRow(ctx context.Context, bulkImport models.Bul
 			}
 		}
 		item, err := listAccountRow(tx, *list, target.ID)
-		if errors.Is(err, gorm.ErrRecordNotFound) && target.ID != bulkImport.AccountID {
+		// listAccountRow reports an account without a follow or follow request as
+		// errListAccountMustBeFollowing; like BulkImportRowService, follow it
+		// first and then add it.
+		if errors.Is(err, errListAccountMustBeFollowing) && target.ID != bulkImport.AccountID {
 			// followErr must not shadow err: the listAccountRow result below has to
 			// reach the outer check, or a newly followed account is never listed.
 			followed, notificationPayload, delivery, followErr := s.applyRelationshipImportRow(tx, bulkImport.AccountID, target, "following", map[string]any{"show_reblogs": true, "notify": false}, now)
