@@ -1349,6 +1349,46 @@ func TestLinkedDataSignatureRejectsCompactedBlankNodeKeywords(t *testing.T) {
 			}
 		})
 	}
+	// At the top level compaction writes no keyword but Paon's own "@context",
+	// so any other one there is refused, also keywords that re-expansion
+	// ignores and the unsupported keyword check above lets through.
+	for _, test := range []struct {
+		keyword string
+		value   any
+	}{
+		{keyword: "@index", value: "i"},
+		{keyword: "@list", value: []any{"x"}},
+		{keyword: "@vocab", value: "https://attacker.example/ns#"},
+	} {
+		t.Run("top-level "+test.keyword+" outside the unsupported keywords", func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, linkedDataKeywordNotePayload)
+			document["_:"+test.keyword] = test.value
+			body := marshalLinkedDataTestDocument(t, document)
+			compactedBody, compacted := activityPubCompactCollectionBody(body)
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			var compactedDocument map[string]any
+			if err := json.Unmarshal(compactedBody, &compactedDocument); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := compactedDocument[test.keyword]; !ok {
+				t.Fatalf("compacted document does not hold a top-level %s: %s", test.keyword, compactedBody)
+			}
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("top-level %s changed the signed RDF: %v", test.keyword, err)
+			}
+			err := activityPubLinkedDataSignatureCoversDocument(compactedBody)
+			if err == nil || !strings.Contains(err.Error(), "linked-data signature does not cover the document: top-level "+test.keyword) {
+				t.Fatalf("coverage error = %v, want rejection of the top-level %s", err, test.keyword)
+			}
+			server := &Server{db: &gorm.DB{}}
+			err = server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, linkedDataForgeryRelay(), nil, 0)
+			if !errors.Is(err, errActivityPubEventNotApplied) || !strings.Contains(err.Error(), "linked-data signature does not cover the document") {
+				t.Fatalf("relayed activity error = %v, want rejection before creator lookup", err)
+			}
+		})
+	}
 }
 
 // linkedDataKeywordQuestionPayload is a signed poll open until 2030, which a
