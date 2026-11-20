@@ -8192,8 +8192,10 @@ func (s *Server) currentWebSessionUser(c *echo.Context, includeDisabled bool) (*
 const webSessionActivationCondition = "EXISTS (SELECT 1 FROM session_activations WHERE session_activations.access_token_id = oauth_access_tokens.id AND session_activations.user_id = oauth_access_tokens.resource_owner_id)"
 
 // apiAuthenticationRoute reports whether the request is served by a REST API
-// route (/api or /api/*). It uses the matched route path, falling back to the
-// request path when no route matched.
+// route (/api or /api/*) or by /oauth/userinfo, which Rails serves with
+// OAuth::UserinfoController < Api::BaseController and a Doorkeeper token. It
+// uses the matched route path, falling back to the request path when no route
+// matched.
 func apiAuthenticationRoute(c *echo.Context) bool {
 	if c == nil {
 		return false
@@ -8204,7 +8206,7 @@ func apiAuthenticationRoute(c *echo.Context) bool {
 			path = req.URL.Path
 		}
 	}
-	return path == "/api" || strings.HasPrefix(path, "/api/")
+	return path == "/api" || strings.HasPrefix(path, "/api/") || path == "/oauth/userinfo"
 }
 
 func (s *Server) currentUserByAccessToken(c *echo.Context, token string, includeDisabled bool, requireSessionActivation bool) (*models.User, string, error) {

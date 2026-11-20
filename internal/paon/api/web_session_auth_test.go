@@ -186,6 +186,8 @@ func TestAPIAuthenticationRouteUsesMatchedRoutePath(t *testing.T) {
 		{name: "api web route", routePath: "/api/web/settings", target: "/api/web/settings", want: true},
 		{name: "settings route", routePath: "/settings/applications", target: "/settings/applications", want: false},
 		{name: "oauth authorize", routePath: "/oauth/authorize", target: "/oauth/authorize", want: false},
+		{name: "oauth userinfo", routePath: "/oauth/userinfo", target: "/oauth/userinfo", want: true},
+		{name: "unmatched oauth userinfo request", target: "/oauth/userinfo", want: true},
 		{name: "admin route", routePath: "/admin/accounts/:id", target: "/admin/accounts/1", want: false},
 		{name: "api prefix lookalike", routePath: "/apidocs", target: "/apidocs", want: false},
 		{name: "route path wins over request path", routePath: "/*", target: "/api/v1/accounts/verify_credentials", want: false},
@@ -361,6 +363,45 @@ func TestAPIRoutesKeepAcceptingOAuthTokens(t *testing.T) {
 			query, ok := store.tokenQueryFor(webSessionTestAppToken)
 			if !ok || strings.Contains(query.sql, "session_activations") {
 				t.Fatalf("API token lookup must not require a session activation: %+v", store.queries)
+			}
+		})
+	}
+}
+
+// OAuth::UserinfoController inherits Api::BaseController and authorizes a
+// Doorkeeper token, so /oauth/userinfo keeps accepting OAuth tokens although it
+// is not under /api.
+func TestOAuthUserInfoAcceptsOAuthTokens(t *testing.T) {
+	const profileToken = "third-party-profile-token"
+	sources := map[string]func(*http.Request){
+		"bearer header": func(req *http.Request) {
+			req.Header.Set(echo.HeaderAuthorization, "Bearer "+profileToken)
+		},
+		"access_token query": func(req *http.Request) {
+			req.URL.RawQuery = url.Values{"access_token": {profileToken}}.Encode()
+		},
+	}
+	for name, configure := range sources {
+		t.Run(name, func(t *testing.T) {
+			s, store := newWebSessionTestServer(t)
+			store.tokens[profileToken] = webSessionFakeToken{id: 14, ownerID: 7, scopes: "profile"}
+			req := httptest.NewRequest(http.MethodGet, "/oauth/userinfo", nil)
+			configure(req)
+			var user *models.User
+			var err error
+			rec := serveWebSessionRoute(http.MethodGet, "/oauth/userinfo", func(c *echo.Context) error {
+				user, _, err = s.requireUser(c)
+				if err != nil {
+					return err
+				}
+				return s.requireUserTokenScope(c, *user, "profile")
+			}, req)
+			if err != nil || user == nil || user.ID != 7 || rec.Code != http.StatusOK {
+				t.Fatalf("userinfo token via %s = user %+v err %v status %d, want user 7", name, user, err, rec.Code)
+			}
+			query, ok := store.tokenQueryFor(profileToken)
+			if !ok || strings.Contains(query.sql, "session_activations") {
+				t.Fatalf("userinfo token lookup must not require a session activation: %+v", store.queries)
 			}
 		})
 	}
