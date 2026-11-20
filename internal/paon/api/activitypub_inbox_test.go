@@ -914,6 +914,52 @@ func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 	}
 }
 
+// A suspended literal typed xsd:boolean is read by its lexical form; other
+// values keep Mastodon's truthiness (only nil and false are false).
+func TestActivityPubSuspendedReadsTypedBooleanLiterals(t *testing.T) {
+	const xsdBoolean = "http://www.w3.org/2001/XMLSchema#boolean"
+	for _, test := range []struct {
+		name  string
+		value any
+		want  bool
+	}{
+		{name: "compacted false", value: map[string]any{"@value": "false", "type": "xsd:boolean"}, want: false},
+		{name: "expanded false", value: []any{map[string]any{"@value": "false", "@type": xsdBoolean}}, want: false},
+		{name: "compacted 0", value: map[string]any{"@value": "0", "type": "xsd:boolean"}, want: false},
+		{name: "compacted true", value: map[string]any{"@value": "true", "type": "xsd:boolean"}, want: true},
+		{name: "expanded 1", value: map[string]any{"@value": "1", "@type": xsdBoolean}, want: true},
+		{name: "typed native false", value: map[string]any{"@value": false, "type": "xsd:boolean"}, want: false},
+		{name: "native true", value: true, want: true},
+		{name: "native false", value: false, want: false},
+		{name: "absent", value: nil, want: false},
+		{name: "untyped string false", value: "false", want: true},
+		{name: "untyped value object false", value: map[string]any{"@value": "false"}, want: true},
+		{name: "string false typed xsd:string", value: map[string]any{"@value": "false", "type": "xsd:string"}, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := activityRailsSuspendedTruthy(test.value); got != test.want {
+				t.Fatalf("suspended(%#v) = %v, want %v", test.value, got, test.want)
+			}
+		})
+	}
+	payload, err := parseActivityPayload([]byte(`{
+		"type":"Update",
+		"actor":"https://remote.test/users/bob",
+		"object":{
+			"id":"https://remote.test/users/bob",
+			"type":"Person",
+			"inbox":"https://remote.test/users/bob/inbox",
+			"suspended":{"@value":"false","type":"xsd:boolean"}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Object.Suspended {
+		t.Fatal("Update(Person) with a typed suspended false reads as suspended")
+	}
+}
+
 func TestActivityPubPollVoteChoiceMatchesOptionExactly(t *testing.T) {
 	poll := models.Poll{Options: models.StringArray{"red", "blue"}}
 	if got := activityPollVoteChoice(poll, "blue"); got != 1 {

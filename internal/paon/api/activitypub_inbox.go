@@ -8357,11 +8357,35 @@ func activityRailsSuspendedTruthy(value any) bool {
 		return typed
 	case map[string]any:
 		if raw, ok := typed["@value"]; ok {
+			// A literal typed xsd:boolean is RDF-equivalent to the native
+			// boolean of the same lexical form, so a relayed copy of a signed
+			// suspended: false may carry {"@value": "false", "type":
+			// "xsd:boolean"}. Read it by its lexical form instead of as a
+			// truthy string.
+			if lexical, ok := raw.(string); ok && activityJSONLDBooleanDatatype(typed) {
+				return lexical == "true" || lexical == "1"
+			}
 			return activityRailsSuspendedTruthy(raw)
 		}
 		return true
 	default:
 		return true
+	}
+}
+
+// activityJSONLDBooleanDatatype reports whether a value object is typed
+// xsd:boolean, under the "@type" keyword or the "type" alias compaction writes
+// and as the compact or the full datatype IRI.
+func activityJSONLDBooleanDatatype(value map[string]any) bool {
+	datatype, ok := value["@type"].(string)
+	if !ok {
+		datatype, _ = value["type"].(string)
+	}
+	switch datatype {
+	case "xsd:boolean", "http://www.w3.org/2001/XMLSchema#boolean":
+		return true
+	default:
+		return false
 	}
 }
 
