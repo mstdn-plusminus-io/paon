@@ -984,6 +984,97 @@ func TestLinkedDataSignatureIgnoresBlankNodeAttributionDomains(t *testing.T) {
 	}
 }
 
+// Mastodon v4.6.6 defines showFeatured, showMedia and showRepliesInMedia in
+// ContextHelper#full_context (profile_settings), so ProcessAccountService
+// reads the signed toot: values, while a property that expands to a blank node
+// identifier such as "_:showMedia" stays under that key and is never read.
+// RDF conversion drops such properties, so the signature does not cover them.
+func TestLinkedDataSignatureReadsOnlySignedProfileSettings(t *testing.T) {
+	type profileSettings struct {
+		featured, featuredSet bool
+		media, mediaSet       bool
+		replies, repliesSet   bool
+	}
+	// Mastodon v4.6.6 actors publish the settings with the profile_settings
+	// context extension.
+	signedSettings := func(publicKeyPEM string) map[string]any {
+		payload := linkedDataPersonUpdatePayload(publicKeyPEM)
+		payload["@context"] = append(payload["@context"].([]any), map[string]any{
+			"toot":               "http://joinmastodon.org/ns#",
+			"showFeatured":       "toot:showFeatured",
+			"showMedia":          "toot:showMedia",
+			"showRepliesInMedia": "toot:showRepliesInMedia",
+		})
+		object := payload["object"].(map[string]any)
+		object["showFeatured"] = true
+		object["showMedia"] = true
+		object["showRepliesInMedia"] = true
+		return payload
+	}
+	signed := profileSettings{featured: true, featuredSet: true, media: true, mediaSet: true, replies: true, repliesSet: true}
+	inject := func(keys ...string) func(object map[string]any) {
+		return func(object map[string]any) {
+			for _, key := range keys {
+				object[key] = false
+			}
+		}
+	}
+	injectValueObjects := func(keys ...string) func(object map[string]any) {
+		return func(object map[string]any) {
+			for _, key := range keys {
+				object[key] = map[string]any{"@value": false}
+			}
+		}
+	}
+	undefinedTerms := []string{"showFeatured", "showMedia", "showRepliesInMedia"}
+	blankNodeProperties := []string{"_:showFeatured", "_:showMedia", "_:showRepliesInMedia"}
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		inject  func(object map[string]any)
+		want    profileSettings
+	}{
+		{name: "signed settings", payload: signedSettings, inject: func(map[string]any) {}, want: signed},
+		{name: "undefined terms", payload: linkedDataPersonUpdatePayload, inject: inject(undefinedTerms...)},
+		{name: "blank node properties", payload: linkedDataPersonUpdatePayload, inject: inject(blankNodeProperties...)},
+		{name: "blank node value objects", payload: linkedDataPersonUpdatePayload, inject: injectValueObjects(blankNodeProperties...)},
+		{name: "blank node properties next to signed settings", payload: signedSettings, inject: inject(blankNodeProperties...), want: signed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			test.inject(document["object"].(map[string]any))
+			compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			// The injected values are outside the signed RDF.
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("compacted signature: %v", err)
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+				if test.want == signed {
+					t.Fatalf("signed Update(Person) was rejected: %v", err)
+				}
+				// Rejecting the document also keeps the injected values out.
+				return
+			}
+			payload, err := parseActivityPayload(compactedBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			object := payload.Object
+			got := profileSettings{
+				featured: object.ShowFeatured, featuredSet: object.ShowFeaturedSet,
+				media: object.ShowMedia, mediaSet: object.ShowMediaSet,
+				replies: object.ShowMediaReplies, repliesSet: object.ShowMediaRepliesSet,
+			}
+			if got != test.want {
+				t.Fatalf("profile settings = %+v, want only the signed %+v", got, test.want)
+			}
+		})
+	}
+}
+
 // Mastodon 4.6 documents reference the WebFinger context, which Mastodon
 // preloads; Paon preloads it too so relayed documents compact offline.
 func TestLinkedDataSignatureCompactsMastodonWebFingerContext(t *testing.T) {

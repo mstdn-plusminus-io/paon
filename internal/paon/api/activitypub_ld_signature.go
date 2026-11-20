@@ -631,8 +631,10 @@ func activityPubFullJSONLDContext() []any {
 // A key Paon reads from them must be a term of that context: otherwise the
 // ActivityStreams "@vocab": "_:" compacts an unsigned blank node property such
 // as "_:attributionDomains" (an undefined term) to that key. Like Mastodon
-// v4.6.6 (ContextHelper#full_context), attributionDomains is defined so that
-// such a property stays "_:attributionDomains" and is never read.
+// v4.6.6 (ContextHelper#full_context), attributionDomains and the
+// profile_settings terms (showFeatured, showMedia, showRepliesInMedia) are
+// defined so that such a property keeps its "_:" key and is never read, while
+// the signed toot: values compact to the keys Paon reads.
 func activityPubFullJSONLDContextExtensions() map[string]any {
 	extensions := map[string]any{
 		"manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
@@ -658,6 +660,9 @@ func activityPubFullJSONLDContextExtensions() map[string]any {
 		"memorial":                  "toot:memorial",
 		"suspended":                 "toot:suspended",
 		"attributionDomains":        map[string]any{"@id": "toot:attributionDomains", "@container": "@set"},
+		"showFeatured":              "toot:showFeatured",
+		"showMedia":                 "toot:showMedia",
+		"showRepliesInMedia":        "toot:showRepliesInMedia",
 		"fep":                       "https://w3id.org/fep/044f#",
 		"quote":                     map[string]any{"@id": "fep:quote", "@type": "@id"},
 		"fedibird":                  "http://fedibird.com/ns#",
