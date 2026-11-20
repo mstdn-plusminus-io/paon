@@ -495,6 +495,13 @@ func (s *Server) faspResolveAccountURI(uri string) (*models.Account, bool, error
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, false, err
 	}
+	// Rails resolves provider URIs with FetchRemoteActorService#call, which
+	// returns before any request when domain_not_allowed?(uri): a provider must
+	// not make this server fetch or store actors of blocked (or, in limited
+	// federation mode, unlisted) domains.
+	if disallowed, err := s.remoteActivityDomainNotAllowed(uri); err != nil || disallowed {
+		return nil, false, err
+	}
 	account, err := s.resolveSearchRemoteAccountURL(uri)
 	if err != nil || account == nil {
 		return nil, false, err
