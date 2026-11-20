@@ -1637,6 +1637,64 @@ func TestLinkedDataSignatureRejectsUncompactedKeywords(t *testing.T) {
 	})
 }
 
+// No context defines an "expiresAt" term, so a blank node property
+// "_:expiresAt" next to the victim's signed key compacts to that key, and RDF
+// conversion drops it, so the victim's signature still covers the document.
+// Mastodon v4.6.6 reads no remote key expiry at all
+// (ProcessAccountService#public_keys). Paon must not store such an injected
+// expiry for the victim's key: it would reject every signature by an expired
+// key until the actor is fetched again.
+func TestLinkedDataSignatureIgnoresBlankNodeKeyExpiry(t *testing.T) {
+	const forgedExpiry = "2000-01-01T00:00:00Z"
+	for _, test := range []struct {
+		name  string
+		value any
+	}{
+		{name: "literal", value: forgedExpiry},
+		{name: "value object", value: map[string]any{"@value": forgedExpiry}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, linkedDataPersonUpdatePayload)
+			document["object"].(map[string]any)["publicKey"].(map[string]any)["_:expiresAt"] = test.value
+			compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			// The injected expiry is outside the signed RDF.
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("injection changed the signed RDF: %v", err)
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+				// Rejecting the document also keeps the injected expiry out.
+				return
+			}
+			payload, err := parseActivityPayload(compactedBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keys := activityRemoteActorPublicKeys(payload.Object.ID, payload.Object.PublicKeySource, nil)
+			if len(keys) != 1 || keys[0].ID != linkedDataForgeryVictimURI+"#main-key" {
+				t.Fatalf("keys = %#v, want only the signed key", keys)
+			}
+			if keys[0].ExpiresAt.Valid {
+				t.Fatalf("signed key expires at %v from the injected %#v", keys[0].ExpiresAt.Time, test.value)
+			}
+		})
+	}
+
+	// The security vocabulary term is still read where the sender wrote it,
+	// e.g. in an actor document fetched from its origin.
+	key := activityRemotePublicKeyFromObject(map[string]any{
+		"id":           linkedDataForgeryVictimURI + "#main-key",
+		"owner":        linkedDataForgeryVictimURI,
+		"publicKeyPem": "PEM",
+		"expires":      "2030-01-02T03:04:05Z",
+	})
+	if !key.ExpiresAt.Valid || key.ExpiresAt.Time.Year() != 2030 {
+		t.Fatalf("key expires = %#v, want the sender's 2030 expiry", key.ExpiresAt)
+	}
+}
+
 // Mastodon 4.6 documents reference the WebFinger context, which Mastodon
 // preloads; Paon preloads it too so relayed documents compact offline.
 func TestLinkedDataSignatureCompactsMastodonWebFingerContext(t *testing.T) {

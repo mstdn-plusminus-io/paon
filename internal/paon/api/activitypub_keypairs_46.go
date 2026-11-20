@@ -113,15 +113,14 @@ func activityRemotePublicKeyFromObject(object map[string]any) remoteActivityPubl
 		PublicKeyPem: activityJSONLDString(object, "publicKeyPem"),
 		Revoked:      activityBoolValue(activityJSONLDValue(object, "revoked")),
 	}
-	for _, field := range []string{"expires", "expiresAt"} {
-		raw := activityJSONLDString(object, field)
-		if raw == "" {
-			continue
-		}
+	// Only the security vocabulary term is read. No context defines an
+	// "expiresAt" term, so in a linked-data compacted document that key holds
+	// a blank node property "_:expiresAt", which the signature never covers
+	// (see activityPubFullJSONLDContextExtensions).
+	if raw := activityJSONLDString(object, "expires"); raw != "" {
 		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
 			key.ExpiresAt = sql.NullTime{Time: parsed.UTC(), Valid: true}
 		}
-		break
 	}
 	return key
 }
