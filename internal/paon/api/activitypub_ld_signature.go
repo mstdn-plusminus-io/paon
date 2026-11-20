@@ -402,7 +402,8 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 		// back into the enclosing node, so the signature would still cover
 		// them while Paon no longer saw them under the keys it reads, and
 		// "@id" would give a node a blank node identifier. Such a document is
-		// never authenticated.
+		// never authenticated, nor is one with a map that holds "@language"
+		// or "@direction" but no "@value" (activityPubJSONLDValueObjectKeywords).
 		if ld.IsKeyword(key) {
 			return fmt.Errorf("linked-data signature does not cover the document: top-level %s", key)
 		}
@@ -435,12 +436,29 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 // the original document is removed.
 var activityPubJSONLDCompactedKeywords = []string{"@value", "@language", "@direction", "@list", "@index"}
 
+// activityPubJSONLDValueObjectKeywords may only appear in a compacted map that
+// has "@value". Compaction writes them inside value objects; it also keeps one
+// a sender put on a node object, but json-gold cannot canonicalize such a
+// document anyway. A map with "@language" but no "@value", such as a
+// compacted "_:@language" blank node property, re-expands to null: it is
+// neither canonicalized nor seen by activityPubJSONLDUncanonicalizedContent,
+// yet Paon reads it, e.g. as a truthy suspended or in place of the signed
+// value behind it.
+var activityPubJSONLDValueObjectKeywords = []string{"@language", "@direction"}
+
 // activityPubJSONLDEmbeddedKeyword returns a JSON-LD keyword entry of value,
 // part of a compacted document below its top level, that compacting with
 // Paon's context does not write there.
 func activityPubJSONLDEmbeddedKeyword(value any) (string, bool) {
 	switch typed := value.(type) {
 	case map[string]any:
+		if _, ok := typed["@value"]; !ok {
+			for _, keyword := range activityPubJSONLDValueObjectKeywords {
+				if _, ok := typed[keyword]; ok {
+					return keyword, true
+				}
+			}
+		}
 		for key, child := range typed {
 			if ld.IsKeyword(key) && !slices.Contains(activityPubJSONLDCompactedKeywords, key) {
 				return key, true
