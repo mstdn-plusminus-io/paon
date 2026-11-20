@@ -377,6 +377,7 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 	// authenticate a compacted document that holds @graph, @included or
 	// @reverse anywhere: they let the JSON tree a server reads (Paon unwraps a
 	// nested @graph into the object) diverge from the signed default graph.
+	// Paon refuses @nest for the same reason.
 	if keyword, ok := activityPubJSONLDUnsupportedKeyword(document); ok {
 		return fmt.Errorf("linked-data signature does not cover the document: %s is not supported", keyword)
 	}
@@ -505,8 +506,14 @@ func activityPubJSONLDUncanonicalizedContent(value any) error {
 const activityPubMastodonAttributionDomainsIRI = "http://joinmastodon.org/ns#attributionDomains"
 
 // activityPubJSONLDUnsupportedKeywords mirrors Mastodon's
-// JsonLdHelper::UNSUPPORTED_JSONLD_KEYWORDS.
-var activityPubJSONLDUnsupportedKeywords = []string{"@graph", "@included", "@reverse"}
+// JsonLdHelper::UNSUPPORTED_JSONLD_KEYWORDS and adds @nest. No term of Paon's
+// compaction context nests its values, but json-gold compacts a blank node
+// property "_:@nest" against the ActivityStreams "@vocab": "_:" to that
+// keyword, at any level of the document. Re-expansion merges the properties
+// under @nest into the node that holds it, so signed values moved there stay
+// in the canonicalized RDF while Paon, which reads the compacted JSON, no
+// longer sees them.
+var activityPubJSONLDUnsupportedKeywords = []string{"@graph", "@included", "@reverse", "@nest"}
 
 // activityPubJSONLDUnsupportedKeyword reports the first unsupported JSON-LD
 // keyword used as a key anywhere in a compacted document, like Mastodon's

@@ -762,6 +762,132 @@ func TestLinkedDataSignatureRejectsUnsupportedJSONLDKeywords(t *testing.T) {
 	}
 }
 
+// json-gold compacts a blank node property "_:@nest" against the
+// ActivityStreams "@vocab": "_:" to the keyword "@nest", at any level of the
+// document. Re-expansion merges the properties under @nest into the node that
+// holds it, so a relay can move the victim's signed values there: the signed
+// RDF and the signature stay the same while Paon, which reads the compacted
+// JSON, no longer sees them. Such a document is never authenticated.
+func TestLinkedDataSignatureRejectsNestedSignedValues(t *testing.T) {
+	contentWarning := func(string) map[string]any {
+		payload := linkedDataNoteCreatePayload("")
+		payload["@context"] = append(payload["@context"].([]any), map[string]any{"sensitive": "as:sensitive"})
+		object := payload["object"].(map[string]any)
+		object["summary"] = "content warning"
+		object["sensitive"] = true
+		return payload
+	}
+	profile := func(publicKeyPEM string) map[string]any {
+		payload := linkedDataPersonUpdatePayload(publicKeyPEM)
+		object := payload["object"].(map[string]any)
+		object["name"] = "Alice"
+		object["summary"] = "<p>signed profile</p>"
+		return payload
+	}
+	const followers = linkedDataForgeryVictimURI + "/followers"
+	followersCC := func(string) map[string]any {
+		payload := linkedDataNoteCreatePayload("")
+		payload["cc"] = []any{followers}
+		return payload
+	}
+	object := func(document map[string]any) map[string]any {
+		return document["object"].(map[string]any)
+	}
+	activity := func(document map[string]any) map[string]any {
+		return document
+	}
+	nest := func(node func(document map[string]any) map[string]any, keys ...string) func(document map[string]any) {
+		return func(document map[string]any) {
+			parent := node(document)
+			nested := make(map[string]any, len(keys))
+			for _, key := range keys {
+				nested[key] = parent[key]
+				delete(parent, key)
+			}
+			parent["_:@nest"] = nested
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		forge   func(document map[string]any)
+		reads   func(payload activityPayload) bool
+	}{
+		{
+			name:    "status content warning",
+			payload: contentWarning,
+			forge:   nest(object, "summary", "sensitive"),
+			reads: func(payload activityPayload) bool {
+				return payload.Object.Sensitive && payload.Object.Summary == "content warning"
+			},
+		},
+		{
+			name:    "actor profile",
+			payload: profile,
+			forge:   nest(object, "name", "summary"),
+			reads: func(payload activityPayload) bool {
+				return payload.Object.Name == "Alice" && payload.Object.Summary == "<p>signed profile</p>"
+			},
+		},
+		{
+			name:    "activity addressing",
+			payload: followersCC,
+			forge:   nest(activity, "cc"),
+			reads: func(payload activityPayload) bool {
+				return slices.Contains(payload.CC, followers)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+				t.Fatalf("signed document was rejected: %v", err)
+			}
+			payload, err := parseActivityPayload(compactedBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !test.reads(payload) {
+				t.Fatalf("signed values were not read: %s", compactedBody)
+			}
+
+			test.forge(document)
+			body := marshalLinkedDataTestDocument(t, document)
+			compactedBody, compacted = activityPubCompactCollectionBody(body)
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			if !strings.Contains(string(compactedBody), `"@nest":`) {
+				t.Fatalf("compacted document does not nest the signed values: %s", compactedBody)
+			}
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("nesting changed the signed RDF: %v", err)
+			}
+			payload, err = parseActivityPayload(compactedBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.reads(payload) {
+				t.Fatalf("nested signed values are still read: %s", compactedBody)
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err == nil || !strings.Contains(err.Error(), "does not cover the document: @nest") {
+				t.Fatalf("coverage error = %v, want rejection of @nest", err)
+			}
+			// Rejection must happen before signature creator lookup touches the
+			// database; reaching it here would panic on the zero-value handle.
+			server := &Server{db: &gorm.DB{}}
+			err = server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, linkedDataForgeryRelay(), nil, 0)
+			if !errors.Is(err, errActivityPubEventNotApplied) || !strings.Contains(err.Error(), "linked-data signature does not cover the document: @nest") {
+				t.Fatalf("relayed activity error = %v, want rejection of @nest", err)
+			}
+		})
+	}
+}
+
 // Mastodon 4.3.0 to 4.5.10 relay Update(Person) with attributionDomains as
 // bare domains under an @id term; RDF conversion drops them, but Paon never
 // reads the property, so the signed document is still accepted. Content Paon
