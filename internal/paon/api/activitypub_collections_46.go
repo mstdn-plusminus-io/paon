@@ -757,6 +757,13 @@ func (s *Server) syncRemoteFeaturedCollectionsNow(ctx context.Context, account *
 	processed := 0
 	signer := s.activityFetchSigner(nil)
 	for page := 0; page < 10 && next != "" && processed < 50; page++ {
+		// Like Mastodon's FetchFeaturedCollectionsCollectionService
+		// (collection_items with reference_uri), only pages on the account's
+		// host are fetched: no context defines featuredCollections, so a
+		// linked-data signature never covers it.
+		if !activityPubURIHostsMatch(account.URI, next) {
+			return nil
+		}
 		resource, err := fetchActivityResourceWithMetadataAndUserAgentSignedWithAcceptAndContext(ctx, next, paonUserAgent(s.cfg), s, signer, activityResourceAcceptHeader)
 		if err != nil {
 			return err

@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -146,5 +147,82 @@ func TestMastodon46FetcherAcceptsFeatureAuthorizationDocuments(t *testing.T) {
 	}
 	if payload.Object.TypeExact != "FeatureAuthorization" || payload.Object.InteractingObject != "https://owner.example/collections/1" || payload.Object.InteractionTarget != "https://remote.example/users/alice" {
 		t.Fatalf("feature authorization payload = %#v", payload.Object)
+	}
+}
+
+// Mastodon v4.6.6 publishes featuredCollections without defining the term
+// (ActorSerializer, ContextHelper#full_context), so a linked-data signature
+// never covers it and a relay can point a victim's collections anywhere.
+// Like ActivityPub::FetchFeaturedCollectionsCollectionService
+// (collection_items with reference_uri), only collection pages on the
+// account's host are fetched; a page on another host could otherwise list
+// FeaturedCollection objects claiming the account's host.
+func TestMastodon46RemoteFeaturedCollectionsFetchOnlyAccountHost(t *testing.T) {
+	const victimCollections = linkedDataForgeryVictimURI + "/collections"
+	const attackerCollections = "https://attacker.example/collections"
+	oldClient := activityHTTPClient
+	oldProxy := activityHTTPProxyConfigured
+	t.Cleanup(func() {
+		activityHTTPClient = oldClient
+		activityHTTPProxyConfigured = oldProxy
+	})
+	activityHTTPProxyConfigured = true
+	var requested []string
+	activityHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requested = append(requested, r.URL.String())
+		body := `{"@context":"https://www.w3.org/ns/activitystreams","id":"` + r.URL.String() + `","type":"OrderedCollection","orderedItems":[],"next":"` + attackerCollections + `?page=2"}`
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/activity+json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})}
+
+	// The victim's linked-data signed Update(Person) still authenticates after
+	// a relay replaced the unsigned featuredCollections.
+	readCollectionsURL := func(collectionsURL string) string {
+		t.Helper()
+		document, publicKey := signedLinkedDataFixture(t, func(publicKeyPEM string) map[string]any {
+			payload := linkedDataPersonUpdatePayload(publicKeyPEM)
+			payload["object"].(map[string]any)["featuredCollections"] = victimCollections
+			return payload
+		})
+		document["object"].(map[string]any)["featuredCollections"] = collectionsURL
+		compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+		if !compacted {
+			t.Fatal("document with a literal signature object was not compacted")
+		}
+		if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+			t.Fatalf("compacted signature: %v", err)
+		}
+		if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+			t.Fatalf("coverage: %v", err)
+		}
+		payload, err := parseActivityPayload(compactedBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return payload.Object.FeaturedCollections
+	}
+
+	account := &models.Account{ID: 1, URI: linkedDataForgeryVictimURI, Domain: sql.NullString{String: "origin.example", Valid: true}}
+	server := &Server{}
+	for _, test := range []struct {
+		name           string
+		collectionsURL string
+		want           []string
+	}{
+		{name: "published collections", collectionsURL: victimCollections, want: []string{victimCollections}},
+		{name: "collections on another host", collectionsURL: attackerCollections},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			collectionsURL := readCollectionsURL(test.collectionsURL)
+			if collectionsURL != test.collectionsURL {
+				t.Fatalf("featuredCollections = %q, want %q", collectionsURL, test.collectionsURL)
+			}
+			requested = nil
+			if err := server.syncRemoteFeaturedCollectionsNow(t.Context(), account, collectionsURL, ""); err != nil {
+				t.Fatalf("sync %s: %v", collectionsURL, err)
+			}
+			if strings.Join(requested, " ") != strings.Join(test.want, " ") {
+				t.Fatalf("sync %s requested %v, want %v", collectionsURL, requested, test.want)
+			}
+		})
 	}
 }
