@@ -432,6 +432,9 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 	if err := activityPubJSONLDUncanonicalizedContent(expanded); err != nil {
 		return fmt.Errorf("linked-data signature does not cover the document: %w", err)
 	}
+	if err := activityPubJSONLDUnsignedPlacement(expanded); err != nil {
+		return fmt.Errorf("linked-data signature does not cover the document: %w", err)
+	}
 	return nil
 }
 
@@ -576,6 +579,197 @@ func activityPubJSONLDUncanonicalizedAttributionDomains(value any) error {
 		}
 	}
 	return nil
+}
+
+// activityPubJSONLDUnsignedPlacement rejects an expanded document whose node
+// objects describe the signed nodes in a shape Paon would read differently
+// from the signed RDF dataset. RDF conversion merges all node objects with the
+// same @id into one subject and keeps the statements of a node object even
+// when the property holding it is dropped, e.g. an undefined term expanding to
+// a blank node property. Without changing the canonicalized dataset, and so
+// with the original signature intact, a relay can therefore move a signed node
+// description below a dropped property while the node stays referenced where
+// Paon reads it (hiding an actor's key or a mention), split one description
+// over several node objects (hiding an actor's suspension or locked flag from
+// the object Paon reads, or shifting poll tallies between options), or put a
+// bare reference in front of the description of the same node. Paon, like
+// Mastodon, reads values by their position in the compacted JSON tree, not
+// from the merged graph. Such a document is not authenticated when
+//
+//   - a node with an @id and statements below a dropped property also has
+//     that @id outside dropped properties, as a reference or a description;
+//   - a blank node identifier is described by more than one node object, or
+//     an IRI by node objects with different statements (identical copies,
+//     e.g. an embedded actor repeated as attributedTo, are kept);
+//   - one property holds both a bare reference to an @id and a description of
+//     it.
+func activityPubJSONLDUnsignedPlacement(expanded []any) error {
+	placement := activityPubJSONLDPlacement{
+		descriptions: map[string]string{},
+		parked:       map[string]bool{},
+		placed:       map[string]bool{},
+	}
+	for _, item := range expanded {
+		node, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if err := placement.walkNode(node, false); err != nil {
+			return err
+		}
+	}
+	for id := range placement.parked {
+		if placement.placed[id] {
+			return fmt.Errorf("node %q is described below a property the signature does not cover", id)
+		}
+	}
+	return nil
+}
+
+// activityPubJSONLDPlacement records where an expanded document describes
+// and references node identifiers.
+type activityPubJSONLDPlacement struct {
+	// descriptions holds the statements of each described identifier
+	// (activityPubJSONLDNodeStatements).
+	descriptions map[string]string
+	// parked holds identifiers described below a dropped property.
+	parked map[string]bool
+	// placed holds identifiers described or referenced outside dropped
+	// properties.
+	placed map[string]bool
+}
+
+// walkNode records an expanded node object; dropped tells whether a property
+// it is part of is left out of the RDF dataset.
+func (p *activityPubJSONLDPlacement) walkNode(node map[string]any, dropped bool) error {
+	if id, ok := node["@id"].(string); ok {
+		described := activityPubJSONLDNodeHasStatements(node)
+		switch {
+		case !dropped:
+			p.placed[id] = true
+		case described:
+			p.parked[id] = true
+		}
+		if described {
+			statements := activityPubJSONLDNodeStatements(node)
+			if previous, ok := p.descriptions[id]; ok {
+				if strings.HasPrefix(id, "_:") {
+					return fmt.Errorf("blank node %q is described more than once", id)
+				}
+				if previous != statements {
+					return fmt.Errorf("node %q is described more than once with different statements", id)
+				}
+			}
+			p.descriptions[id] = statements
+		}
+	}
+	for key, value := range node {
+		if ld.IsKeyword(key) {
+			continue
+		}
+		if err := p.walkValue(value, dropped || !activityPubJSONLDCanonicalizedProperty(key)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// walkValue records the node objects of an expanded property value.
+func (p *activityPubJSONLDPlacement) walkValue(value any, dropped bool) error {
+	switch typed := value.(type) {
+	case []any:
+		return p.walkValues(typed, dropped)
+	case map[string]any:
+		if _, ok := typed["@value"]; ok {
+			return nil
+		}
+		if list, ok := typed["@list"]; ok {
+			items, _ := list.([]any)
+			return p.walkValues(items, dropped)
+		}
+		return p.walkNode(typed, dropped)
+	}
+	return nil
+}
+
+// walkValues records the values of one expanded property or list.
+func (p *activityPubJSONLDPlacement) walkValues(values []any, dropped bool) error {
+	descriptions := map[string]bool{}
+	references := map[string]bool{}
+	for _, value := range values {
+		node, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, ok := node["@id"].(string)
+		if !ok {
+			continue
+		}
+		switch {
+		case activityPubJSONLDNodeHasStatements(node):
+			descriptions[id] = true
+		case len(node) == 1:
+			references[id] = true
+		}
+	}
+	for id := range descriptions {
+		if references[id] {
+			return fmt.Errorf("node %q is both referenced and described in one property", id)
+		}
+	}
+	for _, value := range values {
+		if err := p.walkValue(value, dropped); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// activityPubJSONLDNodeHasStatements reports whether RDF conversion produces a
+// statement with the expanded node object as its subject: a type or a value of
+// a canonicalized property.
+func activityPubJSONLDNodeHasStatements(node map[string]any) bool {
+	for key, value := range node {
+		if key != "@type" && !activityPubJSONLDCanonicalizedProperty(key) {
+			continue
+		}
+		if items, ok := value.([]any); !ok || len(items) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// activityPubJSONLDNodeStatements serializes an expanded node object for
+// comparing descriptions of the same identifier, leaving out the entries RDF
+// conversion drops: @index, dropped properties and empty arrays.
+func activityPubJSONLDNodeStatements(node map[string]any) string {
+	var statements func(value any) any
+	statements = func(value any) any {
+		switch typed := value.(type) {
+		case map[string]any:
+			out := make(map[string]any, len(typed))
+			for key, item := range typed {
+				if key == "@index" || (!ld.IsKeyword(key) && !activityPubJSONLDCanonicalizedProperty(key)) {
+					continue
+				}
+				if items, ok := item.([]any); ok && len(items) == 0 {
+					continue
+				}
+				out[key] = statements(item)
+			}
+			return out
+		case []any:
+			out := make([]any, 0, len(typed))
+			for _, item := range typed {
+				out = append(out, statements(item))
+			}
+			return out
+		}
+		return value
+	}
+	encoded, _ := json.Marshal(statements(node))
+	return string(encoded)
 }
 
 // activityPubJSONLDUnsupportedKeywords mirrors Mastodon's
