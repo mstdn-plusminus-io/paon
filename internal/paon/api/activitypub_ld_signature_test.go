@@ -2285,6 +2285,16 @@ func TestLinkedDataSignatureAcceptsRepeatedAndReferencedNodes(t *testing.T) {
 			payload: linkedDataPlacementMovePayload,
 			reads:   func(p activityPayload) bool { return p.Target == "https://new.example/users/alice" },
 		},
+		{
+			name: "mention href with a keyword-like key, which compaction drops",
+			payload: func(publicKeyPEM string) map[string]any {
+				document := linkedDataPlacementNotePayload(publicKeyPEM)
+				tag := document["object"].(map[string]any)["tag"].([]any)[0].(map[string]any)
+				tag["href"] = map[string]any{"id": tag["href"], "@unknown": "x"}
+				return document
+			},
+			reads: linkedDataPlacementHasMention,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			document, publicKey := signedLinkedDataFixture(t, test.payload)
@@ -2550,6 +2560,47 @@ func TestLinkedDataSignatureRejectsDecoratedReferences(t *testing.T) {
 				document["target"] = map[string]any{"id": document["target"], "zz": 1}
 			},
 			want: decorated("https://new.example/users/alice"),
+		},
+		// json-gold compacts the undefined term "_:@unknown" to "@unknown",
+		// which re-expanding the compacted document drops as a keyword-like
+		// key, so the reference looks bare to the coverage walk.
+		{
+			name:    "mention href with a keyword-like undefined term",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				object(document)["tag"].([]any)[0].(map[string]any)["href"] = map[string]any{"id": bob, "_:@unknown": "x"}
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+			want:   "embedded @unknown",
+		},
+		{
+			name:    "attachment url with a keyword-like undefined term",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				attachment := object(document)["attachment"].([]any)[0].(map[string]any)
+				attachment["url"] = map[string]any{"id": attachment["url"], "_:@unknown": "x"}
+			},
+			forged: func(p activityPayload) bool { return len(p.Object.Attachments) == 0 },
+			want:   "embedded @unknown",
+		},
+		{
+			name:    "avatar url with a keyword-like undefined term",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				icon := object(document)["icon"].(map[string]any)
+				icon["url"] = map[string]any{"id": icon["url"], "_:@unknown": "x"}
+			},
+			forged: func(p activityPayload) bool { return p.Object.AvatarRemoteURL == "" },
+			want:   "embedded @unknown",
+		},
+		{
+			name:    "boosted status with a keyword-like undefined term",
+			payload: linkedDataPlacementAnnouncePayload,
+			forge: func(document map[string]any) {
+				document["object"] = map[string]any{"id": document["object"], "_:@unknown": "x"}
+			},
+			forged: func(p activityPayload) bool { return !p.ObjectReference },
+			want:   "embedded @unknown",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
