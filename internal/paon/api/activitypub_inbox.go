@@ -6826,8 +6826,9 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 		// without recursively parsing arbitrary nested activity documents.
 		nestedObject, _ := activityJSONLDSingle(objectIDValue).(map[string]any)
 		featuredValue := activityJSONLDValue(object, "featured")
-		oneOfPollOptions := activityPollOptionListWithShape(activityJSONLDValue(object, "oneOf"))
-		anyOfPollOptions := activityPollOptionListWithShape(activityJSONLDValue(object, "anyOf"))
+		oneOfPollOptions := activityPollOptionListWithShape(activityJSONLDPresentValue(object, "oneOf"))
+		anyOfPollOptions := activityPollOptionListWithShape(activityJSONLDPresentValue(object, "anyOf"))
+		conversationValue := activityJSONLDPresentValue(object, "conversation")
 		toValue := activityJSONLDValue(object, "to")
 		ccValue := activityJSONLDValue(object, "cc")
 		out := activityObject{
@@ -6863,8 +6864,8 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 			InReplyTo:             activityJSONLDValueOrID(activityJSONLDValue(object, "inReplyTo")),
 			InReplyToPresent:      activityPubJSONLDPresent(activityJSONLDValue(object, "inReplyTo")),
 			InReplyToAtomURI:      activityJSONLDString(object, "inReplyToAtomUri"),
-			Conversation:          activityJSONLDValueOrID(activityJSONLDValue(object, "conversation")),
-			ConversationSet:       activityJSONLDValue(object, "conversation") != nil,
+			Conversation:          activityJSONLDValueOrID(conversationValue),
+			ConversationSet:       conversationValue != nil,
 			Published:             activityJSONLDString(object, "published"),
 			Updated:               activityJSONLDString(object, "updated"),
 			Language:              activityJSONLDString(object, "language"),
@@ -6874,7 +6875,7 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 			Indexable:             activityBoolValue(activityJSONLDValue(object, "indexable")),
 			Memorial:              activityBoolValue(activityJSONLDValue(object, "memorial")),
 			Suspended:             activityRailsSuspendedTruthy(activityJSONLDValue(object, "suspended")),
-			Closed:                activityJSONLDValue(object, "closed"),
+			Closed:                activityJSONLDPresentValue(object, "closed"),
 			EndTime:               activityJSONLDString(object, "endTime"),
 			OneOf:                 oneOfPollOptions.Options,
 			OneOfSet:              oneOfPollOptions.Set,
@@ -6907,10 +6908,10 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 			QuoteURLRaw:           activityJSONLDObjectIDPreserveBearcap(object, "quoteUrl"),
 			MisskeyQuoteRaw:       activityJSONLDObjectIDPreserveBearcap(object, "_misskey_quote"),
 			QuoteAuthorizationRaw: activityJSONLDObjectIDPreserveBearcap(object, "quoteAuthorization"),
-			QuoteSet:              activityJSONLDValue(object, "quote") != nil,
-			QuoteURISet:           activityJSONLDValue(object, "quoteUri") != nil,
-			QuoteURLSet:           activityJSONLDValue(object, "quoteUrl") != nil,
-			MisskeyQuoteSet:       activityJSONLDValue(object, "_misskey_quote") != nil,
+			QuoteSet:              activityJSONLDPresentValue(object, "quote") != nil,
+			QuoteURISet:           activityJSONLDPresentValue(object, "quoteUri") != nil,
+			QuoteURLSet:           activityJSONLDPresentValue(object, "quoteUrl") != nil,
+			MisskeyQuoteSet:       activityJSONLDPresentValue(object, "_misskey_quote") != nil,
 			QuoteAuthorizationSet: activityJSONLDValue(object, "quoteAuthorization") != nil,
 			QuoteDeleted:          activityPubInlineObjectType(activityJSONLDValue(object, "quote")) == "Tombstone",
 			InteractionPolicy:     activityJSONLDValue(object, "interactionPolicy"),
@@ -7683,6 +7684,20 @@ func activityJSONLDValue(object map[string]any, key string) any {
 		}
 	}
 	return nil
+}
+
+// activityJSONLDPresentValue is activityJSONLDValue for the terms Paon reads by
+// their presence (closed, oneOf, anyOf, conversation and the quote terms): an
+// empty array counts as absent. It produces no RDF statement, so it can be
+// added to a linked-data signed document without invalidating the signature,
+// and as a present value it would close an open poll, drop a poll or a quote,
+// or put the status into an empty conversation.
+func activityJSONLDPresentValue(object map[string]any, key string) any {
+	value := activityJSONLDValue(object, key)
+	if items, ok := value.([]any); ok && len(items) == 0 {
+		return nil
+	}
+	return value
 }
 
 func activityJSONLDValueWithExpandedIRI(object map[string]any, key string) (any, bool) {

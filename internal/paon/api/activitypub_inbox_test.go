@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -819,6 +820,107 @@ func TestActivityPubQuestionBlankClosedStringDoesNotFallbackToEndTimeLikeRails(t
 		if poll.ExpiresAt.Valid {
 			t.Fatalf("closed string %q should parse through Rails to_datetime and not fallback to endTime, got %#v", rawClosed, poll.ExpiresAt)
 		}
+	}
+}
+
+// Paon reads closed, oneOf, anyOf, conversation and the quote terms by their
+// presence. An empty array adds nothing to the RDF a linked-data signature
+// covers, so it counts as absent for every delivery.
+func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
+	now := time.Date(2026, 6, 19, 11, 0, 0, 0, time.UTC)
+	parse := func(t *testing.T, object string) activityObject {
+		t.Helper()
+		payload, err := parseActivityPayload([]byte(`{
+			"type":"Create",
+			"actor":"https://remote.test/users/bob",
+			"object":` + object + `
+		}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return payload.Object
+	}
+	t.Run("closed", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/2","type":"Question","closed":[],"endTime":"2026-06-19T12:30:00Z","oneOf":[{"name":"a"},{"name":"b"}]}`)
+		poll, ok := activityPollFromObject(object, 42, 99, now)
+		if !ok || !poll.ExpiresAt.Valid || poll.ExpiresAt.Time.Format(time.RFC3339) != "2026-06-19T12:30:00Z" {
+			t.Fatalf("poll = %#v ok = %v, want it open until endTime", poll, ok)
+		}
+	})
+	t.Run("anyOf next to oneOf", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/2","type":"Question","endTime":"2026-06-19T12:30:00Z","oneOf":[{"name":"a"},{"name":"b"}],"anyOf":[]}`)
+		poll, ok := activityPollFromObject(object, 42, 99, now)
+		if !ok || poll.Multiple || !slices.Equal(poll.Options, models.StringArray{"a", "b"}) {
+			t.Fatalf("poll = %#v ok = %v, want the single-choice options", poll, ok)
+		}
+	})
+	t.Run("oneOf next to anyOf", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/2","type":"Question","endTime":"2026-06-19T12:30:00Z","oneOf":[],"anyOf":[{"name":"a"},{"name":"b"}]}`)
+		poll, ok := activityPollFromObject(object, 42, 99, now)
+		if !ok || !poll.Multiple || !slices.Equal(poll.Options, models.StringArray{"a", "b"}) {
+			t.Fatalf("poll = %#v ok = %v, want the multiple-choice options", poll, ok)
+		}
+	})
+	t.Run("conversation", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/3","type":"Note","content":"x","conversation":[]}`)
+		if object.ConversationSet || object.Conversation != "" {
+			t.Fatalf("conversation = %q set = %v, want none", object.Conversation, object.ConversationSet)
+		}
+	})
+	// Like Mastodon 4.4's StatusParser#quote_uri, Paon reads quote,
+	// _misskey_quote, quoteUrl and quoteUri in that order, so an empty array
+	// of an earlier term must not hide a later one. The last three rows put
+	// the empty array after the term that carries the target and read it
+	// either way.
+	for _, test := range []struct {
+		name   string
+		object string
+		want   string
+	}{
+		{
+			name:   "quote next to _misskey_quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":[],"_misskey_quote":"https://remote.test/notes/q"}`,
+			want:   "https://remote.test/notes/q",
+		},
+		{
+			name:   "_misskey_quote next to quoteUrl",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","_misskey_quote":[],"quoteUrl":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "quoteUrl next to quoteUri",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUrl":[],"quoteUri":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "quoteUri next to quoteUrl",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUri":[],"quoteUrl":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "quoteUri next to _misskey_quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUri":[],"_misskey_quote":"https://remote.test/notes/q"}`,
+			want:   "https://remote.test/notes/q",
+		},
+		{
+			name:   "quoteUrl next to _misskey_quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUrl":[],"_misskey_quote":"https://remote.test/notes/q"}`,
+			want:   "https://remote.test/notes/q",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := activityPubQuoteURL(parse(t, test.object)); got != test.want {
+				t.Fatalf("quote URL = %q, want %q", got, test.want)
+			}
+		})
+	}
+	for _, key := range []string{"quote", "_misskey_quote"} {
+		t.Run(key, func(t *testing.T) {
+			object := parse(t, `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","`+key+`":[]}`)
+			if object.QuoteSet || object.QuoteURISet || object.QuoteURLSet || object.MisskeyQuoteSet {
+				t.Fatalf("quote presence = %v %v %v %v, want none", object.QuoteSet, object.QuoteURISet, object.QuoteURLSet, object.MisskeyQuoteSet)
+			}
+		})
 	}
 }
 
