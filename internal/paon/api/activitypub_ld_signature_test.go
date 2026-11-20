@@ -5,12 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -1254,6 +1257,282 @@ func TestLinkedDataSignatureReadsOnlySignedFeaturedCollectionTerms(t *testing.T)
 				t.Fatalf("read %#v, want only the signed %#v", got, test.want)
 			}
 		})
+	}
+}
+
+// json-gold compacts a blank node property such as "_:@context" against the
+// ActivityStreams "@vocab": "_:" to the keyword "@context", so a relay can put
+// an embedded context into the compacted document. Re-expanded for
+// canonicalization, that context retypes or nulls terms Paon reads: the values
+// under them leave the signed RDF, and the victim's signature stays valid. Such
+// a document is never authenticated. An embedded context of the original
+// document is still fine: compaction only keeps Paon's top-level context.
+func TestLinkedDataSignatureRejectsEmbeddedContext(t *testing.T) {
+	const attackerContextURI = "https://attacker.example/context"
+	forgetAttackerContext := func() {
+		activityPubJSONLDContextCache.Lock()
+		delete(activityPubJSONLDContextCache.entries, attackerContextURI)
+		activityPubJSONLDContextCache.Unlock()
+	}
+	forgetAttackerContext()
+	t.Cleanup(forgetAttackerContext)
+	oldClient := activityHTTPClient
+	oldProxy := activityHTTPProxyConfigured
+	t.Cleanup(func() {
+		activityHTTPClient = oldClient
+		activityHTTPProxyConfigured = oldProxy
+	})
+	activityHTTPProxyConfigured = true
+	// Nothing is preloaded: the compaction of the relayed document itself
+	// fetches and caches the attacker's context, which the verification and
+	// coverage loaders then resolve from that cache.
+	activityHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != attackerContextURI {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/ld+json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"@context":{"attributionDomains":null,"movedTo":null}}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	const mallory = "https://attacker.example/users/mallory"
+	// Earlier Mastodon 4.3 and 4.4 releases publish attributionDomains as node
+	// references, which nobody reads.
+	referencedDomains := func(publicKeyPEM string) map[string]any {
+		payload := linkedDataPersonUpdatePayload(publicKeyPEM)
+		payload["@context"] = append(payload["@context"].([]any), map[string]any{
+			"toot":               "http://joinmastodon.org/ns#",
+			"attributionDomains": map[string]any{"@id": "toot:attributionDomains", "@type": "@id"},
+		})
+		payload["object"].(map[string]any)["attributionDomains"] = []any{"origin.example"}
+		return payload
+	}
+	readsAttributionDomains := func(payload activityPayload) bool {
+		return slices.Contains(activityLimitedStringList(payload.Object.AttributionDomains, 256), "attacker.example")
+	}
+	retypedDomains := func(key string) func(document map[string]any) {
+		return func(document map[string]any) {
+			object := document["object"].(map[string]any)
+			delete(object, "attributionDomains")
+			object["_:@context"] = map[string]any{key: map[string]any{"_:@type": "@id"}}
+			object[key] = []any{"attacker.example"}
+		}
+	}
+	fetchedContext := func(key string, value any) func(document map[string]any) {
+		return func(document map[string]any) {
+			document["@context"] = append(document["@context"].([]any), attackerContextURI)
+			object := document["object"].(map[string]any)
+			object["_:@context"] = attackerContextURI
+			object[key] = value
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		inject  func(document map[string]any)
+		reads   func(payload activityPayload) bool
+	}{
+		{
+			name:    "retyped attributionDomains CURIE",
+			payload: linkedDataPersonUpdatePayload,
+			inject:  retypedDomains("_:toot:attributionDomains"),
+			reads:   readsAttributionDomains,
+		},
+		{
+			name:    "retyped attributionDomains IRI replacing signed references",
+			payload: referencedDomains,
+			inject:  retypedDomains("_:" + activityPubMastodonAttributionDomainsIRI),
+			reads:   readsAttributionDomains,
+		},
+		{
+			name:    "fetched context nulls attributionDomains",
+			payload: linkedDataPersonUpdatePayload,
+			inject:  fetchedContext(activityPubMastodonAttributionDomainsIRI, []any{"attacker.example"}),
+			reads:   readsAttributionDomains,
+		},
+		{
+			name:    "fetched context nulls movedTo",
+			payload: linkedDataPersonUpdatePayload,
+			inject:  fetchedContext("https://www.w3.org/ns/activitystreams#movedTo", map[string]any{"@id": mallory}),
+			reads: func(payload activityPayload) bool {
+				return activityPubObjectID(payload.Object.MovedTo) == mallory
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			forgetAttackerContext()
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			test.inject(document)
+			body := marshalLinkedDataTestDocument(t, document)
+
+			compactedBody, compacted := activityPubCompactCollectionBody(body)
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("injection changed the signed RDF: %v", err)
+			}
+			payload, err := parseActivityPayload(compactedBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !payload.Signature.Present || !test.reads(payload) {
+				t.Fatalf("compacted payload does not carry the injected content: %s", compactedBody)
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err == nil || !strings.Contains(err.Error(), "does not cover the document") {
+				t.Fatalf("coverage error = %v, want rejection of the embedded @context", err)
+			}
+			// Rejection must happen before signature creator lookup touches the
+			// database; reaching it here would panic on the zero-value handle.
+			server := &Server{db: &gorm.DB{}}
+			err = server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, linkedDataForgeryRelay(), nil, 0)
+			if !errors.Is(err, errActivityPubEventNotApplied) || !strings.Contains(err.Error(), "linked-data signature does not cover the document") {
+				t.Fatalf("relayed activity error = %v, want rejection of the embedded @context", err)
+			}
+		})
+	}
+
+	t.Run("embedded context of the original document", func(t *testing.T) {
+		document, publicKey := signedLinkedDataFixture(t, func(string) map[string]any {
+			payload := linkedDataNoteCreatePayload("")
+			object := payload["object"].(map[string]any)
+			object["@context"] = map[string]any{"sensitive": "as:sensitive"}
+			object["sensitive"] = true
+			return payload
+		})
+		compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+		if !compacted {
+			t.Fatal("document with a literal signature object was not compacted")
+		}
+		if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+			t.Fatalf("compacted signature: %v", err)
+		}
+		if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+			t.Fatalf("signed document was rejected: %v", err)
+		}
+	})
+}
+
+// The relayed movedTo forgery end to end: a third party adds a forged movedTo
+// and, as "_:@context", a remote context that nulls movedTo to the victim's
+// linked-data signed Update(Person). Compacting the relayed document fetches
+// that context and keeps the embedded "@context", the canonicalized RDF and so
+// the victim's signature stay unchanged, and the payload Paon processes would
+// move the victim to the attacker's account. The victim's signature must not
+// authenticate it.
+func TestLinkedDataSignatureRejectsRelayedMovedToForgery(t *testing.T) {
+	const attackerContextURI = "https://attacker.example/moved-to-context"
+	const mallory = "https://attacker.example/users/mallory"
+	forgetAttackerContext := func() {
+		activityPubJSONLDContextCache.Lock()
+		delete(activityPubJSONLDContextCache.entries, attackerContextURI)
+		activityPubJSONLDContextCache.Unlock()
+	}
+	forgetAttackerContext()
+	t.Cleanup(forgetAttackerContext)
+	oldClient := activityHTTPClient
+	oldProxy := activityHTTPProxyConfigured
+	t.Cleanup(func() {
+		activityHTTPClient = oldClient
+		activityHTTPProxyConfigured = oldProxy
+	})
+	activityHTTPProxyConfigured = true
+	activityHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != attackerContextURI {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/ld+json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"@context":{"movedTo":null}}`)),
+			Request:    r,
+		}, nil
+	})}
+
+	var victimPublicKeyPEM string
+	document, publicKey := signedLinkedDataFixture(t, func(publicKeyPEM string) map[string]any {
+		victimPublicKeyPEM = publicKeyPEM
+		return linkedDataPersonUpdatePayload(publicKeyPEM)
+	})
+	victim := models.Account{
+		ID:        21,
+		Username:  "alice",
+		Domain:    sql.NullString{String: "origin.example", Valid: true},
+		URI:       linkedDataForgeryVictimURI,
+		PublicKey: victimPublicKeyPEM,
+	}
+	// The signature creator resolves to the victim's stored key.
+	database, err := gorm.Open(postgres.New(postgres.Config{
+		DSN: "host=127.0.0.1 port=1 user=paon dbname=paon sslmode=disable",
+	}), &gorm.Config{DryRun: true, DisableAutomaticPing: true, SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Callback().Query().Replace("gorm:query", func(tx *gorm.DB) {
+		switch destination := tx.Statement.Dest.(type) {
+		case *models.Account:
+			*destination = victim
+		case *models.Keypair, *models.DomainBlock:
+			tx.AddError(gorm.ErrRecordNotFound)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		cfg: config.Config{Scheme: "https", LocalDomain: "paon.example", WebDomain: "paon.example"},
+		db:  database,
+	}
+	// authenticate follows the inbox: it compacts the relayed document, binds
+	// it to the linked-data signature creator and returns the forwarding-safe
+	// payload that the inbox then processes.
+	authenticate := func(body []byte) ([]byte, activityPayload, *models.Account, error) {
+		t.Helper()
+		compactedBody, compacted := activityPubCompactCollectionBody(body)
+		if !compacted || !activityPayloadSupportedContext(compactedBody) {
+			t.Fatalf("relayed document was not compacted with a supported context: %s", compactedBody)
+		}
+		payload, err := parseActivityPayload(compactedBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actor, authErr := server.activityPubLinkedDataSignatureActor(compactedBody, payload)
+		processed, err := parseActivityPayload(activityPubFinalizeCollectionBodyForForwarding(body, compactedBody))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return compactedBody, processed, actor, authErr
+	}
+	actorURI := func(actor *models.Account) string {
+		if actor == nil {
+			return "<nil>"
+		}
+		return actor.URI
+	}
+
+	_, payload, actor, err := authenticate(marshalLinkedDataTestDocument(t, document))
+	if err != nil || actorURI(actor) != linkedDataForgeryVictimURI {
+		t.Fatalf("signed Update(Person) authenticated actor = %s, error = %v", actorURI(actor), err)
+	}
+	if movedTo := activityPubObjectID(payload.Object.MovedTo); movedTo != "" {
+		t.Fatalf("signed Update(Person) movedTo = %q, want none", movedTo)
+	}
+
+	document["@context"] = append(document["@context"].([]any), attackerContextURI)
+	object := document["object"].(map[string]any)
+	object["_:@context"] = attackerContextURI
+	object["https://www.w3.org/ns/activitystreams#movedTo"] = map[string]any{"@id": mallory}
+	compactedBody, payload, actor, err := authenticate(marshalLinkedDataTestDocument(t, document))
+	if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+		t.Fatalf("injection changed the signed RDF: %v", err)
+	}
+	if movedTo := activityPubObjectID(payload.Object.MovedTo); movedTo != mallory {
+		t.Fatalf("processed payload movedTo = %q, want the forged %q", movedTo, mallory)
+	}
+	if actor != nil || err == nil || !strings.Contains(err.Error(), "linked-data signature does not cover the document: embedded @context") {
+		t.Fatalf("forged movedTo authenticated actor = %s, error = %v, want rejection of the embedded @context", actorURI(actor), err)
 	}
 }
 
