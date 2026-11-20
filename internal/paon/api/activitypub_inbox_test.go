@@ -824,7 +824,7 @@ func TestActivityPubQuestionBlankClosedStringDoesNotFallbackToEndTimeLikeRails(t
 	}
 }
 
-// Paon reads closed, oneOf, anyOf, conversation, quoteUri, quoteUrl and
+// Paon reads closed, oneOf, anyOf, conversation, quote, quoteUri, quoteUrl and
 // _misskey_quote by their presence. An empty array adds nothing to the RDF a
 // linked-data signature covers, so it counts as absent for every delivery.
 func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
@@ -902,6 +902,52 @@ func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","_misskey_quote":[]}`)
 		if object.QuoteURISet || object.QuoteURLSet || object.MisskeyQuoteSet {
 			t.Fatalf("quote presence = %v %v %v, want none", object.QuoteURISet, object.QuoteURLSet, object.MisskeyQuoteSet)
+		}
+	})
+	// FEP-044f's quote comes first, so an empty one must neither hide the
+	// later terms nor make the quote a non-legacy one.
+	for _, test := range []struct {
+		name   string
+		object string
+		want   string
+	}{
+		{
+			name:   "quote next to _misskey_quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":[],"_misskey_quote":"https://remote.test/notes/q"}`,
+			want:   `url="https://remote.test/notes/q" legacy=true`,
+		},
+		{
+			name:   "quote next to quoteUrl",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":[],"quoteUrl":"https://remote.test/statuses/q"}`,
+			want:   `url="https://remote.test/statuses/q" legacy=true`,
+		},
+		{
+			name:   "expanded quote next to quoteUri",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","https://w3id.org/fep/044f#quote":[],"quoteUri":"https://remote.test/statuses/q"}`,
+			want:   `url="https://remote.test/statuses/q" legacy=true`,
+		},
+		{
+			name:   "quote alone",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":[]}`,
+			want:   `url="" legacy=true`,
+		},
+		{
+			name:   "quote with a target",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":"https://remote.test/statuses/q","_misskey_quote":"https://remote.test/notes/q"}`,
+			want:   `url="https://remote.test/statuses/q" legacy=false`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			object := parse(t, test.object)
+			if got := fmt.Sprintf("url=%q legacy=%v", activityPubQuoteURL(object), !object.QuoteSet); got != test.want {
+				t.Fatalf("quote reads %s, want %s", got, test.want)
+			}
+		})
+	}
+	t.Run("quote Tombstone", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":{"type":"Tombstone"}}`)
+		if !object.QuoteSet || !object.QuoteDeleted {
+			t.Fatalf("quote set = %v deleted = %v, want a deleted quote", object.QuoteSet, object.QuoteDeleted)
 		}
 	})
 	// A term is read from its own key and then from its other IRIs; an empty

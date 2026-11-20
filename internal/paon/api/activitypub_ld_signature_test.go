@@ -3209,6 +3209,7 @@ func TestLinkedDataSignatureEmptyPresenceArraysKeepSignedReads(t *testing.T) {
 		ostatus  = "http://ostatus.org#"
 		toot     = "http://joinmastodon.org/ns#"
 		fedibird = "http://fedibird.com/ns#"
+		fep      = "https://w3id.org/fep/044f#"
 	)
 	pollCheckedAt := time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
 	readsPoll := func(p activityPayload) string {
@@ -3216,6 +3217,9 @@ func TestLinkedDataSignatureEmptyPresenceArraysKeepSignedReads(t *testing.T) {
 		return fmt.Sprintf("poll=%v options=%v multiple=%v tallies=%v expires=%v", ok, poll.Options, poll.Multiple, poll.CachedTallies, poll.ExpiresAt)
 	}
 	readsQuote := func(p activityPayload) string { return activityPubQuoteURL(p.Object) }
+	readsLegacyQuote := func(p activityPayload) string {
+		return fmt.Sprintf("url=%q legacy=%v", activityPubQuoteURL(p.Object), !p.Object.QuoteSet)
+	}
 	readsConversation := func(p activityPayload) string {
 		return fmt.Sprintf("conversation=%q set=%v", p.Object.Conversation, p.Object.ConversationSet)
 	}
@@ -3241,6 +3245,20 @@ func TestLinkedDataSignatureEmptyPresenceArraysKeepSignedReads(t *testing.T) {
 		{name: "_misskey_quote in front of quoteUrl", payload: noteWith("quoteUrl", "https://other.example/statuses/q"), key: misskey + "_misskey_quote", reads: readsQuote},
 		{name: "_misskey_quote in front of quoteUri", payload: noteWith("quoteUri", "https://other.example/statuses/q"), key: misskey + "_misskey_quote", reads: readsQuote},
 		{name: "quoteUrl in front of quoteUri", payload: noteWith("quoteUri", "https://other.example/statuses/q"), key: as + "quoteUrl", reads: readsQuote},
+		// An empty FEP-044f quote would also turn the legacy quote of the
+		// signed document into a non-legacy one.
+		{
+			name: "quote in front of _misskey_quote", payload: noteWith("_misskey_quote", "https://other.example/notes/q"),
+			key: fep + "quote", reads: readsLegacyQuote, signed: `url="https://other.example/notes/q" legacy=true`,
+		},
+		{
+			name: "quote in front of quoteUrl", payload: noteWith("quoteUrl", "https://other.example/statuses/q"),
+			key: fep + "quote", reads: readsLegacyQuote, signed: `url="https://other.example/statuses/q" legacy=true`,
+		},
+		{
+			name: "quote in front of quoteUri", payload: noteWith("quoteUri", "https://other.example/statuses/q"),
+			key: fep + "quote", reads: readsLegacyQuote, signed: `url="https://other.example/statuses/q" legacy=true`,
+		},
 		{name: "conversation on a status without one", payload: linkedDataPlacementNotePayload, key: ostatus + "conversation", reads: readsConversation},
 		// A term is also read from its other IRIs, which compact to compact
 		// IRIs behind the key of the term; the empty array lands on that key.
