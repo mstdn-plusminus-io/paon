@@ -6662,6 +6662,9 @@ func parseActivityObject(value any) activityObject {
 		oneOfPollOptions := activityPollOptionListWithShape(activityJSONLDPresentValue(object, "oneOf"))
 		anyOfPollOptions := activityPollOptionListWithShape(activityJSONLDPresentValue(object, "anyOf"))
 		conversationValue := activityJSONLDPresentValue(object, "conversation")
+		quoteURIValue := activityJSONLDPresentValue(object, "quoteUri")
+		quoteURLValue := activityJSONLDPresentValue(object, "quoteUrl")
+		misskeyQuoteValue := activityJSONLDPresentValue(object, "_misskey_quote")
 		publicKeyValue := activityJSONLDValue(object, "publicKey")
 		toValue := activityJSONLDValue(object, "to")
 		ccValue := activityJSONLDValue(object, "cc")
@@ -6737,15 +6740,15 @@ func parseActivityObject(value any) activityObject {
 			CipherText:       activityJSONLDString(object, "cipherText"),
 			MessageFranking:  activityJSONLDString(object, "messageFranking"),
 			DigestValue:      activityDigestValue(activityJSONLDValue(object, "digest")),
-			QuoteURI:         activityJSONLDObjectID(object, "quoteUri"),
-			QuoteURL:         activityJSONLDObjectID(object, "quoteUrl"),
-			MisskeyQuote:     activityJSONLDObjectID(object, "_misskey_quote"),
-			QuoteURIRaw:      activityJSONLDObjectIDPreserveBearcap(object, "quoteUri"),
-			QuoteURLRaw:      activityJSONLDObjectIDPreserveBearcap(object, "quoteUrl"),
-			MisskeyQuoteRaw:  activityJSONLDObjectIDPreserveBearcap(object, "_misskey_quote"),
-			QuoteURISet:      activityJSONLDPresentValue(object, "quoteUri") != nil,
-			QuoteURLSet:      activityJSONLDPresentValue(object, "quoteUrl") != nil,
-			MisskeyQuoteSet:  activityJSONLDPresentValue(object, "_misskey_quote") != nil,
+			QuoteURI:         activityJSONLDValueObjectID(quoteURIValue),
+			QuoteURL:         activityJSONLDValueObjectID(quoteURLValue),
+			MisskeyQuote:     activityJSONLDValueObjectID(misskeyQuoteValue),
+			QuoteURIRaw:      activityJSONLDValueObjectIDPreserveBearcap(quoteURIValue),
+			QuoteURLRaw:      activityJSONLDValueObjectIDPreserveBearcap(quoteURLValue),
+			MisskeyQuoteRaw:  activityJSONLDValueObjectIDPreserveBearcap(misskeyQuoteValue),
+			QuoteURISet:      quoteURIValue != nil,
+			QuoteURLSet:      quoteURLValue != nil,
+			MisskeyQuoteSet:  misskeyQuoteValue != nil,
 			AlsoKnownAs:      activityJSONLDValue(object, "alsoKnownAs"),
 			MovedTo:          activityJSONLDValue(object, "movedTo"),
 		}
@@ -7519,16 +7522,21 @@ func activityJSONLDValue(object map[string]any, key string) any {
 
 // activityJSONLDPresentValue is activityJSONLDValue for the terms Paon reads by
 // their presence (closed, oneOf, anyOf, conversation and the quote terms): an
-// empty array counts as absent. It produces no RDF statement, so it can be
+// empty array counts as absent, so the lookup goes on to the other keys of the
+// term as if it were missing. It produces no RDF statement, so it can be
 // added to a linked-data signed document without invalidating the signature,
 // and as a present value it would close an open poll, drop a poll or a quote,
-// or put the status into an empty conversation.
+// or put the status into an empty conversation. In front of the other keys it
+// would hide them, e.g. FEP-044f's quote behind empty quoteUri and quoteUrl.
 func activityJSONLDPresentValue(object map[string]any, key string) any {
-	value := activityJSONLDValue(object, key)
-	if items, ok := value.([]any); ok && len(items) == 0 {
-		return nil
+	for _, candidate := range append([]string{key}, activityJSONLDTermIRIs(key)...) {
+		value := object[candidate]
+		if items, ok := value.([]any); value == nil || (ok && len(items) == 0) {
+			continue
+		}
+		return value
 	}
-	return value
+	return nil
 }
 
 func activityJSONLDValueWithExpandedIRI(object map[string]any, key string) (any, bool) {
@@ -7887,7 +7895,12 @@ func activityJSONLDStringValue(value any) string {
 }
 
 func activityJSONLDObjectID(object map[string]any, key string) string {
-	value := activityJSONLDValue(object, key)
+	return activityJSONLDValueObjectID(activityJSONLDValue(object, key))
+}
+
+// activityJSONLDValueObjectID returns the object identifier of a property
+// value, or of its first item that has one.
+func activityJSONLDValueObjectID(value any) string {
 	if id := activityPubObjectID(value); id != "" {
 		return id
 	}
@@ -7904,7 +7917,12 @@ func activityJSONLDObjectIDFirst(object map[string]any, key string) string {
 }
 
 func activityJSONLDObjectIDPreserveBearcap(object map[string]any, key string) string {
-	value := activityJSONLDValue(object, key)
+	return activityJSONLDValueObjectIDPreserveBearcap(activityJSONLDValue(object, key))
+}
+
+// activityJSONLDValueObjectIDPreserveBearcap is activityJSONLDValueObjectID
+// keeping a bearcap URI as it is.
+func activityJSONLDValueObjectIDPreserveBearcap(value any) string {
 	if id := activityPubObjectIDPreserveBearcap(value); id != "" {
 		return id
 	}

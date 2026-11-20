@@ -889,6 +889,18 @@ func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUrl":[],"_misskey_quote":"https://remote.test/notes/q"}`,
 			want:   "https://remote.test/notes/q",
 		},
+		// quoteUri and quoteUrl are also read from FEP-044f's quote, behind
+		// their own terms.
+		{
+			name:   "quoteUri and quoteUrl next to quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUri":[],"quoteUrl":[],"quote":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "expanded quoteUri and quoteUrl next to the expanded quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","http://joinmastodon.org/ns#quoteUri":[],"https://www.w3.org/ns/activitystreams#quoteUrl":[],"https://w3id.org/fep/044f#quote":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := activityPubQuoteURL(parse(t, test.object)); got != test.want {
