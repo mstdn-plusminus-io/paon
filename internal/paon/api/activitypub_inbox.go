@@ -7012,6 +7012,9 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 		quoteURLValue := activityJSONLDPresentValue(object, "quoteUrl")
 		misskeyQuoteValue := activityJSONLDPresentValue(object, "_misskey_quote")
 		quoteValue := activityJSONLDPresentValue(object, "quote")
+		showMediaValue := activityJSONLDPresentValue(object, "showMedia")
+		showMediaRepliesValue := activityJSONLDPresentValue(object, "showRepliesInMedia")
+		showFeaturedValue := activityJSONLDPresentValue(object, "showFeatured")
 		toValue := activityJSONLDValue(object, "to")
 		ccValue := activityJSONLDValue(object, "cc")
 		out := activityObject{
@@ -7064,12 +7067,12 @@ func parseActivityObjectDepth(value any, quoteDepth int) activityObject {
 			Locked:                activityBoolValue(activityJSONLDValue(object, "manuallyApprovesFollowers")),
 			Discoverable:          activityBoolValue(activityJSONLDValue(object, "discoverable")),
 			Indexable:             activityBoolValue(activityJSONLDValue(object, "indexable")),
-			ShowMedia:             activityBoolValue(activityJSONLDValue(object, "showMedia")),
-			ShowMediaSet:          activityJSONLDValue(object, "showMedia") != nil,
-			ShowMediaReplies:      activityBoolValue(activityJSONLDValue(object, "showRepliesInMedia")),
-			ShowMediaRepliesSet:   activityJSONLDValue(object, "showRepliesInMedia") != nil,
-			ShowFeatured:          activityBoolValue(activityJSONLDValue(object, "showFeatured")),
-			ShowFeaturedSet:       activityJSONLDValue(object, "showFeatured") != nil,
+			ShowMedia:             activityBoolValue(showMediaValue),
+			ShowMediaSet:          showMediaValue != nil,
+			ShowMediaReplies:      activityBoolValue(showMediaRepliesValue),
+			ShowMediaRepliesSet:   showMediaRepliesValue != nil,
+			ShowFeatured:          activityBoolValue(showFeaturedValue),
+			ShowFeaturedSet:       showFeaturedValue != nil,
 			Memorial:              activityBoolValue(activityJSONLDValue(object, "memorial")),
 			Suspended:             activityRailsSuspendedTruthy(activityJSONLDValue(object, "suspended")),
 			Closed:                activityJSONLDPresentValue(object, "closed"),
@@ -7888,16 +7891,18 @@ func activityJSONLDValue(object map[string]any, key string) any {
 
 // activityJSONLDPresentValue is activityJSONLDValue for the terms Paon reads by
 // their presence (closed, oneOf, anyOf, conversation, FEP-044f's quote,
-// quoteUri, quoteUrl and _misskey_quote): an empty array counts as absent, so
+// quoteUri, quoteUrl, _misskey_quote and the profile settings showMedia,
+// showRepliesInMedia and showFeatured): an empty array counts as absent, so
 // the lookup goes on to the other keys of the term as if it were missing. It
 // produces no RDF statement, so it can be added to a linked-data signed
 // document without invalidating the signature, and as a present value it
-// would close an open poll, drop a poll or a quote, or put the status into an
-// empty conversation. activityPubQuoteURL takes the first present quote term,
-// so an empty quote would also hide a signed _misskey_quote, quoteUrl or
-// quoteUri. In front of the other keys of its own term it would hide them,
-// e.g. a signed as:conversation behind an empty ostatus conversation, or a
-// signed toot:quoteUri behind an empty fedibird quoteUri.
+// would close an open poll, drop a poll or a quote, put the status into an
+// empty conversation, or turn off a profile setting the actor did not send.
+// activityPubQuoteURL takes the first present quote term, so an empty quote
+// would also hide a signed _misskey_quote, quoteUrl or quoteUri. In front of
+// the other keys of its own term it would hide them, e.g. a signed
+// as:conversation behind an empty ostatus conversation, or a signed
+// toot:quoteUri behind an empty fedibird quoteUri.
 func activityJSONLDPresentValue(object map[string]any, key string) any {
 	for _, candidate := range append([]string{key}, activityJSONLDTermIRIs(key)...) {
 		value := object[candidate]

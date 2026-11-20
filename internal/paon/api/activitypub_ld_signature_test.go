@@ -993,7 +993,9 @@ func TestLinkedDataSignatureIgnoresBlankNodeAttributionDomains(t *testing.T) {
 // ContextHelper#full_context (profile_settings), so ProcessAccountService
 // reads the signed toot: values, while a property that expands to a blank node
 // identifier such as "_:showMedia" stays under that key and is never read.
-// RDF conversion drops such properties, so the signature does not cover them.
+// RDF conversion drops such properties, so the signature does not cover them,
+// nor does it cover an empty array under the toot: IRIs, which Paon reads as
+// a missing setting.
 func TestLinkedDataSignatureReadsOnlySignedProfileSettings(t *testing.T) {
 	type profileSettings struct {
 		featured, featuredSet bool
@@ -1031,8 +1033,18 @@ func TestLinkedDataSignatureReadsOnlySignedProfileSettings(t *testing.T) {
 			}
 		}
 	}
+	// An empty array under the IRIs of the settings adds no RDF statement
+	// either, but compacts to the terms Paon reads.
+	injectEmptyArrays := func(keys ...string) func(object map[string]any) {
+		return func(object map[string]any) {
+			for _, key := range keys {
+				object[key] = []any{}
+			}
+		}
+	}
 	undefinedTerms := []string{"showFeatured", "showMedia", "showRepliesInMedia"}
 	blankNodeProperties := []string{"_:showFeatured", "_:showMedia", "_:showRepliesInMedia"}
+	settingIRIs := []string{"http://joinmastodon.org/ns#showFeatured", "http://joinmastodon.org/ns#showMedia", "http://joinmastodon.org/ns#showRepliesInMedia"}
 	for _, test := range []struct {
 		name    string
 		payload func(publicKeyPEM string) map[string]any
@@ -1044,6 +1056,8 @@ func TestLinkedDataSignatureReadsOnlySignedProfileSettings(t *testing.T) {
 		{name: "blank node properties", payload: linkedDataPersonUpdatePayload, inject: inject(blankNodeProperties...)},
 		{name: "blank node value objects", payload: linkedDataPersonUpdatePayload, inject: injectValueObjects(blankNodeProperties...)},
 		{name: "blank node properties next to signed settings", payload: signedSettings, inject: inject(blankNodeProperties...), want: signed},
+		{name: "empty arrays", payload: linkedDataPersonUpdatePayload, inject: injectEmptyArrays(settingIRIs...)},
+		{name: "empty arrays next to signed settings", payload: signedSettings, inject: injectEmptyArrays(settingIRIs...), want: signed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			document, publicKey := signedLinkedDataFixture(t, test.payload)

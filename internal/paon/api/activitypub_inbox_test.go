@@ -824,9 +824,10 @@ func TestActivityPubQuestionBlankClosedStringDoesNotFallbackToEndTimeLikeRails(t
 	}
 }
 
-// Paon reads closed, oneOf, anyOf, conversation, quote, quoteUri, quoteUrl and
-// _misskey_quote by their presence. An empty array adds nothing to the RDF a
-// linked-data signature covers, so it counts as absent for every delivery.
+// Paon reads closed, oneOf, anyOf, conversation, quote, quoteUri, quoteUrl,
+// _misskey_quote, showMedia, showRepliesInMedia and showFeatured by their
+// presence. An empty array adds nothing to the RDF a linked-data signature
+// covers, so it counts as absent for every delivery.
 func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 	now := time.Date(2026, 6, 19, 11, 0, 0, 0, time.UTC)
 	parse := func(t *testing.T, object string) activityObject {
@@ -948,6 +949,44 @@ func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quote":{"type":"Tombstone"}}`)
 		if !object.QuoteSet || !object.QuoteDeleted {
 			t.Fatalf("quote set = %v deleted = %v, want a deleted quote", object.QuoteSet, object.QuoteDeleted)
+		}
+	})
+	// Mastodon v4.6.6 updates show_media, show_media_replies and show_featured
+	// only when the actor sends them; empty arrays must not turn them off.
+	const emptySettingsActor = `{"@context":"https://www.w3.org/ns/activitystreams","id":"https://remote.test/users/bob","type":"Person","preferredUsername":"bob","inbox":"https://remote.test/users/bob/inbox","showMedia":[],"showRepliesInMedia":[],"showFeatured":[]}`
+	const falseSettingsActor = `{"@context":"https://www.w3.org/ns/activitystreams","id":"https://remote.test/users/bob","type":"Person","preferredUsername":"bob","inbox":"https://remote.test/users/bob/inbox","showMedia":false,"showRepliesInMedia":false,"showFeatured":false}`
+	settings := func(media, mediaSet, replies, repliesSet, featured, featuredSet bool) string {
+		return fmt.Sprintf("media=%v/%v replies=%v/%v featured=%v/%v", media, mediaSet, replies, repliesSet, featured, featuredSet)
+	}
+	t.Run("profile settings in an Update(Person)", func(t *testing.T) {
+		for _, test := range []struct {
+			actor string
+			want  string
+		}{
+			{actor: emptySettingsActor, want: settings(false, false, false, false, false, false)},
+			{actor: falseSettingsActor, want: settings(false, true, false, true, false, true)},
+		} {
+			object := parse(t, test.actor)
+			if got := settings(object.ShowMedia, object.ShowMediaSet, object.ShowMediaReplies, object.ShowMediaRepliesSet, object.ShowFeatured, object.ShowFeaturedSet); got != test.want {
+				t.Fatalf("profile settings of %s = %s, want %s", test.actor, got, test.want)
+			}
+		}
+	})
+	t.Run("profile settings of a fetched actor", func(t *testing.T) {
+		for _, test := range []struct {
+			actor string
+			want  string
+		}{
+			{actor: emptySettingsActor, want: settings(false, false, false, false, false, false)},
+			{actor: falseSettingsActor, want: settings(false, true, false, true, false, true)},
+		} {
+			actor, err := parseRemoteActivityActorWithImageFetcher([]byte(test.actor), func(string) any { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := settings(actor.ShowMedia, actor.ShowMediaSet, actor.ShowMediaReplies, actor.ShowMediaRepliesSet, actor.ShowFeatured, actor.ShowFeaturedSet); got != test.want {
+				t.Fatalf("profile settings of %s = %s, want %s", test.actor, got, test.want)
+			}
 		}
 	})
 	// A term is read from its own key and then from its other IRIs; an empty

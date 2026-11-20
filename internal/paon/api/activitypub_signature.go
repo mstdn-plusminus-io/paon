@@ -1709,6 +1709,9 @@ func parseRemoteActivityActorWithImageFetcher(body []byte, imageFetcher func(str
 	featuredValue := activityJSONLDValue(raw, "featured")
 	featuredTagsValue := activityJSONLDValue(raw, "featuredTags")
 	sharedInboxURL := activityActorSharedInboxURLFromObject(raw)
+	showMediaValue := activityJSONLDPresentValue(raw, "showMedia")
+	showMediaRepliesValue := activityJSONLDPresentValue(raw, "showRepliesInMedia")
+	showFeaturedValue := activityJSONLDPresentValue(raw, "showFeatured")
 	actor := remoteActivityActor{
 		ID:                        actorID,
 		Type:                      typ,
@@ -1730,12 +1733,12 @@ func parseRemoteActivityActorWithImageFetcher(body []byte, imageFetcher func(str
 		ManuallyApprovesFollowers: activityBoolValue(activityJSONLDValue(raw, "manuallyApprovesFollowers")),
 		Discoverable:              activityBoolValue(activityJSONLDValue(raw, "discoverable")),
 		Indexable:                 activityBoolValue(activityJSONLDValue(raw, "indexable")),
-		ShowMedia:                 activityBoolValue(activityJSONLDValue(raw, "showMedia")),
-		ShowMediaSet:              activityJSONLDValue(raw, "showMedia") != nil,
-		ShowMediaReplies:          activityBoolValue(activityJSONLDValue(raw, "showRepliesInMedia")),
-		ShowMediaRepliesSet:       activityJSONLDValue(raw, "showRepliesInMedia") != nil,
-		ShowFeatured:              activityBoolValue(activityJSONLDValue(raw, "showFeatured")),
-		ShowFeaturedSet:           activityJSONLDValue(raw, "showFeatured") != nil,
+		ShowMedia:                 activityBoolValue(showMediaValue),
+		ShowMediaSet:              showMediaValue != nil,
+		ShowMediaReplies:          activityBoolValue(showMediaRepliesValue),
+		ShowMediaRepliesSet:       showMediaRepliesValue != nil,
+		ShowFeatured:              activityBoolValue(showFeaturedValue),
+		ShowFeaturedSet:           showFeaturedValue != nil,
 		Memorial:                  activityBoolValue(activityJSONLDValue(raw, "memorial")),
 		Suspended:                 activityRailsSuspendedTruthy(activityJSONLDValue(raw, "suspended")),
 		MovedTo:                   activityJSONLDValue(raw, "movedTo"),
