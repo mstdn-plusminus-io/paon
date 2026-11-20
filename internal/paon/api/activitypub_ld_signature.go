@@ -382,9 +382,21 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 	}
 	unsigned := make(map[string]any, len(document))
 	for key, value := range document {
-		if key != "signature" {
-			unsigned[key] = value
+		if key == "signature" {
+			continue
 		}
+		// Compaction only writes Paon's own context at the top level. An
+		// embedded "@context" comes from a blank node property such as
+		// "_:@context", which json-gold compacts against the ActivityStreams
+		// "@vocab": "_:" to that keyword. Re-expanding the document would then
+		// apply it, so it could null or retype the terms Paon reads: the values
+		// under those terms would leave the canonicalized RDF, and nulled ones
+		// would not even appear in the expanded document checked below. Such a
+		// document is never authenticated.
+		if key != "@context" && activityPubJSONLDHasEmbeddedContext(value) {
+			return fmt.Errorf("linked-data signature does not cover the document: embedded @context")
+		}
+		unsigned[key] = value
 	}
 	input, err := activityPubJSONLDSanitize(unsigned)
 	if err != nil {
@@ -401,6 +413,26 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 		return fmt.Errorf("linked-data signature does not cover the document: %w", err)
 	}
 	return nil
+}
+
+// activityPubJSONLDHasEmbeddedContext reports whether value, part of a
+// compacted document below its top level, holds an "@context" entry.
+func activityPubJSONLDHasEmbeddedContext(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if key == "@context" || activityPubJSONLDHasEmbeddedContext(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if activityPubJSONLDHasEmbeddedContext(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // activityPubJSONLDUncanonicalizedContent walks an expanded JSON-LD document
