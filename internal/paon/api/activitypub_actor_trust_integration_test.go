@@ -152,12 +152,23 @@ func TestActivityPubActorTrustIntegration(t *testing.T) {
 		if err := server.db.Create(&models.DomainBlock{Domain: "blocked.example", Severity: sql.NullInt64{Int64: int64(domainBlockSeverityCode("suspend")), Valid: true}, CreatedAt: now, UpdatedAt: now}).Error; err != nil {
 			t.Fatal(err)
 		}
+		const keyID = "https://keys.example/k"
+		// The key document is served by an allowed host and confirmed by its
+		// owner on the blocked domain (FetchRemoteKeyService#confirmed_owner?),
+		// so the lookup reaches the domain check of FetchRemoteActorService on
+		// the actor URI rather than on the keyId host.
 		settingsResolveMockRemote(t, map[string]string{
-			"https://keys.example/k": activityTestJSON(`{"id":"` + actorURI + `"}`),
-			actorURI:                 actorTrustActor(actorURI, "frank", actorURI+"/inbox", "PEM-FRANK"),
+			keyID: activityTestJSON(`{"id":"` + keyID + `","owner":"` + actorURI + `","publicKeyPem":"PEM-FRANK"}`),
+			actorURI: activityTestJSON(`{
+				"id":"` + actorURI + `",
+				"type":"Person",
+				"preferredUsername":"frank",
+				"inbox":"` + actorURI + `/inbox",
+				"publicKey":"` + keyID + `"
+			}`),
 			actorTrustWebFingerURL("frank@blocked.example"): actorTrustWebFinger("frank@blocked.example", actorURI),
 		})
-		if _, err := server.fetchAndStoreActivityActorForKeyID("https://keys.example/k"); !errors.Is(err, errActivitySignatureDomainNotAllowed) {
+		if _, err := server.fetchAndStoreActivityActorForKeyID(keyID); !errors.Is(err, errActivitySignatureDomainNotAllowed) {
 			t.Fatalf("error = %v, want errActivitySignatureDomainNotAllowed", err)
 		}
 		actorTrustAssertNoAccountWithURI(t, server.db, actorURI)
