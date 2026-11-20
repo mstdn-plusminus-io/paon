@@ -1189,6 +1189,261 @@ func TestLinkedDataSignatureEmbeddedContextCannotForgeMovedTo(t *testing.T) {
 	}
 }
 
+// linkedDataKeywordNotePayload is a signed post carrying a content warning and
+// a mention, which a relay must not be able to hide.
+func linkedDataKeywordNotePayload(string) map[string]any {
+	payload := linkedDataNoteCreatePayload("")
+	payload["@context"] = append(payload["@context"].([]any), map[string]any{"sensitive": "as:sensitive"})
+	object := payload["object"].(map[string]any)
+	object["sensitive"] = true
+	object["summary"] = "spoilers"
+	object["tag"] = []any{map[string]any{"type": "Mention", "href": "https://paon.example/users/bob", "name": "@bob@paon.example"}}
+	return payload
+}
+
+// linkedDataKeywordPersonPayload is a signed Update(Person) carrying a shared
+// inbox and an account migration, which a relay must not be able to hide.
+func linkedDataKeywordPersonPayload(publicKeyPEM string) map[string]any {
+	payload := linkedDataPersonUpdatePayload(publicKeyPEM)
+	payload["@context"] = append(payload["@context"].([]any), map[string]any{
+		"movedTo":     map[string]any{"@id": "as:movedTo", "@type": "@id"},
+		"alsoKnownAs": map[string]any{"@id": "as:alsoKnownAs", "@type": "@id"},
+	})
+	object := payload["object"].(map[string]any)
+	object["endpoints"] = map[string]any{"sharedInbox": "https://origin.example/inbox"}
+	object["movedTo"] = "https://new.example/users/alice"
+	object["alsoKnownAs"] = []any{"https://new.example/users/alice"}
+	return payload
+}
+
+// json-gold compacts every blank node property "_:<keyword>" against the
+// ActivityStreams "@vocab": "_:" to the bare keyword, not only "@context".
+// Re-expanding the compacted document for canonicalization gives the keyword
+// its meaning: "@nest" and "@set" move the signed values under them back into
+// the enclosing node, so the victim's signature still verifies while Paon no
+// longer sees those values under the keys it reads, and "@id" gives a node
+// Paon reads a blank node identifier. Compacting with Paon's context never
+// writes these keywords, so such a document is never authenticated.
+func TestLinkedDataSignatureRejectsCompactedBlankNodeKeywords(t *testing.T) {
+	wrap := func(keyword string, node func(document map[string]any) map[string]any, keys ...string) func(document map[string]any) {
+		return func(document map[string]any) {
+			target := node(document)
+			wrapped := map[string]any{}
+			for _, key := range keys {
+				wrapped[key] = target[key]
+				delete(target, key)
+			}
+			target["_:"+keyword] = wrapped
+		}
+	}
+	root := func(document map[string]any) map[string]any { return document }
+	object := func(document map[string]any) map[string]any { return document["object"].(map[string]any) }
+	objectKey := func(key string) func(document map[string]any) map[string]any {
+		return func(document map[string]any) map[string]any { return object(document)[key].(map[string]any) }
+	}
+	for _, test := range []struct {
+		name    string
+		keyword string
+		payload func(publicKeyPEM string) map[string]any
+		forge   func(document map[string]any)
+		forged  func(payload activityPayload) bool
+	}{
+		{
+			name:    "@nest hides sensitive and the content warning",
+			keyword: "embedded @nest",
+			payload: linkedDataKeywordNotePayload,
+			forge:   wrap("@nest", object, "sensitive", "summary"),
+			forged:  func(p activityPayload) bool { return !p.Object.Sensitive && p.Object.Summary == "" },
+		},
+		{
+			name:    "@nest hides the actor key",
+			keyword: "embedded @nest",
+			payload: linkedDataKeywordPersonPayload,
+			forge:   wrap("@nest", object, "publicKey"),
+			forged:  func(p activityPayload) bool { return p.Object.PublicKey == "" },
+		},
+		{
+			name:    "@nest hides the account migration",
+			keyword: "embedded @nest",
+			payload: linkedDataKeywordPersonPayload,
+			forge:   wrap("@nest", object, "movedTo", "alsoKnownAs"),
+			forged:  func(p activityPayload) bool { return p.Object.MovedTo == nil && p.Object.AlsoKnownAs == nil },
+		},
+		{
+			name:    "@set hides the shared inbox",
+			keyword: "embedded @set",
+			payload: linkedDataKeywordPersonPayload,
+			forge:   wrap("@set", objectKey("endpoints"), "sharedInbox"),
+			forged:  func(p activityPayload) bool { return p.Object.SharedInbox == "" },
+		},
+		{
+			name:    "@set hides the actor key node",
+			keyword: "embedded @set",
+			payload: linkedDataKeywordPersonPayload,
+			forge:   wrap("@set", objectKey("publicKey"), "id", "owner", "publicKeyPem"),
+			forged:  func(p activityPayload) bool { return p.Object.PublicKey == "" },
+		},
+		{
+			name:    "@id adds a blank node identifier to a mention",
+			keyword: "embedded @id",
+			payload: linkedDataKeywordNotePayload,
+			forge: func(document map[string]any) {
+				object(document)["tag"].([]any)[0].(map[string]any)["_:@id"] = "_:b0"
+			},
+			forged: func(p activityPayload) bool { return len(p.Object.Tags) == 1 && p.Object.Tags[0].ID == "_:b0" },
+		},
+		{
+			name:    "top-level @nest hides the object",
+			keyword: "top-level @nest",
+			payload: linkedDataKeywordNotePayload,
+			forge:   wrap("@nest", root, "object"),
+			forged:  func(p activityPayload) bool { return p.Object.ID == "" },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			test.forge(document)
+			body := marshalLinkedDataTestDocument(t, document)
+			compactedBody, compacted := activityPubCompactCollectionBody(body)
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("forgery changed the signed RDF: %v", err)
+			}
+			payload, err := parseActivityPayload(compactedBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !payload.Signature.Present || payload.Actor != linkedDataForgeryVictimURI || !test.forged(payload) {
+				t.Fatalf("compacted payload does not show the forgery: %s", compactedBody)
+			}
+			err = activityPubLinkedDataSignatureCoversDocument(compactedBody)
+			if err == nil || !strings.Contains(err.Error(), "linked-data signature does not cover the document: "+test.keyword) {
+				t.Fatalf("coverage error = %v, want rejection of the %s", err, test.keyword)
+			}
+			// Rejection must happen before signature creator lookup touches the
+			// database; reaching it here would panic on the zero-value handle.
+			server := &Server{db: &gorm.DB{}}
+			err = server.processActivityPubInboxForDeliveredToWithContext(t.Context(), body, linkedDataForgeryRelay(), nil, 0)
+			if !errors.Is(err, errActivityPubEventNotApplied) || !strings.Contains(err.Error(), "linked-data signature does not cover the document") {
+				t.Fatalf("relayed activity error = %v, want rejection before creator lookup", err)
+			}
+		})
+	}
+}
+
+// Compacting with Paon's context keeps the keywords of value objects, list
+// objects and indexes below the top level, and removes a sender's own @nest
+// aliases and embedded contexts. Such signed documents are still
+// authenticated, and Paon reads the signed values the forgeries above hide.
+func TestLinkedDataSignatureAcceptsCompactedValueKeywords(t *testing.T) {
+	const ext = "https://ext.example/ns#"
+	withExtensions := func(payload func(publicKeyPEM string) map[string]any) func(publicKeyPEM string) map[string]any {
+		return func(publicKeyPEM string) map[string]any {
+			document := payload(publicKeyPEM)
+			object := document["object"].(map[string]any)
+			object[ext+"rating"] = map[string]any{"@value": "5", "@type": "http://www.w3.org/2001/XMLSchema#integer"}
+			object[ext+"note"] = map[string]any{"@value": "メモ", "@language": "ja"}
+			object[ext+"steps"] = map[string]any{"@list": []any{"one", "two"}}
+			object[ext+"indexed"] = map[string]any{"@value": "first", "@index": "a"}
+			return document
+		}
+	}
+	senderNest := func(string) map[string]any {
+		return map[string]any{
+			"@context": []any{"https://www.w3.org/ns/activitystreams", activityPubSecurityContext, map[string]any{
+				"@version":  1.1,
+				"props":     "@nest",
+				"sensitive": map[string]any{"@id": "as:sensitive", "@nest": "props"},
+			}},
+			"id":    linkedDataForgeryVictimURI + "/statuses/9/activity",
+			"type":  "Create",
+			"actor": linkedDataForgeryVictimURI,
+			"to":    []any{activityPubPublicIRI},
+			"object": map[string]any{
+				"id":           linkedDataForgeryVictimURI + "/statuses/9",
+				"type":         "Note",
+				"attributedTo": linkedDataForgeryVictimURI,
+				"content":      "signed",
+				"summary":      "spoilers",
+				"to":           []any{activityPubPublicIRI},
+				"props":        map[string]any{"sensitive": true},
+				"tag":          []any{map[string]any{"type": "Mention", "href": "https://paon.example/users/bob", "name": "@bob@paon.example"}},
+			},
+		}
+	}
+	readsNote := func(t *testing.T, payload activityPayload) {
+		t.Helper()
+		if !payload.Object.Sensitive || payload.Object.Summary != "spoilers" {
+			t.Fatalf("sensitive = %v, summary = %q; want the signed content warning", payload.Object.Sensitive, payload.Object.Summary)
+		}
+		if len(payload.Object.Tags) != 1 || payload.Object.Tags[0].Href != "https://paon.example/users/bob" || payload.Object.Tags[0].ID != "" {
+			t.Fatalf("tags = %#v, want the signed mention", payload.Object.Tags)
+		}
+	}
+	for _, test := range []struct {
+		name     string
+		payload  func(publicKeyPEM string) map[string]any
+		keywords []string
+		reads    func(t *testing.T, payload activityPayload)
+	}{
+		{
+			name:     "Create(Note) with value, list and index objects",
+			payload:  withExtensions(linkedDataKeywordNotePayload),
+			keywords: []string{"@value", "@language", "@list", "@index"},
+			reads:    readsNote,
+		},
+		{
+			name:     "Update(Person) with value, list and index objects",
+			payload:  withExtensions(linkedDataKeywordPersonPayload),
+			keywords: []string{"@value", "@language", "@list", "@index"},
+			reads: func(t *testing.T, payload activityPayload) {
+				t.Helper()
+				if payload.Object.PublicKey == "" || payload.Object.SharedInbox != "https://origin.example/inbox" {
+					t.Fatalf("publicKey = %q, sharedInbox = %q; want the signed values", payload.Object.PublicKey, payload.Object.SharedInbox)
+				}
+				if movedTo := activityPubObjectID(payload.Object.MovedTo); movedTo != "https://new.example/users/alice" {
+					t.Fatalf("movedTo = %q, want the signed account migration", movedTo)
+				}
+				if aliases := activityLimitedValueOrIDList(payload.Object.AlsoKnownAs, 256); !slices.Equal(aliases, []string{"https://new.example/users/alice"}) {
+					t.Fatalf("alsoKnownAs = %#v, want the signed aliases", aliases)
+				}
+			},
+		},
+		{
+			name:    "Create(Note) with a sender @nest alias",
+			payload: senderNest,
+			reads:   readsNote,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			body := marshalLinkedDataTestDocument(t, document)
+			compactedBody, compacted := activityPubCompactCollectionBody(body)
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			for _, keyword := range test.keywords {
+				if !strings.Contains(string(compactedBody), `"`+keyword+`":`) {
+					t.Fatalf("compacted document does not hold %s: %s", keyword, compactedBody)
+				}
+			}
+			if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+				t.Fatalf("compacted signature: %v", err)
+			}
+			if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+				t.Fatalf("signed document was rejected: %v", err)
+			}
+			payload, err := parseActivityPayload(activityPubFinalizeCollectionBodyForForwarding(body, compactedBody))
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.reads(t, payload)
+		})
+	}
+}
+
 // Mastodon 4.6 documents reference the WebFinger context, which Mastodon
 // preloads; Paon preloads it too so relayed documents compact offline.
 func TestLinkedDataSignatureCompactsMastodonWebFingerContext(t *testing.T) {
