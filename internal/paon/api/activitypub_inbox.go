@@ -4668,8 +4668,12 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 	if object.Published != "" {
 		updates["created_at"] = activityActorPublishedAt(object.Published, actor.CreatedAt)
 	}
+	publicKey, publicKeyResolved := object.PublicKey, true
 	if !activityActorLocallySuspended(*actor) {
-		updates["public_key"] = object.PublicKey
+		publicKey, publicKeyResolved = s.activityPubActorUpdatePublicKey(object)
+		if publicKeyResolved {
+			updates["public_key"] = publicKey
+		}
 	}
 	for key, value := range activityActorSuspensionUpdatesForTransition(suspensionTransition, now) {
 		updates[key] = value
@@ -4745,10 +4749,10 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 				}
 			}
 		}
-		if activityActorLocallySuspended(*actor) {
+		if activityActorLocallySuspended(*actor) || !publicKeyResolved {
 			return nil
 		}
-		return clearActivityPubActorTombstonesOnKeyChange(tx, actor.ID, actor.PublicKey, object.PublicKey)
+		return clearActivityPubActorTombstonesOnKeyChange(tx, actor.ID, actor.PublicKey, publicKey)
 	}); err != nil {
 		return err
 	}
@@ -4780,6 +4784,68 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 		s.syncActivityPubFeaturedTagsBestEffort(actor, object.FeaturedTags)
 	}
 	return nil
+}
+
+// activityPubActorUpdatePublicKey returns the key an actor Update stores and
+// whether it is known. Like ProcessAccountService#public_key, a publicKey
+// given as a reference is fetched (fetchActivityPubReferencedPublicKey).
+// When the reference cannot be resolved the key is unknown: the stored key
+// and the actor's tombstones are kept instead of storing an empty key, which
+// would delete every tombstone and let old signed activities recreate
+// deleted statuses.
+func (s *Server) activityPubActorUpdatePublicKey(object activityObject) (string, bool) {
+	if object.PublicKey != "" || object.PublicKeyReference == "" {
+		return object.PublicKey, true
+	}
+	publicKey, err := s.fetchActivityPubReferencedPublicKey(object.ID, object.PublicKeyReference)
+	if err != nil {
+		return "", false
+	}
+	return publicKey, true
+}
+
+// fetchActivityPubReferencedPublicKey fetches the key keyID with the signed
+// resource fetch (SSRF guarded) unless its domain is blocked, and returns its
+// PEM only when the fetched key has keyID as its id and actorURI as its owner,
+// as Mastodon 4.6 checks the owner. The key may be served on its own, inside a
+// @graph, or as the publicKey of the actor document (Mastodon "#main-key"
+// fragments, GoToSocial key URLs).
+func (s *Server) fetchActivityPubReferencedPublicKey(actorURI string, keyID string) (string, error) {
+	if !activityPubHTTPURIAllowedRaw(keyID) {
+		return "", fmt.Errorf("public key reference is not an http(s) URI")
+	}
+	if disallowed, err := s.remoteActivityDomainNotAllowed(keyID); err != nil || disallowed {
+		if err != nil {
+			return "", err
+		}
+		return "", errActivitySignatureDomainNotAllowed
+	}
+	resource, err := s.fetchActivityResourceWithRepresentative(keyID)
+	if err != nil {
+		return "", err
+	}
+	if !activityJSONContentType(resource.contentType) {
+		return "", fmt.Errorf("unsupported public key content type")
+	}
+	var key map[string]any
+	if err := json.Unmarshal(resource.body, &key); err != nil {
+		return "", err
+	}
+	if graphKey := activityJSONLDGraphPublicKey(key); graphKey != nil {
+		key = graphKey
+	} else if activityJSONLDValue(key, "publicKeyPem") == nil {
+		if embedded, ok := activityJSONLDSingle(activityJSONLDValue(key, "publicKey")).(map[string]any); ok {
+			key = embedded
+		}
+	}
+	if activityJSONLDIDRaw(key) != keyID || activityJSONLDValueOrID(activityJSONLDValue(key, "owner")) != actorURI {
+		return "", fmt.Errorf("public key not found")
+	}
+	publicKey := activityJSONLDString(key, "publicKeyPem")
+	if strings.TrimSpace(publicKey) == "" {
+		return "", fmt.Errorf("public key not found")
+	}
+	return publicKey, nil
 }
 
 func clearActivityPubActorAvatarMediaUpdates(updates map[string]any) {
@@ -5823,6 +5889,9 @@ type activityObject struct {
 	ProfileFields      []profileField
 	ProfileFieldsSet   bool
 	PublicKey          string
+	// PublicKeyReference is the first publicKey value when it names the key
+	// by IRI instead of embedding it; see activityPubActorUpdatePublicKey.
+	PublicKeyReference string
 	AvatarRemoteURL    string
 	HeaderRemoteURL    string
 	QuoteURI           string
@@ -6615,6 +6684,7 @@ func parseActivityObject(value any) activityObject {
 		oneOfPollOptions := activityPollOptionListWithShape(activityJSONLDPresentValue(object, "oneOf"))
 		anyOfPollOptions := activityPollOptionListWithShape(activityJSONLDPresentValue(object, "anyOf"))
 		conversationValue := activityJSONLDPresentValue(object, "conversation")
+		publicKeyValue := activityJSONLDValue(object, "publicKey")
 		toValue := activityJSONLDValue(object, "to")
 		ccValue := activityJSONLDValue(object, "cc")
 		out := activityObject{
@@ -6679,7 +6749,8 @@ func parseActivityObject(value any) activityObject {
 			Replies:            activityCollectionValue(activityJSONLDValue(object, "replies")),
 			ProfileFields:      activityProfileFields(activityJSONLDValue(object, "attachment")),
 			ProfileFieldsSet:   activityAttachmentPresent(activityJSONLDValue(object, "attachment")),
-			PublicKey:          activityPublicKeyPEM(activityJSONLDValue(object, "publicKey")),
+			PublicKey:          activityPublicKeyPEM(publicKeyValue),
+			PublicKeyReference: activityPublicKeyReference(publicKeyValue),
 			AvatarRemoteURL:    activityActorImageURL(activityJSONLDValue(object, "icon")),
 			HeaderRemoteURL:    activityActorImageURL(activityJSONLDValue(object, "image")),
 			QuoteURI:           activityJSONLDObjectID(object, "quoteUri"),
@@ -6881,6 +6952,17 @@ func activityPublicKeyPEM(value any) string {
 		return ""
 	}
 	return activityJSONLDString(object, "publicKeyPem")
+}
+
+// activityPublicKeyReference returns the first publicKey value when it is an
+// IRI reference rather than an embedded key, the value
+// ProcessAccountService#public_key fetches.
+func activityPublicKeyReference(value any) string {
+	reference, ok := activityJSONLDSingle(value).(string)
+	if !ok || strings.TrimSpace(reference) == "" {
+		return ""
+	}
+	return reference
 }
 
 func activityTagList(value any) []activityTag {
