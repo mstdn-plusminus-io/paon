@@ -271,7 +271,8 @@ func TestAPIRejectsSuspendedUsersLikeRailsIntegration(t *testing.T) {
 		expectStatus("follower private status", request(http.MethodGet, privatePath, bearer("follower")), http.StatusOK)
 		expectStatus("follower verify_credentials", request(http.MethodGet, "/api/v1/accounts/verify_credentials", bearer("follower")), http.StatusOK)
 		expectStatus("anonymous public status", request(http.MethodGet, publicPath, credential{}), http.StatusOK)
-		expectError("anonymous private status", request(http.MethodGet, privatePath, credential{}), http.StatusNotFound, "Record not found")
+		// Mastodon 4.3 StatusesController#set_status renders not_found here.
+		expectError("anonymous private status", request(http.MethodGet, privatePath, credential{}), http.StatusNotFound, "Not Found")
 		expectStatus("anonymous oembed", request(http.MethodGet, oEmbedPath, credential{}), http.StatusOK)
 		expectStatus("staff admin account", request(http.MethodGet, "/api/v1/admin/accounts/"+id(accounts["follower"].ID), bearer("staff")), http.StatusOK)
 	})
