@@ -574,7 +574,10 @@ const activityPubMastodonAttributionDomainsIRI = "http://joinmastodon.org/ns#att
 // (activityLimitedStringList), so they are skipped. Paon does read literal
 // values, including expanded {"@value": ...} objects, stores them and uses
 // them for link card author attribution, so those must stay covered by the
-// signature like any other content.
+// signature like any other content. A skipped reference with a relative IRI
+// must also stay bare: activityPubJSONLDUnsignedPlacement rejects one that
+// holds anything else, as RDF conversion drops it together with its
+// properties but keeps the node objects nested in it.
 func activityPubJSONLDUncanonicalizedAttributionDomains(value any) error {
 	items, ok := value.([]any)
 	if !ok {
@@ -620,7 +623,10 @@ func activityPubJSONLDUncanonicalizedAttributionDomains(value any) error {
 //     statement (@index, undefined terms or empty arrays). The compacted
 //     reference then stays a map instead of the IRI string readers such as
 //     a mention's href, an attachment url or an avatar url expect, so Paon
-//     would drop the signed value.
+//     would drop the signed value. A node object whose @id RDF conversion
+//     drops (a relative attributionDomains domain) produces no statement
+//     either, so it must be bare too; otherwise a relay could move signed
+//     descriptions below it.
 func activityPubJSONLDUnsignedPlacement(expanded []any) error {
 	placement := activityPubJSONLDPlacement{
 		descriptions: map[string][sha256.Size]byte{},
@@ -754,8 +760,18 @@ func (p *activityPubJSONLDPlacement) walkValues(values []any, dropped bool) erro
 
 // activityPubJSONLDNodeHasStatements reports whether RDF conversion produces a
 // statement with the expanded node object as its subject: a type or a value of
-// a canonicalized property.
+// a canonicalized property. A node object whose @id is a relative or invalid
+// IRI has none, as RDF conversion drops that subject with all its properties
+// (activityPubJSONLDCanonicalizedNodeID). Outside dropped properties such a
+// node object can only be an attributionDomains value
+// (activityPubJSONLDUncanonicalizedAttributionDomains), and it must stay a
+// bare reference there: the node objects nested in it keep their own
+// statements, so a description moved below it would leave the signed RDF as
+// it was while Paon no longer read it where it is referenced.
 func activityPubJSONLDNodeHasStatements(node map[string]any) bool {
+	if id, ok := node["@id"].(string); ok && !activityPubJSONLDCanonicalizedNodeID(id) {
+		return false
+	}
 	for key, value := range node {
 		if key != "@type" && !activityPubJSONLDCanonicalizedProperty(key) {
 			continue
@@ -765,6 +781,15 @@ func activityPubJSONLDNodeHasStatements(node map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// activityPubJSONLDCanonicalizedNodeID reports whether RDF conversion keeps the
+// statements about the node object identified by id. json-gold skips a node
+// with a relative IRI as a subject (GraphToRDF in ld/rdf_dataset.go) and as an
+// object (objectToRDF in ld/node.go), and drops the statements that hold an
+// invalid IRI (Quad.Valid).
+func activityPubJSONLDCanonicalizedNodeID(id string) bool {
+	return !ld.IsRelativeIri(id) && activityPubJSONLDValidIRI(id)
 }
 
 // statements digests an expanded value for comparing descriptions of the same

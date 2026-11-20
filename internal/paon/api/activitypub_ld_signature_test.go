@@ -2612,6 +2612,142 @@ func TestLinkedDataSignatureRejectsRelocatedNodeDescriptions(t *testing.T) {
 	}
 }
 
+// The coverage check lets attributionDomains values with a relative @id
+// through, as Mastodon 4.3.0 to 4.4.17 publish bare domains there. RDF
+// conversion drops such a node as a subject together with all its
+// properties, but keeps the statements of the node objects nested in it. A
+// relay can therefore move the victim's signed node descriptions below a
+// relative attributionDomains node and leave references behind without
+// changing the signed RDF, while Paon reads the compacted JSON by position
+// and loses the moved values. Such documents are never authenticated; a bare
+// relative reference is still accepted.
+func TestLinkedDataSignatureRejectsDescriptionsBelowRelativeNodes(t *testing.T) {
+	object := func(document map[string]any) map[string]any { return document["object"].(map[string]any) }
+	relative := func(property string, value any) []any {
+		return []any{map[string]any{"id": "origin.example", property: value}}
+	}
+	pollCheckedAt := time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
+	const carriesEntries = `reference "origin.example" carries entries the signature does not cover`
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		forge   func(document map[string]any)
+		forged  func(payload activityPayload) bool
+	}{
+		{
+			name:    "mention moved below a relative node of the status",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				status := object(document)
+				tags := status["tag"].([]any)
+				mention := tags[0].(map[string]any)
+				mention["id"] = "_:m"
+				tags[0] = "_:m"
+				status["attributionDomains"] = relative("tag", mention)
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+		},
+		{
+			name:    "mention moved below a relative node of the activity",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				tags := object(document)["tag"].([]any)
+				mention := tags[0].(map[string]any)
+				mention["id"] = "_:m"
+				tags[0] = map[string]any{"id": "_:m"}
+				document["attributionDomains"] = relative("tag", mention)
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+		},
+		{
+			name:    "attachment moved below a relative node",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				status := object(document)
+				attachment := status["attachment"].([]any)[0].(map[string]any)
+				attachment["id"] = "_:a"
+				status["attachment"] = []any{"_:a"}
+				status["attributionDomains"] = relative("attachment", attachment)
+			},
+			forged: func(p activityPayload) bool { return len(p.Object.Attachments) == 0 },
+		},
+		{
+			name:    "poll options moved below a relative node",
+			payload: linkedDataPlacementQuestionPayload,
+			forge: func(document map[string]any) {
+				status := object(document)
+				options := status["oneOf"].([]any)
+				yes, no := options[0].(map[string]any), options[1].(map[string]any)
+				yes["id"], no["id"] = "_:yes", "_:no"
+				status["oneOf"] = []any{"_:yes", "_:no"}
+				status["attributionDomains"] = relative("oneOf", []any{yes, no})
+			},
+			forged: func(p activityPayload) bool {
+				_, ok := activityPollFromObject(p.Object, 1, 1, pollCheckedAt)
+				return !ok
+			},
+		},
+		{
+			name:    "avatar moved below a relative node",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				icon := person["icon"].(map[string]any)
+				icon["id"] = "_:i"
+				person["icon"] = "_:i"
+				person["attributionDomains"] = relative("icon", icon)
+			},
+			forged: func(p activityPayload) bool { return p.Object.AvatarRemoteURL == "" },
+		},
+		{
+			name:    "key description moved below a relative node",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				key := person["publicKey"].(map[string]any)
+				person["publicKey"] = key["id"]
+				person["attributionDomains"] = relative("publicKey", key)
+			},
+			// Paon dereferences the key reference left behind
+			// (activityRemoteActorPublicKeys) instead of storing the signed
+			// description.
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasSignedKey(p) },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			test.forge(document)
+			assertLinkedDataForgeryRejected(t, document, publicKey, test.forged, carriesEntries)
+		})
+	}
+
+	t.Run("bare relative references stay accepted", func(t *testing.T) {
+		document, publicKey := signedLinkedDataFixture(t, func(publicKeyPEM string) map[string]any {
+			payload := linkedDataPlacementNotePayload(publicKeyPEM)
+			payload["attributionDomains"] = []any{map[string]any{"id": "origin.example"}}
+			object(payload)["attributionDomains"] = []any{map[string]any{"id": "origin.example"}, map[string]any{"id": "news.example"}}
+			return payload
+		})
+		compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+		if !compacted {
+			t.Fatal("document with a literal signature object was not compacted")
+		}
+		if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+			t.Fatalf("compacted signature: %v", err)
+		}
+		if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+			t.Fatalf("signed document with bare relative references was rejected: %v", err)
+		}
+		payload, err := parseActivityPayload(compactedBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !linkedDataPlacementHasMention(payload) || len(payload.Object.Attachments) != 1 {
+			t.Fatalf("signed values were not read: %s", compactedBody)
+		}
+	})
+}
+
 // Signed documents that describe a node more than once with the same
 // statements, reference a node they describe elsewhere, or carry empty arrays
 // keep their linked-data authority, and Paon reads their signed values.
