@@ -392,25 +392,28 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 		if key == "signature" {
 			continue
 		}
-		// Compaction only writes Paon's own context at the top level. An
-		// embedded "@context" comes from a blank node property such as
-		// "_:@context", which json-gold compacts against the ActivityStreams
-		// "@vocab": "_:" to that keyword. Re-expanding the document would then
-		// apply it, so it could null or retype the terms Paon reads: the values
-		// under those terms would leave the canonicalized RDF, and nulled ones
-		// would not even appear in the expanded document checked below. Such a
-		// document is never authenticated.
-		if key != "@context" && activityPubJSONLDHasEmbeddedContext(value) {
-			return fmt.Errorf("linked-data signature does not cover the document: embedded @context")
+		if key == "@context" {
+			unsigned[key] = value
+			continue
 		}
-		// The same holds for every other keyword key that compaction never
-		// writes, e.g. "@type" from "_:@type": re-expansion lets an array
-		// "type" replace it, so injected types leave the canonicalized RDF
-		// while activityJSONLDTypes still reads them.
-		if key != "@context" {
-			if keyword, ok := activityPubJSONLDUncompactedKeyword(map[string]any{key: value}); ok {
-				return fmt.Errorf("linked-data signature does not cover the document: %s is not a compacted keyword", keyword)
-			}
+		// Compaction only writes Paon's own context at the top level and the
+		// keywords listed in activityPubJSONLDCompactedKeywords below it. Any
+		// other keyword comes from a blank node property such as "_:@context",
+		// which json-gold compacts against the ActivityStreams "@vocab": "_:"
+		// to that keyword. Re-expanding the document would then act on it. An
+		// embedded "@context" could null or retype the terms Paon reads: the
+		// values under those terms would leave the canonicalized RDF, and
+		// nulled ones would not even appear in the expanded document checked
+		// below. "@nest" and "@set" would move the signed values under them
+		// back into the enclosing node, so the signature would still cover
+		// them while Paon no longer saw them under the keys it reads, and
+		// "@id" would give a node a blank node identifier. Such a document is
+		// never authenticated.
+		if ld.IsKeyword(key) {
+			return fmt.Errorf("linked-data signature does not cover the document: top-level %s", key)
+		}
+		if keyword, ok := activityPubJSONLDEmbeddedKeyword(value); ok {
+			return fmt.Errorf("linked-data signature does not cover the document: embedded %s", keyword)
 		}
 		unsigned[key] = value
 	}
@@ -431,55 +434,35 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 	return nil
 }
 
-// activityPubJSONLDCompactedKeywords are the only keyword keys, apart from the
-// top-level @context, that compacting with Paon's context writes: value
-// objects and list objects keep these, while the context aliases @id and @type
-// to "id" and "type". Any other keyword key comes from a blank node property
-// such as "_:@type", which json-gold compacts against the ActivityStreams
-// "@vocab": "_:" to that keyword.
-var activityPubJSONLDCompactedKeywords = []string{"@value", "@language", "@direction", "@index", "@list"}
+// activityPubJSONLDCompactedKeywords are the only JSON-LD keywords that
+// compacting with Paon's context writes below the top level of a document:
+// those of value objects, list objects and indexes. Node objects get the "id"
+// and "type" aliases instead of "@id" and "@type", and an embedded context of
+// the original document is removed.
+var activityPubJSONLDCompactedKeywords = []string{"@value", "@language", "@direction", "@list", "@index"}
 
-// activityPubJSONLDUncompactedKeyword reports the first keyword key of value
-// that compaction with Paon's context never writes.
-func activityPubJSONLDUncompactedKeyword(value any) (string, bool) {
+// activityPubJSONLDEmbeddedKeyword returns a JSON-LD keyword entry of value,
+// part of a compacted document below its top level, that compacting with
+// Paon's context does not write there.
+func activityPubJSONLDEmbeddedKeyword(value any) (string, bool) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
 			if ld.IsKeyword(key) && !slices.Contains(activityPubJSONLDCompactedKeywords, key) {
 				return key, true
 			}
-			if keyword, ok := activityPubJSONLDUncompactedKeyword(child); ok {
+			if keyword, ok := activityPubJSONLDEmbeddedKeyword(child); ok {
 				return keyword, true
 			}
 		}
 	case []any:
 		for _, child := range typed {
-			if keyword, ok := activityPubJSONLDUncompactedKeyword(child); ok {
+			if keyword, ok := activityPubJSONLDEmbeddedKeyword(child); ok {
 				return keyword, true
 			}
 		}
 	}
 	return "", false
-}
-
-// activityPubJSONLDHasEmbeddedContext reports whether value, part of a
-// compacted document below its top level, holds an "@context" entry.
-func activityPubJSONLDHasEmbeddedContext(value any) bool {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, child := range typed {
-			if key == "@context" || activityPubJSONLDHasEmbeddedContext(child) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if activityPubJSONLDHasEmbeddedContext(child) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // activityPubJSONLDUncanonicalizedContent walks an expanded JSON-LD document
