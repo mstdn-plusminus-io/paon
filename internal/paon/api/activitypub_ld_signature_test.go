@@ -2803,14 +2803,15 @@ func linkedDataPlacementMovePayload(string) map[string]any {
 }
 
 // A reference whose node object also holds entries that produce no
-// statement (an undefined term, @index or an empty array) keeps the signed
-// RDF, but compacts to a map instead of the IRI string Paon reads, so the
-// mention, media or avatar it names would be dropped. Such documents are
-// never authenticated, also where the decoration does not change what Paon
-// reads today.
+// statement (an undefined term, @index, an empty array or a relative
+// attributionDomains domain) keeps the signed RDF, but compacts to a map
+// instead of the IRI string Paon reads, so the mention, media or avatar it
+// names would be dropped. Such documents are never authenticated, also where
+// the decoration does not change what Paon reads today.
 func TestLinkedDataSignatureRejectsDecoratedReferences(t *testing.T) {
 	const bob = "https://paon.example/users/bob"
 	object := func(document map[string]any) map[string]any { return document["object"].(map[string]any) }
+	relativeDomains := func() []any { return []any{map[string]any{"id": "origin.example"}} }
 	decorated := func(id string) string {
 		return `reference "` + id + `" carries entries the signature does not cover`
 	}
@@ -2892,6 +2893,46 @@ func TestLinkedDataSignatureRejectsDecoratedReferences(t *testing.T) {
 				document["target"] = map[string]any{"id": document["target"], "zz": 1}
 			},
 			want: decorated("https://new.example/users/alice"),
+		},
+		// RDF conversion drops the statement whose object is a relative
+		// attributionDomains domain, so the reference stays without one.
+		{
+			name:    "mention href with a relative attributionDomains domain",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				object(document)["tag"].([]any)[0].(map[string]any)["href"] = map[string]any{"id": bob, "attributionDomains": relativeDomains()}
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+			want:   decorated(bob),
+		},
+		{
+			name:    "attachment url with a relative attributionDomains domain",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				attachment := object(document)["attachment"].([]any)[0].(map[string]any)
+				attachment["url"] = map[string]any{"id": attachment["url"], "attributionDomains": relativeDomains()}
+			},
+			forged: func(p activityPayload) bool { return len(p.Object.Attachments) == 0 },
+			want:   decorated("https://files.origin.example/media/1.png"),
+		},
+		{
+			name:    "avatar url with a relative attributionDomains domain",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				icon := object(document)["icon"].(map[string]any)
+				icon["url"] = map[string]any{"id": icon["url"], "attributionDomains": relativeDomains()}
+			},
+			forged: func(p activityPayload) bool { return p.Object.AvatarRemoteURL == "" },
+			want:   decorated("https://files.origin.example/avatar.png"),
+		},
+		{
+			name:    "boosted status with a relative attributionDomains domain",
+			payload: linkedDataPlacementAnnouncePayload,
+			forge: func(document map[string]any) {
+				document["object"] = map[string]any{"id": document["object"], "attributionDomains": relativeDomains()}
+			},
+			forged: func(p activityPayload) bool { return !p.ObjectReference },
+			want:   decorated("https://other.example/statuses/1"),
 		},
 		// json-gold compacts the undefined term "_:@unknown" to "@unknown",
 		// which re-expanding the compacted document drops as a keyword-like
