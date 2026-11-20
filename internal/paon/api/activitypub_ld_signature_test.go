@@ -2509,6 +2509,128 @@ func TestLinkedDataSignatureAcceptsRepeatedAndReferencedNodes(t *testing.T) {
 	}
 }
 
+// linkedDataCompactedCoverageBody compacts document with a literal signature
+// object, as a relay may send it: the coverage check runs before the
+// signature creator is resolved, so the signature value does not matter.
+func linkedDataCompactedCoverageBody(t *testing.T, document map[string]any) []byte {
+	t.Helper()
+	document["signature"] = map[string]any{
+		"type":           "RsaSignature2017",
+		"creator":        linkedDataForgeryVictimURI + "#main-key",
+		"created":        "2020-01-01T00:00:00Z",
+		"signatureValue": "AAAA",
+	}
+	compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+	if !compacted {
+		t.Fatal("document with a literal signature object was not compacted")
+	}
+	return compactedBody
+}
+
+// Comparing the descriptions of the same node only looks at the statements
+// RDF conversion keeps, also for nested nodes: copies that differ in @index,
+// undefined terms or empty arrays are identical, copies that differ in a
+// nested value are not.
+func TestLinkedDataSignatureComparesDescriptionsByTheirStatements(t *testing.T) {
+	victim := linkedDataForgeryVictimURI
+	actorObject := func() map[string]any {
+		return map[string]any{
+			"type": "Person", "id": victim, "preferredUsername": "alice", "name": "Alice", "inbox": victim + "/inbox",
+			"icon": map[string]any{"type": "Image", "url": "https://files.origin.example/a.png"},
+		}
+	}
+	document := func(attributedTo map[string]any) map[string]any {
+		return map[string]any{
+			"@context": linkedDataPlacementContext(), "id": victim + "/item/1/activity", "type": "Create", "actor": actorObject(),
+			"to":     []any{activityPubPublicIRI},
+			"object": map[string]any{"id": victim + "/item/1", "type": "Note", "attributedTo": attributedTo, "content": "x", "to": []any{activityPubPublicIRI}},
+		}
+	}
+	for _, test := range []struct {
+		name  string
+		forge func(actor map[string]any)
+		want  string
+	}{
+		{
+			name: "copy with an index, an undefined term and an empty array",
+			forge: func(actor map[string]any) {
+				actor["@index"] = "i"
+				actor["zz"] = 1
+				actor["tag"] = []any{}
+				actor["icon"].(map[string]any)["zz"] = 1
+			},
+		},
+		{
+			name:  "copy with another name",
+			forge: func(actor map[string]any) { actor["name"] = "Mallory" },
+			want:  `node "` + victim + `" is described more than once with different statements`,
+		},
+		{
+			name: "copy with another nested avatar",
+			forge: func(actor map[string]any) {
+				actor["icon"].(map[string]any)["url"] = "https://files.origin.example/b.png"
+			},
+			want: `node "` + victim + `" is described more than once with different statements`,
+		},
+		{
+			name:  "copy without the nested avatar",
+			forge: func(actor map[string]any) { delete(actor, "icon") },
+			want:  `node "` + victim + `" is described more than once with different statements`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			actor := actorObject()
+			test.forge(actor)
+			err := activityPubLinkedDataSignatureCoversDocument(linkedDataCompactedCoverageBody(t, document(actor)))
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("identical copies were rejected: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "linked-data signature does not cover the document: "+test.want) {
+				t.Fatalf("coverage error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+// Any relay can send a document with a literal signature object to the
+// coverage check, which runs before the signature is verified. Comparing the
+// descriptions of deeply nested nodes, each with its own IRI, must take time
+// and memory linear in the size of the document, not in the square of its
+// nesting depth.
+func TestLinkedDataSignatureCoverageGrowsLinearlyWithNesting(t *testing.T) {
+	nested := func(depth int) []byte {
+		attachment := map[string]any{"id": "https://origin.example/media/leaf", "type": "Document", "name": "leaf"}
+		for level := depth; level >= 1; level-- {
+			attachment = map[string]any{"id": fmt.Sprintf("https://origin.example/media/%d", level), "type": "Document", "attachment": attachment}
+		}
+		return linkedDataCompactedCoverageBody(t, map[string]any{
+			"@context": linkedDataPlacementContext(), "id": linkedDataForgeryVictimURI + "/statuses/9/activity", "type": "Create",
+			"actor": linkedDataForgeryVictimURI, "to": []any{activityPubPublicIRI},
+			"object": map[string]any{
+				"id": linkedDataForgeryVictimURI + "/statuses/9", "type": "Note", "attributedTo": linkedDataForgeryVictimURI,
+				"content": "x", "to": []any{activityPubPublicIRI}, "attachment": attachment,
+			},
+		})
+	}
+	allocations := func(depth int) float64 {
+		body := nested(depth)
+		var err error
+		allocations := testing.AllocsPerRun(1, func() { err = activityPubLinkedDataSignatureCoversDocument(body) })
+		if err != nil {
+			t.Fatalf("nested document of depth %d was rejected: %v", depth, err)
+		}
+		return allocations
+	}
+	shallow, deep := allocations(400), allocations(800)
+	// Linear work doubles with the depth; quadratic work quadruples.
+	if growth := deep / shallow; growth > 3 {
+		t.Fatalf("coverage allocations grew %.1f times (%.0f to %.0f) for twice the nesting depth, want linear growth", growth, shallow, deep)
+	}
+}
+
 // linkedDataPlacementAnnouncePayload is the victim's signed boost of a remote
 // status.
 func linkedDataPlacementAnnouncePayload(string) map[string]any {

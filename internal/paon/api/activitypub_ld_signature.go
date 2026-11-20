@@ -15,6 +15,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -603,7 +604,8 @@ func activityPubJSONLDUncanonicalizedContent(value any) error {
 //     would drop the signed value.
 func activityPubJSONLDUnsignedPlacement(expanded []any) error {
 	placement := activityPubJSONLDPlacement{
-		descriptions: map[string]string{},
+		descriptions: map[string][sha256.Size]byte{},
+		digests:      map[uintptr][sha256.Size]byte{},
 		parked:       map[string]bool{},
 		placed:       map[string]bool{},
 	}
@@ -627,9 +629,13 @@ func activityPubJSONLDUnsignedPlacement(expanded []any) error {
 // activityPubJSONLDPlacement records where an expanded document describes
 // and references node identifiers.
 type activityPubJSONLDPlacement struct {
-	// descriptions holds the statements of each described identifier
-	// (activityPubJSONLDNodeStatements).
-	descriptions map[string]string
+	// descriptions holds the digest of the statements of each described
+	// identifier (statements).
+	descriptions map[string][sha256.Size]byte
+	// digests memoizes statements for each map of the expanded document by
+	// the identity of the map, which the document keeps alive and in place
+	// during the walk.
+	digests map[uintptr][sha256.Size]byte
 	// parked holds identifiers described below a dropped property.
 	parked map[string]bool
 	// placed holds identifiers described or referenced outside dropped
@@ -653,7 +659,7 @@ func (p *activityPubJSONLDPlacement) walkNode(node map[string]any, dropped bool,
 			return fmt.Errorf("reference %q carries entries the signature does not cover", id)
 		}
 		if described {
-			statements := activityPubJSONLDNodeStatements(node)
+			statements := p.statements(node)
 			if previous, ok := p.descriptions[id]; ok {
 				if strings.HasPrefix(id, "_:") {
 					return fmt.Errorf("blank node %q is described more than once", id)
@@ -742,36 +748,59 @@ func activityPubJSONLDNodeHasStatements(node map[string]any) bool {
 	return false
 }
 
-// activityPubJSONLDNodeStatements serializes an expanded node object for
-// comparing descriptions of the same identifier, leaving out the entries RDF
-// conversion drops: @index, dropped properties and empty arrays.
-func activityPubJSONLDNodeStatements(node map[string]any) string {
-	var statements func(value any) any
-	statements = func(value any) any {
-		switch typed := value.(type) {
-		case map[string]any:
-			out := make(map[string]any, len(typed))
-			for key, item := range typed {
-				if key == "@index" || (!ld.IsKeyword(key) && !activityPubJSONLDCanonicalizedProperty(key)) {
-					continue
-				}
-				if items, ok := item.([]any); ok && len(items) == 0 {
-					continue
-				}
-				out[key] = statements(item)
-			}
-			return out
-		case []any:
-			out := make([]any, 0, len(typed))
-			for _, item := range typed {
-				out = append(out, statements(item))
-			}
-			return out
+// statements digests an expanded value for comparing descriptions of the same
+// identifier, leaving out the entries RDF conversion drops: @index, dropped
+// properties and empty arrays. Equal digests stand for equal values: a map is
+// digested from its sorted keys and the digests of their values, an array
+// from the digests of its items in order, and any other value from its JSON
+// encoding, each behind a tag of its kind. The walk compares every described
+// node, including the ones nested in another description, so digesting each
+// subtree anew would take time and memory quadratic in the nesting depth of a
+// document that any relay can send before its signature is verified. The
+// digests of maps are memoized instead, so every map is digested once.
+func (p *activityPubJSONLDPlacement) statements(value any) [sha256.Size]byte {
+	var digest [sha256.Size]byte
+	switch typed := value.(type) {
+	case map[string]any:
+		identity := reflect.ValueOf(typed).Pointer()
+		if memoized, ok := p.digests[identity]; ok {
+			return memoized
 		}
-		return value
+		keys := make([]string, 0, len(typed))
+		for key, item := range typed {
+			if key == "@index" || (!ld.IsKeyword(key) && !activityPubJSONLDCanonicalizedProperty(key)) {
+				continue
+			}
+			if items, ok := item.([]any); ok && len(items) == 0 {
+				continue
+			}
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		hash := sha256.New()
+		hash.Write([]byte{'{'})
+		for _, key := range keys {
+			// The JSON encoding of a key delimits it from the digest after it.
+			encodedKey, _ := json.Marshal(key)
+			hash.Write(encodedKey)
+			item := p.statements(typed[key])
+			hash.Write(item[:])
+		}
+		hash.Sum(digest[:0])
+		p.digests[identity] = digest
+	case []any:
+		hash := sha256.New()
+		hash.Write([]byte{'['})
+		for _, item := range typed {
+			itemDigest := p.statements(item)
+			hash.Write(itemDigest[:])
+		}
+		hash.Sum(digest[:0])
+	default:
+		encoded, _ := json.Marshal(value)
+		digest = sha256.Sum256(append([]byte{'='}, encoded...))
 	}
-	encoded, _ := json.Marshal(statements(node))
-	return string(encoded)
+	return digest
 }
 
 // activityPubMastodonAttributionDomainsIRI is the expanded form of the
