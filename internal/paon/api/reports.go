@@ -58,8 +58,8 @@ func (s *Server) createReport(c *echo.Context) error {
 	}
 	collectionIDs := compactInt64Array(payload.CollectionIDs)
 	if len(collectionIDs) > 0 {
-		var found []int64
-		if err := s.db.Model(&models.Collection{}).Where("account_id = ? AND id IN ?", target.ID, collectionIDs).Pluck("id", &found).Error; err != nil {
+		found, err := s.reportTargetCollectionIDs(*target, collectionIDs)
+		if err != nil {
 			return err
 		}
 		if len(uniqueInt64s(found)) != len(uniqueInt64s(collectionIDs)) {
@@ -139,6 +139,15 @@ func (s *Server) createReport(c *echo.Context) error {
 		_ = s.sendStaffNewReportMails(report)
 	}
 	return c.JSON(http.StatusOK, serializer.ReportFromModel(s.cfg, report, account))
+}
+
+// reportTargetCollectionIDs returns the IDs among collectionIDs that belong to
+// the reported account. models.Int64Array is a driver.Valuer, which GORM binds
+// as one value ("IN $2", a syntax error); a plain slice expands to "IN ($2,$3)".
+func (s *Server) reportTargetCollectionIDs(target models.Account, collectionIDs models.Int64Array) ([]int64, error) {
+	var found []int64
+	err := s.db.Model(&models.Collection{}).Where("account_id = ? AND id IN ?", target.ID, []int64(collectionIDs)).Pluck("id", &found).Error
+	return found, err
 }
 
 func reportCollectionIDParamsValid(values []string) bool {

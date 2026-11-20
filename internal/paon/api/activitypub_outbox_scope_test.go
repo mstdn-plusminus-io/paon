@@ -129,3 +129,18 @@ func TestReportableStatusIDsKeepsTargetAccountScope(t *testing.T) {
 		t.Fatalf("report status WHERE must keep the parenthesized boost exclusion: %s", where)
 	}
 }
+
+// Reported collection IDs (Mastodon 4.6) arrive as models.Int64Array like the
+// status IDs, so they must be expanded into an IN list as well.
+func TestReportTargetCollectionIDsExpandIntoINList(t *testing.T) {
+	capture := &statusMentionSQLCapture{}
+	server := &Server{db: statusMentionDryRunDatabase(t, capture)}
+
+	if _, err := server.reportTargetCollectionIDs(models.Account{ID: 9}, models.Int64Array{3, 4}); err != nil {
+		t.Fatal(err)
+	}
+	where := dryRunSQLOuterWhere(t, dryRunCapturedQuery(t, capture.queries, `FROM "collections"`))
+	if where != "account_id = 9 AND id IN (3,4)" {
+		t.Fatalf("report collection lookup must keep the target scope and expand the IDs: %s", where)
+	}
+}
