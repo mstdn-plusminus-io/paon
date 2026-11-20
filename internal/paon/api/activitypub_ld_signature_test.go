@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -786,10 +787,11 @@ func TestLinkedDataSignatureRejectsUnsupportedJSONLDKeywords(t *testing.T) {
 	}
 }
 
-// Mastodon 4.3.0 to 4.5.10 relay Update(Person) with attributionDomains as
-// bare domains under an @id term; RDF conversion drops them, but Paon never
-// reads the property, so the signed document is still accepted. Content Paon
-// does read keeps being checked next to it.
+// Mastodon 4.3.0 to 4.4.17 and 4.5.0 to 4.5.10 relay Update(Person) with
+// attributionDomains as bare domains under an @id term; RDF conversion drops
+// them, but Paon never reads such references, so the signed document is still
+// accepted. Content Paon does read keeps being checked next to it, including
+// literal attributionDomains values.
 func TestLinkedDataSignatureAcceptsMastodonAttributionDomains(t *testing.T) {
 	_, attackerPublicKeyPEM, err := generateAccountKeyPair()
 	if err != nil {
@@ -815,6 +817,14 @@ func TestLinkedDataSignatureAcceptsMastodonAttributionDomains(t *testing.T) {
 	if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
 		t.Fatalf("signed Update(Person) with attributionDomains was rejected: %v", err)
 	}
+	// The skipped node references are never read as domains.
+	payload, err := parseActivityPayload(compactedBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if domains := activityLimitedStringList(payload.Object.AttributionDomains, 256); len(domains) != 0 {
+		t.Fatalf("parsed attributionDomains = %#v, want node references to be ignored", domains)
+	}
 
 	forged, publicKey := signedLinkedDataFixture(t, person)
 	object := forged["object"].(map[string]any)
@@ -831,6 +841,60 @@ func TestLinkedDataSignatureAcceptsMastodonAttributionDomains(t *testing.T) {
 	}
 	if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err == nil || !strings.Contains(err.Error(), "does not cover the document") {
 		t.Fatalf("coverage error = %v, want rejection of the injected relative-id key", err)
+	}
+
+	// Paon stores literal attributionDomains values (activityLimitedStringList)
+	// and uses them for link card author attribution, so a literal that RDF
+	// conversion drops (here an invalid language tag) must not ride along
+	// unsigned.
+	forged, publicKey = signedLinkedDataFixture(t, person)
+	forged["object"].(map[string]any)["attributionDomains"] = []any{"origin.example", map[string]any{"@value": "attacker.example", "@language": "x_y"}}
+	compactedBody, compacted = activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, forged))
+	if !compacted {
+		t.Fatal("forged attributionDomains document was not compacted")
+	}
+	if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+		t.Fatalf("injected literal changed the signed RDF: %v", err)
+	}
+	payload, err = parseActivityPayload(compactedBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if domains := activityLimitedStringList(payload.Object.AttributionDomains, 256); !slices.Contains(domains, "attacker.example") {
+		t.Fatalf("parsed attributionDomains = %#v, want the injected literal to be read", domains)
+	}
+	if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err == nil || !strings.Contains(err.Error(), "does not cover the document") {
+		t.Fatalf("coverage error = %v, want rejection of the uncanonicalized attributionDomains literal", err)
+	}
+
+	// Mastodon 4.4.18 and later publish literal domains in a set; the
+	// signature covers them, so they verify and are read.
+	literalPerson := func(publicKeyPEM string) map[string]any {
+		payload := linkedDataPersonUpdatePayload(publicKeyPEM)
+		payload["@context"] = append(payload["@context"].([]any), map[string]any{
+			"toot":               "http://joinmastodon.org/ns#",
+			"attributionDomains": map[string]any{"@id": "toot:attributionDomains", "@container": "@set"},
+		})
+		payload["object"].(map[string]any)["attributionDomains"] = []any{"origin.example", "news.example"}
+		return payload
+	}
+	document, publicKey = signedLinkedDataFixture(t, literalPerson)
+	compactedBody, compacted = activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+	if !compacted {
+		t.Fatal("document with literal attributionDomains was not compacted")
+	}
+	if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+		t.Fatalf("compacted signature with literal attributionDomains: %v", err)
+	}
+	if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+		t.Fatalf("signed literal attributionDomains were rejected: %v", err)
+	}
+	payload, err = parseActivityPayload(compactedBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if domains := activityLimitedStringList(payload.Object.AttributionDomains, 256); !slices.Equal(domains, []string{"origin.example", "news.example"}) {
+		t.Fatalf("parsed attributionDomains = %#v, want the signed literals", domains)
 	}
 }
 
