@@ -2625,3 +2625,37 @@ func TestLinkedDataSignatureEmptyPresenceArraysKeepSignedReads(t *testing.T) {
 		})
 	}
 }
+
+// A native boolean and a literal of the same lexical form typed xsd:boolean
+// are the same RDF term, so a relay can rewrite a signed suspended: false into
+// a typed literal without invalidating the linked-data signature. Paon reads
+// it as false, so the relayed copy does not suspend the account.
+func TestLinkedDataSignatureTypedSuspendedLiteralKeepsSignedRead(t *testing.T) {
+	document, publicKey := signedLinkedDataFixture(t, func(publicKeyPEM string) map[string]any {
+		document := linkedDataPlacementPersonPayload(publicKeyPEM)
+		document["object"].(map[string]any)["suspended"] = false
+		return document
+	})
+	document["object"].(map[string]any)["suspended"] = map[string]any{"@value": "false", "@type": "http://www.w3.org/2001/XMLSchema#boolean"}
+	body := marshalLinkedDataTestDocument(t, document)
+	compactedBody, compacted := activityPubCompactCollectionBody(body)
+	if !compacted {
+		t.Fatal("document with a literal signature object was not compacted")
+	}
+	if !strings.Contains(string(compactedBody), `"suspended":{"@value":"false","type":"xsd:boolean"}`) {
+		t.Fatalf("compacted document does not hold the typed literal: %s", compactedBody)
+	}
+	if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+		t.Fatalf("typed literal changed the signed RDF: %v", err)
+	}
+	if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+		t.Fatalf("signed document was rejected: %v", err)
+	}
+	payload, err := parseActivityPayload(activityPubFinalizeCollectionBodyForForwarding(body, compactedBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Object.Suspended {
+		t.Fatal("relayed copy of a signed suspended: false reads as suspended")
+	}
+}
