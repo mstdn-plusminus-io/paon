@@ -309,7 +309,7 @@ func (s *Server) mediaProxy(c *echo.Context) error {
 	if attachment.Discarded {
 		if localPath := s.downloadProxyLocalPath(*attachment, version); localPath != "" {
 			if info, statErr := os.Stat(localPath); statErr == nil && !info.IsDir() {
-				return s.serveDiscardedMediaProxyLocalFile(c, localPath, *attachment, version)
+				return s.serveDiscardedMediaProxyLocalFile(c, localPath)
 			}
 		}
 	}
@@ -368,16 +368,25 @@ func (s *Server) serveDownloadProxyLocalFile(c *echo.Context, localPath string) 
 	return nil
 }
 
-func (s *Server) serveDiscardedMediaProxyLocalFile(c *echo.Context, localPath string, attachment models.MediaAttachment, version string) error {
-	contentType := attachment.FileContentType.String
-	if version == "small" && attachment.ThumbnailFileName.Valid && strings.TrimSpace(attachment.ThumbnailFileName.String) != "" {
-		contentType = attachment.ThumbnailContentType.String
+// serveDiscardedMediaProxyLocalFile streams the public/system file of a
+// discarded attachment, like MediaProxyController#show's send_file. A remote
+// Update rewrites file_content_type from its mediaType (text/html included)
+// without touching the cached file, so the stored value is not trusted: the
+// response gets the same headers as the public/system mount, namely the
+// sandboxing CSP and nosniff, the Content-Type of a known media extension
+// inline, and anything else as an application/octet-stream attachment.
+func (s *Server) serveDiscardedMediaProxyLocalFile(c *echo.Context, localPath string) error {
+	header := c.Response().Header()
+	header.Set("Content-Security-Policy", paperclipStaticContentSecurityPolicy)
+	header.Set("X-Content-Type-Options", "nosniff")
+	if contentType, ok := paperclipInlineContentType(filepath.Base(localPath)); ok {
+		header.Set(echo.HeaderContentType, contentType)
+		header.Set("Content-Disposition", "inline")
+	} else {
+		header.Set(echo.HeaderContentType, "application/octet-stream")
+		header.Set("Content-Disposition", "attachment")
 	}
-	if strings.TrimSpace(contentType) != "" {
-		c.Response().Header().Set(echo.HeaderContentType, contentType)
-	}
-	c.Response().Header().Set("Content-Disposition", "inline")
-	c.Response().Header().Set("Cache-Control", "private, no-store")
+	header.Set("Cache-Control", "private, no-store")
 	return s.serveDownloadProxyLocalFile(c, localPath)
 }
 
