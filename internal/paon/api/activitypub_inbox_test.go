@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -1235,5 +1237,241 @@ func TestIncomingFollowDomainBlockUsesCaseInsensitiveRailsDomains(t *testing.T) 
 	}
 	if functionBodyContains(t, src, "rejectIncomingFollow", `Where("account_id = ? AND domain = ?", target.ID, actor.Domain.String)`) {
 		t.Fatal("incoming Follow rejection must not use a case-sensitive domain comparison")
+	}
+}
+
+// actorKeyUpdateConnPool lets a dry-run gorm handle open transactions without
+// PostgreSQL; dry-run statements never reach it.
+type actorKeyUpdateConnPool struct{}
+
+func (actorKeyUpdateConnPool) PrepareContext(context.Context, string) (*sql.Stmt, error) {
+	return nil, errors.New("unexpected prepare")
+}
+
+func (actorKeyUpdateConnPool) ExecContext(context.Context, string, ...any) (sql.Result, error) {
+	return nil, errors.New("unexpected exec")
+}
+
+func (actorKeyUpdateConnPool) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	return nil, errors.New("unexpected query")
+}
+
+func (actorKeyUpdateConnPool) QueryRowContext(context.Context, string, ...any) *sql.Row {
+	return nil
+}
+
+func (p actorKeyUpdateConnPool) BeginTx(context.Context, *sql.TxOptions) (gorm.ConnPool, error) {
+	return &actorKeyUpdateTx{p}, nil
+}
+
+// actorKeyUpdateTx is a pointer type because gorm checks a committer for nil.
+type actorKeyUpdateTx struct{ actorKeyUpdateConnPool }
+
+func (*actorKeyUpdateTx) Commit() error   { return nil }
+func (*actorKeyUpdateTx) Rollback() error { return nil }
+
+// actorKeyUpdateWrites records the account updates and deletions a dry-run
+// actor Update issues.
+type actorKeyUpdateWrites struct {
+	accountUpdates []map[string]any
+	deletedTables  []string
+}
+
+// actorKeyUpdateDB is a dry-run database recording the writes of
+// updateActivityPubActor. A non-empty blockedDomain answers every domain block
+// lookup with a suspension of that domain.
+func actorKeyUpdateDB(t *testing.T, blockedDomain string) (*gorm.DB, *actorKeyUpdateWrites) {
+	t.Helper()
+	database, err := gorm.Open(postgres.New(postgres.Config{Conn: actorKeyUpdateConnPool{}}), &gorm.Config{DryRun: true, DisableAutomaticPing: true, SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := &actorKeyUpdateWrites{}
+	callbacks := database.Callback()
+	if err := callbacks.Update().After("gorm:update").Register("paon_test:record_update", func(db *gorm.DB) {
+		// Fetching with the representative account may also write that
+		// account; only the actor Update sets inbox_url.
+		if updates, ok := db.Statement.Dest.(map[string]any); ok && db.Statement.Table == "accounts" && updates["inbox_url"] != nil {
+			writes.accountUpdates = append(writes.accountUpdates, updates)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := callbacks.Delete().After("gorm:delete").Register("paon_test:record_delete", func(db *gorm.DB) {
+		writes.deletedTables = append(writes.deletedTables, db.Statement.Table)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if blockedDomain != "" {
+		if err := callbacks.Query().After("gorm:query").Register("paon_test:domain_block", func(db *gorm.DB) {
+			if block, ok := db.Statement.Dest.(*models.DomainBlock); ok {
+				*block = models.DomainBlock{Domain: blockedDomain, Severity: sql.NullInt64{Int64: int64(domainBlockSeverityCode("suspend")), Valid: true}}
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return database, writes
+}
+
+// Like ProcessAccountService#public_key, an actor Update whose publicKey is a
+// reference stores the referenced key once it is fetched and confirmed to be
+// the actor's. A reference that cannot be resolved keeps the stored key and the
+// actor's tombstones instead of storing an empty key, which would delete every
+// tombstone so that old signed activities could recreate deleted statuses.
+func TestActivityPubActorUpdateResolvesReferencedPublicKey(t *testing.T) {
+	const (
+		actorURI = "https://origin.example/users/alice"
+		keyID    = actorURI + "#main-key"
+		oldPEM   = "OLD-PEM"
+		newPEM   = "NEW-PEM"
+	)
+	actorDocument := func(id, keyID, owner, publicKeyPEM string) string {
+		return activityTestJSON(`{
+			"id":"` + id + `",
+			"type":"Person",
+			"preferredUsername":"alice",
+			"inbox":"` + id + `/inbox",
+			"publicKey":{"id":"` + keyID + `","owner":"` + owner + `","publicKeyPem":"` + publicKeyPEM + `"}
+		}`)
+	}
+	update := func(publicKey string) string {
+		return `{
+			"type":"Update",
+			"actor":"` + actorURI + `",
+			"object":{
+				"id":"` + actorURI + `",
+				"type":"Person",
+				"preferredUsername":"alice",
+				"inbox":"` + actorURI + `/inbox",
+				"publicKey":` + publicKey + `
+			}
+		}`
+	}
+	// The mock remote matches the request URL, which keeps the fragment of a
+	// "#main-key" reference; the origin serves its actor document there.
+	for _, test := range []struct {
+		name          string
+		update        string
+		responses     map[string]string
+		blockedDomain string
+		// stored is the public_key the Update writes; keep means none is written.
+		stored     string
+		keep       bool
+		tombstones bool
+		// noFetch means no remote request may be made.
+		noFetch bool
+	}{
+		{
+			name:       "fragment reference served by the actor document",
+			update:     update(`"` + keyID + `"`),
+			responses:  map[string]string{keyID: actorDocument(actorURI, keyID, actorURI, newPEM)},
+			stored:     newPEM,
+			tombstones: true,
+		},
+		{
+			name:      "fragment reference to the stored key",
+			update:    update(`"` + keyID + `"`),
+			responses: map[string]string{keyID: actorDocument(actorURI, keyID, actorURI, oldPEM)},
+			stored:    oldPEM,
+		},
+		{
+			name:      "reference in an array",
+			update:    update(`["` + keyID + `"]`),
+			responses: map[string]string{keyID: actorDocument(actorURI, keyID, actorURI, oldPEM)},
+			stored:    oldPEM,
+		},
+		{
+			name:   "key URL serving the actor like GoToSocial",
+			update: update(`"` + actorURI + `/main-key"`),
+			responses: map[string]string{
+				actorURI + "/main-key": actorDocument(actorURI, actorURI+"/main-key", actorURI, oldPEM),
+			},
+			stored: oldPEM,
+		},
+		{
+			name:   "standalone key document",
+			update: update(`"https://origin.example/keys/alice"`),
+			responses: map[string]string{
+				"https://origin.example/keys/alice": activityTestJSON(`{"id":"https://origin.example/keys/alice","owner":"` + actorURI + `","publicKeyPem":"` + oldPEM + `"}`),
+			},
+			stored: oldPEM,
+		},
+		{
+			name:      "embedded key is not fetched",
+			update:    update(`{"id":"` + keyID + `","owner":"` + actorURI + `","publicKeyPem":"` + oldPEM + `"}`),
+			responses: map[string]string{},
+			stored:    oldPEM,
+			noFetch:   true,
+		},
+		{
+			name:      "unresolvable reference",
+			update:    update(`"` + keyID + `"`),
+			responses: map[string]string{},
+			keep:      true,
+		},
+		{
+			name:      "key owned by another actor",
+			update:    update(`"https://origin.example/keys/alice"`),
+			responses: map[string]string{"https://origin.example/keys/alice": activityTestJSON(`{"id":"https://origin.example/keys/alice","owner":"https://origin.example/users/mallory","publicKeyPem":"` + newPEM + `"}`)},
+			keep:      true,
+		},
+		{
+			name:      "key with another id",
+			update:    update(`"` + keyID + `"`),
+			responses: map[string]string{keyID: actorDocument(actorURI, actorURI+"#other-key", actorURI, newPEM)},
+			keep:      true,
+		},
+		{
+			name:      "key document without a key",
+			update:    update(`"https://origin.example/keys/alice"`),
+			responses: map[string]string{"https://origin.example/keys/alice": activityTestJSON(`{"id":"https://origin.example/keys/alice","owner":"` + actorURI + `"}`)},
+			keep:      true,
+		},
+		{
+			name:          "key on a blocked domain",
+			update:        update(`"https://keys.blocked.example/alice"`),
+			responses:     map[string]string{"https://keys.blocked.example/alice": activityTestJSON(`{"id":"https://keys.blocked.example/alice","owner":"` + actorURI + `","publicKeyPem":"` + newPEM + `"}`)},
+			blockedDomain: "keys.blocked.example",
+			keep:          true,
+			noFetch:       true,
+		},
+		{
+			name:      "reference that is not an http(s) URI",
+			update:    update(`"urn:example:key"`),
+			responses: map[string]string{},
+			keep:      true,
+			noFetch:   true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := actorTrustMockRemote(t, test.responses)
+			database, writes := actorKeyUpdateDB(t, test.blockedDomain)
+			server := &Server{cfg: config.Config{Scheme: "https", LocalDomain: "paon.example", WebDomain: "paon.example"}, db: database}
+			payload, err := parseActivityPayload([]byte(test.update))
+			if err != nil {
+				t.Fatal(err)
+			}
+			actor := &models.Account{ID: 21, Username: "alice", Domain: sql.NullString{String: "origin.example", Valid: true}, URI: actorURI, PublicKey: oldPEM, Protocol: 1}
+			if err := server.updateActivityPubActor(actor, payload.Object, ""); err != nil {
+				t.Fatal(err)
+			}
+			if len(writes.accountUpdates) != 1 {
+				t.Fatalf("account updates = %#v, want one", writes.accountUpdates)
+			}
+			stored, written := writes.accountUpdates[0]["public_key"]
+			switch {
+			case test.keep && written:
+				t.Fatalf("public_key = %#v, want the stored key kept", stored)
+			case !test.keep && (!written || stored != test.stored):
+				t.Fatalf("public_key = %#v (written %v), want %q", stored, written, test.stored)
+			}
+			if cleared := slices.Contains(writes.deletedTables, "tombstones"); cleared != test.tombstones {
+				t.Fatalf("tombstones cleared = %v, want %v (requests %v)", cleared, test.tombstones, requests.list())
+			}
+			if test.noFetch && len(requests.list()) > 0 {
+				t.Fatalf("requests = %v, want none", requests.list())
+			}
+		})
 	}
 }
