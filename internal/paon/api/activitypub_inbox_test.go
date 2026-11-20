@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -903,6 +904,77 @@ func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
 			t.Fatalf("quote presence = %v %v %v, want none", object.QuoteURISet, object.QuoteURLSet, object.MisskeyQuoteSet)
 		}
 	})
+	// A term is read from its own key and then from its other IRIs; an empty
+	// array under an earlier key must not hide a value under a later one.
+	readsPoll := func(object activityObject) string {
+		poll, ok := activityPollFromObject(object, 42, 99, now)
+		return fmt.Sprintf("poll=%v options=%v multiple=%v expires=%v", ok, poll.Options, poll.Multiple, poll.ExpiresAt)
+	}
+	readsConversation := func(object activityObject) string {
+		return fmt.Sprintf("conversation=%q set=%v", object.Conversation, object.ConversationSet)
+	}
+	readsQuote := func(object activityObject) string { return activityPubQuoteURL(object) }
+	for _, test := range []struct {
+		name   string
+		object string
+		reads  func(object activityObject) string
+		want   string
+	}{
+		{
+			name:   "closed next to as:closed",
+			object: `{"id":"https://remote.test/users/bob/statuses/2","type":"Question","closed":[],"as:closed":"2026-06-19T10:30:00Z","endTime":"2026-06-19T12:30:00Z","oneOf":[{"name":"a"},{"name":"b"}]}`,
+			reads:  readsPoll,
+			want:   "poll=true options=[a b] multiple=false expires={2026-06-19 10:30:00 +0000 UTC true}",
+		},
+		{
+			name:   "oneOf next to the expanded oneOf",
+			object: `{"id":"https://remote.test/users/bob/statuses/2","type":"Question","endTime":"2026-06-19T12:30:00Z","oneOf":[],"https://www.w3.org/ns/activitystreams#oneOf":[{"name":"a"},{"name":"b"}]}`,
+			reads:  readsPoll,
+			want:   "poll=true options=[a b] multiple=false expires={2026-06-19 12:30:00 +0000 UTC true}",
+		},
+		{
+			name:   "anyOf next to as:anyOf",
+			object: `{"id":"https://remote.test/users/bob/statuses/2","type":"Question","endTime":"2026-06-19T12:30:00Z","anyOf":[],"as:anyOf":[{"name":"a"},{"name":"b"}]}`,
+			reads:  readsPoll,
+			want:   "poll=true options=[a b] multiple=true expires={2026-06-19 12:30:00 +0000 UTC true}",
+		},
+		{
+			name:   "conversation next to as:conversation",
+			object: `{"id":"https://remote.test/users/bob/statuses/3","type":"Note","content":"x","conversation":[],"as:conversation":"tag:remote.test,2026:objectId=1:objectType=Conversation"}`,
+			reads:  readsConversation,
+			want:   `conversation="tag:remote.test,2026:objectId=1:objectType=Conversation" set=true`,
+		},
+		{
+			name:   "expanded ostatus conversation next to the expanded AS conversation",
+			object: `{"id":"https://remote.test/users/bob/statuses/3","type":"Note","content":"x","http://ostatus.org#conversation":[],"https://www.w3.org/ns/activitystreams#conversation":"tag:remote.test,2026:objectId=1:objectType=Conversation"}`,
+			reads:  readsConversation,
+			want:   `conversation="tag:remote.test,2026:objectId=1:objectType=Conversation" set=true`,
+		},
+		{
+			name:   "quoteUri next to toot:quoteUri",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUri":[],"toot:quoteUri":"https://remote.test/statuses/q"}`,
+			reads:  readsQuote,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "quoteUrl next to toot:quoteUrl",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUrl":[],"toot:quoteUrl":"https://remote.test/statuses/q"}`,
+			reads:  readsQuote,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "_misskey_quote next to misskey:_misskey_quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","_misskey_quote":[],"misskey:_misskey_quote":"https://remote.test/notes/q"}`,
+			reads:  readsQuote,
+			want:   "https://remote.test/notes/q",
+		},
+	} {
+		t.Run("look past "+test.name, func(t *testing.T) {
+			if got := test.reads(parse(t, test.object)); got != test.want {
+				t.Fatalf("reads %s, want %s", got, test.want)
+			}
+		})
+	}
 }
 
 // A suspended literal typed xsd:boolean is read by its lexical form; other
