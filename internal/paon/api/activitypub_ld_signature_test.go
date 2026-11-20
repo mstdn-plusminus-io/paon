@@ -15,6 +15,7 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"github.com/piprate/json-gold/ld"
 	"gorm.io/gorm"
 )
 
@@ -2147,6 +2148,171 @@ func TestLinkedDataSignatureRejectsDescriptionsBelowAttributionDomainsNodes(t *t
 		}
 		if domains := activityLimitedStringList(payload.Object.AttributionDomains, 256); len(domains) != 0 {
 			t.Fatalf("attributionDomains node references were read as %#v", domains)
+		}
+	})
+}
+
+// linkedDataUnsignedPlacementError runs the placement check on its own on a
+// compacted document, which it expands without the signature like
+// activityPubLinkedDataSignatureCoversDocument does.
+func linkedDataUnsignedPlacementError(t *testing.T, compactedBody []byte) error {
+	t.Helper()
+	var document map[string]any
+	if err := json.Unmarshal(compactedBody, &document); err != nil {
+		t.Fatal(err)
+	}
+	delete(document, "signature")
+	input, err := activityPubJSONLDSanitize(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := ld.NewJsonLdOptions("")
+	options.DocumentLoader = newActivityPubJSONLDDocumentLoader(true)
+	expanded, err := ld.NewJsonLdProcessor().Expand(input, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return activityPubJSONLDUnsignedPlacement(expanded)
+}
+
+// RDF conversion drops a node with a relative @id as a subject together with
+// all its properties, but keeps the statements of the node objects nested in
+// it. A relay can therefore move the victim's signed node descriptions below
+// a relative attributionDomains node and leave references behind without
+// changing the signed RDF, while Paon reads the compacted JSON by position and
+// loses the moved values. The attributionDomains check only skips bare
+// references and rejects such a node's identifier; the placement check
+// rejects it on its own as well, as a reference that carries entries, so the
+// rule does not hinge on that exception. Such documents are never
+// authenticated; a bare relative reference is still accepted.
+func TestLinkedDataSignatureRejectsDescriptionsBelowRelativeNodes(t *testing.T) {
+	object := func(document map[string]any) map[string]any { return document["object"].(map[string]any) }
+	relative := func(property string, value any) []any {
+		return []any{map[string]any{"id": "origin.example", property: value}}
+	}
+	pollCheckedAt := time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC)
+	const notCanonicalized = `node identifier "origin.example" is not canonicalized`
+	const carriesEntries = `reference "origin.example" carries entries the signature does not cover`
+	for _, test := range []struct {
+		name    string
+		payload func(publicKeyPEM string) map[string]any
+		forge   func(document map[string]any)
+		forged  func(payload activityPayload) bool
+	}{
+		{
+			name:    "mention moved below a relative node of the status",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				status := object(document)
+				tags := status["tag"].([]any)
+				mention := tags[0].(map[string]any)
+				mention["id"] = "_:m"
+				tags[0] = "_:m"
+				status["attributionDomains"] = relative("tag", mention)
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+		},
+		{
+			name:    "mention moved below a relative node of the activity",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				tags := object(document)["tag"].([]any)
+				mention := tags[0].(map[string]any)
+				mention["id"] = "_:m"
+				tags[0] = map[string]any{"id": "_:m"}
+				document["attributionDomains"] = relative("tag", mention)
+			},
+			forged: func(p activityPayload) bool { return !linkedDataPlacementHasMention(p) },
+		},
+		{
+			name:    "attachment moved below a relative node",
+			payload: linkedDataPlacementNotePayload,
+			forge: func(document map[string]any) {
+				status := object(document)
+				attachment := status["attachment"].([]any)[0].(map[string]any)
+				attachment["id"] = "_:a"
+				status["attachment"] = []any{"_:a"}
+				status["attributionDomains"] = relative("attachment", attachment)
+			},
+			forged: func(p activityPayload) bool { return len(p.Object.Attachments) == 0 },
+		},
+		{
+			name:    "poll options moved below a relative node",
+			payload: linkedDataPlacementQuestionPayload,
+			forge: func(document map[string]any) {
+				status := object(document)
+				options := status["oneOf"].([]any)
+				yes, no := options[0].(map[string]any), options[1].(map[string]any)
+				yes["id"], no["id"] = "_:yes", "_:no"
+				status["oneOf"] = []any{"_:yes", "_:no"}
+				status["attributionDomains"] = relative("oneOf", []any{yes, no})
+			},
+			forged: func(p activityPayload) bool {
+				_, ok := activityPollFromObject(p.Object, 1, 1, pollCheckedAt)
+				return !ok
+			},
+		},
+		{
+			name:    "avatar moved below a relative node",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				icon := person["icon"].(map[string]any)
+				icon["id"] = "_:i"
+				person["icon"] = "_:i"
+				person["attributionDomains"] = relative("icon", icon)
+			},
+			forged: func(p activityPayload) bool { return p.Object.AvatarRemoteURL == "" },
+		},
+		{
+			name:    "key description moved below a relative node",
+			payload: linkedDataPlacementPersonPayload,
+			forge: func(document map[string]any) {
+				person := object(document)
+				key := person["publicKey"].(map[string]any)
+				person["publicKey"] = key["id"]
+				person["attributionDomains"] = relative("publicKey", key)
+			},
+			forged: func(p activityPayload) bool { return p.Object.PublicKey == "" },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, publicKey := signedLinkedDataFixture(t, test.payload)
+			test.forge(document)
+			assertLinkedDataForgeryRejected(t, document, publicKey, test.forged, notCanonicalized)
+			compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+			if !compacted {
+				t.Fatal("document with a literal signature object was not compacted")
+			}
+			if err := linkedDataUnsignedPlacementError(t, compactedBody); err == nil || !strings.Contains(err.Error(), carriesEntries) {
+				t.Fatalf("placement error = %v, want %q", err, carriesEntries)
+			}
+		})
+	}
+
+	t.Run("bare relative references stay accepted", func(t *testing.T) {
+		document, publicKey := signedLinkedDataFixture(t, func(publicKeyPEM string) map[string]any {
+			payload := linkedDataPlacementNotePayload(publicKeyPEM)
+			payload["attributionDomains"] = []any{map[string]any{"id": "origin.example"}}
+			object(payload)["attributionDomains"] = []any{map[string]any{"id": "origin.example"}, map[string]any{"id": "news.example"}}
+			return payload
+		})
+		compactedBody, compacted := activityPubCompactCollectionBody(marshalLinkedDataTestDocument(t, document))
+		if !compacted {
+			t.Fatal("document with a literal signature object was not compacted")
+		}
+		if err := verifyActivityPubLinkedDataSignatureWithError(compactedBody, publicKey); err != nil {
+			t.Fatalf("compacted signature: %v", err)
+		}
+		if err := activityPubLinkedDataSignatureCoversDocument(compactedBody); err != nil {
+			t.Fatalf("signed document with bare relative references was rejected: %v", err)
+		}
+		payload, err := parseActivityPayload(compactedBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !linkedDataPlacementHasMention(payload) || len(payload.Object.Attachments) != 1 {
+			t.Fatalf("signed values were not read: %s", compactedBody)
 		}
 	})
 }
