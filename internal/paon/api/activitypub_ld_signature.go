@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	"net/url"
@@ -377,14 +378,40 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 	// authenticate a compacted document that holds @graph, @included or
 	// @reverse anywhere: they let the JSON tree a server reads (Paon unwraps a
 	// nested @graph into the object) diverge from the signed default graph.
+	// Paon refuses @nest for the same reason.
 	if keyword, ok := activityPubJSONLDUnsupportedKeyword(document); ok {
 		return fmt.Errorf("linked-data signature does not cover the document: %s is not supported", keyword)
 	}
 	unsigned := make(map[string]any, len(document))
 	for key, value := range document {
-		if key != "signature" {
-			unsigned[key] = value
+		if key == "signature" {
+			continue
 		}
+		if key == "@context" {
+			unsigned[key] = value
+			continue
+		}
+		// Compaction only writes Paon's own context at the top level and the
+		// keywords listed in activityPubJSONLDCompactedKeywords below it. Any
+		// other keyword comes from a blank node property such as "_:@context",
+		// which json-gold compacts against the ActivityStreams "@vocab": "_:"
+		// to that keyword. Re-expanding the document would then act on it. An
+		// embedded "@context" could null or retype the terms Paon reads: the
+		// values under those terms would leave the canonicalized RDF, and
+		// nulled ones would not even appear in the expanded document checked
+		// below. "@nest" and "@set" would move the signed values under them
+		// back into the enclosing node, so the signature would still cover
+		// them while Paon no longer saw them under the keys it reads, and
+		// "@id" would give a node a blank node identifier. Such a document is
+		// never authenticated, nor is one with a map that holds "@language"
+		// or "@direction" but no "@value" (activityPubJSONLDValueObjectKeywords).
+		if ld.IsKeyword(key) {
+			return fmt.Errorf("linked-data signature does not cover the document: top-level %s", key)
+		}
+		if keyword, ok := activityPubJSONLDEmbeddedKeyword(value); ok {
+			return fmt.Errorf("linked-data signature does not cover the document: embedded %s", keyword)
+		}
+		unsigned[key] = value
 	}
 	input, err := activityPubJSONLDSanitize(unsigned)
 	if err != nil {
@@ -400,7 +427,69 @@ func activityPubLinkedDataSignatureCoversDocument(body []byte) (err error) {
 	if err := activityPubJSONLDUncanonicalizedContent(expanded); err != nil {
 		return fmt.Errorf("linked-data signature does not cover the document: %w", err)
 	}
+	if err := activityPubJSONLDUnsignedPlacement(expanded); err != nil {
+		return fmt.Errorf("linked-data signature does not cover the document: %w", err)
+	}
 	return nil
+}
+
+// activityPubJSONLDCompactedKeywords are the only JSON-LD keywords that
+// compacting with Paon's context writes below the top level of a document:
+// those of value objects, list objects and indexes. Node objects get the "id"
+// and "type" aliases instead of "@id" and "@type", and an embedded context of
+// the original document is removed.
+var activityPubJSONLDCompactedKeywords = []string{"@value", "@language", "@direction", "@list", "@index"}
+
+// activityPubJSONLDValueObjectKeywords may only appear in a compacted map that
+// has "@value". Compaction writes them inside value objects; it also keeps one
+// a sender put on a node object, but json-gold cannot canonicalize such a
+// document anyway. A map with "@language" but no "@value", such as a
+// compacted "_:@language" blank node property, re-expands to null: it is
+// neither canonicalized nor seen by activityPubJSONLDUncanonicalizedContent,
+// yet Paon reads it, e.g. as a truthy suspended or in place of the signed
+// value behind it.
+var activityPubJSONLDValueObjectKeywords = []string{"@language", "@direction"}
+
+// activityPubJSONLDKeywordLike matches the keys of the keyword form that
+// JSON-LD 1.1 reserves without defining them ("@" followed by letters,
+// json-gold's ignoredKeywordPattern). Expansion drops them like undefined
+// terms, but json-gold also compacts a blank node property such as
+// "_:@unknown" to "@unknown", and that key is dropped when the compacted
+// document is re-expanded: the node object holding it looks bare to
+// activityPubJSONLDUnsignedPlacement while Paon reads a map, e.g. a decorated
+// mention href, avatar url or attachment url Paon would drop.
+var activityPubJSONLDKeywordLike = regexp.MustCompile(`^@[a-zA-Z]+$`)
+
+// activityPubJSONLDEmbeddedKeyword returns a JSON-LD keyword entry of value,
+// part of a compacted document below its top level, that compacting with
+// Paon's context does not write there, also one of the keyword form that
+// JSON-LD does not define (activityPubJSONLDKeywordLike).
+func activityPubJSONLDEmbeddedKeyword(value any) (string, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if _, ok := typed["@value"]; !ok {
+			for _, keyword := range activityPubJSONLDValueObjectKeywords {
+				if _, ok := typed[keyword]; ok {
+					return keyword, true
+				}
+			}
+		}
+		for key, child := range typed {
+			if (ld.IsKeyword(key) || activityPubJSONLDKeywordLike.MatchString(key)) && !slices.Contains(activityPubJSONLDCompactedKeywords, key) {
+				return key, true
+			}
+			if keyword, ok := activityPubJSONLDEmbeddedKeyword(child); ok {
+				return keyword, true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if keyword, ok := activityPubJSONLDEmbeddedKeyword(child); ok {
+				return keyword, true
+			}
+		}
+	}
+	return "", false
 }
 
 // activityPubJSONLDUncanonicalizedContent walks an expanded JSON-LD document
@@ -472,9 +561,295 @@ func activityPubJSONLDUncanonicalizedContent(value any) error {
 // attributionDomains term in Mastodon's toot namespace.
 const activityPubMastodonAttributionDomainsIRI = "http://joinmastodon.org/ns#attributionDomains"
 
+// activityPubJSONLDUnsignedPlacement rejects an expanded document whose node
+// objects describe the signed nodes in a shape Paon would read differently
+// from the signed RDF dataset. RDF conversion merges all node objects with the
+// same @id into one subject and keeps the statements of a node object even
+// when the property holding it is dropped, e.g. an undefined term expanding to
+// a blank node property. Without changing the canonicalized dataset, and so
+// with the original signature intact, a relay can therefore move a signed node
+// description below a dropped property while the node stays referenced where
+// Paon reads it (hiding an actor's key or a mention), split one description
+// over several node objects (hiding an actor's suspension or locked flag from
+// the object Paon reads, or shifting poll tallies between options), put a
+// bare reference in front of the description of the same node, or decorate a
+// reference with entries that produce no statement. Paon, like
+// Mastodon, reads values by their position in the compacted JSON tree, not
+// from the merged graph. Such a document is not authenticated when
+//
+//   - a node with an @id and statements below a dropped property also has
+//     that @id outside dropped properties, as a reference or a description;
+//   - a blank node identifier is described by more than one node object, or
+//     an IRI by node objects with different statements (identical copies,
+//     e.g. an embedded actor repeated as attributedTo, are kept);
+//   - one property holds both a bare reference to an @id and a description of
+//     it;
+//   - a reference outside dropped properties carries entries that produce no
+//     statement (@index, undefined terms or empty arrays). The compacted
+//     reference then stays a map instead of the IRI string readers such as
+//     a mention's href, an attachment url or an avatar url expect, so Paon
+//     would drop the signed value.
+func activityPubJSONLDUnsignedPlacement(expanded []any) error {
+	placement := activityPubJSONLDPlacement{
+		descriptions: map[string]string{},
+		parked:       map[string]bool{},
+		placed:       map[string]bool{},
+	}
+	for _, item := range expanded {
+		node, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, err := placement.walkNode(node, false, true); err != nil {
+			return err
+		}
+	}
+	for id := range placement.parked {
+		if placement.placed[id] {
+			return fmt.Errorf("node %q is described below a property the signature does not cover", id)
+		}
+	}
+	return nil
+}
+
+// activityPubJSONLDPlacement records where an expanded document describes
+// and references node identifiers.
+type activityPubJSONLDPlacement struct {
+	// descriptions holds the statements digest of each described identifier
+	// (activityPubJSONLDStatementsDigest).
+	descriptions map[string]string
+	// parked holds identifiers described below a dropped property.
+	parked map[string]bool
+	// placed holds identifiers described or referenced outside dropped
+	// properties.
+	placed map[string]bool
+}
+
+// walkNode records an expanded node object and returns its statements digest
+// (activityPubJSONLDStatementsDigest); dropped tells whether a property it is
+// part of is left out of the RDF dataset, and root whether it is a top-level
+// node of the document. The digest is built from the digests the walk returns
+// for the node's values, so every node object of the document is digested
+// once, however deeply it is nested.
+func (p *activityPubJSONLDPlacement) walkNode(node map[string]any, dropped bool, root bool) (string, error) {
+	id, identified := node["@id"].(string)
+	described := identified && activityPubJSONLDNodeHasStatements(node)
+	if identified {
+		switch {
+		case !dropped:
+			p.placed[id] = true
+		case described:
+			p.parked[id] = true
+		}
+		if !described && !dropped && !root && len(node) > 1 {
+			return "", fmt.Errorf("reference %q carries entries the signature does not cover", id)
+		}
+	}
+	entries := make(map[string]string, len(node))
+	for key, value := range node {
+		kept := activityPubJSONLDStatementEntry(key, value)
+		if ld.IsKeyword(key) {
+			if kept {
+				entries[key] = activityPubJSONLDStatementsDigest(value)
+			}
+			continue
+		}
+		digest, err := p.walkValue(value, dropped || !activityPubJSONLDSignedProperty(key))
+		if err != nil {
+			return "", err
+		}
+		if kept {
+			entries[key] = digest
+		}
+	}
+	digest := activityPubJSONLDMapDigest(entries)
+	if described {
+		if previous, ok := p.descriptions[id]; ok {
+			if strings.HasPrefix(id, "_:") {
+				return "", fmt.Errorf("blank node %q is described more than once", id)
+			}
+			if previous != digest {
+				return "", fmt.Errorf("node %q is described more than once with different statements", id)
+			}
+		}
+		p.descriptions[id] = digest
+	}
+	return digest, nil
+}
+
+// walkValue records the node objects of an expanded property value and
+// returns its statements digest (activityPubJSONLDStatementsDigest).
+func (p *activityPubJSONLDPlacement) walkValue(value any, dropped bool) (string, error) {
+	switch typed := value.(type) {
+	case []any:
+		return p.walkValues(typed, dropped)
+	case map[string]any:
+		if _, ok := typed["@value"]; ok {
+			return activityPubJSONLDStatementsDigest(typed), nil
+		}
+		if list, ok := typed["@list"]; ok {
+			items, isArray := list.([]any)
+			listDigest, err := p.walkValues(items, dropped)
+			if err != nil {
+				return "", err
+			}
+			entries := make(map[string]string, len(typed))
+			for key, item := range typed {
+				switch {
+				case !activityPubJSONLDStatementEntry(key, item):
+				case key == "@list" && isArray:
+					entries[key] = listDigest
+				default:
+					entries[key] = activityPubJSONLDStatementsDigest(item)
+				}
+			}
+			return activityPubJSONLDMapDigest(entries), nil
+		}
+		return p.walkNode(typed, dropped, false)
+	}
+	return activityPubJSONLDStatementsDigest(value), nil
+}
+
+// walkValues records the values of one expanded property or list and returns
+// their statements digest (activityPubJSONLDStatementsDigest).
+func (p *activityPubJSONLDPlacement) walkValues(values []any, dropped bool) (string, error) {
+	descriptions := map[string]bool{}
+	references := map[string]bool{}
+	for _, value := range values {
+		node, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, ok := node["@id"].(string)
+		if !ok {
+			continue
+		}
+		switch {
+		case activityPubJSONLDNodeHasStatements(node):
+			descriptions[id] = true
+		case len(node) == 1:
+			references[id] = true
+		}
+	}
+	for id := range descriptions {
+		if references[id] {
+			return "", fmt.Errorf("node %q is both referenced and described in one property", id)
+		}
+	}
+	digests := make([]string, len(values))
+	for index, value := range values {
+		digest, err := p.walkValue(value, dropped)
+		if err != nil {
+			return "", err
+		}
+		digests[index] = digest
+	}
+	return activityPubJSONLDArrayDigest(digests), nil
+}
+
+// activityPubJSONLDNodeHasStatements reports whether RDF conversion produces a
+// statement with the expanded node object as its subject: a type or a value of
+// a signed property (activityPubJSONLDSignedProperty).
+func activityPubJSONLDNodeHasStatements(node map[string]any) bool {
+	for key, value := range node {
+		if key != "@type" && !activityPubJSONLDSignedProperty(key) {
+			continue
+		}
+		if items, ok := value.([]any); !ok || len(items) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// activityPubJSONLDStatementEntry reports whether an entry of an expanded map
+// takes part in comparing descriptions of the same identifier. RDF conversion
+// drops @index, dropped properties and empty arrays.
+func activityPubJSONLDStatementEntry(key string, value any) bool {
+	if key == "@index" || (!ld.IsKeyword(key) && !activityPubJSONLDSignedProperty(key)) {
+		return false
+	}
+	items, ok := value.([]any)
+	return !ok || len(items) > 0
+}
+
+// activityPubJSONLDStatementsDigest identifies an expanded value for comparing
+// descriptions of the same identifier: two values have the same digest
+// exactly when they are equal once every map in them leaves out the entries
+// RDF conversion drops (activityPubJSONLDStatementEntry). A scalar is
+// identified by its JSON encoding, and a map or an array by a SHA-256 digest
+// over the digests of its entries (activityPubJSONLDMapDigest,
+// activityPubJSONLDArrayDigest), so no value is serialized again for every
+// map or array it is nested in.
+func activityPubJSONLDStatementsDigest(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		entries := make(map[string]string, len(typed))
+		for key, item := range typed {
+			if activityPubJSONLDStatementEntry(key, item) {
+				entries[key] = activityPubJSONLDStatementsDigest(item)
+			}
+		}
+		return activityPubJSONLDMapDigest(entries)
+	case []any:
+		digests := make([]string, len(typed))
+		for index, item := range typed {
+			digests[index] = activityPubJSONLDStatementsDigest(item)
+		}
+		return activityPubJSONLDArrayDigest(digests)
+	}
+	encoded, _ := json.Marshal(value)
+	return "s" + string(encoded)
+}
+
+// activityPubJSONLDMapDigest returns the statements digest of a map from the
+// digests of its kept entries. Each entry is hashed as its JSON-encoded key,
+// ":", its digest and ",": a digest is a fixed-length hash after "m" or "a",
+// or a JSON scalar after "s", which never contains a "," outside a quoted
+// string, so different maps never hash the same input.
+func activityPubJSONLDMapDigest(entries map[string]string) string {
+	hash := sha256.New()
+	for _, key := range slices.Sorted(maps.Keys(entries)) {
+		encoded, _ := json.Marshal(key)
+		hash.Write(encoded)
+		hash.Write([]byte{':'})
+		io.WriteString(hash, entries[key])
+		hash.Write([]byte{','})
+	}
+	return "m" + string(hash.Sum(nil))
+}
+
+// activityPubJSONLDArrayDigest returns the statements digest of an array from
+// the digests of its items, in order (see activityPubJSONLDMapDigest).
+func activityPubJSONLDArrayDigest(digests []string) string {
+	hash := sha256.New()
+	for _, digest := range digests {
+		io.WriteString(hash, digest)
+		hash.Write([]byte{','})
+	}
+	return "a" + string(hash.Sum(nil))
+}
+
+// activityPubJSONLDSignedProperty reports whether
+// activityPubJSONLDUnsignedPlacement treats an expanded property as part of
+// the signed RDF dataset. attributionDomains is treated like a dropped
+// property: activityPubJSONLDUncanonicalizedContent does not check it, so it
+// may hold nodes with relative identifiers, whose statements RDF conversion
+// drops while it keeps those of the node objects below them, and Paon never
+// reads it.
+func activityPubJSONLDSignedProperty(property string) bool {
+	return activityPubJSONLDCanonicalizedProperty(property) && property != activityPubMastodonAttributionDomainsIRI
+}
+
 // activityPubJSONLDUnsupportedKeywords mirrors Mastodon's
-// JsonLdHelper::UNSUPPORTED_JSONLD_KEYWORDS.
-var activityPubJSONLDUnsupportedKeywords = []string{"@graph", "@included", "@reverse"}
+// JsonLdHelper::UNSUPPORTED_JSONLD_KEYWORDS and adds @nest. No term of Paon's
+// compaction context nests its values, but json-gold compacts a blank node
+// property "_:@nest" against the ActivityStreams "@vocab": "_:" to that
+// keyword, at any level of the document. Re-expansion merges the properties
+// under @nest into the node that holds it, so signed values moved there stay
+// in the canonicalized RDF while Paon, which reads the compacted JSON, no
+// longer sees them.
+var activityPubJSONLDUnsupportedKeywords = []string{"@graph", "@included", "@reverse", "@nest"}
 
 // activityPubJSONLDUnsupportedKeyword reports the first unsupported JSON-LD
 // keyword used as a key anywhere in a compacted document, like Mastodon's

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/mstdn-plusminus-io/paon/internal/paon/config"
 	"github.com/mstdn-plusminus-io/paon/internal/paon/models"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -822,6 +825,161 @@ func TestActivityPubQuestionBlankClosedStringDoesNotFallbackToEndTimeLikeRails(t
 	}
 }
 
+// Paon reads closed, oneOf, anyOf, conversation and the quote terms by their
+// presence. An empty array adds nothing to the RDF a linked-data signature
+// covers, so it counts as absent for every delivery.
+func TestActivityPubEmptyPresenceArraysCountAsAbsent(t *testing.T) {
+	now := time.Date(2026, 6, 19, 11, 0, 0, 0, time.UTC)
+	parse := func(t *testing.T, object string) activityObject {
+		t.Helper()
+		payload, err := parseActivityPayload([]byte(`{
+			"type":"Create",
+			"actor":"https://remote.test/users/bob",
+			"object":` + object + `
+		}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return payload.Object
+	}
+	t.Run("closed", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/2","type":"Question","closed":[],"endTime":"2026-06-19T12:30:00Z","oneOf":[{"name":"a"},{"name":"b"}]}`)
+		poll, ok := activityPollFromObject(object, 42, 99, now)
+		if !ok || !poll.ExpiresAt.Valid || poll.ExpiresAt.Time.Format(time.RFC3339) != "2026-06-19T12:30:00Z" {
+			t.Fatalf("poll = %#v ok = %v, want it open until endTime", poll, ok)
+		}
+	})
+	t.Run("anyOf next to oneOf", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/2","type":"Question","endTime":"2026-06-19T12:30:00Z","oneOf":[{"name":"a"},{"name":"b"}],"anyOf":[]}`)
+		poll, ok := activityPollFromObject(object, 42, 99, now)
+		if !ok || poll.Multiple || !slices.Equal(poll.Options, models.StringArray{"a", "b"}) {
+			t.Fatalf("poll = %#v ok = %v, want the single-choice options", poll, ok)
+		}
+	})
+	t.Run("oneOf next to anyOf", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/2","type":"Question","endTime":"2026-06-19T12:30:00Z","oneOf":[],"anyOf":[{"name":"a"},{"name":"b"}]}`)
+		poll, ok := activityPollFromObject(object, 42, 99, now)
+		if !ok || !poll.Multiple || !slices.Equal(poll.Options, models.StringArray{"a", "b"}) {
+			t.Fatalf("poll = %#v ok = %v, want the multiple-choice options", poll, ok)
+		}
+	})
+	t.Run("conversation", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/3","type":"Note","content":"x","conversation":[]}`)
+		if object.ConversationSet || object.Conversation != "" {
+			t.Fatalf("conversation = %q set = %v, want none", object.Conversation, object.ConversationSet)
+		}
+	})
+	for _, test := range []struct {
+		name   string
+		object string
+		want   string
+	}{
+		{
+			name:   "quoteUri next to quoteUrl",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUri":[],"quoteUrl":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "quoteUri next to _misskey_quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUri":[],"_misskey_quote":"https://remote.test/notes/q"}`,
+			want:   "https://remote.test/notes/q",
+		},
+		{
+			name:   "quoteUrl next to _misskey_quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUrl":[],"_misskey_quote":"https://remote.test/notes/q"}`,
+			want:   "https://remote.test/notes/q",
+		},
+		// quoteUri and quoteUrl are also read from FEP-044f's quote, behind
+		// their own terms.
+		{
+			name:   "quoteUri and quoteUrl next to quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","quoteUri":[],"quoteUrl":[],"quote":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+		{
+			name:   "expanded quoteUri and quoteUrl next to the expanded quote",
+			object: `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","http://joinmastodon.org/ns#quoteUri":[],"https://www.w3.org/ns/activitystreams#quoteUrl":[],"https://w3id.org/fep/044f#quote":"https://remote.test/statuses/q"}`,
+			want:   "https://remote.test/statuses/q",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := activityPubQuoteURL(parse(t, test.object)); got != test.want {
+				t.Fatalf("quote URL = %q, want %q", got, test.want)
+			}
+		})
+	}
+	t.Run("_misskey_quote", func(t *testing.T) {
+		object := parse(t, `{"id":"https://remote.test/users/bob/statuses/4","type":"Note","content":"x","_misskey_quote":[]}`)
+		if object.QuoteURISet || object.QuoteURLSet || object.MisskeyQuoteSet {
+			t.Fatalf("quote presence = %v %v %v, want none", object.QuoteURISet, object.QuoteURLSet, object.MisskeyQuoteSet)
+		}
+	})
+}
+
+// A suspended literal typed xsd:boolean is read by its lexical form; other
+// values keep Mastodon's truthiness (only nil and false are false).
+func TestActivityPubSuspendedReadsTypedBooleanLiterals(t *testing.T) {
+	const xsdBoolean = "http://www.w3.org/2001/XMLSchema#boolean"
+	for _, test := range []struct {
+		name  string
+		value any
+		want  bool
+	}{
+		{name: "compacted false", value: map[string]any{"@value": "false", "type": "xsd:boolean"}, want: false},
+		{name: "expanded false", value: []any{map[string]any{"@value": "false", "@type": xsdBoolean}}, want: false},
+		{name: "compacted 0", value: map[string]any{"@value": "0", "type": "xsd:boolean"}, want: false},
+		{name: "compacted true", value: map[string]any{"@value": "true", "type": "xsd:boolean"}, want: true},
+		{name: "expanded 1", value: map[string]any{"@value": "1", "@type": xsdBoolean}, want: true},
+		{name: "typed native false", value: map[string]any{"@value": false, "type": "xsd:boolean"}, want: false},
+		{name: "native true", value: true, want: true},
+		{name: "native false", value: false, want: false},
+		{name: "absent", value: nil, want: false},
+		{name: "untyped string false", value: "false", want: true},
+		{name: "untyped value object false", value: map[string]any{"@value": "false"}, want: true},
+		{name: "string false typed xsd:string", value: map[string]any{"@value": "false", "type": "xsd:string"}, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := activityRailsSuspendedTruthy(test.value); got != test.want {
+				t.Fatalf("suspended(%#v) = %v, want %v", test.value, got, test.want)
+			}
+		})
+	}
+	t.Run("Update(Person)", func(t *testing.T) {
+		payload, err := parseActivityPayload([]byte(`{
+			"type":"Update",
+			"actor":"https://remote.test/users/bob",
+			"object":{
+				"id":"https://remote.test/users/bob",
+				"type":"Person",
+				"inbox":"https://remote.test/users/bob/inbox",
+				"suspended":{"@value":"false","type":"xsd:boolean"}
+			}
+		}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if payload.Object.Suspended {
+			t.Fatal("Update(Person) with a typed suspended false reads as suspended")
+		}
+	})
+	t.Run("fetched actor", func(t *testing.T) {
+		actor, err := parseRemoteActivityActorWithImageFetcher([]byte(`{
+			"@context":["https://www.w3.org/ns/activitystreams","https://w3id.org/security/v1",{"toot":"http://joinmastodon.org/ns#","suspended":"toot:suspended"}],
+			"id":"https://remote.test/users/bob",
+			"type":"Person",
+			"preferredUsername":"bob",
+			"inbox":"https://remote.test/users/bob/inbox",
+			"suspended":{"@value":"false","type":"xsd:boolean"}
+		}`), func(string) any { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if actor.Suspended {
+			t.Fatal("fetched actor with a typed suspended false reads as suspended")
+		}
+	})
+}
+
 func TestActivityPubPollVoteChoiceMatchesOptionExactly(t *testing.T) {
 	poll := models.Poll{Options: models.StringArray{"red", "blue"}}
 	if got := activityPollVoteChoice(poll, "blue"); got != 1 {
@@ -1076,5 +1234,241 @@ func TestIncomingFollowDomainBlockUsesCaseInsensitiveRailsDomains(t *testing.T) 
 	}
 	if functionBodyContains(t, src, "rejectIncomingFollow", `Where("account_id = ? AND domain = ?", target.ID, actor.Domain.String)`) {
 		t.Fatal("incoming Follow rejection must not use a case-sensitive domain comparison")
+	}
+}
+
+// actorKeyUpdateConnPool lets a dry-run gorm handle open transactions without
+// PostgreSQL; dry-run statements never reach it.
+type actorKeyUpdateConnPool struct{}
+
+func (actorKeyUpdateConnPool) PrepareContext(context.Context, string) (*sql.Stmt, error) {
+	return nil, errors.New("unexpected prepare")
+}
+
+func (actorKeyUpdateConnPool) ExecContext(context.Context, string, ...any) (sql.Result, error) {
+	return nil, errors.New("unexpected exec")
+}
+
+func (actorKeyUpdateConnPool) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	return nil, errors.New("unexpected query")
+}
+
+func (actorKeyUpdateConnPool) QueryRowContext(context.Context, string, ...any) *sql.Row {
+	return nil
+}
+
+func (p actorKeyUpdateConnPool) BeginTx(context.Context, *sql.TxOptions) (gorm.ConnPool, error) {
+	return &actorKeyUpdateTx{p}, nil
+}
+
+// actorKeyUpdateTx is a pointer type because gorm checks a committer for nil.
+type actorKeyUpdateTx struct{ actorKeyUpdateConnPool }
+
+func (*actorKeyUpdateTx) Commit() error   { return nil }
+func (*actorKeyUpdateTx) Rollback() error { return nil }
+
+// actorKeyUpdateWrites records the account updates and deletions a dry-run
+// actor Update issues.
+type actorKeyUpdateWrites struct {
+	accountUpdates []map[string]any
+	deletedTables  []string
+}
+
+// actorKeyUpdateDB is a dry-run database recording the writes of
+// updateActivityPubActor. A non-empty blockedDomain answers every domain block
+// lookup with a suspension of that domain.
+func actorKeyUpdateDB(t *testing.T, blockedDomain string) (*gorm.DB, *actorKeyUpdateWrites) {
+	t.Helper()
+	database, err := gorm.Open(postgres.New(postgres.Config{Conn: actorKeyUpdateConnPool{}}), &gorm.Config{DryRun: true, DisableAutomaticPing: true, SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writes := &actorKeyUpdateWrites{}
+	callbacks := database.Callback()
+	if err := callbacks.Update().After("gorm:update").Register("paon_test:record_update", func(db *gorm.DB) {
+		// Fetching with the representative account may also write that
+		// account; only the actor Update sets inbox_url.
+		if updates, ok := db.Statement.Dest.(map[string]any); ok && db.Statement.Table == "accounts" && updates["inbox_url"] != nil {
+			writes.accountUpdates = append(writes.accountUpdates, updates)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := callbacks.Delete().After("gorm:delete").Register("paon_test:record_delete", func(db *gorm.DB) {
+		writes.deletedTables = append(writes.deletedTables, db.Statement.Table)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if blockedDomain != "" {
+		if err := callbacks.Query().After("gorm:query").Register("paon_test:domain_block", func(db *gorm.DB) {
+			if block, ok := db.Statement.Dest.(*models.DomainBlock); ok {
+				*block = models.DomainBlock{Domain: blockedDomain, Severity: sql.NullInt64{Int64: int64(domainBlockSeverityCode("suspend")), Valid: true}}
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return database, writes
+}
+
+// Like ProcessAccountService#public_key, an actor Update whose publicKey is a
+// reference stores the referenced key once it is fetched and confirmed to be
+// the actor's. A reference that cannot be resolved keeps the stored key and the
+// actor's tombstones instead of storing an empty key, which would delete every
+// tombstone so that old signed activities could recreate deleted statuses.
+func TestActivityPubActorUpdateResolvesReferencedPublicKey(t *testing.T) {
+	const (
+		actorURI = "https://origin.example/users/alice"
+		keyID    = actorURI + "#main-key"
+		oldPEM   = "OLD-PEM"
+		newPEM   = "NEW-PEM"
+	)
+	actorDocument := func(id, keyID, owner, publicKeyPEM string) string {
+		return activityTestJSON(`{
+			"id":"` + id + `",
+			"type":"Person",
+			"preferredUsername":"alice",
+			"inbox":"` + id + `/inbox",
+			"publicKey":{"id":"` + keyID + `","owner":"` + owner + `","publicKeyPem":"` + publicKeyPEM + `"}
+		}`)
+	}
+	update := func(publicKey string) string {
+		return `{
+			"type":"Update",
+			"actor":"` + actorURI + `",
+			"object":{
+				"id":"` + actorURI + `",
+				"type":"Person",
+				"preferredUsername":"alice",
+				"inbox":"` + actorURI + `/inbox",
+				"publicKey":` + publicKey + `
+			}
+		}`
+	}
+	// The mock remote matches the request URL, which keeps the fragment of a
+	// "#main-key" reference; the origin serves its actor document there.
+	for _, test := range []struct {
+		name          string
+		update        string
+		responses     map[string]string
+		blockedDomain string
+		// stored is the public_key the Update writes; keep means none is written.
+		stored     string
+		keep       bool
+		tombstones bool
+		// noFetch means no remote request may be made.
+		noFetch bool
+	}{
+		{
+			name:       "fragment reference served by the actor document",
+			update:     update(`"` + keyID + `"`),
+			responses:  map[string]string{keyID: actorDocument(actorURI, keyID, actorURI, newPEM)},
+			stored:     newPEM,
+			tombstones: true,
+		},
+		{
+			name:      "fragment reference to the stored key",
+			update:    update(`"` + keyID + `"`),
+			responses: map[string]string{keyID: actorDocument(actorURI, keyID, actorURI, oldPEM)},
+			stored:    oldPEM,
+		},
+		{
+			name:      "reference in an array",
+			update:    update(`["` + keyID + `"]`),
+			responses: map[string]string{keyID: actorDocument(actorURI, keyID, actorURI, oldPEM)},
+			stored:    oldPEM,
+		},
+		{
+			name:   "key URL serving the actor like GoToSocial",
+			update: update(`"` + actorURI + `/main-key"`),
+			responses: map[string]string{
+				actorURI + "/main-key": actorDocument(actorURI, actorURI+"/main-key", actorURI, oldPEM),
+			},
+			stored: oldPEM,
+		},
+		{
+			name:   "standalone key document",
+			update: update(`"https://origin.example/keys/alice"`),
+			responses: map[string]string{
+				"https://origin.example/keys/alice": activityTestJSON(`{"id":"https://origin.example/keys/alice","owner":"` + actorURI + `","publicKeyPem":"` + oldPEM + `"}`),
+			},
+			stored: oldPEM,
+		},
+		{
+			name:      "embedded key is not fetched",
+			update:    update(`{"id":"` + keyID + `","owner":"` + actorURI + `","publicKeyPem":"` + oldPEM + `"}`),
+			responses: map[string]string{},
+			stored:    oldPEM,
+			noFetch:   true,
+		},
+		{
+			name:      "unresolvable reference",
+			update:    update(`"` + keyID + `"`),
+			responses: map[string]string{},
+			keep:      true,
+		},
+		{
+			name:      "key owned by another actor",
+			update:    update(`"https://origin.example/keys/alice"`),
+			responses: map[string]string{"https://origin.example/keys/alice": activityTestJSON(`{"id":"https://origin.example/keys/alice","owner":"https://origin.example/users/mallory","publicKeyPem":"` + newPEM + `"}`)},
+			keep:      true,
+		},
+		{
+			name:      "key with another id",
+			update:    update(`"` + keyID + `"`),
+			responses: map[string]string{keyID: actorDocument(actorURI, actorURI+"#other-key", actorURI, newPEM)},
+			keep:      true,
+		},
+		{
+			name:      "key document without a key",
+			update:    update(`"https://origin.example/keys/alice"`),
+			responses: map[string]string{"https://origin.example/keys/alice": activityTestJSON(`{"id":"https://origin.example/keys/alice","owner":"` + actorURI + `"}`)},
+			keep:      true,
+		},
+		{
+			name:          "key on a blocked domain",
+			update:        update(`"https://keys.blocked.example/alice"`),
+			responses:     map[string]string{"https://keys.blocked.example/alice": activityTestJSON(`{"id":"https://keys.blocked.example/alice","owner":"` + actorURI + `","publicKeyPem":"` + newPEM + `"}`)},
+			blockedDomain: "keys.blocked.example",
+			keep:          true,
+			noFetch:       true,
+		},
+		{
+			name:      "reference that is not an http(s) URI",
+			update:    update(`"urn:example:key"`),
+			responses: map[string]string{},
+			keep:      true,
+			noFetch:   true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := actorTrustMockRemote(t, test.responses)
+			database, writes := actorKeyUpdateDB(t, test.blockedDomain)
+			server := &Server{cfg: config.Config{Scheme: "https", LocalDomain: "paon.example", WebDomain: "paon.example"}, db: database}
+			payload, err := parseActivityPayload([]byte(test.update))
+			if err != nil {
+				t.Fatal(err)
+			}
+			actor := &models.Account{ID: 21, Username: "alice", Domain: sql.NullString{String: "origin.example", Valid: true}, URI: actorURI, PublicKey: oldPEM, Protocol: 1}
+			if err := server.updateActivityPubActor(actor, payload.Object, ""); err != nil {
+				t.Fatal(err)
+			}
+			if len(writes.accountUpdates) != 1 {
+				t.Fatalf("account updates = %#v, want one", writes.accountUpdates)
+			}
+			stored, written := writes.accountUpdates[0]["public_key"]
+			switch {
+			case test.keep && written:
+				t.Fatalf("public_key = %#v, want the stored key kept", stored)
+			case !test.keep && (!written || stored != test.stored):
+				t.Fatalf("public_key = %#v (written %v), want %q", stored, written, test.stored)
+			}
+			if cleared := slices.Contains(writes.deletedTables, "tombstones"); cleared != test.tombstones {
+				t.Fatalf("tombstones cleared = %v, want %v (requests %v)", cleared, test.tombstones, requests.list())
+			}
+			if test.noFetch && len(requests.list()) > 0 {
+				t.Fatalf("requests = %v, want none", requests.list())
+			}
+		})
 	}
 }

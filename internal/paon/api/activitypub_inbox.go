@@ -4640,8 +4640,12 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 	if object.Published != "" {
 		updates["created_at"] = activityActorPublishedAt(object.Published, actor.CreatedAt)
 	}
+	publicKey, publicKeyResolved := object.PublicKey, true
 	if !activityActorLocallySuspended(*actor) {
-		updates["public_key"] = object.PublicKey
+		publicKey, publicKeyResolved = s.activityPubActorUpdatePublicKey(object)
+		if publicKeyResolved {
+			updates["public_key"] = publicKey
+		}
 	}
 	for key, value := range activityActorSuspensionUpdatesForTransition(suspensionTransition, now) {
 		updates[key] = value
@@ -4717,10 +4721,10 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 				}
 			}
 		}
-		if activityActorLocallySuspended(*actor) {
+		if activityActorLocallySuspended(*actor) || !publicKeyResolved {
 			return nil
 		}
-		return clearActivityPubActorTombstonesOnKeyChange(tx, actor.ID, actor.PublicKey, object.PublicKey)
+		return clearActivityPubActorTombstonesOnKeyChange(tx, actor.ID, actor.PublicKey, publicKey)
 	}); err != nil {
 		return err
 	}
@@ -4752,6 +4756,68 @@ func (s *Server) updateActivityPubActor(actor *models.Account, object activityOb
 		s.syncActivityPubFeaturedTagsBestEffort(actor, object.FeaturedTags)
 	}
 	return nil
+}
+
+// activityPubActorUpdatePublicKey returns the key an actor Update stores and
+// whether it is known. Like ProcessAccountService#public_key, a publicKey
+// given as a reference is fetched (fetchActivityPubReferencedPublicKey).
+// When the reference cannot be resolved the key is unknown: the stored key
+// and the actor's tombstones are kept instead of storing an empty key, which
+// would delete every tombstone and let old signed activities recreate
+// deleted statuses.
+func (s *Server) activityPubActorUpdatePublicKey(object activityObject) (string, bool) {
+	if object.PublicKey != "" || object.PublicKeyReference == "" {
+		return object.PublicKey, true
+	}
+	publicKey, err := s.fetchActivityPubReferencedPublicKey(object.ID, object.PublicKeyReference)
+	if err != nil {
+		return "", false
+	}
+	return publicKey, true
+}
+
+// fetchActivityPubReferencedPublicKey fetches the key keyID with the signed
+// resource fetch (SSRF guarded) unless its domain is blocked, and returns its
+// PEM only when the fetched key has keyID as its id and actorURI as its owner,
+// as Mastodon 4.6 checks the owner. The key may be served on its own, inside a
+// @graph, or as the publicKey of the actor document (Mastodon "#main-key"
+// fragments, GoToSocial key URLs).
+func (s *Server) fetchActivityPubReferencedPublicKey(actorURI string, keyID string) (string, error) {
+	if !activityPubHTTPURIAllowedRaw(keyID) {
+		return "", fmt.Errorf("public key reference is not an http(s) URI")
+	}
+	if disallowed, err := s.remoteActivityDomainNotAllowed(keyID); err != nil || disallowed {
+		if err != nil {
+			return "", err
+		}
+		return "", errActivitySignatureDomainNotAllowed
+	}
+	resource, err := s.fetchActivityResourceWithRepresentative(keyID)
+	if err != nil {
+		return "", err
+	}
+	if !activityJSONContentType(resource.contentType) {
+		return "", fmt.Errorf("unsupported public key content type")
+	}
+	var key map[string]any
+	if err := json.Unmarshal(resource.body, &key); err != nil {
+		return "", err
+	}
+	if graphKey := activityJSONLDGraphPublicKey(key); graphKey != nil {
+		key = graphKey
+	} else if activityJSONLDValue(key, "publicKeyPem") == nil {
+		if embedded, ok := activityJSONLDSingle(activityJSONLDValue(key, "publicKey")).(map[string]any); ok {
+			key = embedded
+		}
+	}
+	if activityJSONLDIDRaw(key) != keyID || activityJSONLDValueOrID(activityJSONLDValue(key, "owner")) != actorURI {
+		return "", fmt.Errorf("public key not found")
+	}
+	publicKey := activityJSONLDString(key, "publicKeyPem")
+	if strings.TrimSpace(publicKey) == "" {
+		return "", fmt.Errorf("public key not found")
+	}
+	return publicKey, nil
 }
 
 func clearActivityPubActorAvatarMediaUpdates(updates map[string]any) {
@@ -5796,6 +5862,9 @@ type activityObject struct {
 	ProfileFields      []profileField
 	ProfileFieldsSet   bool
 	PublicKey          string
+	// PublicKeyReference is the first publicKey value when it names the key
+	// by IRI instead of embedding it; see activityPubActorUpdatePublicKey.
+	PublicKeyReference string
 	AvatarRemoteURL    string
 	HeaderRemoteURL    string
 	SourceDeviceID     string
@@ -6590,8 +6659,13 @@ func parseActivityObject(value any) activityObject {
 		// without recursively parsing arbitrary nested activity documents.
 		nestedObject, _ := activityJSONLDSingle(objectIDValue).(map[string]any)
 		featuredValue := activityJSONLDValue(object, "featured")
-		oneOfPollOptions := activityPollOptionListWithShape(activityJSONLDValue(object, "oneOf"))
-		anyOfPollOptions := activityPollOptionListWithShape(activityJSONLDValue(object, "anyOf"))
+		oneOfPollOptions := activityPollOptionListWithShape(activityJSONLDPresentValue(object, "oneOf"))
+		anyOfPollOptions := activityPollOptionListWithShape(activityJSONLDPresentValue(object, "anyOf"))
+		conversationValue := activityJSONLDPresentValue(object, "conversation")
+		quoteURIValue := activityJSONLDPresentValue(object, "quoteUri")
+		quoteURLValue := activityJSONLDPresentValue(object, "quoteUrl")
+		misskeyQuoteValue := activityJSONLDPresentValue(object, "_misskey_quote")
+		publicKeyValue := activityJSONLDValue(object, "publicKey")
 		toValue := activityJSONLDValue(object, "to")
 		ccValue := activityJSONLDValue(object, "cc")
 		out := activityObject{
@@ -6628,8 +6702,8 @@ func parseActivityObject(value any) activityObject {
 			InReplyTo:        activityJSONLDValueOrID(activityJSONLDValue(object, "inReplyTo")),
 			InReplyToPresent: activityPubJSONLDPresent(activityJSONLDValue(object, "inReplyTo")),
 			InReplyToAtomURI: activityJSONLDString(object, "inReplyToAtomUri"),
-			Conversation:     activityJSONLDValueOrID(activityJSONLDValue(object, "conversation")),
-			ConversationSet:  activityJSONLDValue(object, "conversation") != nil,
+			Conversation:     activityJSONLDValueOrID(conversationValue),
+			ConversationSet:  conversationValue != nil,
 			Published:        activityJSONLDString(object, "published"),
 			Updated:          activityJSONLDString(object, "updated"),
 			Language:         activityJSONLDString(object, "language"),
@@ -6639,7 +6713,7 @@ func parseActivityObject(value any) activityObject {
 			Indexable:        activityBoolValue(activityJSONLDValue(object, "indexable")),
 			Memorial:         activityBoolValue(activityJSONLDValue(object, "memorial")),
 			Suspended:        activityRailsSuspendedTruthy(activityJSONLDValue(object, "suspended")),
-			Closed:           activityJSONLDValue(object, "closed"),
+			Closed:           activityJSONLDPresentValue(object, "closed"),
 			EndTime:          activityJSONLDString(object, "endTime"),
 			OneOf:            oneOfPollOptions.Options,
 			OneOfSet:         oneOfPollOptions.Set,
@@ -6657,7 +6731,7 @@ func parseActivityObject(value any) activityObject {
 			Replies:          activityCollectionValue(activityJSONLDValue(object, "replies")),
 			ProfileFields:    activityProfileFields(activityJSONLDValue(object, "attachment")),
 			ProfileFieldsSet: activityAttachmentPresent(activityJSONLDValue(object, "attachment")),
-			PublicKey:        activityPublicKeyPEM(activityJSONLDValue(object, "publicKey")),
+			PublicKey:        activityPublicKeyPEM(publicKeyValue),
 			AvatarRemoteURL:  activityActorImageURL(activityJSONLDValue(object, "icon")),
 			HeaderRemoteURL:  activityActorImageURL(activityJSONLDValue(object, "image")),
 			SourceDeviceID:   activityDeviceID(activityJSONLDValue(object, "attributedTo")),
@@ -6666,19 +6740,20 @@ func parseActivityObject(value any) activityObject {
 			CipherText:       activityJSONLDString(object, "cipherText"),
 			MessageFranking:  activityJSONLDString(object, "messageFranking"),
 			DigestValue:      activityDigestValue(activityJSONLDValue(object, "digest")),
-			QuoteURI:         activityJSONLDObjectID(object, "quoteUri"),
-			QuoteURL:         activityJSONLDObjectID(object, "quoteUrl"),
-			MisskeyQuote:     activityJSONLDObjectID(object, "_misskey_quote"),
-			QuoteURIRaw:      activityJSONLDObjectIDPreserveBearcap(object, "quoteUri"),
-			QuoteURLRaw:      activityJSONLDObjectIDPreserveBearcap(object, "quoteUrl"),
-			MisskeyQuoteRaw:  activityJSONLDObjectIDPreserveBearcap(object, "_misskey_quote"),
-			QuoteURISet:      activityJSONLDValue(object, "quoteUri") != nil,
-			QuoteURLSet:      activityJSONLDValue(object, "quoteUrl") != nil,
-			MisskeyQuoteSet:  activityJSONLDValue(object, "_misskey_quote") != nil,
+			QuoteURI:         activityJSONLDValueObjectID(quoteURIValue),
+			QuoteURL:         activityJSONLDValueObjectID(quoteURLValue),
+			MisskeyQuote:     activityJSONLDValueObjectID(misskeyQuoteValue),
+			QuoteURIRaw:      activityJSONLDValueObjectIDPreserveBearcap(quoteURIValue),
+			QuoteURLRaw:      activityJSONLDValueObjectIDPreserveBearcap(quoteURLValue),
+			MisskeyQuoteRaw:  activityJSONLDValueObjectIDPreserveBearcap(misskeyQuoteValue),
+			QuoteURISet:      quoteURIValue != nil,
+			QuoteURLSet:      quoteURLValue != nil,
+			MisskeyQuoteSet:  misskeyQuoteValue != nil,
 			AlsoKnownAs:      activityJSONLDValue(object, "alsoKnownAs"),
 			MovedTo:          activityJSONLDValue(object, "movedTo"),
 		}
 		out.FeaturedCollection = activityCollectionInlinePage(featuredValue)
+		out.PublicKeyReference = activityPublicKeyReference(publicKeyValue)
 		return out
 	default:
 		return activityObject{}
@@ -6861,6 +6936,17 @@ func activityPublicKeyPEM(value any) string {
 		return ""
 	}
 	return activityJSONLDString(object, "publicKeyPem")
+}
+
+// activityPublicKeyReference returns the first publicKey value when it is an
+// IRI reference rather than an embedded key, the value
+// ProcessAccountService#public_key fetches.
+func activityPublicKeyReference(value any) string {
+	reference, ok := activityJSONLDSingle(value).(string)
+	if !ok || strings.TrimSpace(reference) == "" {
+		return ""
+	}
+	return reference
 }
 
 func activityTagList(value any) []activityTag {
@@ -7434,6 +7520,25 @@ func activityJSONLDValue(object map[string]any, key string) any {
 	return nil
 }
 
+// activityJSONLDPresentValue is activityJSONLDValue for the terms Paon reads by
+// their presence (closed, oneOf, anyOf, conversation and the quote terms): an
+// empty array counts as absent, so the lookup goes on to the other keys of the
+// term as if it were missing. It produces no RDF statement, so it can be
+// added to a linked-data signed document without invalidating the signature,
+// and as a present value it would close an open poll, drop a poll or a quote,
+// or put the status into an empty conversation. In front of the other keys it
+// would hide them, e.g. FEP-044f's quote behind empty quoteUri and quoteUrl.
+func activityJSONLDPresentValue(object map[string]any, key string) any {
+	for _, candidate := range append([]string{key}, activityJSONLDTermIRIs(key)...) {
+		value := object[candidate]
+		if items, ok := value.([]any); value == nil || (ok && len(items) == 0) {
+			continue
+		}
+		return value
+	}
+	return nil
+}
+
 func activityJSONLDValueWithExpandedIRI(object map[string]any, key string) (any, bool) {
 	if value, ok := object[key]; ok && value != nil {
 		return value, false
@@ -7790,7 +7895,12 @@ func activityJSONLDStringValue(value any) string {
 }
 
 func activityJSONLDObjectID(object map[string]any, key string) string {
-	value := activityJSONLDValue(object, key)
+	return activityJSONLDValueObjectID(activityJSONLDValue(object, key))
+}
+
+// activityJSONLDValueObjectID returns the object identifier of a property
+// value, or of its first item that has one.
+func activityJSONLDValueObjectID(value any) string {
 	if id := activityPubObjectID(value); id != "" {
 		return id
 	}
@@ -7807,7 +7917,12 @@ func activityJSONLDObjectIDFirst(object map[string]any, key string) string {
 }
 
 func activityJSONLDObjectIDPreserveBearcap(object map[string]any, key string) string {
-	value := activityJSONLDValue(object, key)
+	return activityJSONLDValueObjectIDPreserveBearcap(activityJSONLDValue(object, key))
+}
+
+// activityJSONLDValueObjectIDPreserveBearcap is activityJSONLDValueObjectID
+// keeping a bearcap URI as it is.
+func activityJSONLDValueObjectIDPreserveBearcap(value any) string {
 	if id := activityPubObjectIDPreserveBearcap(value); id != "" {
 		return id
 	}
@@ -8061,11 +8176,35 @@ func activityRailsSuspendedTruthy(value any) bool {
 		return typed
 	case map[string]any:
 		if raw, ok := typed["@value"]; ok {
+			// A literal typed xsd:boolean is RDF-equivalent to the native
+			// boolean of the same lexical form, so a relayed copy of a signed
+			// suspended: false may carry {"@value": "false", "type":
+			// "xsd:boolean"}. Read it by its lexical form instead of as a
+			// truthy string.
+			if lexical, ok := raw.(string); ok && activityJSONLDBooleanDatatype(typed) {
+				return lexical == "true" || lexical == "1"
+			}
 			return activityRailsSuspendedTruthy(raw)
 		}
 		return true
 	default:
 		return true
+	}
+}
+
+// activityJSONLDBooleanDatatype reports whether a value object is typed
+// xsd:boolean, under the "@type" keyword or the "type" alias compaction writes
+// and as the compact or the full datatype IRI.
+func activityJSONLDBooleanDatatype(value map[string]any) bool {
+	datatype, ok := value["@type"].(string)
+	if !ok {
+		datatype, _ = value["type"].(string)
+	}
+	switch datatype {
+	case "xsd:boolean", "http://www.w3.org/2001/XMLSchema#boolean":
+		return true
+	default:
+		return false
 	}
 }
 
